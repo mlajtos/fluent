@@ -1,9 +1,8 @@
 'use client'
 
-/*
+// MARK: Documentation
 
-MARK: Documentation
-
+const Documentation = `
 # Fluent
 
 Fluent is a tiny language + IDE for differentiable tensors and reactive UIs. Fluent is for programmers, researchers, and tinkerers who want to combine math, differentiation, and interactivity in a playful way.
@@ -12,68 +11,70 @@ Fluent is a tiny language + IDE for differentiable tensors and reactive UIs. Flu
 
 - Try in browser: https://mlajtos.mu/fluent
 
-```
+\`\`\`fluent
 ; tensors + broadcasting
 a: [1, 2, 3],
-a + 1,        ; [2, 3, 4]
+a + 1, ; [2, 3, 4]
 
 ; functions + gradient
 square: { x | x^2 },
-square(a),           ; [1, 4, 9]
-∇(square)(a),        ; [2, 4, 6]
+square(a), ; [1, 4, 9]
+∇(square)(a), ; [2, 4, 6]
 
 ; reactive UI
 x: $(0.5),
 Slider(x),
 $({ square(x()) }),
 Button({ x(0) }, "Reset"),
-```
+\`\`\`
 
 ## Features
 
 ### Syntax
 - Tensors
   - multi-dimensional arrays of numbers
-  - scalars: `1`, `3.14`, `-42`, `6.02e23`
-  - higher-rank: `[1, 2, 3]`, `[[1, 2], [3, 4]]`, `[[[1]], [[2]], [[3]]]`
-  - auto-broadcasting: `[1, 2, 3] + 1` is `[2, 3, 4]`
+  - scalars: \`1\`, \`3.14\`, \`-42\`, \`6.02e23\`
+  - higher-rank: \`[1, 2, 3]\`, \`[[1, 2], [3, 4]]\`, \`[[[1]], [[2]], [[3]]]\`
+  - auto-broadcasting: \`[1, 2, 3] + 1\` is \`[2, 3, 4]\`
 - Lists
   - ordered collection of heterogeneous values
-  - e.g. `(1, 2, 3)`, `(1, (2, 3), [4])`, `()`, `(42,)`
+  - e.g. \`(1, 2, 3)\`, \`(1, (2, 3), [4])\`, \`()\`, \`(42,)\`
 - Functions
-  - lambda with `{}`: `{ x | x + 1 }`, `{ x, y | x * y }`, `{ 42 }`
-  - last expression is the return value: `{ 1 + 1, 42 }`
-  - application by juxtaposition: `{ x, y | x * y }(6, 7)`
-  - application by infix: `6 { x, y | x * y } 7`
-  - left-to-right, no precedence: `1 + 2 * 3` is `(1 + 2) * 3`
-  - single-argument function equivalence: `√(4)` and `(√4)` are the same
+  - lambda with \`{}\`: \`{ x | x + 1 }\`, \`{ x, y | x * y }\`, \`{ 42 }\`
+  - last expression is the return value: \`{ 1 + 1, 42 }\`
+  - application by juxtaposition: \`{ x, y | x * y }(6, 7)\`
+  - application by infix: \`6 { x, y | x * y } 7\`
+  - left-to-right, no precedence: \`1 + 2 * 3\` is \`(1 + 2) * 3\`
+  - single-argument function equivalence: \`√(4)\` and \`(√4)\` are the same
 - Symbols
-  - e.g. `a`, `FooBar`, `bar-baz-1`, `α`, `Σ𝓜ℂ2`, `+`, `≠`, `!=`, `⌈≠⌋`
-  - assignment with `:`: `a: 23, b: (a + 24)`
-  - letter-based (`a`, `α`, ...) and non-letter-based (`+`, `√`, ...) do not conflict:
-    - e.g. `foo+bar`, `α≠β`, `a!!b!!c` are valid expressions
+  - e.g. \`a\`, \`FooBar\`, \`bar-baz-1\`, \`α\`, \`Σ𝓜ℂ2\`, \`+\`, \`≠\`, \`!=\`, \`⌈≠⌋\`
+  - assignment with \`:\`: \`a: 23, b: (a + 24)\`
+  - letter-based (\`a\`, \`α\`, ...) and non-letter-based (\`+\`, \`√\`, ...) do not conflict:
+    - e.g. \`foo+bar\`, \`α≠β\`, \`a!!b!!c\` works without whitespace or parentheses
 - Grouping
-  - parentheses for expressions: `(1 + 2) * 3`
+  - parentheses for expressions: \`1 + (2 * 3)\` is \`7\`
 - Comments
-  - single-line comments with `;`: `1 + 2 ; this is a comment`
+  - single-line comments with \`;\`: \`1 + 2 ; this is a comment\`
 
 ### Semantics
 - Differentiable programming
-  - get gradient with `∇`: `∇({ x | x^2 })(1)` is `2`
-  - higher-order gradients: `∇(∇({ x | x^3 }))(1)` is `6`
+  - get gradient of function with \`∇\`: \`(∇ { x | x^2 }) 1\` is \`2\`
+  - higher-order gradients: \`(∇ (∇ { x | x^3 })) 1\` is \`6\`
 - Reactive programming
   - signal-based library-level support for reactivity
-  - e.g. `($): Signal, a: $(1), b: $(2), c: $({ a() + b() }), b(41)`, `c()` is `42`
-  - paired with UI for interactive programs: `a: $(0.5), Slider(a)`
+  - e.g. \`($): Reactive, a: $(1), b: $(2), c: $({ a() + b() }), b(41)\`, \`c()\` is \`42\`
+  - paired with UI for interactive programs: \`a: $(0.5), Slider(a)\`
+  - fine-grained updates: only parts of the program that depend on changed values are re-evaluated
 - Built-in functions
-  - lists: `List`, `ListConcat`, `ListLength`, `ListGet`, `ListMap`, etc.
-  - tensors: `Tensor`, `TensorStack`, `TensorUnstack`, `TensorConcat`, `TensorTile`, etc.
-  - tensor math: `+`, `-`, `*`, `/`, `^`, `√`, `%`, `max`, `min`, `sin`, `cos`, `log`, `exp`, `sum`, `mean`, `<`, `>=`, etc.
-  - user interface: `Print`, `Slider`, `Button`, `Text`, `Grid`, `Image`, `Plot`, etc.
+  - lists: \`List\`, \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, etc.
+  - tensors: \`Tensor\`, \`TensorStack\`, \`TensorUnstack\`, \`TensorConcat\`, \`TensorTile\`, etc.
+  - tensor math: \`+\`, \`-\`, \`*\`, \`/\`, \`^\`, \`√\`, \`%\`, \`max\`, \`min\`, \`sin\`, \`cos\`, \`log\`, \`exp\`, \`sum\`, \`mean\`, \`<\`, \`>=\`, etc.
+  - signals: \`SignalCreate\`, \`SignalRead\`, \`SignalUpdate\`, \`SignalEffect\`, etc.
+  - user interface: \`Print\`, \`Slider\`, \`Button\`, \`Text\`, \`Grid\`, \`Image\`, \`Plot\`, etc.
   - ...and more!
 
 ### IDE
-- Syntax highlighting
+- Syntax highlight
 - Live evaluation with granular error reporting
 - Automatic visualization of values (notebook-style output)
 - GPU-accelerated execution of tensor operations
@@ -81,7 +82,9 @@ Button({ x(0) }, "Reset"),
 - Shareable URL links to programs
 - Dark theme
 - LLM-assisted code generation (coming soon)
+`
 
+/*
 ## TODO
 
 ## Bugs
@@ -129,147 +132,26 @@ Button({ x(0) }, "Reset"),
 
 */
 
-// A simple JavaScript implementation for reading SafeTensors files.
-// This function takes an ArrayBuffer (e.g., from fs.readFileSync().buffer in Node.js or fetch().arrayBuffer() in browser)
-// and returns an object with tensor names as keys and objects containing dtype, shape, and data (as TypedArray) as values.
-// Note: For 'F16' and 'BF16', the data is returned as Uint16Array (raw bits); you may need additional conversion to floats if required.
-// Throws errors on unsupported dtypes or invalid formats.
-
-
-function loadSafeTensors(arrayBuffer) {
-  if (!(arrayBuffer instanceof ArrayBuffer)) {
-    throw new Error('Input must be an ArrayBuffer');
-  }
-
-  const dataView = new DataView(arrayBuffer);
-  let offset = 0;
-
-  // Read header length: 8-byte little-endian uint64
-  const headerLen = Number(dataView.getBigUint64(offset, true));
-  offset += 8;
-
-  if (headerLen === 0 || offset + headerLen > arrayBuffer.byteLength) {
-    throw new Error('Invalid header length');
-  }
-
-  // Extract header bytes and decode as JSON
-  const headerArray = new Uint8Array(arrayBuffer, offset, headerLen);
-  const decoder = new TextDecoder('utf-8');
-  const headerString = decoder.decode(headerArray);
-  const header = JSON.parse(headerString);
-
-  offset += headerLen;
-
-  const tensors = {};
-
-  for (const key in header) {
-    if (key === '__metadata__') continue; // Skip optional metadata
-
-    const info = header[key];
-    if (!info.dtype || !info.shape || !info.data_offsets) {
-      throw new Error(`Invalid tensor info for key: ${key}`);
-    }
-
-    const { dtype, shape } = info;
-    const [start, end] = info.data_offsets;
-
-    if (start < 0 || end <= start || offset + end > arrayBuffer.byteLength) {
-      throw new Error(`Invalid data offsets for tensor: ${key}`);
-    }
-
-    const tensorBuffer = arrayBuffer.slice(offset + start, offset + end);
-
-    let data;
-    switch (dtype) {
-      case 'BOOL':
-        data = new Uint8Array(tensorBuffer);
-        break;
-      case 'I8':
-        data = new Int8Array(tensorBuffer);
-        break;
-      case 'U8':
-        data = new Uint8Array(tensorBuffer);
-        break;
-      case 'I16':
-        data = new Int16Array(tensorBuffer);
-        break;
-      case 'U16':
-        data = new Uint16Array(tensorBuffer);
-        break;
-      case 'I32':
-        data = new Int32Array(tensorBuffer);
-        break;
-      case 'U32':
-        data = new Uint32Array(tensorBuffer);
-        break;
-      case 'I64':
-        data = new BigInt64Array(tensorBuffer);
-        break;
-      case 'U64':
-        data = new BigUint64Array(tensorBuffer);
-        break;
-      case 'F16':
-      case 'BF16':
-        data = new Uint16Array(tensorBuffer); // Raw bits; convert to float if needed
-        break;
-      case 'F32':
-        data = new Float32Array(tensorBuffer);
-        break;
-      case 'F64':
-        data = new Float64Array(tensorBuffer);
-        break;
-      default:
-        throw new Error(`Unsupported dtype: ${dtype}`);
-    }
-
-    // Verify the data length matches shape and dtype size
-    const expectedSize = shape.reduce((a, b) => a * b, 1);
-    const byteSize = data.byteLength / data.BYTES_PER_ELEMENT;
-    if (byteSize !== expectedSize) {
-      throw new Error(`Data size mismatch for tensor: ${key}`);
-    }
-
-    tensors[key] = { dtype, shape, data };
-  }
-
-  return tensors;
-}
-
-function loadTensorFromImageUrl(url: string): Signal<tf.Tensor> {
-  const s = signal<tf.Tensor | null>(null);
-
-  const imgElement = document.createElement('img');
-  imgElement.crossOrigin = "anonymous";
-  imgElement.src = url;
-
-  imgElement.onload = () => {
-    s.value = tf.browser.fromPixels(imgElement)
-  }
-
-  return s
-}
-
 import { grammar } from "ohm-js";
 import { toAST as ohmToAST } from "ohm-js/extras";
-import React, { isValidElement, useEffect } from "react";
+import React, { isValidElement, useEffect, useRef } from "react";
 import * as tf from "@tensorflow/tfjs";
 // for fancy signals
 // https://www.npmjs.com/package/@preact-signals/utils
 import { signal, Signal, computed, effect } from "@preact/signals-core"
 import dynamic from 'next/dynamic'
 import { ErrorBoundary } from 'react-error-boundary';
-import { BeforeMount, OnMount } from '@monaco-editor/react';
+import { BeforeMount, OnMount, Editor, Monaco } from '@monaco-editor/react';
 import type { editor } from "monaco-editor";
 
 import { useComputed, useSignal, useSignals } from "@preact/signals-react/runtime";
 import dedent from "ts-dedent";
-import Meta from "@/components/Meta";
 import { Annotations } from "plotly.js";
 
-const Editor = dynamic(() => import('@monaco-editor/react'), {
-  ssr: false,
-  loading: () => <div className="flex items-center justify-center h-full">Loading editor...</div>
-});
+// const Editor = dynamic(() => import('@monaco-editor/react'), {
+//   ssr: false,
+//   loading: () => <div className="flex items-center justify-center h-full">Loading editor...</div>
+// });
 
 // loader.config({ monaco })
 // loader.init()
@@ -377,7 +259,7 @@ Fluent2 {
     = (Atom #(~space) (NestedExpr | List))
     
   Atom
-    = Number | Hack | Lambda | NestedExpr | List | Symbol | String | Tensor | Null
+    = Number | Hack | Lambda | NestedExpr | List | Symbol | String | Code | Tensor | Null
     
   NestedExpr
     = "(" Expr ")"
@@ -402,7 +284,8 @@ Fluent2 {
   digitGroup
     = digit ("_"? digit)*
   String          = #("\"" (~"\"" any)* "\"")
-  reserved        = "|" | "," | "{" | "}" | "(" | ")" | "[" | "]" | ";" | "\"" 
+  Code            = "${"`"}" Program "${"`"}" | "${"`"}" Code "${"`"}"
+  reserved        = "|" | "," | "{" | "}" | "(" | ")" | "[" | "]" | ";" | "\"" | "${"`"}"
   operator        = (#(~(reserved | alnum) specialChar))+
   specialChar     = ${getSymbolsRange(OPERATOR_RANGES)}
   space          += ";" (~"\n" any)* -- comment
@@ -427,6 +310,7 @@ type SyntaxTreeNode =
   | { type: "Lambda", content: { args: SyntaxTreeNode[], expr: SyntaxTreeNode }, origin: Origin }
   | { type: "String", content: { value: string }, origin: Origin }
   | { type: "Error", content: string, origin: Origin }
+  | { type: "Code", content: { value: SyntaxTreeNode }, origin: Origin }
 
 function getLocationOrigin(node: any): Origin {
   const from = node.source.collapsedLeft().getLineAndColumn();
@@ -582,9 +466,19 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     }
   },
+  Code(_, value, __): SyntaxTreeNode {
+    console.log("Code node", value.sourceString);
+    return {
+      type: "Code",
+      content: {
+        value: value.toAST(this.args.mapping) as SyntaxTreeNode,
+      },
+      origin: getLocationOrigin(this),
+    }
+  },
 } as const;
 
-const ParseIntoSyntaxTree = (program: string): SyntaxTreeNode => {
+const CodeParse = (program: string): SyntaxTreeNode => {
   const matchResult = compiledGrammar.match(program);
 
   if (matchResult.succeeded()) {
@@ -678,6 +572,12 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: Scope): Value {
     const args = evaluateSyntaxTreeNode(node.content.args, env) as Value[]
 
     return safeApply(fn, args, env)
+  }
+
+  if (node.type === "Code") {
+    console.log("Evaluating embedded code:", node.content.value);
+    // @ts-ignore
+    return PrettyPrintSyntaxTree(node.content.value)
   }
 }
 
@@ -788,11 +688,11 @@ function safeApply(fn: Value, args: Value[], env: Scope): Value {
     if (fnValue instanceof Signal) {
 
       if (argsValue.length === 0) {
-        return read(fnValue)
+        return SignalRead(fnValue)
       }
 
       if (argsValue.length === 1) {
-        update(fnValue, argsValue[0])
+        SignalUpdate(fnValue, argsValue[0])
         return
       }
 
@@ -806,7 +706,7 @@ function safeApply(fn: Value, args: Value[], env: Scope): Value {
   }
 }
 
-const multiDispatch = (candidates: Function[]) => (a: Value, b: Value) => {
+const FunctionCascade = (candidates: Function[]) => (a: Value, b: Value) => {
   const noResultSymbol = Symbol('noResult')
 
   let result: (Value | typeof noResultSymbol) = noResultSymbol
@@ -850,7 +750,7 @@ function getAsSyncList(value: tf.Tensor) {
 // MARK: Environment
 
 const evaluateProgramWithScope = (program: string, scope: Scope) => {
-  const syntaxTree = ParseIntoSyntaxTree(program)
+  const syntaxTree = CodeParse(program)
 
   if (syntaxTree.type === "Error") {
     console.error("Error parsing program:", syntaxTree.content);
@@ -860,7 +760,7 @@ const evaluateProgramWithScope = (program: string, scope: Scope) => {
   return evaluateSyntaxTreeNode(syntaxTree, scope)
 }
 
-const evaluate = function (program: string) {
+const CodeEvaluate = function (program: string) {
   console.log("Evaluating program:", program, this);
   return evaluateProgramWithScope(program, this);
 }
@@ -881,7 +781,7 @@ function prefixKeys<P extends string, S extends object>(prefix: P, scope: S): Pr
   return prefixedScope as PrefixKeys<S, P>;
 }
 
-const iterate = async (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar = tf.scalar(1)) => {
+const FunctionIterate = async (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar = tf.scalar(1)) => {
   if (!(typeof fn === "function" && iterations instanceof tf.Tensor)) {
     throw new Error("iterate(fn, iterations): fn must be a function and iterations must be a Tensor");
   }
@@ -899,22 +799,16 @@ const iterate = async (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar = 
   return null
 }
 
-const reactive = (a: Value) => {
-  if (typeof a === "function") {
-    // @ts-ignore
-    return computed(a)
-  }
-  return signal(a)
-}
+const SignalCreate = signal
 
-const read = <T,>(s: Signal<T>) => {
+const SignalRead = <T,>(s: Signal<T>) => {
   if (!(s instanceof Signal)) {
-    return new Error(`'read': ${string(s)} is not a signal`)
+    return new Error(`'read': ${String(s)} is not a signal`)
   }
   return s.value
 }
 
-const update = <T,>(s: Signal<T>, v: T) => {
+const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
   if (s instanceof Signal) {
     s.value = v
     return
@@ -923,30 +817,28 @@ const update = <T,>(s: Signal<T>, v: T) => {
   return new Error(`'update': ${s} is not a signal`)
 }
 
-async function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms))
+const SignalComputed = computed
+
+// @ts-ignore
+const SignalComputedAsync = function (v, cb = arguments.length === 1 ? v : cb) {
+  const s = signal(arguments.length === 2 ? v : undefined);
+  effect(() => cb().then((v) => s.value = v));
+  return computed(() => s.value);
+};
+
+const SignalEffect = effect
+
+const Reactive = (a: Value) => {
+  if (typeof a === "function") {
+    // @ts-ignore
+    return SignalComputed(a)
+  }
+  return SignalCreate(a)
 }
 
-const delay = async (fn: () => Promise<any>, time: tf.Tensor) => {
-  const timeValue = getAsSyncList(time) as number
-  await sleep(timeValue)
-  return await fn()
-}
+const SymbolAssign = function (a: Value, b: Value) {
 
-const timeInterval = (time: tf.Tensor) => {
-  let count = 0
-  const timeValue = getAsSyncList(time) as number
-  const intervalSignal = signal(count)
-  setInterval(() => {
-    count += 1
-    intervalSignal.value = count
-  }, timeValue * 1000)
-  return computed(() => tf.scalar(intervalSignal.value))
-}
-
-const assignLeft = function (a: Value, b: Value) {
-
-  // console.log("assignLeft", a, b, this)
+  // console.log("SymbolAssign", a, b, this)
 
   if (typeof a === "symbol") {
     // if a is not defined in the current environment
@@ -959,7 +851,8 @@ const assignLeft = function (a: Value, b: Value) {
     // return a
     return a.resolve(this)
   } else {
-    return new Error(`assignLeft: '${a}' is not a symbol, rebind the symbol to the environment first`)
+    return new Error(`SymbolAssign: '${a}' is not a symbol, rebind the symbol to the environment first`)
+
     // reified symbol has a value attached to it
     // found this value in the environment traversing the prototype chain of env
     const aSymbol = Symbol.reverseResolve(this, a)
@@ -968,7 +861,7 @@ const assignLeft = function (a: Value, b: Value) {
       // aSymbol.assign(this, b)
       // console.log(Symbol.keyFor(aSymbol))
       this[Symbol.keyFor(aSymbol)] = b
-      // console.log("assignLeft", aSymbol, b, this, this[Symbol.keyFor(aSymbol)])
+      // console.log("SymbolAssign", aSymbol, b, this, this[Symbol.keyFor(aSymbol)])
       return aSymbol.resolve(this)
     }
   }
@@ -977,22 +870,22 @@ const assignLeft = function (a: Value, b: Value) {
 }
 
 // @ts-ignore
-assignLeft.receivesNonreifiedSymbols = true
+SymbolAssign.receivesNonreifiedSymbols = true
 
-const functionCall = function (fn: Value, args: Value[]) {
+const FunctionEvaluate = function (fn: Value, args: Value[]) {
   return safeApply(fn, args, this)
 }
 
-const apply = function (a: Value, b: Value): Value {
+const FunctionApply = function (a: Value, b: Value): Value {
   const arg = a instanceof Array ? a : [a]
   return safeApply(b, arg, this)
 }
 
-const list = (...args: unknown[]) => {
+const List = (...args: unknown[]) => {
   return args
 }
 
-const listConcat = (...args: Value[]) => {
+const ListConcat = (...args: Value[]) => {
   return args.reduce((acc, arg) => {
     if (arg instanceof Array) {
       return acc.concat(arg)
@@ -1007,11 +900,11 @@ const listConcat = (...args: Value[]) => {
   // return [].concat(args)
 }
 
-const listLength = (a: unknown[]) => {
+const ListLength = (a: unknown[]) => {
   return tf.scalar(a.length)
 }
 
-const listGet = (a: any[], b: tf.Scalar) => {
+const ListGet = (a: any[], b: tf.Scalar) => {
   if (!Array.isArray(a)) {
     return new Error("list-get: a must be an array")
   }
@@ -1024,94 +917,107 @@ const listGet = (a: any[], b: tf.Scalar) => {
   return a.at(index)
 }
 
-const listMap = (a: any[], fn: (value: any, index: tf.Scalar) => any) => {
+const ListMap = (a: any[], fn: (value: any, index: tf.Scalar) => any) => {
   if (typeof fn !== "function") {
-    return new Error("list-map: fn must be a function")
+    return new Error("ListMap: `fn` must be a function")
   }
 
   if (!Array.isArray(a)) {
-    return new Error("list-map: a must be an array")
+    return new Error("ListMap: `a` must be a list")
   }
 
   return a.map((value, index) => {
-    // console.log("list-map", value, index, this)
-    return apply([value, tf.scalar(index)], fn)
-    //return fn(value, tf.scalar(index))
+    return FunctionEvaluate(fn, [value, TensorScalar(index)])
   })
 }
 
-const tensor = tf.tensor
-const tensorStack = (...args: tf.Tensor[]) => tf.stack(args)
-const tensorUnstack = tf.unstack
-const tensorConcat = (...args: tf.Tensor[]) => tf.concat(args)
-const tensorTile = (a: tf.Tensor, reps: tf.Tensor) => {
+const ListReduce = (a: any[], fn: (acc: any, value: any) => any, initialValue?: any) => {
+  if (typeof fn !== "function") {
+    return new Error("list-reduce: fn must be a function")
+  }
+
+  if (initialValue === undefined) {
+    return a.reduce(fn)
+  }
+
+  return a.reduce(fn, initialValue)
+}
+
+const Tensor = tf.Tensor
+const TensorScalar = tf.scalar
+const TensorStack = (...args: tf.Tensor[]) => tf.stack(args)
+const TensorUnstack = tf.unstack
+const TensorConcat = (...args: tf.Tensor[]) => tf.concat(args)
+const TensorTile = (a: tf.Tensor, reps: tf.Tensor) => {
   const repsList = getAsSyncList(reps) as number[]
   return tf.tile(a, repsList)
 }
 
-const tensorAdd = tf.add
-const tensorSubtract = tf.sub
-const tensorMultiply = tf.mul
-const tensorDivide = tf.div
-const tensorPower = tf.pow
-const tensorRoot = (a: tf.Tensor, b: tf.Tensor) => tensorPower(b, tensorReciprocal(a))
-const tensorRemainder = tf.mod
-const tensorMaximum = tf.maximum
-const tensorMinimum = tf.minimum
+const TensorAdd = tf.add
+const TensorSubtract = tf.sub
+const TensorMultiply = tf.mul
+const TensorDivide = tf.div
+const TensorPower = tf.pow
+const TensorRoot = (a: tf.Tensor, b: tf.Tensor) => TensorPower(b, TensorReciprocal(a))
+const TensorRemainder = tf.mod
+const TensorMaximum = tf.maximum
+const TensorMinimum = tf.minimum
 
-const tensorLess = tf.less
-const tensorGreater = tf.greater
-const tensorLessEqual = tf.lessEqual
-const tensorGreaterEqual = tf.greaterEqual
-const tensorEqual = tf.equal
-const tensorNotEqual = tf.notEqual
+const TensorLess = tf.less
+const TensorGreater = tf.greater
+const TensorLessEqual = tf.lessEqual
+const TensorGreaterEqual = tf.greaterEqual
+const TensorEqual = tf.equal
+const TensorNotEqual = tf.notEqual
 
-const tensorSine = tf.sin
-const tensorCosine = tf.cos
-const tensorTangent = tf.tan
-const tensorSineHyperbolic = tf.sinh
-const tensorCosineHyperbolic = tf.cosh
-const tensorTangentHyperbolic = tf.tanh
-const tensorSineHyperbolicInverse = tf.asin
-const tensorCosineHyperbolicInverse = tf.acos
-const tensorTangentHyperbolicInverse = tf.atan
+const TensorSine = tf.sin
+const TensorCosine = tf.cos
+const TensorTangent = tf.tan
+const TensorSineHyperbolic = tf.sinh
+const TensorCosineHyperbolic = tf.cosh
+const TensorTangentHyperbolic = tf.tanh
+const TensorSineHyperbolicInverse = tf.asin
+const TensorCosineHyperbolicInverse = tf.acos
+const TensorTangentHyperbolicInverse = tf.atan
 
-// tensor-reduce(a, 0, +)
-const tensorSum = tf.sum
-// tensor-reduce(a, 0, *)
-const tensorProduct = tf.prod
-const tensorMean = tf.mean
+// Tensor-reduce(a, 0, +)
+const TensorSum = tf.sum
+// Tensor-reduce(a, 0, *)
+const TensorProduct = tf.prod
+const TensorMean = tf.mean
+const TensorMin = tf.min
+const TensorMax = tf.max
 
-const tensorNegate = tf.neg
-const tensorAbsolute = tf.abs
-const tensorSign = tf.sign
-const tensorLogarithm = tf.log
-const tensorExponential = tf.exp
-const tensorReciprocal = tf.reciprocal
-const tensorRound = tf.round
-const tensorCeil = tf.ceil
-const tensorFloor = tf.floor
+const TensorNegate = tf.neg
+const TensorAbsolute = tf.abs
+const TensorSign = tf.sign
+const TensorLogarithm = tf.log
+const TensorExponential = tf.exp
+const TensorReciprocal = tf.reciprocal
+const TensorRound = tf.round
+const TensorCeil = tf.ceil
+const TensorFloor = tf.floor
 
-const tensorGradient = tf.grad
-const tensorTranspose = tf.transpose
-const tensorIdentity = (a: tf.Tensor) => {
+const TensorGradient = tf.grad
+const TensorTranspose = tf.transpose
+const TensorIdentity = (a: tf.Tensor) => {
   const size = getAsSyncList(a) as number
   return tf.eye(size)
 }
 
-const tensorRange = (a: tf.Tensor, b: tf.Tensor, c: tf.Tensor) => {
+const TensorRange = (a: tf.Tensor, b: tf.Tensor, c: tf.Tensor) => {
   const start = getAsSyncList(tf.cast(a, "int32")) as number
   const stop = getAsSyncList(tf.cast(b, "int32")) as number
   return tf.range(start, stop)
 }
 
-const tensorLinearSpace = (range: tf.Tensor, steps: tf.Tensor, c: tf.Tensor) => {
+const TensorLinearSpace = (range: tf.Tensor, steps: tf.Tensor, c: tf.Tensor) => {
   const [start, stop] = getAsSyncList(range) as [number, number]
   const num = getAsSyncList(steps) as number
   return tf.linspace(start, stop, num)
 }
 
-const tensorReshape = (a: tf.Tensor, b: tf.Tensor) => {
+const TensorReshape = (a: tf.Tensor, b: tf.Tensor) => {
   if (b !== undefined) {
     return tf.reshape(a, getAsSyncList(b) as number[])
   }
@@ -1119,10 +1025,10 @@ const tensorReshape = (a: tf.Tensor, b: tf.Tensor) => {
   return tf.tensor(a.shape)
 }
 
-const matrixMultiply = (a: tf.Tensor, b: tf.Tensor) => tf.matMul(a, b, false, false)
-const tensorDotProduct = tf.dot
+const TensorMatrixMultiply = (a: tf.Tensor, b: tf.Tensor) => tf.matMul(a, b, false, false)
+const TensorDotProduct = tf.dot
 
-const tensorLength = (a: tf.Tensor, b?: tf.Tensor) => {
+const TensorLength = (a: tf.Tensor, b?: tf.Tensor) => {
   if (b !== undefined) {
     return tf.scalar(a.shape[getAsSyncList(b) as number])
   }
@@ -1130,16 +1036,16 @@ const tensorLength = (a: tf.Tensor, b?: tf.Tensor) => {
   return tf.scalar(a.shape[0])
 }
 
-const tensorShape = (a: tf.Tensor) => tf.tensor(a.shape)
+const TensorShape = (a: tf.Tensor) => tf.tensor(a.shape)
 
-const tensorGather = (a: tf.Tensor, b: tf.Tensor) => {
+const TensorGather = (a: tf.Tensor, b: tf.Tensor) => {
   const indices = tf.cast(b, "int32")
   // (__): { L, i | L _ tensorWhere(i < 0, i + #(L), i) },
   return tf.gather(a, indices)
 }
 
-const tensorWhere = tf.where
-const tensorIsNaN = tf.isNaN
+const TensorWhere = tf.where
+const TensorIsNaN = tf.isNaN
 
 // const tensorVariableAssignOriginal = Variable.prototype.assign
 
@@ -1148,7 +1054,7 @@ const tensorIsNaN = tf.isNaN
 //   tensorVariableAssignOriginal.bind(this)(newValue)
 // }
 
-const tensorVariable = (a: tf.Tensor) => {
+const TensorVariable = (a: tf.Tensor) => {
   // const s = signal(a)
   const variableTensor = tf.variable(a);
   // @ts-ignore
@@ -1156,25 +1062,25 @@ const tensorVariable = (a: tf.Tensor) => {
   return variableTensor
 }
 
-const tensorAssign = (a: tf.Variable, b: tf.Tensor) => {
+const TensorAssign = (a: tf.Variable, b: tf.Tensor) => {
   return a.assign(b)
 }
 
-const tensorOptimizationAdam = (a: tf.Tensor, b: tf.Variable[]) => {
+const TensorOptimizationAdam = (a: tf.Tensor, b: tf.Variable[]) => {
   const optimizer = tf.train.adam(getAsSyncList(a) as number, 0.9, 0.999, 1e-8)
   return (fn: () => tf.Scalar) => optimizer.minimize(fn, true, b)
 }
 
-const tensorOptimizationSgd = (a: tf.Tensor) => {
+const TensorOptimizationSgd = (a: tf.Tensor) => {
   const optimizer = tf.train.sgd(getAsSyncList(a) as number)
   return (fn: () => tf.Scalar) => optimizer.minimize(fn, true)
 }
 
-const tensorRandomNormal = (a: tf.Tensor) => tf.randomStandardNormal(getAsSyncList(a) as number[])
+const TensorRandomNormal = (a: tf.Tensor) => tf.randomStandardNormal(getAsSyncList(a) as number[])
 
-const string = (a: unknown) => `${a.toString()}`
-const stringConcat = (...args: any[]) => "".concat(...args)
-const stringLength = (a: string) => tf.scalar(a.length)
+// const String = (a: unknown) => `${a.toString()}`
+const StringConcat = (...args: any[]) => "".concat(...args)
+const StringLength = (a: string) => tf.scalar(a.length)
 
 const Button = (label?: string | Signal<string>, onClick?: () => void) => {
   return computed(() => {
@@ -1184,63 +1090,72 @@ const Button = (label?: string | Signal<string>, onClick?: () => void) => {
   })
 }
 
-// @ts-ignore
-const computedAsync = function (v, cb = arguments.length === 1 ? v : cb) {
-  const s = signal(arguments.length === 2 ? v : undefined);
-  effect(() => cb().then((v) => s.value = v));
-  return computed(() => s.value);
-};
-
-const renderMarkdownAsyncEffect = async (value: string, renderedHTML: Signal<string>) => {
+const renderMarkdown = async (value: string) => {
   const renderMarkdown = (await import("monaco-editor/esm/vs/base/browser/markdownRenderer.js")).renderMarkdown
 
   const options = {
-    inline: true,
-    // https://github.com/Microsoft/monaco-editor/issues/892
-    // codeBlockRenderer: async function (languageAlias, value) {
-    // return await monaco.editor.colorize(value, languageAlias, {  })
-    // }
+    inline: false,
+    codeBlockRenderer: colorizeCodeAsync,
+
   }
-  const result = renderMarkdown({ value }, options)
+  const result = await renderMarkdown({ value }, options)
 
-  renderedHTML.value = result.element.innerHTML
-
-  return result.dispose
+  return result.element
 }
 
-const colorizeCodeAsync = async (value: string, language: string) => {
-  // const colorize = (await import("monaco-editor/esm/vs/editor/standalone/browser/standaloneCodeEditor.js")).colorize
-  // const result = await colorize(value, "fluent", {})
-  // return <div className="overflow-hidden" dangerouslySetInnerHTML={{ __html: result }} />
+const colorizeCodeAsync = async (language: string, value: string) => {
+  const colorize = (await getEditor()).colorize
+  const e = document.createElement("div")
+  e.className = "overflow-hidden"
+  e.style.fontFamily = "monospace"
+  try {
+    e.innerHTML = await colorize(value, language)
+  } catch (error) {
+    e.textContent = value
+  }
+  return e
 }
 
-const Text = (value: string | Signal<string>) => {
-  const renderedHtml = signal("")
+const NativeDOMElement = ({ fn }: { fn: () => Promise<HTMLElement> }) => {
+  const ref = useRef<HTMLDivElement>(null)
 
-  effect(() => {
-    let rawValue: string
-    if (typeof value === "string") {
-      rawValue = value
+  useEffect(() => {
+
+    async function mount() {
+      if (ref.current) {
+        const element = await fn()
+        ref.current.appendChild(element)
+        return () => {
+          ref.current?.removeChild(element)
+        }
+      }
     }
 
-    if (value instanceof Signal) {
-      rawValue = value.value
+    mount()
+
+    return () => {
+      if (ref.current) {
+        while (ref.current.firstChild) {
+          ref.current.removeChild(ref.current.firstChild)
+        }
+      }
     }
+  }, [fn])
 
-    renderMarkdownAsyncEffect(rawValue, renderedHtml)
-  })
+  return <div ref={ref}></div>
+}
 
-  return computed(
-    () => <div className="overflow-hidden" dangerouslySetInnerHTML={{ __html: renderedHtml.value }} />
-  )
+const Text = (value: string) => {
+  const fn = () => { console.log("rendering"); return renderMarkdown(value) }
+  return <NativeDOMElement fn={fn} />
 }
 
 const TextEditor = (editedValue: Signal<string>) => {
-  return computed(() =>
+  return SignalComputed(() =>
     <div className="grid">
       <textarea
         value={editedValue.value}
-        onChange={(e) => update(editedValue, e.target.value)}
+        onChange={(e) => SignalUpdate(editedValue, e.target.value)}
         className="block bg-neutral-800 focus:bg-neutral-900 rounded-xl border border-neutral-600 hover:border-neutral-500 focus:border-neutral-300 outline-none p-2 field-sizing-content"
         // @ts-ignore
         style={{ fieldSizing: "content" }}
@@ -1251,7 +1166,7 @@ const TextEditor = (editedValue: Signal<string>) => {
 }
 
 const Slider = (editedValue: Signal<tf.Tensor>) => {
-  return computed(() => {
+  return SignalComputed(() => {
     const valueAsList = getAsSyncList(editedValue?.value) as number
 
     return (
@@ -1262,7 +1177,7 @@ const Slider = (editedValue: Signal<tf.Tensor>) => {
           max={1}
           step={0.01}
           value={valueAsList}
-          onChange={(e) => update(editedValue, tf.scalar(parseFloat(e.target.value)))}
+          onChange={(e) => SignalUpdate(editedValue, tf.scalar(parseFloat(e.target.value)))}
           className="bg-neutral-900 focus:bg-neutral-800 rounded-xl border border-neutral-800 hover:border-neutral-700 focus:border-neutral-600 outline-none p-2 w-full h-2 cursor-pointer dark:bg-gray-700 place-self-center"
         />
       </div>
@@ -1323,7 +1238,7 @@ function WrapWithPrintIfNotReactElement(child: any) {
 }
 
 const Fetch = (url: string) => {
-  const s = signal(null)
+  const s = SignalCreate(null)
 
   fetch(url)
     .then(response => response.text())
@@ -1337,19 +1252,140 @@ const Fetch = (url: string) => {
   return s
 }
 
-const loadSafeTensorFromURL = (url?: string) => {
+// A simple JavaScript implementation for reading SafeTensors files.
+// This function takes an ArrayBuffer (e.g., from fs.readFileSync().buffer in Node.js or fetch().arrayBuffer() in browser)
+// and returns an object with tensor names as keys and objects containing dtype, shape, and data (as TypedArray) as values.
+// Note: For 'F16' and 'BF16', the data is returned as Uint16Array (raw bits); you may need additional conversion to floats if required.
+// Throws errors on unsupported dtypes or invalid formats.
+
+
+function LoadSafeTensors(arrayBuffer) {
+  if (!(arrayBuffer instanceof ArrayBuffer)) {
+    throw new Error('Input must be an ArrayBuffer');
+  }
+
+  const dataView = new DataView(arrayBuffer);
+  let offset = 0;
+
+  // Read header length: 8-byte little-endian uint64
+  const headerLen = Number(dataView.getBigUint64(offset, true));
+  offset += 8;
+
+  if (headerLen === 0 || offset + headerLen > arrayBuffer.byteLength) {
+    throw new Error('Invalid header length');
+  }
+
+  // Extract header bytes and decode as JSON
+  const headerArray = new Uint8Array(arrayBuffer, offset, headerLen);
+  const decoder = new TextDecoder('utf-8');
+  const headerString = decoder.decode(headerArray);
+  const header = JSON.parse(headerString);
+
+  offset += headerLen;
+
+  const tensors = {};
+
+  for (const key in header) {
+    if (key === '__metadata__') continue; // Skip optional metadata
+
+    const info = header[key];
+    if (!info.dtype || !info.shape || !info.data_offsets) {
+      throw new Error(`Invalid tensor info for key: ${key}`);
+    }
+
+    const { dtype, shape } = info;
+    const [start, end] = info.data_offsets;
+
+    if (start < 0 || end <= start || offset + end > arrayBuffer.byteLength) {
+      throw new Error(`Invalid data offsets for tensor: ${key}`);
+    }
+
+    const tensorBuffer = arrayBuffer.slice(offset + start, offset + end);
+
+    let data;
+    switch (dtype) {
+      case 'BOOL':
+        data = new Uint8Array(tensorBuffer);
+        break;
+      case 'I8':
+        data = new Int8Array(tensorBuffer);
+        break;
+      case 'U8':
+        data = new Uint8Array(tensorBuffer);
+        break;
+      case 'I16':
+        data = new Int16Array(tensorBuffer);
+        break;
+      case 'U16':
+        data = new Uint16Array(tensorBuffer);
+        break;
+      case 'I32':
+        data = new Int32Array(tensorBuffer);
+        break;
+      case 'U32':
+        data = new Uint32Array(tensorBuffer);
+        break;
+      case 'I64':
+        data = new BigInt64Array(tensorBuffer);
+        break;
+      case 'U64':
+        data = new BigUint64Array(tensorBuffer);
+        break;
+      case 'F16':
+      case 'BF16':
+        data = new Uint16Array(tensorBuffer); // Raw bits; convert to float if needed
+        break;
+      case 'F32':
+        data = new Float32Array(tensorBuffer);
+        break;
+      case 'F64':
+        data = new Float64Array(tensorBuffer);
+        break;
+      default:
+        throw new Error(`Unsupported dtype: ${dtype}`);
+    }
+
+    // Verify the data length matches shape and dtype size
+    const expectedSize = shape.reduce((a, b) => a * b, 1);
+    const byteSize = data.byteLength / data.BYTES_PER_ELEMENT;
+    if (byteSize !== expectedSize) {
+      throw new Error(`Data size mismatch for tensor: ${key}`);
+    }
+
+    tensors[key] = { dtype, shape, data };
+  }
+
+  return tensors;
+}
+
+function LoadTensorFromImageUrl(url: string): Signal<tf.Tensor> {
+  const s = SignalCreate<tf.Tensor | null>(null);
+
+  const imgElement = document.createElement('img');
+  imgElement.crossOrigin = "anonymous";
+  imgElement.src = url;
+
+  imgElement.onload = () => {
+    s.value = tf.browser.fromPixels(imgElement)
+  }
+
+  return s
+}
+
+
+const LoadSafeTensorFromURL = (url?: string) => {
   if (!url) {
     return new Error("loadSafeTensorFromURL: url is required")
   }
   if (typeof url !== "string") {
     return new Error("loadSafeTensorFromURL: url must be a string")
   }
-  const s = signal("Loading tensors...");
+  const s = SignalCreate("Loading tensors...");
 
   fetch(url)
     .then(res => res.arrayBuffer())
     .then(buffer => {
-      const tensors = loadSafeTensors(buffer);
+      const tensors = LoadSafeTensors(buffer);
 
       const mu = Object.entries(tensors).map(([key, value]) => {
         // @ts-ignore
@@ -1367,212 +1403,258 @@ const loadSafeTensorFromURL = (url?: string) => {
   return s
 }
 
+const Null = null
+
 
 // MARK: Environment
 
 const DefaultEnvironment = {
-  "null": null,
+  Null,
+  Documentation: Text(Documentation),
 
-  iterate,
-  reactive,
+  CodeParse,
+  CodeEvaluate,
+  CodePrint: PrettyPrintSyntaxTree,
 
-  signal,
-  computed,
-  read,
-  update,
-  effect,
-  delay,
-  timeInterval,
-  evaluate,
-  ParseIntoSyntaxTree,
-  PrettyPrintSyntaxTree,
-  assignLeft,
-  this: function () {
-    return this
-  },
-  bind: (fn: Function, scope: Scope) => {
-    return fn.bind(scope)
-  },
-  apply,
-  functionCall,
+  FunctionIterate,
+  FunctionCascade,
+  FunctionEvaluate,
+  FunctionApply,
 
-  multiDispatch,
+  // MARK: Signals
+  Reactive,
+  SignalCreate,
+  SignalComputed,
+  SignalComputedAsync,
+  SignalRead,
+  SignalUpdate,
+  SignalEffect,
 
   // MARK: Tensor operations
 
-  tensor,
-  tensorStack,
-  tensorUnstack,
-  tensorConcat,
-  tensorTile,
+  Tensor,
+  TensorStack,
+  TensorUnstack,
+  TensorConcat,
+  TensorTile,
 
-  tensorAdd,
-  tensorSubtract,
-  tensorMultiply,
-  tensorDivide,
+  TensorAdd,
+  TensorSubtract,
+  TensorMultiply,
+  TensorDivide,
 
-  tensorPower,
-  tensorRoot,
-  tensorRemainder,
-  tensorMaximum,
-  tensorMinimum,
+  TensorPower,
+  TensorRoot,
+  TensorRemainder,
+  TensorMaximum,
+  TensorMinimum,
 
-  tensorLess,
-  tensorGreater,
-  tensorLessEqual,
-  tensorGreaterEqual,
-  tensorEqual,
-  tensorNotEqual,
-  tensorSine,
-  tensorCosine,
-  tensorTangent,
-  tensorSineHyperbolic,
-  tensorCosineHyperbolic,
-  tensorTangentHyperbolic,
-  tensorSineHyperbolicInverse,
-  tensorCosineHyperbolicInverse,
-  tensorTangentHyperbolicInverse,
+  TensorLess,
+  TensorGreater,
+  TensorLessEqual,
+  TensorGreaterEqual,
+  TensorEqual,
+  TensorNotEqual,
+  TensorSine,
+  TensorCosine,
+  TensorTangent,
+  TensorSineHyperbolic,
+  TensorCosineHyperbolic,
+  TensorTangentHyperbolic,
+  TensorSineHyperbolicInverse,
+  TensorCosineHyperbolicInverse,
+  TensorTangentHyperbolicInverse,
 
-  tensorSum,
-  tensorProduct,
-  tensorMean,
+  TensorSum,
+  TensorProduct,
+  TensorMean,
+  TensorMin,
+  TensorMax,
 
-  "max": (a: tf.Tensor, b?: tf.Tensor) => b === undefined ? tf.max(a) : tf.maximum(a, b),
-  "min": (a: tf.Tensor, b?: tf.Tensor) => b === undefined ? tf.min(a) : tf.minimum(a, b),
+  TensorNegate,
+  TensorAbsolute,
+  TensorSign,
+  TensorLogarithm,
+  TensorExponential,
+  TensorReciprocal,
+  TensorRound,
+  TensorCeil,
+  TensorFloor,
 
-  tensorNegate,
-  tensorAbsolute,
-  tensorSign,
-  tensorLogarithm,
-  tensorExponential,
-  tensorReciprocal,
-  tensorRound,
-  tensorCeil,
-  tensorFloor,
+  TensorGradient,
 
-  tensorGradient,
+  TensorTranspose,
+  TensorRange,
+  TensorLinearSpace,
+  TensorReshape,
+  TensorLength,
+  TensorShape,
+  TensorGather,
+  TensorWhere,
+  TensorIsNaN,
+  TensorIdentity,
 
-  tensorTranspose,
-  tensorRange,
-  tensorLinearSpace,
-  tensorReshape,
-  tensorLength,
-  tensorShape,
-  tensorGather,
-  tensorWhere,
-  tensorIsNaN,
-  tensorIdentity,
+  TensorVariable,
+  TensorAssign,
+  TensorOptimizationAdam,
+  TensorOptimizationSgd,
+  TensorRandomNormal,
 
-  tensorVariable,
-  tensorAssign,
-  tensorOptimizationAdam,
-  tensorOptimizationSgd,
-  tensorRandomNormal,
-
-  matrixMultiply,
-  tensorDotProduct,
+  TensorMatrixMultiply,
+  TensorDotProduct,
 
   // MARK: List operations
 
-  list,
-  listLength,
-  listConcat,
-  listGet,
-  listMap,
-  listReduce: (a: any[], fn: (acc: any, value: any) => any, initialValue?: any) => {
-    if (typeof fn !== "function") {
-      return new Error("list-reduce: fn must be a function")
-    }
-
-    if (initialValue === undefined) {
-      return a.reduce(fn)
-    }
-
-    return a.reduce(fn, initialValue)
-  },
-  // listGather: { a, b | b listMap { i | a listGet i } },
+  List,
+  ListLength,
+  ListConcat,
+  ListGet,
+  ListMap,
+  ListReduce,
+  // ListGather: { a, b | b ListMap { i | a ListGet i } },
 
   // MARK: String operations
 
-  string,
-  stringConcat,
-  stringLength,
+  String,
+  StringConcat,
+  StringLength,
 
   // MARK: Prelude
 
-  "◌": null,
-  // assignLeft(:, assignLeft)
-  ":": assignLeft,
-  // (.): apply
-  ".": apply,
+  "◌": Null,
+  "null" : Null,
+
+  // SymbolAssign(:, SymbolAssign)
+  ":": SymbolAssign,
+  // (.): FunctionApply
+  ".": FunctionApply,
+  // (⟳): FunctionIterate
+  "⟳": FunctionIterate,
+  // (@): FunctionEvaluate
+  "@": FunctionEvaluate,
+
+  // (⍴): TensorReshape
+  "⍴": TensorReshape,
+  // (⌈): TensorMaximum
   // max : { a,b | [a,b] @ (a < b) }
-  "⌈": tensorMaximum,
+  "⌈": TensorMaximum,
+  // (⌊): TensorMinimum
   // min : { a,b | [a,b] @ (a > b) }
-  "⌊": tensorMinimum,
-  // (_): gather
-  "_": tensorGather,
-  // (#): size
-  "#": tensorLength,
-  // (+): multiDispatch(tensorAdd, tensorAbsolute)
+  "⌊": TensorMinimum,
+  // (_): TensorGather
+  "_": TensorGather,
+  // (#): TensorLength
+  "#": TensorLength,
+  // (+): multiDispatch(TensorAdd, TensorAbsolute)
   "+": (a: tf.Tensor, b: tf.Tensor) => {
     if (b === undefined) {
-      return tensorAbsolute(a)
+      return TensorAbsolute(a)
     }
-    return tensorAdd(a, b)
+    return TensorAdd(a, b)
   },
-  // (-): multiDispatch(tensorSubtract, tensorNegate)
+  // (-): FunctionCascade(TensorSubtract, TensorNegate)
   "-": (a: tf.Tensor, b: tf.Tensor) => {
     if (b === undefined) {
-      return tensorNegate(a)
+      return TensorNegate(a)
     }
-    return tensorSubtract(a, b)
+    return TensorSubtract(a, b)
   },
-  // (*): multiDispatch(tensorMultiply, tensorSign)
+  // (*): FunctionCascade(TensorMultiply, TensorSign)
   "*": (a: tf.Tensor, b: tf.Tensor) => {
     if (b === undefined) {
-      return tensorSign(a)
+      return TensorSign(a)
     }
-    return tensorMultiply(a, b)
+    return TensorMultiply(a, b)
   },
-  // (×): multiDispatch(tensorMultiply, tensorSign)
+  // (×): FunctionCascade(TensorMultiply, TensorSign)
   "×": (a: tf.Tensor, b: tf.Tensor) => {
     if (b === undefined) {
-      return tensorSign(a)
+      return TensorSign(a)
     }
-    return tensorMultiply(a, b)
+    return TensorMultiply(a, b)
   },
-  "/": tensorDivide,
-  "÷": tensorDivide,
-  "%": tensorRemainder,
-  "^": tensorPower,
-  "√": tensorRoot,
-  "<": tensorLess,
-  ">": tensorGreater,
-  "≤": tensorLessEqual,
-  "<=": tensorLessEqual,
-  "≥": tensorGreaterEqual,
-  ">=": tensorGreaterEqual,
-  // "=": tensorEqual,
-  "≠": tensorNotEqual,
-  "!=": tensorNotEqual,
+  // (/): TensorDivide
+  "/": TensorDivide,
+  // (÷): TensorDivide
+  "÷": TensorDivide,
+  // (%): TensorRemainder
+  "%": TensorRemainder,
+  // (^): TensorPower
+  "^": TensorPower,
+  // (√): TensorRoot
+  "√": TensorRoot,
+  // (<): TensorLess 
+  "<": TensorLess,
+  // (>): TensorGreater
+  ">": TensorGreater,
+  // (≤): TensorLessEqual
+  "≤": TensorLessEqual,
+  // (<=): TensorLessEqual
+  "<=": TensorLessEqual,
+  // (≥): TensorGreaterEqual
+  "≥": TensorGreaterEqual,
+  // (>=): TensorGreaterEqual
+  ">=": TensorGreaterEqual,
+  // (=): TensorEqual,
+  // "=": TensorEqual,
+  // (≠): TensorNotEqual,
+  "≠": TensorNotEqual,
+  // (!=): TensorNotEqual,
+  "!=": TensorNotEqual,
 
-  // ":=": tensorAssign,
-  "~": tensorVariable,
+  // (:=): TensorAssign
+  // ":=": TensorAssign,
 
-  "::": tensorRange,
+  // (~): TensorVariable
+  "~": TensorVariable,
 
-  "∇": tensorGradient,
-  "Σ": tensorSum,
-  "Π": tensorProduct,
+  // (::): TensorRange
+  "::": TensorRange,
+
+  // (∇): TensorGradient
+  "∇": TensorGradient,
+  // (Σ): TensorSum
+  "Σ": TensorSum,
+  // (Π): TensorProduct
+  "Π": TensorProduct,
+  // (μ): TensorMean
   // (μ): { a | ∑(a) / #(a) }
-  "μ": tensorMean,
+  "μ": TensorMean,
 
-  "⟳": iterate,
+  // max: FunctionCascade(TensorMax, TensorMaximum),
+  "max": (a: tf.Tensor, b?: tf.Tensor) => b === undefined ? TensorMax(a) : TensorMaximum(a, b),
+  // min: FunctionCascade(TensorMin, TensorMinimum),
+  "min": (a: tf.Tensor, b?: tf.Tensor) => b === undefined ? TensorMin(a) : TensorMinimum(a, b),
+
+  "neg": TensorNegate,
+  "abs": TensorAbsolute,
+  "sign": TensorSign,
+  "round": TensorRound,
+  "floor": TensorFloor,
+  "ceil": TensorCeil,
+
+  "reciprocal": TensorReciprocal,
+  "pow": TensorPower,
+  "log": TensorLogarithm,
+  "exp": TensorExponential,
+
+  "sin": TensorSine,
+  "cos": TensorCosine,
+  "tan": TensorTangent,
+  "sinh": TensorSineHyperbolic,
+  "cosh": TensorCosineHyperbolic,
+  "tanh": TensorTangentHyperbolic,
+  "asinh": TensorSineHyperbolicInverse,
+  "acosh": TensorCosineHyperbolicInverse,
+  "atanh": TensorTangentHyperbolicInverse,
+
   // (?): { cond, choice | choice gather (1 sub cond) }
   // TODO: doesn't work for some reason, copying code to editor works
   // "?": evaluate(`{ cond, choice | choice tensorGather (1 tensorSubtract cond) }`),
 
-  // MARK: UI Components
+  // MARK: Reactive + UI Components
+
+  "$": Reactive,
 
   Button,
   Grid,
@@ -1585,8 +1667,11 @@ const DefaultEnvironment = {
   CodeEditor,
 
   Fetch,
-  loadSafeTensorFromURL,
-  loadTensorFromImageUrl,
+  LoadSafeTensorFromURL,
+  LoadTensorFromImageUrl,
+  // TensorEditor,
+  // TensorCanvas,
+  // ImageFromTensor,
 
   Print,
   PrettyPrint,
@@ -1631,7 +1716,7 @@ type TreeNodeDescriptor = {
   }
 }
 
-const highlightedNode = signal(null as TreeNodeDescriptor | null);
+const highlightedNode = SignalCreate(null as TreeNodeDescriptor | null);
 
 function getColumnWidths(nodes: TreeNodeDescriptor[]): number[] {
   const columnWidths: number[] = [];
@@ -2210,7 +2295,7 @@ const getEditorOptions: (type: "editable" | "readonly") => editor.IStandaloneEdi
 })
 
 function Code(sourceCode: Signal<string>) {
-  return computed(() => {
+  return SignalComputed(() => {
     return (
       // @ts-ignore
       <Panel className="!p-0 border-none overflow-hidden h-[5em]">
@@ -2221,8 +2306,8 @@ function Code(sourceCode: Signal<string>) {
           defaultLanguage="fluent"
           theme="fluentThemeReadOnly"
           // @ts-ignore
-          value={read(sourceCode)}
-          onChange={(updatedSourceCode) => { update(sourceCode, updatedSourceCode) }}
+          value={SignalRead(sourceCode)}
+          onChange={(updatedSourceCode) => { SignalUpdate(sourceCode, updatedSourceCode) }}
           options={getEditorOptions("readonly")}
         />
       </Panel>
@@ -2230,75 +2315,45 @@ function Code(sourceCode: Signal<string>) {
   })
 }
 
-let fluentRegistered = false
-const useFluentInMonaco: BeforeMount = (monaco) => {
-
-  if (!fluentRegistered) {
-    editorBeforeMount(monaco)
-    fluentRegistered = true
-  }
-}
-
 function CodeEditor(sourceCode: Signal<string>) {
   // console.log("CodeEditor")
 
-  const height = signal("100%")
-  const editorRef = signal<editor.IStandaloneCodeEditor>(null)
+  const height = SignalCreate("100%")
 
-  effect(() => {
-    const editor = editorRef.value
-
-    if (editor === null) {
-      return
-    }
-
-    const updateHeight = () => {
-      return
-
-
-      const contentHeight = editor.getContentHeight();
-      // +2px because top&bottom border
-      height.value = `calc(min(${contentHeight + 2}px, 100%))`
-      editor.layout();
-    };
-
-    const dispose = editor.onDidContentSizeChange(updateHeight);
-
-    updateHeight()
-
-    return () => {
-      dispose.dispose();
-    };
-  })
-
-  const onMount = (editor, monaco, editorRef) => {
-    update(editorRef, editor)
-    editorOnMount(editor, monaco)
-  }
-
-  return computed(() => {
-    console.log("rerendering editor", read(height))
+  return SignalComputed(() => {
+    console.log("rerendering editor", SignalRead(height))
 
     return (
       // @ts-ignore
       <Editor
-        beforeMount={useFluentInMonaco}
-        onMount={(monaco, editor) => onMount(monaco, editor, editorRef)}
+        beforeMount={editorBeforeMount}
+        onMount={editorOnMount}
         // @ts-ignore
-        height={read(height)}
+        height={SignalRead(height)}
         defaultLanguage="fluent"
         className={`${frameStyle} !p-0 overflow-hidden`}
         theme="fluentTheme"
         // @ts-ignore
-        value={read(sourceCode)}
-        onChange={(updatedSourceCode) => { update(sourceCode, updatedSourceCode) }}
+        value={SignalRead(sourceCode)}
+        onChange={(updatedSourceCode) => { SignalUpdate(sourceCode, updatedSourceCode) }}
         options={getEditorOptions("editable")}
       />
     )
   })
 }
 
+let EDITOR = null
+
+async function getEditor() {
+  while (EDITOR === null) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return EDITOR;
+}
+
 const editorBeforeMount: BeforeMount = (monaco) => {
+  EDITOR = monaco.editor
+
   monaco.languages.register({ id: "fluent" });
 
   monaco.languages.setMonarchTokensProvider("fluent", {
@@ -2308,7 +2363,8 @@ const editorBeforeMount: BeforeMount = (monaco) => {
       root: [
         [/;.*$/, { token: "comment" }],
         [numberRegexp, { token: "number" }],
-        [/"/, { token: "string", next: "@string", nextEmbedded: 'markdown' }],
+        // https://github.com/microsoft/monaco-editor/issues/5026
+        [/"/, { token: "string", next: "@string", /*nextEmbedded: 'markdown'*/ }],
         // [/-/, "operator"],
         [identifierRegexp, { token: "identifier" }],
         [delimiterRegexp, { token: "delimiter" }],
@@ -2316,7 +2372,7 @@ const editorBeforeMount: BeforeMount = (monaco) => {
       ],
       string: [
         [/[^"]+/, { token: "string" }],
-        [/"/, { token: 'string', next: '@pop', nextEmbedded: '@pop' }],
+        [/"/, { /* token: '@rematch',*/ token: "string", next: '@pop', /*nextEmbedded: '@pop'*/ }],
 
       ],
     },
@@ -2577,7 +2633,7 @@ export function REPL() {
     const handleUrlChange = () => {
       const codeFromUrl = stringDeserialize(new URLSearchParams(window.location.search).get("code") ?? "");
       if (codeFromUrl !== "") {
-        update(code, codeFromUrl);
+        SignalUpdate(code, codeFromUrl);
       }
     };
     window.addEventListener("popstate", handleUrlChange);
@@ -2595,12 +2651,11 @@ export function REPL() {
   //const code = useSignal<string>(codeFromUrl !== "" ? codeFromUrl : getExample("REPL"))
   const result = useComputed<Value>(() => {
     // return evaluate(read(code))
-    return evaluateSyntaxTreeNode(ParseIntoSyntaxTree(code.value), Object.create(DefaultEnvironment)) ?? null;
+    return evaluateSyntaxTreeNode(CodeParse(code.value), Object.create(DefaultEnvironment)) ?? null;
   })
 
   return (
     <>
-      <Meta {...meta} />
       <div className="absolute inset-0 z-50 p-2 bg-neutral-900 grid">
         {
           Grid(tf.scalar(2), tf.scalar(1))(
@@ -2702,8 +2757,8 @@ B: { c | Button(c, { x | x ++ c } . Δ) },
 `,
   "linear-regression": `
 ; defs
-($): reactive,
-(++): tensorConcat,
+($): Reactive,
+(++): TensorConcat,
 (++=): { a, b | a(a() ++ b) },
 
 ; data
@@ -2720,8 +2775,8 @@ f: { x | x × (θ_0) + (θ_1) },
 𝓛: { (f(x) ≈ y) },
 
 ; optimizer
-; minimize: tensorOptimizationAdam(0.01),
-minimize : tensorOptimizationSgd(0.03),
+; minimize: TensorOptimizationAdam(0.01),
+minimize : TensorOptimizationSgd(0.03),
 
 losses: $([0]),
 a: $([0,0]),
@@ -2737,46 +2792,6 @@ a: $([0,0]),
     losses,
     a,
     θ,
-)
-`,
-  "linear-regression-compressed": `
-($):reactive,
-(++):tensor-concat,
-(++=):{a,b|a(a()++b)},
-
-; data
-x:(0::10),
-y:(x×0.23+0.47),
-
-; model
-θ: ~([0,0]),
-f:{x|x*(θ_0)+(θ_1)},
-
-; loss function
-μ:{x|Σ(x)÷ #(x)},
-(≈):{x,y|μ((y - x)^2)},
-𝓛:{(f(x)≈y)},
-
-; optimizer
-M:tensor-optimization-sgd(0.03),
-
-losses: $([0]),
-a: $([0]),
-b: $([0]),
-N:300,
-
-{
-    loss:𝓛(),
-    losses++=[loss],
-    a++=([θ_0]),
-    b++=([θ_1]),
-    M(𝓛),
-}⟳N,
-
-(
-    ;losses,
-    $({ [a(),b()] }),
-    ;θ
 )
 `,
   "experiment": `
@@ -3152,9 +3167,3 @@ w: $({ d.(tick() % #(d)) }),
 ].map((s) => dedent(s));
 
 export default () => null
-
-export const meta = {
-  title: "Fluent",
-  description: "...",
-  image: ""
-}
