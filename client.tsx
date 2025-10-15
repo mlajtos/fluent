@@ -1,5 +1,3 @@
-'use client'
-
 // MARK: Documentation
 
 const Documentation = `
@@ -92,8 +90,6 @@ Button({ x(0) }, "Reset"),
   - treat assignments as a special case of function application that gets the symbol, rather than the reified value
 - Grid can't use dynamically created lists :'(
   - deeper issue: `(...args) => ...` JS lambdas (stack, grid, concat, etc.) are too magical, but very useful
-- React is shit for using signals
-  - move to Solid.js or Preact?
 
 ## Features
 
@@ -132,35 +128,31 @@ Button({ x(0) }, "Reset"),
 
 */
 
-import { grammar } from "ohm-js";
+import { grammar, type ActionDict } from "ohm-js";
 import { toAST as ohmToAST } from "ohm-js/extras";
-import React, { isValidElement, useEffect, useRef } from "react";
 import * as tf from "@tensorflow/tfjs";
 // for fancy signals
 // https://www.npmjs.com/package/@preact-signals/utils
 import { signal, Signal, computed, effect } from "@preact/signals-core"
-import dynamic from 'next/dynamic'
+import { useSignals, useSignal, useComputed } from '@preact/signals-react/runtime';
 import { ErrorBoundary } from 'react-error-boundary';
-import { BeforeMount, OnMount, Editor, Monaco } from '@monaco-editor/react';
-import type { editor } from "monaco-editor";
-
-import { useComputed, useSignal, useSignals } from "@preact/signals-react/runtime";
+import { type BeforeMount, type Monaco, type OnMount, Editor } from '@monaco-editor/react';
+import { type editor } from "monaco-editor";
+// @ts-ignore
+import { renderMarkdown } from "monaco-editor/esm/vs/base/browser/markdownRenderer.js"
 import dedent from "ts-dedent";
-import { Annotations } from "plotly.js";
+import { useEffect, type JSX, isValidElement, useRef } from "react";
+import { createRoot } from "react-dom/client"
+import { Base64 } from 'js-base64'
+import { type Annotations } from "plotly.js"
 
-// const Editor = dynamic(() => import('@monaco-editor/react'), {
-//   ssr: false,
-//   loading: () => <div className="flex items-center justify-center h-full">Loading editor...</div>
-// });
+// @ts-ignore
+const Plot = (await import("react-plotly.js")).default.default as Plot
 
-// loader.config({ monaco })
-// loader.init()
+import "./index.css"
 
 tf.setBackend('cpu');
 // tf.setBackend('webgl');
-// console.log(tf.getBackend());
-
-// http://journal.stuffwithstuff.com/2010/12/31/rethinking-user-defined-operators/
 
 // MARK: Parse
 
@@ -241,8 +233,8 @@ const delimiterRegexp = new RegExp(RESERVED_SYMBOLS, "u")
 
 // MARK: Grammar
 
-const GRAMMAR = String.raw`
-Fluent2 {
+const CodeGrammar = String.raw`
+Fluent {
   Program
     = ListOf<Expr, ","> ","?
 
@@ -292,7 +284,7 @@ Fluent2 {
 }
 `;
 
-const compiledGrammar = grammar(GRAMMAR);
+const CodeGrammarCompiled = grammar(CodeGrammar);
 
 type Origin = {
   source: string;
@@ -329,15 +321,15 @@ function getLocationOrigin(node: any): Origin {
   }
 }
 
-const syntaxTreeMapping = {
-  Program(expressions, _): SyntaxTreeNode {
+const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
+  Program(expressions, _) {
     return {
       type: "Program",
       content: expressions.toAST(this.args.mapping),
       origin: getLocationOrigin(this),
     }
   },
-  Operation_infix(left, operator, right): SyntaxTreeNode {
+  Operation_infix(left, operator, right) {
     return {
       type: "Operation",
       content: {
@@ -353,7 +345,7 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     }
   },
-  Hack(left, right): SyntaxTreeNode {
+  Hack(left, right) {
     const rightValue: SyntaxTreeNode = right.toAST(this.args.mapping);
     const isList = rightValue.type === "List";
     const args: SyntaxTreeNode = isList ? rightValue : {
@@ -373,7 +365,7 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     }
   },
-  Operation_prefix(left, right): SyntaxTreeNode {
+  Operation_prefix(left, right) {
     const rightValue: SyntaxTreeNode = right.toAST(this.args.mapping);
     const isList = rightValue.type === "List";
     const args: SyntaxTreeNode = isList ? rightValue : {
@@ -393,7 +385,7 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     }
   },
-  List_multi(_, exprs, __, ___): SyntaxTreeNode {
+  List_multi(_, exprs, __, ___) {
     return {
       type: "List",
       content: {
@@ -402,7 +394,7 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     }
   },
-  List_single(_, expr, __, ___): SyntaxTreeNode {
+  List_single(_, expr, __, ___) {
     return {
       type: "List",
       content: {
@@ -411,7 +403,7 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     }
   },
-  List_empty(_): SyntaxTreeNode {
+  List_empty(_) {
     return {
       type: "List",
       content: {
@@ -420,7 +412,7 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     }
   },
-  Symbol(value): SyntaxTreeNode {
+  Symbol(value) {
     return {
       type: "Symbol",
       content: {
@@ -429,7 +421,7 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     }
   },
-  Number(value): SyntaxTreeNode {
+  Number(value) {
     return {
       type: "Number",
       content: {
@@ -438,7 +430,7 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     }
   },
-  Tensor(_, exprs, __, ___): SyntaxTreeNode {
+  Tensor(_, exprs, __, ___) {
     return {
       type: "Tensor",
       content: {
@@ -447,7 +439,7 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     }
   },
-  Lambda(_, args, __, expr, ___): SyntaxTreeNode {
+  Lambda(_, args, __, expr, ___) {
     return {
       type: "Lambda",
       content: {
@@ -457,7 +449,7 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     };
   },
-  String(_, value, __): SyntaxTreeNode {
+  String(_, value, __) {
     return {
       type: "String",
       content: {
@@ -466,8 +458,8 @@ const syntaxTreeMapping = {
       origin: getLocationOrigin(this),
     }
   },
-  Code(_, value, __): SyntaxTreeNode {
-    console.log("Code node", value.sourceString);
+  Code(_, value, __) {
+    // console.log("Code node", value.sourceString);
     return {
       type: "Code",
       content: {
@@ -479,7 +471,7 @@ const syntaxTreeMapping = {
 } as const;
 
 const CodeParse = (program: string): SyntaxTreeNode => {
-  const matchResult = compiledGrammar.match(program);
+  const matchResult = CodeGrammarCompiled.match(program);
 
   if (matchResult.succeeded()) {
     // ohmToAST is untyped, so we need to cast it to our SyntaxTreeNode type
@@ -489,7 +481,7 @@ const CodeParse = (program: string): SyntaxTreeNode => {
   } else {
     return {
       type: "Error",
-      content: matchResult.message,
+      content: matchResult.message ?? "Unknown parse error",
       origin: {
         source: program,
         start: { line: 1, column: 1 },
@@ -502,9 +494,9 @@ const CodeParse = (program: string): SyntaxTreeNode => {
 // MARK: Evaluate
 
 type Value = tf.Tensor | Function | Signal<Value> | Error | string | symbol | null | Value[]
-type Scope = Record<string, Value>
+type CurrentScope = Record<string, Value>
 
-function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: Scope): Value {
+function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value {
 
   if (node.type === "Error") {
     console.error("Error evaluating node:", node.content);
@@ -514,7 +506,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: Scope): Value {
   if (node.type === "Program") {
     const values: Array<Value> = node.content.map((e) => evaluateSyntaxTreeNode(e, env))
     // last value is the result of the program
-    return values[values.length - 1]
+    return values[values.length - 1] ?? null
   }
 
   if (node.type === "Number") {
@@ -532,6 +524,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: Scope): Value {
       return tf.stack(values)
     } catch (e) {
       console.error("Error stacking tensors:", e, values);
+      // @ts-ignore
       return new Error("Error stacking tensors: " + e.message)
     }
   }
@@ -553,11 +546,11 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: Scope): Value {
     const fn = function (...args: any[]) {
       const localEnv = node.content.args
         .filter(n => n.type === "Symbol")
-        .reduce<Scope>((acc, arg, i) => {
+        .reduce<CurrentScope>((acc, arg, i) => {
           // @ts-ignore
           acc[arg.content.value] = args[i]
           return acc
-        }, Object.create(env) as Scope)
+        }, Object.create(env) as CurrentScope)
 
       return evaluateSyntaxTreeNode(node.content.expr, localEnv)
     }
@@ -579,6 +572,8 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: Scope): Value {
     // @ts-ignore
     return PrettyPrintSyntaxTree(node.content.value)
   }
+
+  return null
 }
 
 tf.Tensor.prototype.toString = function () {
@@ -588,34 +583,46 @@ tf.Tensor.prototype.toString = function () {
 // Extend the Symbol interface to include 'resolve' and 'assign'
 declare global {
   interface Symbol {
-    resolve(env: Scope): any;
-    assign(env: Scope, value: any): void;
+    resolve(env: CurrentScope): any;
+    assign(env: CurrentScope, value: any): void;
   }
 }
 
 // @ts-ignore
-Symbol.prototype.resolve = function (env: Scope) {
+Symbol.prototype.resolve = function (this: Symbol, env: CurrentScope): Value {
   // console.log("resolve", this, env)
-  return env[Symbol.keyFor(this)] ?? this
+
+  const s = this[Symbol.toPrimitive]("symbol")
+  const k = Symbol.keyFor(s) ?? ""
+
+  try {
+    return env?.[k] ?? s
+  } catch (e) {
+    return null
+  }
 }
 
 // @ts-ignore
-Symbol.prototype.assign = function (env: Scope, value: any) {
-  // console.log("mutating", this, env, value)
+Symbol.prototype.assign = function (env: CurrentScope, value: any) {
+  console.log("mutating", this, env, value)
+
+  const s = this[Symbol.toPrimitive]("symbol")
+  const k = Symbol.keyFor(s) ?? ""
+
   Object.assign(env, {
-    [Symbol.keyFor(this)]: value,
+    [k]: value,
   })
 }
 
 // Extend SymbolConstructor to include reverseResolve
 declare global {
   interface SymbolConstructor {
-    reverseResolve(env: Scope, value: any): symbol | undefined;
+    reverseResolve(env: CurrentScope, value: any): symbol | undefined;
   }
 }
 
 // hierarchically traverse the environment to find the symbol that resolves to the given value
-Symbol.reverseResolve = function (env: Scope, value: any): symbol | undefined {
+Symbol.reverseResolve = function (env: CurrentScope, value: any): symbol | undefined {
   // console.log("reverseResolve", env, value)
 
   const symbolKeys = Object.getOwnPropertyNames(env);
@@ -643,7 +650,7 @@ Symbol.reverseResolve = function (env: Scope, value: any): symbol | undefined {
   return undefined;
 }
 
-const reify = (v: Value, env: Scope): Value => {
+const reify = (v: Value, env: CurrentScope): Value => {
   if (typeof v === "symbol") {
     // @ts-ignore
     const resolved = v.resolve(env)
@@ -664,16 +671,18 @@ const reify = (v: Value, env: Scope): Value => {
   return v
 }
 
-function safeApply(fn: Value, args: Value[], env: Scope): Value {
+function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
   try {
-    // console.log("safeApply", fn, args, env)
+    console.log("safeApply", fn, args, env)
 
     let fnValue: Value = reify(fn, env);
     let argsValue: Value[] = args;
 
     // @ts-ignore
-    if (!fn.receivesNonreifiedSymbols) {
+    if (!fnValue.receivesNonreifiedSymbols) {
+      console.log("reifying args", args)
       argsValue = args.map(arg => reify(arg, env))
+      console.log("reifying args done", argsValue)
     }
 
     const errorArgs = argsValue.filter(a => a instanceof Error)
@@ -682,7 +691,7 @@ function safeApply(fn: Value, args: Value[], env: Scope): Value {
     }
 
     if (typeof fnValue !== "function" && !(fnValue instanceof Signal)) {
-      throw new Error(`'${fnValue.toString()}' is not a function.`)
+      throw new Error(`'${String(fnValue)}' is not a function.`)
     }
 
     if (fnValue instanceof Signal) {
@@ -693,7 +702,7 @@ function safeApply(fn: Value, args: Value[], env: Scope): Value {
 
       if (argsValue.length === 1) {
         SignalUpdate(fnValue, argsValue[0])
-        return
+        return null
       }
 
       throw new Error("What are you trying to do with this poor signal?")
@@ -701,8 +710,7 @@ function safeApply(fn: Value, args: Value[], env: Scope): Value {
 
     return fnValue.apply(env, argsValue)
   } catch (e) {
-    return e
-    return new Error(`'FunctionApply' failed.`, { cause: e });
+    return e as Error
   }
 }
 
@@ -718,7 +726,8 @@ const FunctionCascade = (candidates: Function[]) => (a: Value, b: Value) => {
     let candidateResult: (Value | typeof noResultSymbol) = noResultSymbol
 
     try {
-      candidateResult = candidates[candidateIndex](a, b)
+      const fn = candidates[candidateIndex]
+      candidateResult = fn?.(a, b)
       console.log("candidateResult", candidateResult)
     } catch (e) {
       console.log("error", e)
@@ -749,7 +758,7 @@ function getAsSyncList(value: tf.Tensor) {
 
 // MARK: Environment
 
-const evaluateProgramWithScope = (program: string, scope: Scope) => {
+const evaluateProgramWithScope = (program: string, scope: CurrentScope) => {
   const syntaxTree = CodeParse(program)
 
   if (syntaxTree.type === "Error") {
@@ -760,7 +769,7 @@ const evaluateProgramWithScope = (program: string, scope: Scope) => {
   return evaluateSyntaxTreeNode(syntaxTree, scope)
 }
 
-const CodeEvaluate = function (program: string) {
+const CodeEvaluate = function (this: CurrentScope, program: string) {
   console.log("Evaluating program:", program, this);
   return evaluateProgramWithScope(program, this);
 }
@@ -818,14 +827,6 @@ const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
 }
 
 const SignalComputed = computed
-
-// @ts-ignore
-const SignalComputedAsync = function (v, cb = arguments.length === 1 ? v : cb) {
-  const s = signal(arguments.length === 2 ? v : undefined);
-  effect(() => cb().then((v) => s.value = v));
-  return computed(() => s.value);
-};
-
 const SignalEffect = effect
 
 const Reactive = (a: Value) => {
@@ -836,9 +837,9 @@ const Reactive = (a: Value) => {
   return SignalCreate(a)
 }
 
-const SymbolAssign = function (a: Value, b: Value) {
+const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
 
-  // console.log("SymbolAssign", a, b, this)
+  console.log("SymbolAssign", a, b, this)
 
   if (typeof a === "symbol") {
     // if a is not defined in the current environment
@@ -851,8 +852,7 @@ const SymbolAssign = function (a: Value, b: Value) {
     // return a
     return a.resolve(this)
   } else {
-    return new Error(`SymbolAssign: '${a}' is not a symbol, rebind the symbol to the environment first`)
-
+    return new Error(`Left side of assignment must be a symbol, got: ${String(a)}`)
     // reified symbol has a value attached to it
     // found this value in the environment traversing the prototype chain of env
     const aSymbol = Symbol.reverseResolve(this, a)
@@ -872,11 +872,11 @@ const SymbolAssign = function (a: Value, b: Value) {
 // @ts-ignore
 SymbolAssign.receivesNonreifiedSymbols = true
 
-const FunctionEvaluate = function (fn: Value, args: Value[]) {
+const FunctionEvaluate = function (this: CurrentScope, fn: Value, args: Value[]) {
   return safeApply(fn, args, this)
 }
 
-const FunctionApply = function (a: Value, b: Value): Value {
+const FunctionApply = function (this: CurrentScope, a: Value, b: Value): Value {
   const arg = a instanceof Array ? a : [a]
   return safeApply(b, arg, this)
 }
@@ -980,9 +980,9 @@ const TensorSineHyperbolicInverse = tf.asin
 const TensorCosineHyperbolicInverse = tf.acos
 const TensorTangentHyperbolicInverse = tf.atan
 
-// Tensor-reduce(a, 0, +)
+// TensorReduce(a, 0, +)
 const TensorSum = tf.sum
-// Tensor-reduce(a, 0, *)
+// TensorReduce(a, 1, *)
 const TensorProduct = tf.prod
 const TensorMean = tf.mean
 const TensorMin = tf.min
@@ -1081,6 +1081,8 @@ const TensorRandomNormal = (a: tf.Tensor) => tf.randomStandardNormal(getAsSyncLi
 // const String = (a: unknown) => `${a.toString()}`
 const StringConcat = (...args: any[]) => "".concat(...args)
 const StringLength = (a: string) => tf.scalar(a.length)
+const StringSerialize = (s: string) => Base64.encodeURI(s)
+const StringDeserialize = (s: string) => Base64.decode(s)
 
 const Button = (label?: string | Signal<string>, onClick?: () => void) => {
   return computed(() => {
@@ -1090,17 +1092,13 @@ const Button = (label?: string | Signal<string>, onClick?: () => void) => {
   })
 }
 
-const renderMarkdown = async (value: string) => {
-  const renderMarkdown = (await import("monaco-editor/esm/vs/base/browser/markdownRenderer.js")).renderMarkdown
-
-  const options = {
+const convertTextToHTML = async (value: string) => {
+  const result = await renderMarkdown({ value }, {
     inline: false,
     codeBlockRenderer: colorizeCodeAsync,
+  })
 
-  }
-  const result = await renderMarkdown({ value }, options)
-
-  return result.element
+  return result.element as HTMLElement
 }
 
 const colorizeCodeAsync = async (language: string, value: string) => {
@@ -1146,8 +1144,8 @@ const NativeDOMElement = ({ fn }: { fn: () => Promise<HTMLElement> }) => {
 }
 
 const Text = (value: string) => {
-  const fn = () => { console.log("rendering"); return renderMarkdown(value) }
-  return <NativeDOMElement fn={fn} />
+  const fn = () => { console.log("rendering"); return convertTextToHTML(value) }
+  return <div className="prose prose-neutral prose-invert"><NativeDOMElement fn={fn} /></div>
 }
 
 const TextEditor = (editedValue: Signal<string>) => {
@@ -1238,7 +1236,7 @@ function WrapWithPrintIfNotReactElement(child: any) {
 }
 
 const Fetch = (url: string) => {
-  const s = SignalCreate(null)
+  const s = SignalCreate<Value>(null)
 
   fetch(url)
     .then(response => response.text())
@@ -1259,7 +1257,7 @@ const Fetch = (url: string) => {
 // Throws errors on unsupported dtypes or invalid formats.
 
 
-function LoadSafeTensors(arrayBuffer) {
+function LoadSafeTensors(arrayBuffer: ArrayBuffer) {
   if (!(arrayBuffer instanceof ArrayBuffer)) {
     throw new Error('Input must be an ArrayBuffer');
   }
@@ -1409,8 +1407,8 @@ const Null = null
 // MARK: Environment
 
 const DefaultEnvironment = {
-  Null,
-  Documentation: Text(Documentation),
+  [Symbol.keyFor(Symbol.for("Null"))!]: Null,
+  [Symbol.keyFor(Symbol.for("Documentation"))!]: Text(Documentation),
 
   CodeParse,
   CodeEvaluate,
@@ -1425,7 +1423,6 @@ const DefaultEnvironment = {
   Reactive,
   SignalCreate,
   SignalComputed,
-  SignalComputedAsync,
   SignalRead,
   SignalUpdate,
   SignalEffect,
@@ -1522,7 +1519,7 @@ const DefaultEnvironment = {
   // MARK: Prelude
 
   "◌": Null,
-  "null" : Null,
+  "null": Null,
 
   // SymbolAssign(:, SymbolAssign)
   ":": SymbolAssign,
@@ -2051,7 +2048,7 @@ function PrettyPrint(obj: any): JSX.Element {
       return <div className="contents">{PrettyPrint(obj.value)}</div>;
     }
 
-    if (React.isValidElement(obj)) {
+    if (isValidElement(obj)) {
       return obj;
     }
 
@@ -2118,11 +2115,8 @@ function Panel({ children, className }: { children: JSX.Element, className?: str
 
 // MARK: Plots
 
-const Plot = dynamic(() => import('react-plotly.js'), { ssr: false });
-
 const BarPlot = ({ data }: { data: tf.Tensor }) => {
   return (
-    // @ts-ignore
     <Plot
       data={[
         {
@@ -2193,11 +2187,9 @@ const HeatPlot = ({ data }: { data: tf.Tensor }) => {
   }
 
   return (
-    // @ts-ignore
     <Plot
       data={[
         {
-          // @ts-ignore
           z,
           type: 'heatmap',
           colorscale: 'Viridis',
@@ -2342,17 +2334,17 @@ function CodeEditor(sourceCode: Signal<string>) {
   })
 }
 
-let EDITOR = null
+let EditorInstance: Monaco["editor"] | null = null
 
 async function getEditor() {
-  while (EDITOR === null) {
+  while (EditorInstance === null) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-  return EDITOR;
+  return EditorInstance;
 }
 
 const editorBeforeMount: BeforeMount = (monaco) => {
-  EDITOR = monaco.editor
+  EditorInstance = monaco.editor
 
   monaco.languages.register({ id: "fluent" });
 
@@ -2421,13 +2413,12 @@ const editorBeforeMount: BeforeMount = (monaco) => {
     },
   });
 
-  // define a dark theme (unchanged)
   monaco.editor.defineTheme("fluentTheme", {
     base: "vs-dark",
     inherit: true,
     rules: COLORS,
     colors: {
-      "editor.foreground": COLORS.find(rule => rule.token === "string")?.foreground,
+      "editor.foreground": COLORS.find(rule => rule.token === "string")?.foreground ?? "FFFFFF",
       "editor.background": "#1C1C1C",
       "focusBorder": "#FF000000",
     },
@@ -2438,7 +2429,7 @@ const editorBeforeMount: BeforeMount = (monaco) => {
     inherit: true,
     rules: COLORS,
     colors: {
-      "editor.foreground": COLORS.find(rule => rule.token === "string")?.foreground,
+      "editor.foreground": COLORS.find(rule => rule.token === "string")?.foreground ?? "FFFFFF",
       "editor.background": "#1C1C1C00",
       "focusBorder": "#FF000000",
     },
@@ -2451,13 +2442,11 @@ const editorBeforeMount: BeforeMount = (monaco) => {
   //     command: "editor.action.reindentlines",
   //   },);
 
-  monaco.editor.addKeybindingRule(
-    {
-      keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF,
-      command: "editor.action.formatDocument",
-    },);
+  monaco.editor.addKeybindingRule({
+    keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF,
+    command: "editor.action.formatDocument",
+  });
 
-  // Add keybindings (unchanged)
   monaco.editor.addKeybindingRule({
     keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK,
     command: 'editor.action.quickCommand',
@@ -2566,18 +2555,17 @@ const editorOnMount: OnMount = (editor, monaco) => {
     // ],
 
     // A precondition for this action.
-    precondition: null,
+    // precondition: null,
 
     // A rule to evaluate on top of the precondition in order to dispatch the keybindings.
-    keybindingContext: null,
+    // keybindingContext: null,
     contextMenuGroupId: "navigation",
     contextMenuOrder: 1.5,
 
-    // Method that will be executed when the action is triggered.
-    // @param editor The editor instance is passed in as a convenience
     run: function (editor) {
-      // editor.getModel().setValue(examples["tasks"])
-      editor.getModel().setValue(getExample("linear-regression"))
+      // TODO: show dropdown with examples to choose from
+      const exampleName = "linear-regression"
+      editor.getModel()?.setValue(getExample(exampleName))
     },
   });
 
@@ -2586,8 +2574,8 @@ const editorOnMount: OnMount = (editor, monaco) => {
     label: "Save example",
     keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
     run: function (editor) {
-      const code = editor.getModel().getValue();
-      const encodedCode = stringSerialize(code);
+      const code = editor.getModel()?.getValue() ?? "";
+      const encodedCode = StringSerialize(code);
       const url = new URL(window.location.href);
       url.searchParams.set("code", encodedCode);
       window.history.pushState({}, "", url.toString());
@@ -2602,13 +2590,19 @@ const editorOnMount: OnMount = (editor, monaco) => {
     }
     const nodeOrigin = highlightedNode.value.node.origin;
 
-    monaco.editor.setModelMarkers(editor.getModel(), "fluent-editor", [
+    const model = editor.getModel();
+
+    if (model == null || nodeOrigin == null) {
+      return
+    }
+
+    monaco.editor.setModelMarkers(model, "fluent-editor", [
       {
         startLineNumber: nodeOrigin.start.line,
         startColumn: nodeOrigin.start.column,
         endLineNumber: nodeOrigin.end.line,
         endColumn: nodeOrigin.end.column,
-        message: "Click to load example",
+        message: "",
         severity: monaco.MarkerSeverity.Info,
       }
     ]);
@@ -2617,21 +2611,14 @@ const editorOnMount: OnMount = (editor, monaco) => {
 
 // MARK: Playground
 
-const stringSerialize = (s: string) => {
-  return btoa(encodeURIComponent(s))
-}
+export function Playground() {
 
-const stringDeserialize = (s: string) => {
-  return decodeURIComponent(atob(s))
-}
-
-export function REPL() {
-  useSignals();
+  useSignals()
 
   useEffect(() => {
     // register URL search params change listener
     const handleUrlChange = () => {
-      const codeFromUrl = stringDeserialize(new URLSearchParams(window.location.search).get("code") ?? "");
+      const codeFromUrl = StringDeserialize(new URLSearchParams(window.location.search).get("code") ?? "");
       if (codeFromUrl !== "") {
         SignalUpdate(code, codeFromUrl);
       }
@@ -2646,7 +2633,7 @@ export function REPL() {
     };
   }, [])
 
-  const codeFromUrl = stringDeserialize(new URLSearchParams(window.location.search).get("code") ?? "");
+  const codeFromUrl = StringDeserialize(new URLSearchParams(window.location.search).get("code") ?? "");
   const code = useSignal<string>(codeFromUrl !== "" ? codeFromUrl : "1 + 1")
   //const code = useSignal<string>(codeFromUrl !== "" ? codeFromUrl : getExample("REPL"))
   const result = useComputed<Value>(() => {
@@ -2656,7 +2643,7 @@ export function REPL() {
 
   return (
     <>
-      <div className="absolute inset-0 z-50 p-2 bg-neutral-900 grid">
+      <div className="absolute inset-0 z-50 p-2 bg-neutral-900 grid text-white">
         {
           Grid(tf.scalar(2), tf.scalar(1))(
             Print(result),
@@ -3166,4 +3153,14 @@ w: $({ d.(tick() % #(d)) }),
     `,
 ].map((s) => dedent(s));
 
-export default () => null
+function PlaygroundRender() {
+  const root = document.getElementById("root")
+
+  if (!root) {
+    throw new Error("Root element not found")
+  }
+
+  createRoot(root).render(<Playground />)
+}
+
+PlaygroundRender()
