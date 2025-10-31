@@ -130,29 +130,41 @@ Button({ x(0) }, "Reset"),
 
 import { grammar, type ActionDict } from "ohm-js";
 import { toAST as ohmToAST } from "ohm-js/extras";
-import * as tf from "@tensorflow/tfjs";
+
 // for fancy signals
 // https://www.npmjs.com/package/@preact-signals/utils
 import { signal, Signal, computed, effect } from "@preact/signals-core"
 import { useSignals, useSignal, useComputed } from '@preact/signals-react/runtime';
 import { ErrorBoundary } from 'react-error-boundary';
+import { useEffect, type JSX, isValidElement, useRef } from "react";
+import { createRoot } from "react-dom/client"
+
 import { type BeforeMount, type Monaco, type OnMount, Editor } from '@monaco-editor/react';
 import { type editor } from "monaco-editor";
 // @ts-ignore
 import { renderMarkdown } from "monaco-editor/esm/vs/base/browser/markdownRenderer.js"
-import dedent from "ts-dedent";
-import { useEffect, type JSX, isValidElement, useRef } from "react";
-import { createRoot } from "react-dom/client"
-import { Base64 } from 'js-base64'
-import { type Annotations } from "plotly.js"
 
+import dedent from "ts-dedent";
+import { Base64 } from 'js-base64'
+
+import { type Annotations } from "plotly.js"
+import * as tf from '@tensorflow/tfjs-core';
+import "@tensorflow/tfjs-backend-cpu"
+import '@tensorflow/tfjs-backend-webgl'
+import '@tensorflow/tfjs-backend-wasm'
 // @ts-ignore
 const Plot = (await import("react-plotly.js")).default.default as Plot
 
 import "./index.css"
 
-tf.setBackend('cpu');
-// tf.setBackend('webgl');
+// tf.setBackend('cpu');
+
+//tf.setBackend('wasm');
+tf.ready().then(() => {
+  console.log("TensorFlow.js backend:", tf.getBackend());
+  tf.scalar(1).print()
+});
+tf.setBackend('webgl');
 
 // MARK: Parse
 
@@ -210,6 +222,7 @@ const RESERVED_SYMBOLS = "[|,{}()\\[\\];]"
 
 const IDENTIFIER_RANGES: Record<string, [string, string]> = {
   MATHEMATICAL_ALPHANUMERIC_SYMBOLS: [String.fromCodePoint(0x1D400), String.fromCodePoint(0x1D7FF)], // Mathematical Alphanumeric Symbols
+  EMOJIS: [String.fromCodePoint(0x1F300), String.fromCodePoint(0x1FFFF)], // Emoticons
 }
 const identifierRegexp = /(?:\p{L})[\p{L}\p{N}\-]*/u
 
@@ -496,6 +509,8 @@ const CodeParse = (program: string): SyntaxTreeNode => {
 type Value = tf.Tensor | Function | Signal<Value> | Error | string | symbol | null | Value[]
 type CurrentScope = Record<string, Value>
 
+const SymbolOrigin = Symbol.for('Origin')
+
 function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value {
 
   if (node.type === "Error") {
@@ -516,17 +531,11 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   if (node.type === "Tensor") {
     const values = node.content.value.map((e) => evaluateSyntaxTreeNode(e, env))
     if (values.length === 0) {
+      //return safeApply(Tensor, [[]], env)
       return tf.tensor([])
     }
-    try {
-      // let it crash when stacking shit together
-      // @ts-ignore
-      return tf.stack(values)
-    } catch (e) {
-      console.error("Error stacking tensors:", e, values);
-      // @ts-ignore
-      return new Error("Error stacking tensors: " + e.message)
-    }
+
+    return safeApply(TensorStack, values, env)
   }
 
   if (node.type === "Symbol") {
@@ -564,7 +573,18 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     const fn = evaluateSyntaxTreeNode(node.content.operator, env)
     const args = evaluateSyntaxTreeNode(node.content.args, env) as Value[]
 
-    return safeApply(fn, args, env)
+    const value = safeApply(fn, args, env)
+
+    if (Object.isExtensible(value)) {
+      // @ts-ignore
+      value[SymbolOrigin] = {
+        source: node.origin.source,
+        start: node.origin.start,
+        end: node.origin.end,
+      }
+    }
+
+    return value
   }
 
   if (node.type === "Code") {
@@ -672,6 +692,8 @@ const reify = (v: Value, env: CurrentScope): Value => {
 }
 
 function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
+  let errorArgs: Error[] = []
+
   try {
     console.log("safeApply", fn, args, env)
 
@@ -685,10 +707,10 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       console.log("reifying args done", argsValue)
     }
 
-    const errorArgs = argsValue.filter(a => a instanceof Error)
-    if (errorArgs.length > 0) {
-      throw errorArgs[0]
-    }
+    errorArgs = argsValue.filter(a => a instanceof Error)
+    // if (errorArgs.length > 0) {
+    //    throw new Error(`Error in arguments`, { cause: errorArgs[0] })
+    //}
 
     if (typeof fnValue !== "function" && !(fnValue instanceof Signal)) {
       throw new Error(`'${String(fnValue)}' is not a function.`)
@@ -710,7 +732,13 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
 
     return fnValue.apply(env, argsValue)
   } catch (e) {
-    return e as Error
+    // inject cause to the caught error from argument errors
+    if (e instanceof Error && errorArgs.length > 0) {
+      return new Error(e.message, { cause: errorArgs[0] })
+    } else {
+      // @ts-ignore
+      return e
+    }
   }
 }
 
@@ -853,6 +881,11 @@ const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
     return a.resolve(this)
   } else {
     return new Error(`Left side of assignment must be a symbol, got: ${String(a)}`)
+
+    /*
+    
+    // sketch for shadowing assignment, but it is shit
+
     // reified symbol has a value attached to it
     // found this value in the environment traversing the prototype chain of env
     const aSymbol = Symbol.reverseResolve(this, a)
@@ -864,6 +897,7 @@ const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
       // console.log("SymbolAssign", aSymbol, b, this, this[Symbol.keyFor(aSymbol)])
       return aSymbol.resolve(this)
     }
+    */
   }
 
   return b
@@ -927,6 +961,7 @@ const ListMap = (a: any[], fn: (value: any, index: tf.Scalar) => any) => {
   }
 
   return a.map((value, index) => {
+    // @ts-ignore
     return FunctionEvaluate(fn, [value, TensorScalar(index)])
   })
 }
@@ -943,7 +978,7 @@ const ListReduce = (a: any[], fn: (acc: any, value: any) => any, initialValue?: 
   return a.reduce(fn, initialValue)
 }
 
-const Tensor = tf.Tensor
+const Tensor = tf.tensor
 const TensorScalar = tf.scalar
 const TensorStack = (...args: tf.Tensor[]) => tf.stack(args)
 const TensorUnstack = tf.unstack
@@ -997,6 +1032,28 @@ const TensorReciprocal = tf.reciprocal
 const TensorRound = tf.round
 const TensorCeil = tf.ceil
 const TensorFloor = tf.floor
+const TensorSort = (x: tf.Tensor) => {
+  return TensorReverse(tf.topk(x, x.size, true).values)
+}
+const TensorSlice = (a: tf.Tensor, begin: tf.Tensor, size: tf.Tensor) => {
+  const beginList = getAsSyncList(begin) as number[]
+  const sizeList = getAsSyncList(size) as number[]
+  return tf.slice(a, beginList, sizeList)
+}
+const TensorMask = (a: tf.Tensor, b: tf.Tensor) => {
+  const count = TensorSum(TensorBoolean(b))
+  const indices = TensorRange(tf.tensor(0), TensorShape(a));
+  const mu = TensorWhere(b, indices, TensorFill(TensorShape(a), tf.tensor(-1)));
+  const top = TensorReverse(TensorSort(mu));
+  const i = TensorSlice(top, tf.tensor(0), count);
+  return TensorGather(a, TensorReverse(tf.cast(i, "int32")));
+}
+const TensorFill = (shape: tf.Tensor, value: tf.Tensor) => {
+  const shapeList = getAsSyncList(shape) as number[]
+  const valueScalar = getAsSyncList(value) as number
+  return tf.fill(shapeList, valueScalar)
+}
+const TensorBoolean = (a: tf.Tensor) => tf.cast(a, "bool")
 
 const TensorGradient = tf.grad
 const TensorTranspose = tf.transpose
@@ -1005,13 +1062,18 @@ const TensorIdentity = (a: tf.Tensor) => {
   return tf.eye(size)
 }
 
-const TensorRange = (a: tf.Tensor, b: tf.Tensor, c: tf.Tensor) => {
+const TensorRange = (a: tf.Tensor, b: tf.Tensor) => {
+  if (b === undefined) {
+    const stop = getAsSyncList(tf.cast(a, "int32")) as number
+    return tf.range(0, stop)
+  }
+
   const start = getAsSyncList(tf.cast(a, "int32")) as number
   const stop = getAsSyncList(tf.cast(b, "int32")) as number
   return tf.range(start, stop)
 }
 
-const TensorLinearSpace = (range: tf.Tensor, steps: tf.Tensor, c: tf.Tensor) => {
+const TensorLinearSpace = (range: tf.Tensor, steps: tf.Tensor) => {
   const [start, stop] = getAsSyncList(range) as [number, number]
   const num = getAsSyncList(steps) as number
   return tf.linspace(start, stop, num)
@@ -1025,11 +1087,14 @@ const TensorReshape = (a: tf.Tensor, b: tf.Tensor) => {
   return tf.tensor(a.shape)
 }
 
+const TensorReverse = tf.reverse
+
 const TensorMatrixMultiply = (a: tf.Tensor, b: tf.Tensor) => tf.matMul(a, b, false, false)
 const TensorDotProduct = tf.dot
 
 const TensorLength = (a: tf.Tensor, b?: tf.Tensor) => {
   if (b !== undefined) {
+    // @ts-ignore
     return tf.scalar(a.shape[getAsSyncList(b) as number])
   }
 
@@ -1044,7 +1109,7 @@ const TensorGather = (a: tf.Tensor, b: tf.Tensor) => {
   return tf.gather(a, indices)
 }
 
-const TensorWhere = tf.where
+const TensorWhere = (a: tf.Tensor, b: tf.Tensor, c: tf.Tensor) => tf.where(TensorBoolean(a), b, c)
 const TensorIsNaN = tf.isNaN
 
 // const tensorVariableAssignOriginal = Variable.prototype.assign
@@ -1077,6 +1142,7 @@ const TensorOptimizationSgd = (a: tf.Tensor) => {
 }
 
 const TensorRandomNormal = (a: tf.Tensor) => tf.randomStandardNormal(getAsSyncList(a) as number[])
+const TensorRandomUniform = (a: tf.Tensor) => tf.randomUniform(getAsSyncList(a) as number[])
 
 // const String = (a: unknown) => `${a.toString()}`
 const StringConcat = (...args: any[]) => "".concat(...args)
@@ -1107,7 +1173,7 @@ const colorizeCodeAsync = async (language: string, value: string) => {
   e.className = "overflow-hidden"
   e.style.fontFamily = "monospace"
   try {
-    e.innerHTML = await colorize(value, language)
+    e.innerHTML = await colorize(value, language, {})
   } catch (error) {
     e.textContent = value
   }
@@ -1144,6 +1210,9 @@ const NativeDOMElement = ({ fn }: { fn: () => Promise<HTMLElement> }) => {
 }
 
 const Text = (value: string) => {
+  if (typeof value !== "string") {
+    return new Error(`Text: expected string, got ${typeof value}`)
+  }
   const fn = () => { console.log("rendering"); return convertTextToHTML(value) }
   return <div className="prose prose-neutral prose-invert"><NativeDOMElement fn={fn} /></div>
 }
@@ -1477,6 +1546,7 @@ const DefaultEnvironment = {
   TensorRound,
   TensorCeil,
   TensorFloor,
+  TensorSort,
 
   TensorGradient,
 
@@ -1490,6 +1560,7 @@ const DefaultEnvironment = {
   TensorWhere,
   TensorIsNaN,
   TensorIdentity,
+  TensorMask,
 
   TensorVariable,
   TensorAssign,
@@ -1593,7 +1664,7 @@ const DefaultEnvironment = {
   // (>=): TensorGreaterEqual
   ">=": TensorGreaterEqual,
   // (=): TensorEqual,
-  // "=": TensorEqual,
+  "=": TensorEqual,
   // (≠): TensorNotEqual,
   "≠": TensorNotEqual,
   // (!=): TensorNotEqual,
@@ -1644,6 +1715,55 @@ const DefaultEnvironment = {
   "asinh": TensorSineHyperbolicInverse,
   "acosh": TensorCosineHyperbolicInverse,
   "atanh": TensorTangentHyperbolicInverse,
+
+  "equal": TensorEqual,
+  "notEqual": TensorNotEqual,
+  "less": TensorLess,
+  "lt": TensorLess,
+  "greater": TensorGreater,
+  "gt": TensorGreater,
+  "lessEqual": TensorLessEqual,
+  "le": TensorLessEqual,
+  "greaterEqual": TensorGreaterEqual,
+  "ge": TensorGreaterEqual,
+  "add": TensorAdd,
+  "sub": TensorSubtract,
+  "mul": TensorMultiply,
+  "div": TensorDivide,
+  "mod": TensorRemainder,
+  "root": TensorRoot,
+  "sum": TensorSum,
+  "prod": TensorProduct,
+  "mean": TensorMean,
+
+  "sort": TensorSort,
+  "shape": TensorShape,
+  "mask": TensorMask,
+  "where": TensorWhere,
+  "isNaN": TensorIsNaN,
+  "eye": TensorIdentity,
+  "slice": TensorSlice,
+  "reshape": TensorReshape,
+  "transpose": TensorTranspose,
+  "range": TensorRange,
+  "gradient": TensorGradient,
+  "length": TensorLength,
+  "len": TensorLength,
+  "dot": TensorDotProduct,
+  "matmul": TensorMatrixMultiply,
+  "adam": TensorOptimizationAdam,
+  "sgd": TensorOptimizationSgd,
+  "rand": TensorRandomUniform,
+  "randn": TensorRandomNormal,
+  "linspace": TensorLinearSpace,
+  "fill": TensorFill,
+  "stack": TensorStack,
+  "unstack": TensorUnstack,
+  "concat": TensorConcat,
+  "tile": TensorTile,
+  "gather": TensorGather,
+  "var": TensorVariable,
+  "reverse": TensorReverse,
 
   // (?): { cond, choice | choice gather (1 sub cond) }
   // TODO: doesn't work for some reason, copying code to editor works
@@ -1713,7 +1833,7 @@ type TreeNodeDescriptor = {
   }
 }
 
-const highlightedNode = SignalCreate(null as TreeNodeDescriptor | null);
+const highlightedCodeOrigin = SignalCreate(null as Origin | null);
 
 function getColumnWidths(nodes: TreeNodeDescriptor[]): number[] {
   const columnWidths: number[] = [];
@@ -1864,7 +1984,10 @@ function TreeNode(node: TreeNodeDescriptor): JSX.Element {
         rx={node.frame.height / 4}
         stroke="rgba(255,255,255, 0.1)"
         onPointerOver={(e) => {
-          highlightedNode.value = node
+          highlightedCodeOrigin.value = node.node.origin
+        }}
+        onPointerOut={e => {
+          highlightedCodeOrigin.value = null
         }}
       />
       <text
@@ -1896,6 +2019,8 @@ function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDe
       return '{}';
     } else if (node.type === 'List') {
       return '()';
+    } else if (node.type === 'String') {
+      return `"${node.content.value}"`;
     } else {
       throw new Error(`Unknown type ${node.type}`);
     }
@@ -1915,6 +2040,8 @@ function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDe
       return [];
     } else if (node.type === 'List') {
       return node.content.value;
+    } else if (node.type === 'String') {
+      return [];
     } else {
       throw new Error(`Unknown type ${node.type}`);
     }
@@ -2027,7 +2154,7 @@ function PrettyPrint(obj: any): JSX.Element {
   if (Array.isArray(obj)) {
     return (
       <div className="grid gap-2 rounded-xl">
-        {obj.map((item, key) => <div key={key} className={`${frameStyle} !border-0 grid hover:bg-neutral-600 hover:bg-opacity-5`}>{PrettyPrint(item)}</div>)}
+        {obj.map((item, key) => <div key={key} className={`${frameStyle} !border-0 grid hover:bg-neutral-800 hover:bg-tra`}>{PrettyPrint(item)}</div>)}
       </div>
     );
   }
@@ -2087,7 +2214,36 @@ function PrettyPrint(obj: any): JSX.Element {
 
     if (obj instanceof Error) {
       console.log("Error object:", obj);
-      return <div className="border rounded-lg border-red-700 bg-red-950 bg-opacity-30 px-2 py-1 text-red-700"><div>{obj.message}</div>{obj.cause ? <div>{PrettyPrint(obj.cause)}</div> : null}</div>;
+
+
+      // traverse error causes and collent them into a flat list
+      function linearizeError(error: Error): Error[] {
+        const errors = [error];
+        let currentError: any = error;
+        while (currentError.cause && currentError.cause instanceof Error) {
+          errors.push(currentError.cause);
+          currentError = currentError.cause;
+        }
+        return errors;
+      }
+
+      return <div className="flex flex-col gap-2 border rounded-lg border-red-700 bg-red-950 ">{linearizeError(obj).reverse().map((error, index) => {
+        return (
+          <div key={index}
+            className=" px-2 py-1 text-red-700"
+            // @ts-ignore
+            onPointerOver={e => {
+              // @ts-ignore
+              highlightedCodeOrigin.value = error[SymbolOrigin] || null;
+            }}>
+            <div>{error.message}</div>
+            {/* {obj.cause ? <div>{PrettyPrint(obj.cause)}</div> : null} */}
+          </div>
+        );
+      })}</div>;
+
+
+
     }
 
     return (
@@ -2120,7 +2276,7 @@ const BarPlot = ({ data }: { data: tf.Tensor }) => {
     <Plot
       data={[
         {
-          y: data.as1D().arraySync(),
+          y: data.arraySync(),
           type: 'bar',
         },
       ]}
@@ -2584,11 +2740,11 @@ const editorOnMount: OnMount = (editor, monaco) => {
   });
 
   effect(() => {
-    console.log("highlightedNode changed", highlightedNode.value);
-    if (highlightedNode.value == null) {
+    console.log("highlightedCodeOrigin changed", highlightedCodeOrigin.value);
+    if (highlightedCodeOrigin.value == null) {
       return
     }
-    const nodeOrigin = highlightedNode.value.node.origin;
+    const nodeOrigin = highlightedCodeOrigin.value;
 
     const model = editor.getModel();
 
@@ -2596,13 +2752,15 @@ const editorOnMount: OnMount = (editor, monaco) => {
       return
     }
 
+    console.log("Setting markers for", nodeOrigin);
+
     monaco.editor.setModelMarkers(model, "fluent-editor", [
       {
         startLineNumber: nodeOrigin.start.line,
         startColumn: nodeOrigin.start.column,
         endLineNumber: nodeOrigin.end.line,
         endColumn: nodeOrigin.end.column,
-        message: "",
+        message: "mu",
         severity: monaco.MarkerSeverity.Info,
       }
     ]);
@@ -3153,7 +3311,7 @@ w: $({ d.(tick() % #(d)) }),
     `,
 ].map((s) => dedent(s));
 
-function PlaygroundRender() {
+document.addEventListener("DOMContentLoaded", () => {
   const root = document.getElementById("root")
 
   if (!root) {
@@ -3161,6 +3319,4 @@ function PlaygroundRender() {
   }
 
   createRoot(root).render(<Playground />)
-}
-
-PlaygroundRender()
+})
