@@ -489,7 +489,7 @@ const CodeParse = (program: string): SyntaxTreeNode => {
   if (matchResult.succeeded()) {
     // ohmToAST is untyped, so we need to cast it to our SyntaxTreeNode type
     const result = ohmToAST(matchResult, syntaxTreeMapping) as SyntaxTreeNode;
-    console.log("Parsed syntax tree:", result);
+    // console.log("Parsed syntax tree:", result);
     return result
   } else {
     return {
@@ -588,7 +588,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "Code") {
-    console.log("Evaluating embedded code:", node.content.value);
+    // console.log("Evaluating embedded code:", node.content.value);
     // @ts-ignore
     return PrettyPrintSyntaxTree(node.content.value)
   }
@@ -695,16 +695,16 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
   let errorArgs: Error[] = []
 
   try {
-    console.log("safeApply", fn, args, env)
+    // console.log("safeApply", fn, args, env)
 
     let fnValue: Value = reify(fn, env);
     let argsValue: Value[] = args;
 
     // @ts-ignore
     if (!fnValue.receivesNonreifiedSymbols) {
-      console.log("reifying args", args)
+      // console.log("reifying args", args)
       argsValue = args.map(arg => reify(arg, env))
-      console.log("reifying args done", argsValue)
+      // console.log("reifying args done", argsValue)
     }
 
     errorArgs = argsValue.filter(a => a instanceof Error)
@@ -798,7 +798,7 @@ const evaluateProgramWithScope = (program: string, scope: CurrentScope) => {
 }
 
 const CodeEvaluate = function (this: CurrentScope, program: string) {
-  console.log("Evaluating program:", program, this);
+  // console.log("Evaluating program:", program, this);
   return evaluateProgramWithScope(program, this);
 }
 
@@ -867,7 +867,7 @@ const Reactive = (a: Value) => {
 
 const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
 
-  console.log("SymbolAssign", a, b, this)
+  // console.log("SymbolAssign", a, b, this)
 
   if (typeof a === "symbol") {
     // if a is not defined in the current environment
@@ -1121,7 +1121,7 @@ const TensorIsNaN = tf.isNaN
 
 const TensorVariable = (a: tf.Tensor) => {
   // const s = signal(a)
-  const variableTensor = tf.variable(a);
+  const variableTensor = tf.variable(a, true);
   // @ts-ignore
   // variableTensor.signal = s;
   return variableTensor
@@ -1213,7 +1213,7 @@ const Text = (value: string) => {
   if (typeof value !== "string") {
     return new Error(`Text: expected string, got ${typeof value}`)
   }
-  const fn = () => { console.log("rendering"); return convertTextToHTML(value) }
+  const fn = () => { return convertTextToHTML(value) }
   return <div className="prose prose-neutral prose-invert"><NativeDOMElement fn={fn} /></div>
 }
 
@@ -2272,18 +2272,39 @@ function Panel({ children, className }: { children: JSX.Element, className?: str
 // MARK: Plots
 
 const BarPlot = ({ data }: { data: tf.Tensor }) => {
+
+  const annotations: Partial<Annotations>[] = [];
+
+  if (data.shape.reduce((a, b) => a * b) < 20) {
+    // @ts-ignore
+    annotations.push(...data.arraySync().map((value: number, i: number) => ({
+      xref: "x1",
+      yref: "y1",
+      x: i,
+      y: value,
+      text: value.toFixed(2),
+      font: { color: '#D4D4D4', shadow: "0px 0px 1px black" },
+      showarrow: false,
+    })));
+  }
+
   return (
     <Plot
       data={[
         {
           y: data.arraySync(),
           type: 'bar',
+          marker: {
+          color: data.arraySync(),
+          colorscale: 'Viridis',
+        },
         },
       ]}
       layout={{
         paper_bgcolor: 'transparent',
         plot_bgcolor: 'transparent',
         font: { color: '#D4D4D4', },
+        annotations,
         xaxis: {
           automargin: true,
           // // remove 0.5, 1.5, 2.5, etc. from x-axis
@@ -2740,7 +2761,7 @@ const editorOnMount: OnMount = (editor, monaco) => {
   });
 
   effect(() => {
-    console.log("highlightedCodeOrigin changed", highlightedCodeOrigin.value);
+    // console.log("highlightedCodeOrigin changed", highlightedCodeOrigin.value);
     if (highlightedCodeOrigin.value == null) {
       return
     }
@@ -2752,7 +2773,7 @@ const editorOnMount: OnMount = (editor, monaco) => {
       return
     }
 
-    console.log("Setting markers for", nodeOrigin);
+    // console.log("Setting markers for", nodeOrigin);
 
     monaco.editor.setModelMarkers(model, "fluent-editor", [
       {
