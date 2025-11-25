@@ -148,23 +148,13 @@ import dedent from "ts-dedent";
 import { Base64 } from 'js-base64'
 
 import { type Annotations } from "plotly.js"
-import * as tf from '@tensorflow/tfjs-core';
-import "@tensorflow/tfjs-backend-cpu"
-import '@tensorflow/tfjs-backend-webgl'
-import '@tensorflow/tfjs-backend-wasm'
+import * as tf from '@tensorflow/tfjs'
 // @ts-ignore
 const Plot = (await import("react-plotly.js")).default.default as Plot
 
 import "./index.css"
 
-// tf.setBackend('cpu');
-
-//tf.setBackend('wasm');
-tf.ready().then(() => {
-  console.log("TensorFlow.js backend:", tf.getBackend());
-  tf.scalar(1).print()
-});
-tf.setBackend('webgl');
+tf.setBackend('cpu');
 
 // MARK: Parse
 
@@ -535,7 +525,8 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
       return tf.tensor([])
     }
 
-    return safeApply(TensorStack, values, env)
+    // return safeApply(TensorStack, values, env)
+    return tf.stack(values as tf.Tensor[])
   }
 
   if (node.type === "Symbol") {
