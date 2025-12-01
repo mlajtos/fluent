@@ -525,8 +525,8 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
       return tf.tensor([])
     }
 
-    // return safeApply(TensorStack, values, env)
-    return tf.stack(values as tf.Tensor[])
+    return safeApply(TensorStack, values, env)
+    //return tf.stack(values as tf.Tensor[])
   }
 
   if (node.type === "Symbol") {
@@ -809,7 +809,7 @@ function prefixKeys<P extends string, S extends object>(prefix: P, scope: S): Pr
   return prefixedScope as PrefixKeys<S, P>;
 }
 
-const FunctionIterate = async (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar = tf.scalar(1)) => {
+const FunctionIterate = (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar = tf.scalar(1)) => {
   if (!(typeof fn === "function" && iterations instanceof tf.Tensor)) {
     throw new Error("iterate(fn, iterations): fn must be a function and iterations must be a Tensor");
   }
@@ -1007,7 +1007,13 @@ const TensorCosineHyperbolicInverse = tf.acos
 const TensorTangentHyperbolicInverse = tf.atan
 
 // TensorReduce(a, 0, +)
-const TensorSum = tf.sum
+const TensorSum = (a: tf.Tensor, b: tf.Tensor) => {
+  if (b !== undefined) {
+    const axis = getAsSyncList(b) as (number | number[])
+    return tf.sum(a, axis)
+  }
+  return tf.sum(a)
+}
 // TensorReduce(a, 1, *)
 const TensorProduct = tf.prod
 const TensorMean = tf.mean
@@ -1756,6 +1762,11 @@ const DefaultEnvironment = {
   "var": TensorVariable,
   "reverse": TensorReverse,
 
+  "iter": FunctionIterate,
+  "cascade": FunctionCascade,
+  "apply": FunctionApply,
+  "eval": FunctionEvaluate,
+
   // (?): { cond, choice | choice gather (1 sub cond) }
   // TODO: doesn't work for some reason, copying code to editor works
   // "?": evaluate(`{ cond, choice | choice tensorGather (1 tensorSubtract cond) }`),
@@ -2271,9 +2282,10 @@ const BarPlot = ({ data }: { data: tf.Tensor }) => {
     annotations.push(...data.arraySync().map((value: number, i: number) => ({
       xref: "x1",
       yref: "y1",
+      yanchor: "bottom",
       x: i,
       y: value,
-      text: value.toFixed(2),
+      text: value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2, useGrouping: true }).replace(/,/g, "_"),
       font: { color: '#D4D4D4', shadow: "0px 0px 1px black" },
       showarrow: false,
     })));
