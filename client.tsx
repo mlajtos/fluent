@@ -959,7 +959,7 @@ const ListMap = (a: any[], fn: (value: any, index: tf.Scalar) => any) => {
 
 const ListReduce = (a: any[], fn: (acc: any, value: any) => any, initialValue?: any) => {
   if (typeof fn !== "function") {
-    return new Error("list-reduce: fn must be a function")
+    return new Error("ListReduce: `fn` must be a function")
   }
 
   if (initialValue === undefined) {
@@ -984,7 +984,12 @@ const TensorSubtract = tf.sub
 const TensorMultiply = tf.mul
 const TensorDivide = tf.div
 const TensorPower = tf.pow
-const TensorRoot = (a: tf.Tensor, b: tf.Tensor) => TensorPower(b, TensorReciprocal(a))
+const TensorRoot = (a: tf.Tensor, b: tf.Tensor) => {
+  if (b === undefined) {
+    return tf.sqrt(a)
+  }
+  return TensorPower(b, TensorReciprocal(a))
+} 
 const TensorRemainder = tf.mod
 const TensorMaximum = tf.maximum
 const TensorMinimum = tf.minimum
@@ -1015,10 +1020,34 @@ const TensorSum = (a: tf.Tensor, b: tf.Tensor) => {
   return tf.sum(a)
 }
 // TensorReduce(a, 1, *)
-const TensorProduct = tf.prod
-const TensorMean = tf.mean
-const TensorMin = tf.min
-const TensorMax = tf.max
+const TensorProduct = (a: tf.Tensor, b: tf.Tensor) => {
+  if (b !== undefined) {
+    const axis = getAsSyncList(b) as (number | number[])
+    return tf.prod(a, axis)
+  }
+  return tf.prod(a)
+}
+const TensorMean = (a: tf.Tensor, b: tf.Tensor) => {
+  if (b !== undefined) {
+    const axis = getAsSyncList(b) as (number | number[])
+    return tf.mean(a, axis)
+  }
+  return tf.mean(a)
+}
+const TensorMin = (a: tf.Tensor, b: tf.Tensor) => {
+  if (b !== undefined) {
+    const axis = getAsSyncList(b) as (number | number[])
+    return tf.min(a, axis)
+  }
+  return tf.min(a)
+}
+const TensorMax = (a: tf.Tensor, b: tf.Tensor) => {
+  if (b !== undefined) {
+    const axis = getAsSyncList(b) as (number | number[])
+    return tf.max(a, axis)
+  }
+  return tf.max(a)
+}
 
 const TensorNegate = tf.neg
 const TensorAbsolute = tf.abs
@@ -1136,6 +1165,11 @@ const TensorOptimizationAdam = (a: tf.Tensor, b: tf.Variable[]) => {
 const TensorOptimizationSgd = (a: tf.Tensor) => {
   const optimizer = tf.train.sgd(getAsSyncList(a) as number)
   return (fn: () => tf.Scalar) => optimizer.minimize(fn, true)
+}
+
+const TensorOptimizationAdaGrad = (a: tf.Tensor) => {
+  const optimizer = tf.train.adagrad(getAsSyncList(a) as number)
+  return (fn: () => tf.Scalar) => optimizer.minimize(fn, true)  
 }
 
 const TensorRandomNormal = (a: tf.Tensor) => tf.randomStandardNormal(getAsSyncList(a) as number[])
@@ -1563,6 +1597,7 @@ const DefaultEnvironment = {
   TensorAssign,
   TensorOptimizationAdam,
   TensorOptimizationSgd,
+  TensorOptimizationAdaGrad,
   TensorRandomNormal,
 
   TensorMatrixMultiply,
