@@ -125,6 +125,8 @@ Button({ x(0) }, "Reset"),
   - think about benefits of alternative universal notation
 - https://arxiv.org/pdf/2303.15784
   - ideograph – inspiration for visualization of syntax tree
+- https://github.com/Rogue-Frontier/Oblivia
+  - APL+JS hybrid language
 
 */
 
@@ -473,25 +475,69 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
   },
 } as const;
 
+type ParseError = {
+  message: string;
+  start: { line: number; column: number };
+  end: { line: number; column: number };
+}
+
+// Convert a string index to line and column numbers
+const indexToLineAndColumn = (str: string, index: number): { line: number; column: number } => {
+  const lines = str.slice(0, index).split('\n');
+  const lastLine = lines[lines.length - 1] ?? '';
+  return {
+    line: lines.length,
+    column: lastLine.length + 1
+  };
+}
+
 const CodeParse = (program: string): SyntaxTreeNode => {
   const matchResult = CodeGrammarCompiled.match(program);
 
   if (matchResult.succeeded()) {
-    // ohmToAST is untyped, so we need to cast it to our SyntaxTreeNode type
     const result = ohmToAST(matchResult, syntaxTreeMapping) as SyntaxTreeNode;
-    // console.log("Parsed syntax tree:", result);
     return result
   } else {
+    // @ts-ignore - getRightmostFailurePosition exists but not in types
+    const errorPos = matchResult.getRightmostFailurePosition() as number;
+    const errorLocation = indexToLineAndColumn(program, errorPos);
+
     return {
       type: "Error",
-      content: matchResult.message ?? "Unknown parse error",
+      content: matchResult.shortMessage ?? matchResult.message ?? "Unknown parse error",
       origin: {
         source: program,
-        start: { line: 1, column: 1 },
-        end: { line: 1, column: program.length + 1 }
+        start: { line: errorLocation.line, column: errorLocation.column },
+        end: { line: errorLocation.line, column: errorLocation.column + 1 }
       }
     };
   }
+}
+
+// Validate code and return parse errors for editor markers
+const getParseErrors = (program: string): ParseError[] => {
+  const matchResult = CodeGrammarCompiled.match(program);
+
+  if (matchResult.succeeded()) {
+    return [];
+  }
+
+  // @ts-ignore - getRightmostFailurePosition exists but not in types
+  let errorPos = matchResult.getRightmostFailurePosition() as number;
+
+  // If error is at start of line after newline, back up to previous line
+  if (errorPos > 0 && program[errorPos - 1] === '\n') {
+    errorPos--;
+  }
+
+  const startLocation = indexToLineAndColumn(program, errorPos);
+  const endLocation = indexToLineAndColumn(program, program.length);
+
+  return [{
+    message: matchResult.shortMessage ?? matchResult.message ?? "Syntax error",
+    start: startLocation,
+    end: endLocation
+  }];
 }
 
 // MARK: Evaluate
@@ -504,8 +550,10 @@ const SymbolOrigin = Symbol.for('Origin')
 function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value {
 
   if (node.type === "Error") {
-    console.error("Error evaluating node:", node.content);
-    return new Error(node.content)
+    const error = new Error(node.content)
+    // @ts-ignore
+    error[SymbolOrigin] = node.origin
+    return error
   }
 
   if (node.type === "Program") {
@@ -831,7 +879,7 @@ const SignalCreate = signal
 
 const SignalRead = <T,>(s: Signal<T>) => {
   if (!(s instanceof Signal)) {
-    return new Error(`'read': ${String(s)} is not a signal`)
+    return new Error(`'SignalRead': ${String(s)} is not a signal`)
   }
   return s.value
 }
@@ -842,7 +890,7 @@ const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
     return
   }
 
-  return new Error(`'update': ${s} is not a signal`)
+  return new Error(`'SignalUpdate': ${s} is not a signal`)
 }
 
 const SignalComputed = computed
@@ -871,7 +919,7 @@ const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
     // return a
     return a.resolve(this)
   } else {
-    return new Error(`Left side of assignment must be a symbol, got: ${String(a)}`)
+    return new Error(`'SymbolAssign': Left side must be a symbol, got: ${String(a)}`)
 
     /*
     
@@ -916,7 +964,7 @@ const ListConcat = (...args: Value[]) => {
       return acc.concat(arg)
     } else {
       console.log(arg)
-      return acc.concat(new Error(`listConcat: argument is not an array: ${String(arg)}`))
+      return acc.concat(new Error(`'ListConcat': argument is not an array: ${String(arg)}`))
     }
   }, [] as unknown[]
   )
@@ -931,12 +979,12 @@ const ListLength = (a: unknown[]) => {
 
 const ListGet = (a: any[], b: tf.Scalar) => {
   if (!Array.isArray(a)) {
-    return new Error("list-get: a must be an array")
+    return new Error("'ListGet': 'a' must be an array")
   }
 
   const index = getAsSyncList(b) as number
   if (index < -a.length || index >= a.length) {
-    return new Error(`Index out of bounds: ${index} for list of length ${a.length}`)
+    return new Error(`'ListGet': Index '${index}' out of bounds for list of length ${a.length}`)
   }
 
   return a.at(index)
@@ -944,11 +992,11 @@ const ListGet = (a: any[], b: tf.Scalar) => {
 
 const ListMap = (a: any[], fn: (value: any, index: tf.Scalar) => any) => {
   if (typeof fn !== "function") {
-    return new Error("ListMap: `fn` must be a function")
+    return new Error("'ListMap': 'fn' must be a function")
   }
 
   if (!Array.isArray(a)) {
-    return new Error("ListMap: `a` must be a list")
+    return new Error("'ListMap': 'a' must be a list")
   }
 
   return a.map((value, index) => {
@@ -959,7 +1007,7 @@ const ListMap = (a: any[], fn: (value: any, index: tf.Scalar) => any) => {
 
 const ListReduce = (a: any[], fn: (acc: any, value: any) => any, initialValue?: any) => {
   if (typeof fn !== "function") {
-    return new Error("ListReduce: `fn` must be a function")
+    return new Error("'ListReduce': `fn` must be a function")
   }
 
   if (initialValue === undefined) {
@@ -1058,6 +1106,8 @@ const TensorReciprocal = tf.reciprocal
 const TensorRound = tf.round
 const TensorCeil = tf.ceil
 const TensorFloor = tf.floor
+const TensorErrorFunction = tf.erf
+
 const TensorSort = (x: tf.Tensor) => {
   return TensorReverse(tf.topk(x, x.size, true).values)
 }
@@ -1577,6 +1627,7 @@ const DefaultEnvironment = {
   TensorRound,
   TensorCeil,
   TensorFloor,
+  TensorErrorFunction,
   TensorSort,
 
   TensorGradient,
@@ -1645,7 +1696,7 @@ const DefaultEnvironment = {
   "_": TensorGather,
   // (#): TensorLength
   "#": TensorLength,
-  // (+): multiDispatch(TensorAdd, TensorAbsolute)
+  // (+): FunctionCascade(TensorAdd, TensorAbsolute)
   "+": (a: tf.Tensor, b: tf.Tensor) => {
     if (b === undefined) {
       return TensorAbsolute(a)
@@ -1872,6 +1923,32 @@ type TreeNodeDescriptor = {
 
 const highlightedCodeOrigin = SignalCreate(null as Origin | null);
 
+// Reference to main editor for hover highlighting
+let mainEditorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null;
+
+const setHoverHighlight = (origin: Origin | null) => {
+  if (!mainEditorRef) return
+  const { editor, monaco } = mainEditorRef
+  const model = editor.getModel()
+  if (!model) return
+
+  if (!origin) {
+    monaco.editor.setModelMarkers(model, "fluent-hover", [])
+    return
+  }
+
+  monaco.editor.setModelMarkers(model, "fluent-hover", [
+    {
+      startLineNumber: origin.start.line,
+      startColumn: origin.start.column,
+      endLineNumber: origin.end.line,
+      endColumn: origin.end.column,
+      message: "Error source",
+      severity: monaco.MarkerSeverity.Error,
+    }
+  ])
+}
+
 function getColumnWidths(nodes: TreeNodeDescriptor[]): number[] {
   const columnWidths: number[] = [];
   for (const node of nodes) {
@@ -2020,11 +2097,11 @@ function TreeNode(node: TreeNodeDescriptor): JSX.Element {
         height={node.frame.height}
         rx={node.frame.height / 4}
         stroke="rgba(255,255,255, 0.1)"
-        onPointerOver={(e) => {
-          highlightedCodeOrigin.value = node.node.origin
+        onPointerOver={() => {
+          setHoverHighlight(node.node.origin)
         }}
-        onPointerOut={e => {
-          highlightedCodeOrigin.value = null
+        onPointerOut={() => {
+          setHoverHighlight(null)
         }}
       />
       <text
@@ -2264,14 +2341,16 @@ function PrettyPrint(obj: any): JSX.Element {
         return errors;
       }
 
-      return <div className="flex flex-col gap-2 border rounded-lg border-red-700 bg-red-950 ">{linearizeError(obj).reverse().map((error, index) => {
+      return <div className="flex flex-col gap-2 border rounded-lg border-red-700 bg-red-950 overflow-scroll max-h-24">{linearizeError(obj).reverse().map((error, index) => {
         return (
           <div key={index}
-            className=" px-2 py-1 text-red-700"
-            // @ts-ignore
-            onPointerOver={e => {
+            className=" px-2 py-0.5 text-red-700 cursor-pointer"
+            onPointerOver={() => {
               // @ts-ignore
-              highlightedCodeOrigin.value = error[SymbolOrigin] || null;
+              setHoverHighlight(error[SymbolOrigin] || null)
+            }}
+            onPointerOut={() => {
+              setHoverHighlight(null)
             }}>
             <div>{error.message}</div>
             {/* {obj.cause ? <div>{PrettyPrint(obj.cause)}</div> : null} */}
@@ -2523,18 +2602,47 @@ function Code(sourceCode: Signal<string>) {
 }
 
 function CodeEditor(sourceCode: Signal<string>) {
-  // console.log("CodeEditor")
-
   const height = SignalCreate("100%")
 
-  return SignalComputed(() => {
-    console.log("rerendering editor", SignalRead(height))
+  const handleEditorMount: OnMount = (editor, monaco) => {
+    editorOnMount(editor, monaco)
+    mainEditorRef = { editor, monaco }
 
+    const validateCode = () => {
+      const model = editor.getModel()
+      if (!model) return
+
+      const code = model.getValue()
+      const errors = getParseErrors(code)
+
+      const markers = errors.map(error => ({
+        startLineNumber: error.start.line,
+        startColumn: error.start.column,
+        endLineNumber: error.end.line,
+        endColumn: error.end.column,
+        message: error.message,
+        severity: monaco.MarkerSeverity.Error,
+      }))
+
+      monaco.editor.setModelMarkers(model, "fluent-syntax", markers)
+    }
+
+    // Validate on initial load
+    validateCode()
+
+    // Validate on every change
+    editor.onDidChangeModelContent(() => {
+      validateCode()
+    })
+
+  }
+
+  return SignalComputed(() => {
     return (
       // @ts-ignore
       <Editor
         beforeMount={editorBeforeMount}
-        onMount={editorOnMount}
+        onMount={handleEditorMount}
         // @ts-ignore
         height={SignalRead(height)}
         defaultLanguage="fluent"
@@ -2622,7 +2730,8 @@ const editorBeforeMount: BeforeMount = (monaco) => {
       decreaseIndentPattern: /^\s*[\)\}\]]/,
     },
     // TODO: unify this with RESERVED_SYMBOLS
-    wordPattern: /[^|,{}()\\[\\];]+/g,
+    // Word pattern for identifiers (letter-based symbols)
+    wordPattern: /(?:\p{L})[\p{L}\p{N}\-]*/gu,
     comments: {
       lineComment: ";",
     },
@@ -2675,30 +2784,25 @@ const editorBeforeMount: BeforeMount = (monaco) => {
   });
 
   monaco.languages.registerCompletionItemProvider('fluent', {
-    triggerCharacters: [""],
     provideCompletionItems: (model, position) => {
-      const lineText = model.getLineContent(position.lineNumber);
-      // how to recognize "+" and other symbols as a word?
       const word = model.getWordUntilPosition(position);
-
-      // console.log("Text before cursor:", textBeforeCursor);
-      // console.log("Word before cursor:", word.word,);
+      const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn,
+      };
 
       return ({
-        suggestions: Object.entries(DefaultEnvironment).map(([key, value], i) => {
+        suggestions: Object.entries(DefaultEnvironment).map(([key, value]) => {
           return ({
-            label: `${key}`,
-            kind: monaco.languages.CompletionItemKind.Value,
-            insertText: `${key}`,
+            label: key,
+            kind: monaco.languages.CompletionItemKind.Function,
+            insertText: key,
             documentation: `Function: ${key}`,
-            detail: `${value}`,
-            range: {
-              startLineNumber: position.lineNumber,
-              endLineNumber: position.lineNumber,
-              startColumn: word.startColumn,
-              endColumn: word.endColumn// + key.length,
-            },
-            insertTextRules: monaco.languages.CompletionItemInsertTextRule.KeepWhitespace
+            detail: typeof value === 'function' ? 'function' : String(value).slice(0, 50),
+            range,
+            filterText: key,
           })
         })
       })
@@ -2798,32 +2902,6 @@ const editorOnMount: OnMount = (editor, monaco) => {
     },
   });
 
-  effect(() => {
-    // console.log("highlightedCodeOrigin changed", highlightedCodeOrigin.value);
-    if (highlightedCodeOrigin.value == null) {
-      return
-    }
-    const nodeOrigin = highlightedCodeOrigin.value;
-
-    const model = editor.getModel();
-
-    if (model == null || nodeOrigin == null) {
-      return
-    }
-
-    // console.log("Setting markers for", nodeOrigin);
-
-    monaco.editor.setModelMarkers(model, "fluent-editor", [
-      {
-        startLineNumber: nodeOrigin.start.line,
-        startColumn: nodeOrigin.start.column,
-        endLineNumber: nodeOrigin.end.line,
-        endColumn: nodeOrigin.end.column,
-        message: "mu",
-        severity: monaco.MarkerSeverity.Info,
-      }
-    ]);
-  })
 };
 
 // MARK: Playground
