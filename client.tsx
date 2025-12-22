@@ -95,10 +95,6 @@ Button({ x(0) }, "Reset"),
 
 - LLM-assisted code generation
   - proof-of-concept whether Grok can generate code in Fluent
-- good error reporting
-  - show stack trace when `Print`ing `Error`
-    - the deepest error first
-  - red squigly line on bad code
 - `Canvas` UI component for rapid tensor creation
 - loading tensors (and models) from URLs
   - `fetchFromUrl` / `tensorLoad`
