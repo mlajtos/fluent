@@ -663,7 +663,6 @@ Symbol.prototype.resolve = function (this: Symbol, env: CurrentScope): Value {
 
 // @ts-ignore
 Symbol.prototype.assign = function (env: CurrentScope, value: any) {
-  console.log("mutating", this, env, value)
 
   const s = this[Symbol.toPrimitive]("symbol")
   const k = Symbol.keyFor(s) ?? ""
@@ -696,7 +695,6 @@ Symbol.reverseResolve = function (env: CurrentScope, value: any): symbol | undef
 
   // traverse recursively parents
 
-  console.log(env)
   const prototypeEnv = Object.getPrototypeOf(env);
   if (prototypeEnv) {
     // console.log("checking prototype", prototypeEnv);
@@ -720,7 +718,6 @@ const reify = (v: Value, env: CurrentScope): Value => {
     }
 
     if (typeof resolved === "symbol") {
-      console.log("circular reference", v, resolved)
       return reify(resolved, env)
     }
 
@@ -795,9 +792,7 @@ const FunctionCascade = (candidates: Function[]) => (a: Value, b: Value) => {
     try {
       const fn = candidates[candidateIndex]
       candidateResult = fn?.(a, b)
-      console.log("candidateResult", candidateResult)
     } catch (e) {
-      console.log("error", e)
       candidateIndex += 1
       continue
     }
@@ -853,7 +848,6 @@ type PrefixKeys<T extends object, Prefix extends string> = {
 // Usage in function:
 function prefixKeys<P extends string, S extends object>(prefix: P, scope: S): PrefixKeys<S, P> {
   const prefixedScope = Object.fromEntries(Object.entries(scope).map(([k, v]) => [[prefix, k].filter(a => a.length > 0).join("-"), v]));
-  console.log(prefixedScope);
   return prefixedScope as PrefixKeys<S, P>;
 }
 
@@ -963,7 +957,6 @@ const ListConcat = (...args: Value[]) => {
     if (arg instanceof Array) {
       return acc.concat(arg)
     } else {
-      console.log(arg)
       return acc.concat(new Error(`'ListConcat': argument is not an array: ${String(arg)}`))
     }
   }, [] as unknown[]
@@ -1347,7 +1340,6 @@ const Grid = (cols: tf.Tensor, rows: tf.Tensor) => {
       gridTemplateColumns = (colsValue as number[]).map((v) => `minmax(0, ${v}fr)`).join(" ")
       break;
     default:
-      console.log("zle je")
       break;
   }
 
@@ -1364,7 +1356,6 @@ const Grid = (cols: tf.Tensor, rows: tf.Tensor) => {
         gridTemplateRows = (rowsValue as number[]).map((v) => `minmax(0, ${v}fr)`).join(" ")
         break;
       default:
-        console.log("zle je")
         break;
     }
   }
@@ -1540,7 +1531,6 @@ const LoadSafeTensorFromURL = (url?: string) => {
         return [key, tf.tensor(value.data, value.shape, "float32")]
       })
 
-      console.log(tensors);
       return mu
     })
     .then((a) => {
@@ -1920,8 +1910,6 @@ type TreeNodeDescriptor = {
     content: string,
   }
 }
-
-const highlightedCodeOrigin = SignalCreate(null as Origin | null);
 
 // Reference to main editor for hover highlighting
 let mainEditorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null;
@@ -2327,9 +2315,6 @@ function PrettyPrint(obj: any): JSX.Element {
     }
 
     if (obj instanceof Error) {
-      console.log("Error object:", obj);
-
-
       // traverse error causes and collent them into a flat list
       function linearizeError(error: Error): Error[] {
         const errors = [error];
@@ -2830,9 +2815,6 @@ monaco.languages.registerCompletionItemProvider('fluent', {
     const textBeforeCursor = lineText.substring(0, position.column - 1);
 
     let prefixStart = textBeforeCursor.lastIndexOf('\\');
-
-    console.log("Prefix start:", prefixStart, "Text before cursor:", textBeforeCursor);
-
 
     const word = model.getWordUntilPosition(position);
     const range = { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber, startColumn: word.startColumn, endColumn: word.endColumn };
