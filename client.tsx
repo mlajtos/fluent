@@ -832,21 +832,6 @@ const CodeEvaluate = function (this: CurrentScope, program: string) {
   return evaluateProgramWithScope(program, this);
 }
 
-type PrefixKey<K extends string, P extends string> =
-  P extends '' ? K :
-  K extends '' ? P :
-  `${P}-${K}`;
-
-type PrefixKeys<T extends object, Prefix extends string> = {
-  [K in keyof T as PrefixKey<`${Extract<K, string>}`, Prefix>]: T[K];
-};
-
-// Usage in function:
-function prefixKeys<P extends string, S extends object>(prefix: P, scope: S): PrefixKeys<S, P> {
-  const prefixedScope = Object.fromEntries(Object.entries(scope).map(([k, v]) => [[prefix, k].filter(a => a.length > 0).join("-"), v]));
-  return prefixedScope as PrefixKeys<S, P>;
-}
-
 const FunctionIterate = (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar = tf.scalar(1)) => {
   if (!(typeof fn === "function" && iterations instanceof tf.Tensor)) {
     throw new Error("iterate(fn, iterations): fn must be a function and iterations must be a Tensor");
@@ -2322,10 +2307,10 @@ function PrettyPrint(obj: any): JSX.Element {
         return errors;
       }
 
-      return <div className="flex flex-col gap-2 border rounded-lg border-red-700 bg-red-950 overflow-scroll max-h-24">{linearizeError(obj).reverse().map((error, index) => {
+      return <ol className="list-decimal list-inside flex flex-col gap-2 border rounded-lg border-red-700 bg-red-950 overflow-scroll max-h-24">{linearizeError(obj).reverse().map((error, index) => {
         return (
-          <div key={index}
-            className=" px-2 py-0.5 text-red-700 cursor-pointer"
+          <li key={index}
+            className="list-item px-2 py-0.5 text-red-700 cursor-pointer hover:bg-red-700 hover:text-red-200"
             onPointerOver={() => {
               // @ts-ignore
               setHoverHighlight(error[SymbolOrigin] || null)
@@ -2333,11 +2318,11 @@ function PrettyPrint(obj: any): JSX.Element {
             onPointerOut={() => {
               setHoverHighlight(null)
             }}>
-            <div>{error.message}</div>
+            {error.message}
             {/* {obj.cause ? <div>{PrettyPrint(obj.cause)}</div> : null} */}
-          </div>
+          </li>
         );
-      })}</div>;
+      })}</ol>;
 
 
 
@@ -2582,6 +2567,26 @@ function Code(sourceCode: Signal<string>) {
   })
 }
 
+const validateCode = (code: string) => {
+  if (!mainEditorRef) return
+  const { editor, monaco } = mainEditorRef
+  const model = editor.getModel()
+  if (!model) return
+
+  const errors = getParseErrors(code)
+
+  const markers = errors.map(error => ({
+    startLineNumber: error.start.line,
+    startColumn: error.start.column,
+    endLineNumber: error.end.line,
+    endColumn: error.end.column,
+    message: error.message,
+    severity: monaco.MarkerSeverity.Error,
+  }))
+
+  monaco.editor.setModelMarkers(model, "fluent-syntax", markers)
+}
+
 function CodeEditor(sourceCode: Signal<string>) {
   const height = SignalCreate("100%")
 
@@ -2589,33 +2594,11 @@ function CodeEditor(sourceCode: Signal<string>) {
     editorOnMount(editor, monaco)
     mainEditorRef = { editor, monaco }
 
-    const validateCode = () => {
-      const model = editor.getModel()
-      if (!model) return
-
-      const code = model.getValue()
-      const errors = getParseErrors(code)
-
-      const markers = errors.map(error => ({
-        startLineNumber: error.start.line,
-        startColumn: error.start.column,
-        endLineNumber: error.end.line,
-        endColumn: error.end.column,
-        message: error.message,
-        severity: monaco.MarkerSeverity.Error,
-      }))
-
-      monaco.editor.setModelMarkers(model, "fluent-syntax", markers)
-    }
-
     // Validate on initial load
-    validateCode()
-
-    // Validate on every change
-    editor.onDidChangeModelContent(() => {
-      validateCode()
-    })
-
+    const model = editor.getModel()
+    if (model) {
+      validateCode(model.getValue())
+    }
   }
 
   return SignalComputed(() => {
@@ -2631,7 +2614,12 @@ function CodeEditor(sourceCode: Signal<string>) {
         theme="fluentTheme"
         // @ts-ignore
         value={SignalRead(sourceCode)}
-        onChange={(updatedSourceCode) => { SignalUpdate(sourceCode, updatedSourceCode) }}
+        onChange={(updatedSourceCode) => {
+          SignalUpdate(sourceCode, updatedSourceCode)
+          if (updatedSourceCode !== undefined) {
+            validateCode(updatedSourceCode)
+          }
+        }}
         options={getEditorOptions("editable")}
       />
     )
