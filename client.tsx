@@ -554,8 +554,9 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
 
   if (node.type === "Program") {
     const values: Array<Value> = node.content.map((e) => evaluateSyntaxTreeNode(e, env))
-    // last value is the result of the program
-    return values[values.length - 1] ?? null
+    // last value is the result of the program - reify so symbols get resolved
+    const lastValue = values[values.length - 1] ?? null
+    return reify(lastValue, env)
   }
 
   if (node.type === "Number") {
@@ -574,7 +575,8 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "Symbol") {
-    return Symbol.for(node.content.value).resolve(env)
+    // Return raw symbol - resolve happens later in safeApply
+    return Symbol.for(node.content.value)
   }
 
   if (node.type === "String") {
@@ -582,7 +584,8 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "List") {
-    return node.content.value.map((e) => evaluateSyntaxTreeNode(e, env))
+    // Reify elements - List as value should have resolved symbols
+    return node.content.value.map((e) => reify(evaluateSyntaxTreeNode(e, env), env))
   }
 
   if (node.type === "Lambda") {
@@ -596,7 +599,8 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
           return acc
         }, Object.create(env) as CurrentScope)
 
-      return evaluateSyntaxTreeNode(node.content.expr, localEnv)
+      // Reify in localEnv so symbols resolve to local values, not outer scope
+      return reify(evaluateSyntaxTreeNode(node.content.expr, localEnv), localEnv)
     }
 
     fn.toString = () => node.origin.source
@@ -606,7 +610,12 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
 
   if (node.type === "Operation") {
     const fn = evaluateSyntaxTreeNode(node.content.operator, env)
-    const args = evaluateSyntaxTreeNode(node.content.args, env) as Value[]
+
+    // Process args directly (not via List evaluation) - safeApply handles quotedArgs
+    const argNodes = node.content.args.content.value
+    const args = argNodes.map((argNode: SyntaxTreeNode) =>
+      evaluateSyntaxTreeNode(argNode, env)
+    )
 
     const value = safeApply(fn, args, env)
 
@@ -732,12 +741,12 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
     let fnValue: Value = reify(fn, env);
     let argsValue: Value[] = args;
 
+    // Selectively reify arguments - quoted args stay as symbols
     // @ts-ignore
-    if (!fnValue.receivesNonreifiedSymbols) {
-      // console.log("reifying args", args)
-      argsValue = args.map(arg => reify(arg, env))
-      // console.log("reifying args done", argsValue)
-    }
+    const quotedArgs: number[] = fnValue.quotedArgs ?? []
+    argsValue = args.map((arg, i) =>
+      quotedArgs.includes(i) ? arg : reify(arg, env)
+    )
 
     errorArgs = argsValue.filter(a => a instanceof Error)
     // if (errorArgs.length > 0) {
@@ -762,7 +771,8 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       throw new Error("What are you trying to do with this poor signal?")
     }
 
-    return fnValue.apply(env, argsValue)
+    // Reify return value so symbols get resolved
+    return reify(fnValue.apply(env, argsValue), env)
   } catch (e) {
     // inject cause to the caught error from argument errors
     if (e instanceof Error && errorArgs.length > 0) {
@@ -917,8 +927,9 @@ const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
   return b
 }
 
+// First argument (target symbol) should not be reified
 // @ts-ignore
-SymbolAssign.receivesNonreifiedSymbols = true
+SymbolAssign.quotedArgs = [0]
 
 const FunctionEvaluate = function (this: CurrentScope, fn: Value, args: Value[]) {
   return safeApply(fn, args, this)
@@ -2237,7 +2248,7 @@ function PrettyPrint(obj: any): JSX.Element {
   if (Array.isArray(obj)) {
     return (
       <div className="grid gap-2 rounded-xl">
-        {obj.map((item, key) => <div key={key} className={`${frameStyle} !border-0 grid hover:bg-neutral-800 hover:bg-tra`}>{PrettyPrint(item)}</div>)}
+        {obj.map((item, key) => <div key={key} className={`${frameStyle} !border-0 grid hover:bg-neutral-800`}>{PrettyPrint(item)}</div>)}
       </div>
     );
   }
