@@ -890,41 +890,12 @@ const Reactive = (a: Value) => {
 }
 
 const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
-
-  // console.log("SymbolAssign", a, b, this)
-
   if (typeof a === "symbol") {
-    // if a is not defined in the current environment
-    // if (!Object.getOwnPropertyNames(this).includes(Symbol.keyFor(a))) {
-    //   // FIXME: this is should be scope where the symbol is defined not just the proto of this
-    //   Object.getPrototypeOf(this)[Symbol.keyFor(a)] = b
-    //   return a.resolve(this)
-    // }
     a.assign(this, b)
-    // return a
     return a.resolve(this)
   } else {
     return new Error(`'SymbolAssign': Left side must be a symbol, got: ${String(a)}`)
-
-    /*
-    
-    // sketch for shadowing assignment, but it is shit
-
-    // reified symbol has a value attached to it
-    // found this value in the environment traversing the prototype chain of env
-    const aSymbol = Symbol.reverseResolve(this, a)
-
-    if (typeof aSymbol === "symbol") {
-      // aSymbol.assign(this, b)
-      // console.log(Symbol.keyFor(aSymbol))
-      this[Symbol.keyFor(aSymbol)] = b
-      // console.log("SymbolAssign", aSymbol, b, this, this[Symbol.keyFor(aSymbol)])
-      return aSymbol.resolve(this)
-    }
-    */
   }
-
-  return b
 }
 
 // First argument (target symbol) should not be reified
