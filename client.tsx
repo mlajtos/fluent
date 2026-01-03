@@ -2859,7 +2859,9 @@ console.log('Fluent Generation System Prompt:', FLUENT_GENERATION_SYSTEM_PROMPT)
 
 const GENERATION_COMMENT_REGEX = /;;(.+?);;/g
 
-const ANTHROPIC_API_KEY = "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"
+const ANTHROPIC_API_KEY_STORAGE = "fluent-anthropic-api-key"
+const getAnthropicApiKey = () => localStorage.getItem(ANTHROPIC_API_KEY_STORAGE) ?? ""
+const setAnthropicApiKey = (key: string) => localStorage.setItem(ANTHROPIC_API_KEY_STORAGE, key)
 
 let pendingGenerationRequests = new Set<string>()
 
@@ -3084,9 +3086,10 @@ function CodeEditor(sourceCode: Signal<string>) {
           if (updatedSourceCode !== undefined) {
             validateCode(updatedSourceCode)
             // Check for generation comments and process them
-            if (ANTHROPIC_API_KEY && GENERATION_COMMENT_REGEX.test(updatedSourceCode)) {
+            const apiKey = getAnthropicApiKey()
+            if (apiKey && GENERATION_COMMENT_REGEX.test(updatedSourceCode)) {
               GENERATION_COMMENT_REGEX.lastIndex = 0 // Reset regex state
-              processGenerationComments(updatedSourceCode, ANTHROPIC_API_KEY, (newCode) => {
+              processGenerationComments(updatedSourceCode, apiKey, (newCode) => {
                 SignalUpdate(sourceCode, newCode)
                 validateCode(newCode)
               })
@@ -3347,6 +3350,27 @@ const editorOnMount: OnMount = (editor, monaco) => {
       url.searchParams.set("code", encodedCode);
       window.history.pushState({}, "", url.toString());
       console.log("Saved example to URL:", url.toString());
+    },
+  });
+
+  editor.addAction({
+    id: "fluent-set-api-key",
+    label: "Set Anthropic API Key",
+    contextMenuGroupId: "navigation",
+    contextMenuOrder: 1.6,
+    run: (editor) => {
+      editor.trigger("", quickInputCommand!, (quickInput: any) => {
+        quickInput.input({
+          placeHolder: 'Enter your Anthropic API key (sk-ant-...)',
+          value: getAnthropicApiKey(),
+          password: true,
+        }).then((value: string | undefined) => {
+          if (value !== undefined) {
+            setAnthropicApiKey(value)
+            console.log('API key saved to localStorage')
+          }
+        })
+      })
     },
   });
 
