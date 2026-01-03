@@ -32,62 +32,72 @@ Button({ x(0) }, "Reset"),
 - Tensors
   - multi-dimensional arrays of numbers
   - scalars: \`1\`, \`3.14\`, \`-42\`, \`6.02e23\`
-  - higher-rank: \`[1, 2, 3]\`, \`[[1, 2], [3, 4]]\`, \`[[[1]], [[2]], [[3]]]\`
+  - vectors: \`[1, 2, 3]\`, matrices: \`[[1, 2], [3, 4]]\`
   - auto-broadcasting: \`[1, 2, 3] + 1\` is \`[2, 3, 4]\`
+  - indexing with \`_\`: \`a_0\`, \`a_1\`, \`a_(i + 1)\`, \`a_(-1)\` (last element)
+  - length with \`#\`: \`#([1, 2, 3])\` is \`3\`
+  - range with \`::\`: \`0 :: 10\` is \`[0, 1, 2, ..., 9]\`
 - Lists
   - ordered collection of heterogeneous values
   - e.g. \`(1, 2, 3)\`, \`(1, (2, 3), [4])\`, \`()\`, \`(42,)\`
 - Functions
   - lambda with \`{}\`: \`{ x | x + 1 }\`, \`{ x, y | x * y }\`, \`{ 42 }\`
-  - last expression is the return value: \`{ 1 + 1, 42 }\`
-  - application by juxtaposition: \`{ x, y | x * y }(6, 7)\`
-  - application by infix: \`6 { x, y | x * y } 7\`
-  - left-to-right, no precedence: \`1 + 2 * 3\` is \`(1 + 2) * 3\`
-  - single-argument function equivalence: \`√(4)\` and \`(√4)\` are the same
+  - last expression is the return value: \`{ a: 1, b: 2, a + b }\` returns \`3\`
+  - application: \`add(1, 2)\` or infix \`1 add 2\`
 - Symbols
-  - e.g. \`a\`, \`FooBar\`, \`bar-baz-1\`, \`α\`, \`Σ𝓜ℂ2\`, \`+\`, \`≠\`, \`!=\`, \`⌈≠⌋\`
+  - letter-based: \`a\`, \`FooBar\`, \`bar-baz-1\`, \`α\`, \`β\`, \`θ\`
+  - operator-based: \`+\`, \`≠\`, \`!=\`, \`√\`, \`∇\`
   - assignment with \`:\`: \`a: 23, b: (a + 24)\`
-  - letter-based (\`a\`, \`α\`, ...) and non-letter-based (\`+\`, \`√\`, ...) do not conflict:
-    - e.g. \`foo+bar\`, \`α≠β\`, \`a!!b!!c\` works without whitespace or parentheses
-- Grouping
-  - parentheses for expressions: \`1 + (2 * 3)\` is \`7\`
+  - letter and operator symbols do not conflict: \`foo+bar\`, \`α≠β\` work without spaces
+- Evaluation order
+  - left-to-right, NO operator precedence: \`1 + 2 * 3\` is \`(1 + 2) * 3\` = \`9\`
+  - use parentheses to override: \`1 + (2 * 3)\` is \`7\`
+  - assignment is also left-to-right: write \`a: (1 + 2)\`, not \`a: 1 + 2\`
 - Comments
-  - single-line comments with \`;\`: \`1 + 2 ; this is a comment\`
+  - single-line with \`;\`: \`a: 1, ; this is a comment\`
+- Program structure
+  - expressions separated by commas: \`a: 1, b: 2, a + b\`
+  - last expression is the result (automatically displayed)
 
 ### Semantics
 - Differentiable programming
-  - get gradient of function with \`∇\`: \`(∇ { x | x^2 }) 1\` is \`2\`
-  - higher-order gradients: \`(∇ (∇ { x | x^3 })) 1\` is \`6\`
+  - gradient with \`∇\`: \`∇({ x | x^2 })(3)\` is \`6\`
+  - higher-order: \`∇(∇({ x | x^3 }))(1)\` is \`6\`
 - Reactive programming
-  - signal-based library-level support for reactivity
-  - e.g. \`($): Reactive, a: $(1), b: $(2), c: $({ a() + b() }), b(41)\`, \`c()\` is \`42\`
-  - paired with UI for interactive programs: \`a: $(0.5), Slider(a)\`
-  - fine-grained updates: only parts of the program that depend on changed values are re-evaluated
+  - create signal: \`x: $(0.5)\`
+  - read signal: \`x()\`
+  - update signal: \`x(0.7)\`
+  - computed signal: \`y: $({ x() + 1 })\` – re-evaluates when \`x\` changes
+- Iteration
+  - repeat N times with \`⟳\`: \`step ⟳ 100\`
+- Optimization
+  - create variable: \`θ: ~([0, 0])\`
+  - define loss: \`loss: { sum(θ^2) }\`
+  - create optimizer: \`opt: adam(0.01)\`
+  - minimize: \`{ opt(loss) } ⟳ 100\`
 - Built-in functions
-  - lists: \`List\`, \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, etc.
-  - tensors: \`Tensor\`, \`TensorStack\`, \`TensorUnstack\`, \`TensorConcat\`, \`TensorTile\`, etc.
-  - tensor math: \`+\`, \`-\`, \`*\`, \`/\`, \`^\`, \`√\`, \`%\`, \`max\`, \`min\`, \`sin\`, \`cos\`, \`log\`, \`exp\`, \`sum\`, \`mean\`, \`<\`, \`>=\`, etc.
-  - signals: \`SignalCreate\`, \`SignalRead\`, \`SignalUpdate\`, \`SignalEffect\`, etc.
-  - user interface: \`Print\`, \`Slider\`, \`Button\`, \`Text\`, \`Grid\`, \`Image\`, \`Plot\`, etc.
-  - ...and more!
+  - tensor math: \`+\`, \`-\`, \`*\`, \`/\`, \`^\`, \`√\`, \`sum\`, \`mean\`, \`max\`, \`min\`, \`sin\`, \`cos\`, \`log\`, \`exp\`, \`dot\`, \`matmul\`, \`transpose\`, \`reshape\`, etc.
+  - tensor creation: \`::\` (range), \`linspace\`, \`eye\`, \`rand\`, \`randn\`
+  - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
+  - UI: \`Slider\`, \`Button\`, \`Text\`, \`Grid\`
+  - optimizers: \`adam\`, \`sgd\`, \`adagrad\`
+- Ad-hoc operators
+  - define custom operators: \`(++): ListConcat, (1, 2) ++ (3, 4)\`
 
 ### IDE
-- Syntax highlight
-- Live evaluation with granular error reporting
-- Automatic visualization of values (notebook-style output)
-- GPU-accelerated execution of tensor operations
-- Auto-completion of symbols and built-in functions
-- Shareable URL links to programs
-- Dark theme
-- LLM-assisted code generation (coming soon)
+- Syntax highlighting
+- Live evaluation with error reporting
+- Automatic visualization of values
+- GPU-accelerated tensor operations
+- Auto-completion
+- Shareable URL links
 `
 
 /*
-## TODO
+
+# TODO
 
 ## Bugs
-- shadowing of symbols doesn't work
-  - treat assignments as a special case of function application that gets the symbol, rather than the reified value
 - Grid can't use dynamically created lists :'(
   - deeper issue: `(...args) => ...` JS lambdas (stack, grid, concat, etc.) are too magical, but very useful
 
@@ -137,10 +147,16 @@ import { ErrorBoundary } from 'react-error-boundary';
 import { useEffect, type JSX, isValidElement, useRef } from "react";
 import { createRoot } from "react-dom/client"
 
-import { type BeforeMount, type Monaco, type OnMount, Editor } from '@monaco-editor/react';
+import { type BeforeMount, type Monaco, type OnMount, Editor, loader } from '@monaco-editor/react';
+import * as monaco from "monaco-editor";
 import { type editor } from "monaco-editor";
 // @ts-ignore
 import { renderMarkdown } from "monaco-editor/esm/vs/base/browser/markdownRenderer.js"
+// @ts-ignore
+import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/common/quickInput"
+
+// Configure @monaco-editor/react to use local monaco-editor package
+loader.config({ monaco })
 
 import dedent from "ts-dedent";
 import { Base64 } from 'js-base64'
@@ -844,7 +860,7 @@ const CodeEvaluate = function (this: CurrentScope, program: string) {
 
 const FunctionIterate = (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar = tf.scalar(1)) => {
   if (!(typeof fn === "function" && iterations instanceof tf.Tensor)) {
-    throw new Error("iterate(fn, iterations): fn must be a function and iterations must be a Tensor");
+    throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` must be a scalar Tensor");
   }
 
   const maxIterations = getAsSyncList(iterations) as number
@@ -1016,7 +1032,7 @@ const TensorCosineHyperbolicInverse = tf.acos
 const TensorTangentHyperbolicInverse = tf.atan
 
 // TensorReduce(a, 0, +)
-const TensorSum = (a: tf.Tensor, b: tf.Tensor) => {
+const TensorSum = (a: tf.Tensor, b?: tf.Tensor) => {
   if (b !== undefined) {
     const axis = getAsSyncList(b) as (number | number[])
     return tf.sum(a, axis)
@@ -1038,14 +1054,14 @@ const TensorMean = (a: tf.Tensor, b: tf.Tensor) => {
   }
   return tf.mean(a)
 }
-const TensorMin = (a: tf.Tensor, b: tf.Tensor) => {
+const TensorMin = (a: tf.Tensor, b?: tf.Tensor) => {
   if (b !== undefined) {
     const axis = getAsSyncList(b) as (number | number[])
     return tf.min(a, axis)
   }
   return tf.min(a)
 }
-const TensorMax = (a: tf.Tensor, b: tf.Tensor) => {
+const TensorMax = (a: tf.Tensor, b?: tf.Tensor) => {
   if (b !== undefined) {
     const axis = getAsSyncList(b) as (number | number[])
     return tf.max(a, axis)
@@ -1789,6 +1805,7 @@ const DefaultEnvironment = {
   "matmul": TensorMatrixMultiply,
   "adam": TensorOptimizationAdam,
   "sgd": TensorOptimizationSgd,
+  "adagrad": TensorOptimizationAdaGrad,
   "rand": TensorRandomUniform,
   "randn": TensorRandomNormal,
   "linspace": TensorLinearSpace,
@@ -2086,6 +2103,8 @@ function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDe
       return '()';
     } else if (node.type === 'String') {
       return `"${node.content.value}"`;
+    } else if (node.type === 'Code') {
+      return '``';
     } else {
       throw new Error(`Unknown type ${node.type}`);
     }
@@ -2107,6 +2126,8 @@ function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDe
       return node.content.value;
     } else if (node.type === 'String') {
       return [];
+    } else if (node.type === 'Code') {
+      return []
     } else {
       throw new Error(`Unknown type ${node.type}`);
     }
@@ -2470,6 +2491,468 @@ const HeatPlot = ({ data }: { data: tf.Tensor }) => {
   );
 }
 
+// MARK: Examples
+
+const EXAMPLES = {
+  // Basic syntax and operators
+  "no-precedence": `
+; Left-to-right evaluation, no operator precedence
+1 + 2 * 3 - 4 / 5 ^ sin(2)
+`,
+  "infix-lambda": `
+; Using lambda as infix operator
+1 {x,y | x+y} 2
+`,
+  "broadcasting": `
+; Tensor broadcasting - scalar added to vector
+[1,2,3] + 1
+`,
+  "vector-addition": `
+; Element-wise vector addition
+a:[1,2,3], b:[4,5,6], a+b
+`,
+
+  // Functions and calling conventions
+  "calling-conventions": `
+; Multiple ways to call functions
+(
+    1 + 2,
+    1 add 2,
+    add(1,2),
+    +(1,2),
+    (1,2) . +,
+    (1,2) apply add,
+)
+`,
+  "max-variations": `
+; Different ways to use max function
+(
+    (⌈): max,
+    max(2,3),
+    2 max 3,
+    (2,3) . max,
+    max(max(1,2), 3),
+    1 max 2 max 3,
+    1 ⌈ 2 ⌈ 3
+)
+`,
+
+  // Differentiation
+  "gradient": `
+; Automatic differentiation with ∇
+f : { x | x ^ 2 },
+g : ∇(f),
+x : (1 :: 10),
+(f(x), g(x))
+`,
+
+  // Ad-hoc operators
+  "ad-hoc-operators": `
+; Defining custom operators
+(++): ListConcat,
+(1, 2) ++ (3, 4)
+`,
+  "flip-operator": `
+; Commute/flip operator arguments
+↔︎ : {⊙ | {x,y| y ⊙ x}},
+1 - 2,
+1 ↔︎(-) 2
+`,
+  "partial-application": `
+; Partial application with custom operators
+(
+    ↔ : { ⊙ | { a, b | b ⊙ a } },
+    ⊢ : { ⊙, a | { b | a ⊙ b } },
+    ⊣ : ↔(⊢),
+    (+ ⊢ -1)(3),
+    (-1 ⊣ +)(3),
+)
+`,
+  "lerp": `
+; Linear interpolation with custom operators
+; lerp: 0.5 ≻ [10, 30] = 20
+≻ : { t, v | (v_0 × (1 - t)) + (v_1 × t) },
+
+; invlerp: [1, 3] ≺ 2 = 0.5
+≺ : { v, t | (t - (v_0)) ÷ ((v_1) - (v_0)) },
+
+normalize : { x | [min(x), max(x)] ≺ x },
+[10, 20, 30] . normalize
+`,
+
+  // Reactive programming
+  "reactive-slider": `
+; Reactive slider with computed value
+x: $(0.5),
+Slider(x),
+$({ x() ^ 2 })
+`,
+  "reactive-function-plot": `
+; Interactive function visualization
+PI: 3.14159,
+a: $(0.5),
+aa: $({ (a() * 9) + 1 }),
+S: $({ linspace(-(PI), PI, 1 / aa()) }),
+G: $({ sin(S()) }),
+
+(Slider(a), G)
+`,
+
+  // Apps
+  "tasks": `
+(++): ListConcat,
+(=): { a, b | a(b) },
+(++=): { a, b | a = (a() ++ List(b)) },
+
+task-name: $(""),
+
+task-create: { name |
+    s: $(name),
+    f: $("🔴"),
+
+    Grid([1, 9])(
+        Button(f, { f = "✅" }),
+        TextEditor(s),
+    )
+},
+
+tasks: $(List()),
+
+(
+    Text("
+        # TODO app in 33 lines of code
+
+        Still *some* lines to spare. Please **suggest** features!
+    "),
+    Grid([5, 1])(
+        TextEditor(task-name),
+        Button("Add Task", {
+            tasks ++= task-create(task-name()),
+            task-name = "",
+        }),
+    ),
+    tasks,
+)
+`,
+  "tasks-compressed": `
+(++):list-concat,(=):{a,b|a(b)},(++=):{a,b|a=(a()++(b))},task-name: $(""),task-create:{name|s: $(name),f: $("🔴"),Grid([1,10])($({Button(f(),{f="✅"})}),$({TextField(s(),s)}),)},tasks: $(()),(Text("# TODO app in 420 bytes
+Still some bytes to spare. Please **suggest** features!"),$({Grid([5,1])(TextField(task-name(),task-name),Button("Add Task",{tasks ++= task-create(task-name()),task-name="",}),)}),tasks)
+`,
+  "tasks-super-compressed-unrunable": `
+(++):list-concat,(++:):{a,b|a:(a++(b))},B:Button,G:Grid,T:Textfield,N:"",C:{n|s:n,f:"🔴",G([1,10])(B(f,{f:"✅"})}),T(s)}),)},t:(),(G([5,1])(T(N)}),B("Add Task",{t++=C(N),N="",}),),t)
+`
+  ,
+  "calculator": `
+
+(++): StringConcat,
+
+d: $(""),
+D: $({ d() . evaluate }),
+Δ: { f | { d(d() . f) } },
+B: { c | Button(c, { x | x ++ c } . Δ) },
+
+(
+    $({ TextField(d(), d) }),
+    D,
+    Grid([2,2,2,1])(
+        B("7"),
+        B("8"),
+        B("9"),
+        B(" ÷ "),
+
+        B("4"),
+        B("5"),
+        B("6"),
+        B(" × "),
+
+        B("1"),
+        B("2"),
+        B("3"),
+        B(" - "),
+
+        Button("Reset",  { "" } . Δ),
+        B("0"),
+        B("."),
+        B(" + "),
+    ),
+)
+`,
+  "linear-regression": `
+; defs,
+(++): TensorConcat,
+(++=): { a, b | a(a() ++ b) },
+
+; data
+x: (0 :: 10),
+y: (x × 0.23 + 0.47),
+
+; model
+θ: ~([0, 0]),
+f: { x | x × (θ_0) + (θ_1) },
+
+; loss function
+μ: { x | Σ(x) ÷ #(x) },
+(≈): { x, y | μ((y - x) ^ 2) },
+𝓛: { (f(x) ≈ y) },
+
+; optimizer
+; minimize: TensorOptimizationAdam(0.01),
+minimize : TensorOptimizationSgd(0.03),
+
+losses: $([0]),
+a: $([0,0]),
+
+{
+    loss: 𝓛(),
+    losses ++= [loss],
+    a ++= θ,
+    minimize(𝓛),
+} ⟳ 100,
+
+(
+    losses,
+    a,
+    θ,
+)
+`,
+  "experiment": `
+; defs,
+(++): TensorConcat,
+(++=): { a, b | a(a() ++ b) },
+
+μ: { x | Σ(x) ÷ #(x) },
+(≈): { x, y | μ((y - x) ^ 2) },
+
+(
+    x: ~(TensorRandomNormal([9,1])),
+    ;x: (0 :: 10 TensorReshape [1, 10]),
+    x-trans: TensorTranspose(x),
+
+),
+
+target:
+[
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 1, 0, 1, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 0, 0, 0, 0],
+    [0, 0, 1, 0, 0, 0, 1, 0, 0],
+    [0, 0, 0, 1, 1, 1, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],
+],
+
+loss:
+{ (x-trans * x) ≈ target },
+optimizer: TensorOptimizationSgd(0.01),
+iterations: 10,
+
+{
+  optimizer(loss)
+} ⟳ iterations,
+`,
+  "linreg-debug": `
+(++): TensorConcat,
+(++=): { a, b | a(a() ++ b) },
+
+x: (0 :: 10),
+y: (x × 0.23 + 0.47),
+
+θ: ~([0, 0]),
+f: { x | x × (θ_0) + (θ_1) },
+
+μ: { x | Σ(x) ÷ #(x) },
+(≈): { x, y | μ((y - x) ^ 2) },
+𝓛: { (f(x) ≈ y) },
+
+minimize: TensorOptimizationSgd(0.03),
+
+iters: $(0),
+
+{ i |
+    iters(i),
+    loss: 𝓛(),
+    minimize(𝓛),
+} ⟳ 100,
+
+(
+    iters,
+    θ,
+    minimize,
+    𝓛(),
+    minimize(𝓛)
+)
+`,
+  "REPL": `
+make-cell: {
+    code: $("1 + 1"),
+    result: $({ evaluate(code()) }),
+
+    Grid(1)(
+        Print(result),
+        CodeEditor(code),
+    )
+},
+
+(
+    make-cell(),
+    make-cell(),
+    make-cell(),
+)
+`,
+  "some math": `
+(
+exp: TensorExponential,
+
+b: 0.1,
+c1: 1,
+k: 5,
+
+
+a: { t | b + (c1 * exp(-(k) * t))},
+b + (c1 * exp(-(k) * 1)),
+
+t: $(0),
+Slider(t),
+$({ a(t()) }),
+a(0::100 / 100)
+)
+`
+} as const
+
+const getExample = (k: keyof typeof EXAMPLES) => EXAMPLES[k].trim()
+
+
+// MARK: Generated Code
+
+const FLUENT_GENERATION_SYSTEM_PROMPT = `
+
+1. You generate Fluent code. Output ONLY valid code, no explanations.
+2. Make sure the generated code is syntactically correct.
+3. Use built-in functions and environment variables where appropriate.
+4. Follow best practices for Fluent code style and structure.
+5. Refer to the examples below for guidance.
+6. Ensure interactive/reactive elements (Slider, Button, etc.) are part of the program's return value, i.e. inside the final parentheses.
+7. Keep the code concise and efficient.
+8. If you want to add label to a Slider, use Grid to compose it with a Text element – \`Grid(2)(Text("Label"), Slider(x))\`
+9. Slider can use only values between 0 and 1 for its range. To map to other ranges, use arithmetic operations.
+
+Here is some documentation for Fluent:
+
+${Documentation}
+
+\`\`\`fluent
+${
+  Object.entries(EXAMPLES).map(example => dedent`
+    ; ${example[0]}
+    ${example[1].trim()}
+  `).join("\n\n")
+}
+\`\`\`
+
+You can use the following built-in functions and environment variables:
+${Object.keys(DefaultEnvironment).join(", ")}
+`
+
+console.log('Fluent Generation System Prompt:', FLUENT_GENERATION_SYSTEM_PROMPT)
+
+const GENERATION_COMMENT_REGEX = /;;(.+?);;/g
+
+const ANTHROPIC_API_KEY = "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"
+
+let pendingGenerationRequests = new Set<string>()
+
+async function generateFluentCode(instruction: string, context: string, apiKey: string): Promise<string> {
+  console.log('[Generation] Starting...', { instruction })
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5-20251101',
+      max_tokens: 16000,
+      thinking: {
+        type: 'enabled',
+        budget_tokens: 10000
+      },
+      system: FLUENT_GENERATION_SYSTEM_PROMPT,
+      messages: [{
+        role: 'user',
+        content: `Current code context:\n\`\`\`\n${context}\n\`\`\`\n\nGenerate Fluent code for: ${instruction}`
+      }]
+    })
+  })
+
+  console.log('[Generation] Response status:', response.status)
+
+  const data = await response.json()
+  console.log('[Generation] Response data:', data)
+
+  if (data.error) {
+    throw new Error(data.error.message)
+  }
+
+  // With thinking enabled, find the text block (not thinking block)
+  const textBlock = data.content.find((block: any) => block.type === 'text')
+  if (!textBlock) {
+    throw new Error('No text block in response')
+  }
+
+  let result = textBlock.text.trim()
+
+  // Strip markdown code fences if present
+  result = result.replace(/^```(?:fluent)?\n?/gm, '').replace(/```$/gm, '').trim()
+
+  console.log('[Generation] Generated code:', result)
+
+  return result
+}
+
+function processGenerationComments(
+  code: string,
+  apiKey: string,
+  onUpdate: (newCode: string) => void
+): string {
+  console.log('[Generation] Processing comments in code...')
+  const matches = [...code.matchAll(GENERATION_COMMENT_REGEX)]
+  console.log('[Generation] Found matches:', matches.length)
+
+  for (const match of matches) {
+    const fullMatch = match[0]
+    const instruction = match[1].trim()
+    console.log('[Generation] Processing:', { fullMatch, instruction })
+
+    // Skip if already processing this exact comment
+    if (pendingGenerationRequests.has(fullMatch)) {
+      console.log('[Generation] Skipping, already pending:', fullMatch)
+      continue
+    }
+    pendingGenerationRequests.add(fullMatch)
+
+    // Fire off async generation
+    generateFluentCode(instruction, code, apiKey)
+      .then(generatedCode => {
+        console.log('[Generation] Success, replacing code')
+        pendingGenerationRequests.delete(fullMatch)
+        const newCode = code.replace(fullMatch, generatedCode)
+        onUpdate(newCode)
+      })
+      .catch(err => {
+        pendingGenerationRequests.delete(fullMatch)
+        console.error('[Generation] Failed:', err)
+        onUpdate(code.replace(fullMatch, `; ERROR: ${err.message}`))
+      })
+  }
+
+  return code
+}
+
 
 // MARK: Editor
 
@@ -2600,6 +3083,14 @@ function CodeEditor(sourceCode: Signal<string>) {
           SignalUpdate(sourceCode, updatedSourceCode)
           if (updatedSourceCode !== undefined) {
             validateCode(updatedSourceCode)
+            // Check for generation comments and process them
+            if (ANTHROPIC_API_KEY && GENERATION_COMMENT_REGEX.test(updatedSourceCode)) {
+              GENERATION_COMMENT_REGEX.lastIndex = 0 // Reset regex state
+              processGenerationComments(updatedSourceCode, ANTHROPIC_API_KEY, (newCode) => {
+                SignalUpdate(sourceCode, newCode)
+                validateCode(newCode)
+              })
+            }
           }
         }}
         options={getEditorOptions("editable")}
@@ -2807,32 +3298,41 @@ monaco.languages.registerCompletionItemProvider('fluent', {
 }
 
 const editorOnMount: OnMount = (editor, monaco) => {
+  // Create command to access quick input service
+  const quickInputCommand = editor.addCommand(0, (accessor, func) => {
+    const quickInputService = accessor.get(IQuickInputService)
+    func(quickInputService)
+  })
+
   editor.addAction({
     id: "fluent-load-example",
     label: "Load example",
-
-    // An optional array of keybindings for the action.
-    // keybindings: [
-    //   monaco.KeyMod.CtrlCmd | monaco.KeyCode.F10,
-    //   // chord
-    //   monaco.KeyMod.chord(
-    //     monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK,
-    //     monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyM
-    //   ),
-    // ],
-
-    // A precondition for this action.
-    // precondition: null,
-
-    // A rule to evaluate on top of the precondition in order to dispatch the keybindings.
-    // keybindingContext: null,
     contextMenuGroupId: "navigation",
     contextMenuOrder: 1.5,
 
-    run: function (editor) {
-      // TODO: show dropdown with examples to choose from
-      const exampleName = "linear-regression"
-      editor.getModel()?.setValue(getExample(exampleName))
+    run: (editor) => {
+      const exampleNames = Object.keys(EXAMPLES) as (keyof typeof EXAMPLES)[]
+
+      // Get first comment line as description
+      const getDescription = (code: string) => {
+        const firstLine = code.trim().split('\n')[0] ?? ''
+        return firstLine.startsWith(';') ? firstLine.replace(/^;\s*/, '') : ''
+      }
+
+      const items = exampleNames.map(name => ({
+        label: name,
+        description: getDescription(EXAMPLES[name])
+      }))
+
+      editor.trigger("", quickInputCommand!, (quickInput: any) => {
+        quickInput.pick(items, {
+          placeHolder: 'Select an example to load'
+        }).then((selected: any) => {
+          if (selected) {
+            editor.getModel()?.setValue(getExample(selected.label))
+          }
+        })
+      })
     },
   });
 
@@ -2897,504 +3397,6 @@ export function Playground() {
     </>
   );
 }
-
-
-// MARK: Examples
-
-const EXAMPLES = {
-  "tasks": `
-(
-($): reactive,
-(++): listConcat,
-(=): { a, b | a(b) },
-(++=): { a, b | a = (a() ++ list(b)) },
-
-task-name: $(""),
-
-task-create: { name |
-    s: $(name),
-    f: $("🔴"),
-
-    Grid([1, 9])(
-        Button(f, { f = "✅" }),
-        TextEditor(s),
-    )
-},
-
-tasks: $(()),
-
-(
-    Text("
-        # TODO app in 34 lines of code
-
-        Still *some* lines to spare. Please **suggest** features!
-    "),
-    Grid([5, 1])(
-        TextEditor(task-name),
-        Button("Add Task", {
-            tasks ++= task-create(task-name()),
-            task-name = "",
-        }),
-    ),
-    tasks,
-)
-)
-`,
-  "tasks-compressed": `
-($):reactive,(++):list-concat,(=):{a,b|a(b)},(++=):{a,b|a=(a()++(b))},task-name: $(""),task-create:{name|s: $(name),f: $("🔴"),Grid([1,10])($({Button(f(),{f="✅"})}),$({TextField(s(),s)}),)},tasks: $(()),(Text("# TODO app in 420 bytes
-Still some bytes to spare. Please **suggest** features!"),$({Grid([5,1])(TextField(task-name(),task-name),Button("Add Task",{tasks ++= task-create(task-name()),task-name="",}),)}),tasks)
-`,
-  "tasks-super-compressed-unrunable": `
-(++):list-concat,(++:):{a,b|a:(a++(b))},B:Button,G:Grid,T:Textfield,N:"",C:{n|s:n,f:"🔴",G([1,10])(B(f,{f:"✅"})}),T(s)}),)},t:(),(G([5,1])(T(N)}),B("Add Task",{t++=C(N),N="",}),),t)
-`
-  ,
-  "calculator": `
-
-($): reactive,
-(.): apply,
-(++): string-concat,
-
-d: $(""),
-D: $({ d() . evaluate }),
-Δ: { f | { d(d() . f) } },
-B: { c | Button(c, { x | x ++ c } . Δ) },
-
-(
-    $({ TextField(d(), d) }),
-    D,
-    Grid([2,2,2,1])(
-        B("7"),
-        B("8"),
-        B("9"),
-        B(" ÷ "),
-
-        B("4"),
-        B("5"),
-        B("6"),
-        B(" × "),
-
-        B("1"),
-        B("2"),
-        B("3"),
-        B(" - "),
-
-        Button("Reset",  { "" } . Δ),
-        B("0"),
-        B("."),
-        B(" + "),
-    ),
-)
-`,
-  "linear-regression": `
-; defs
-($): Reactive,
-(++): TensorConcat,
-(++=): { a, b | a(a() ++ b) },
-
-; data
-x: (0 :: 10),
-y: (x × 0.23 + 0.47),
-
-; model
-θ: ~([0, 0]),
-f: { x | x × (θ_0) + (θ_1) },
-
-; loss function
-μ: { x | Σ(x) ÷ #(x) },
-(≈): { x, y | μ((y - x) ^ 2) },
-𝓛: { (f(x) ≈ y) },
-
-; optimizer
-; minimize: TensorOptimizationAdam(0.01),
-minimize : TensorOptimizationSgd(0.03),
-
-losses: $([0]),
-a: $([0,0]),
-
-{
-    loss: 𝓛(),
-    losses ++= [loss],
-    a ++= θ,
-    minimize(𝓛),
-} ⟳ 100,
-
-(
-    losses,
-    a,
-    θ,
-)
-`,
-  "experiment": `
-; defs
-($): reactive,
-(++): tensor-concat,
-(++=): { a, b | a(a() ++ b) },
-
-μ: { x | Σ(x) ÷ #(x) },
-(≈): { x, y | μ((y - x) ^ 2) },
-
-(
-    x: ~(tensor-random-normal([9,1])),
-    ;x: (0 :: 10 tensor-reshape [1, 10]),
-    x-trans: tensor-transpose(x),
-
-),
-
-target:
-[
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 1, 0, 1, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 1, 0, 0, 0, 0],
-    [0, 0, 1, 0, 0, 0, 1, 0, 0],
-    [0, 0, 0, 1, 1, 1, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-],
-
-loss:
-{ (x-trans * x) ≈ target },
-optimizer: tensor-optimization-sgd(0.01),
-iterations: 10,
-
-{
-  optimizer(loss)
-} ⟳ iterations,
-`,
-  "linreg-debug": `
-($): reactive,
-(++): tensorConcat,
-(++=): { a, b | a(a() ++ b) },
-
-x: (0 :: 10),
-y: (x × 0.23 + 0.47),
-
-θ: ~([0, 0]),
-f: { x | x × (θ_0) + (θ_1) },
-
-μ: { x | Σ(x) ÷ #(x) },
-(≈): { x, y | μ((y - x) ^ 2) },
-𝓛: { (f(x) ≈ y) },
-
-minimize: tensorOptimizationSgd(0.03),
-
-iters: $(0),
-
-{ i |
-    iters(i),
-    loss: 𝓛(),
-    minimize(𝓛),
-} ⟳ 100,
-
-(
-    iters,
-    θ,
-    minimize,
-    𝓛(),
-    minimize(𝓛)
-)
-`,
-  "REPL": `
-($): reactive,
-
-make-cell: {
-    code: $("1 + 1"),
-    result: $({ evaluate(code()) }),
-
-    Grid(1)(
-        Print(result),
-        CodeEditor(code),
-    )
-},
-
-(
-    make-cell(),
-    make-cell(),
-    make-cell(),
-)
-`,
-  "some math": `
-(
-($): reactive,
-exp: tensorExponential,
-
-b: 0.1,
-c1: 1,
-k: 5,
-
-
-a: { t | b + (c1 * exp(-(k) * t))},
-b + (c1 * exp(-(k) * 1)),
-
-t: $(0),
-Slider(t),
-$({ a(t()) }),
-a(0::100 / 100)
-)
-`
-} as const
-
-const getExample = (k: keyof typeof EXAMPLES) => EXAMPLES[k].trim()
-
-const examples2 = [
-  `
-        1 + 2 * 3 - 4 / 5 ^ sin(2)
-    `,
-  `
-        1 {x,y | x+y} 2
-    `,
-  `
-        [1,2,3] + 1
-    `,
-  `
-        commute(/) → \\,
-        3 \\ 2
-    `,
-  `
-        a:[1,2,3]
-        b:[4,5,6]
-        a+b
-    `,
-  `
-        a:[1,2,3]
-        a
-    `,
-  `
-(
-    x: (0::100),
-    y: (2 √ x),
-    [x,y]
-)
-    `,
-  `
-(
-    1 {+}() 2,
-    fn: {+},
-    fn()(1,2),
-    1 fn() 2,
-)
-    `,
-  `
-(
-    ; max: { x,y | [x,y]_(x<y) },
-    (⌈): max,
-    max(2,3),
-    2 max 3,
-    (2,3) . max,
-    .((2,3), max),
-    max(max(1,2), 3),
-    1 max 2 max 3,
-    1 ⌈ 2 ⌈ 3
-)
-    `,
-  `
-      ↔︎ : {⊙ | {x,y| y ⊙ x}},
-      1 - 2,
-      1 ↔︎(-) 2,
-      1 (- · ↔︎) 2
-    `,
-  `
-      x ← variable(1),
-      iterate({ x := (x * 2) }, 10),
-      x   
-    `,
-  `
-(
-    ↔ : { ⊙ | { a, b | b ⊙ a } },
-    ⊢ : { ⊙, a | { b | a ⊙ b } },
-    ⊣ : ↔(⊢),
-    (+ ⊢ -1)(3),
-    (-1 ⊣ +)(3),
-)
-     `,
-  `
-(
-    x: [23, 47],
-    a: 2,
-    (a = 2) ? x,
-    (a = 200) ? x
-)
-    `,
-  `
-(
-    1 + 2,
-    1 add 2,
-    add(1,2),
-    +(1,2),
-    (1,2) . +,
-    (1,2) apply add,
-)
-    `,
-  `
-f : { x | x ^ 2 },
-g : ∇(f),
-x : (1 :: 10),
-
-(
-    f(x),
-    g(x)
-)
-    `,
-  `
-        ; definitions
-        assignLeft(:, assignLeft),
-
-        ; lerp: 0.5 ≻ [10, 30] = 20
-        ≻ : { t, v |
-            (v_0 × (1 - t)) + (v_1 × t)
-        },
-
-        ; invlerp: [1, 3] ≺ 2 = 0.5
-        ≺ : { v, t |
-            (t - (v_0)) ÷ ((v_1) - (v_0))
-        },
-        ; remap: [1,3] ≺ 2 ≻ [10, 30] = 20
-        ≺≻ : { s, t | { x | s ≺ x ≻ t } },
-        normalize : { x | [min(x), max(x)] ≺ x},
-
-        [10, 20, 30]
-        . normalize
-        ;. ([10, 30] ≺≻ [100, 200])
-        ;. ([100, 200] ≺≻ [0, 1]),
-    `,
-  `
-($): reactive,
-(...): delay,
-(^^): iterate,
-
-a: $(0),
-A: $({ 1 :: (2 + a()) }),
-
-(
-    { i | { a(i) } ... (i * 1_000) } ^^ 10
-),
-
-A
-    `,
-  `
-($): reactive,
-(.): apply,
-(++): string-concat,
-
-(
-    M: $(""),
-    m: $("message 1"),
-    M-a: { m | M(M() ++ " " ++ m) },
-    M-c: { m | M("") },
-    $({ TextField(m(), m) }),
-    $({ TextField(m(), m) }),
-    Button("Append", { M-a(m()) }),
-    Button("Clear", M-c ),
-)
-    `,
-  `
-(
-    mu:
-        log,
-    log: 23,
-    log,
-    mu
-)
-`,
-  `
-($): reactive,
-(.): apply,
-(++): string-concat,
-
-; lerp: 0.5 ≻ [10, 30] = 20
-≻ : { t, v |
-    (v_0 × (1 - t)) + (v_1 × t)
-},
-
-PI: (3.14159),
-
-a: $(0.5),
-aa: $({ a() ≻ [1, 10] }),
-A: $({ Slider(a(), a) }),
-
-f: $("{ a | a . sin }"),
-F: $({ TextField(f(), f) }),
-
-S: $({ linspace(-(PI), PI, 1 / aa()) }),
-
-G: $({
-    S() . evaluate(f())
-}),
-
-X: $({ [S(), G()] }),
-
-(
-    ;S,
-    A,
-    F,
-    G,
-)
-    `,
-  `
-(
-    ($): reactive,
-
-    (
-        v1: "hello",
-        TextField(v1),
-        s1: $(v1),
-        $({ TextField(s1(), s1) })
-    ),
-
-    (
-        v2: 0.23,
-        Slider(v2),
-        s2: $(v2),
-        $({ Slider(s2(), s2) })
-    ),
-
-    (
-        v3: list(1,2,3),
-        s3: $(v3),
-    )
-)
-    `,
-
-  `
-commute: { f | { a, b | b f a } },
-update-value: { s, v | s(v) },
-($:): { s, v | magic(s): $(v) },
-(:=): update-value,
-(+=):{ s, d | s := (s() + d) },
-
-(.): list-get,
-(#): list-length,
-(!): commute(list-get),
-($): reactive,
-
-d: ("Hello", "World", "War", 3),
-
-;i $: 0,
-i: $(0),
-
-; v: (d.(i % #(d)))
-v: $({ d.(i() % #(d)) }),
-
-;tick: time-interval(1),
-; w: (d.(tick % #(d))),
-w: $({ d.(tick() % #(d)) }),
-
-(
-    (
-        w,
-        v,
-    ),
-    Grid(3)(
-        Button("←", { i += -1 }),
-        Button("---"),
-        Button("→", { i += 1 }),
-    ),
-    ; FIX
-    Grid(2)(w, v),
-)
-    `,
-].map((s) => dedent(s));
 
 document.addEventListener("DOMContentLoaded", () => {
   const root = document.getElementById("root")
