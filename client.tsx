@@ -265,7 +265,7 @@ Fluent {
     | Atom
 
   Hack
-    = (Atom #(~space) (NestedExpr | List))
+    = (Atom #(~space) (List | NestedExpr))
     
   Atom
     = Number | Hack | Lambda | NestedExpr | List | Symbol | String | Code | Tensor | Null
@@ -1069,6 +1069,12 @@ const TensorMax = (a: tf.Tensor, b?: tf.Tensor) => {
   return tf.max(a)
 }
 
+const TensorNormalize = (a: tf.Tensor, p?: tf.Tensor) => {
+  const pVal = p !== undefined ? getAsSyncList(p) as number : 2
+  const norm = tf.norm(a, pVal)
+  return tf.div(a, norm)
+}
+
 const TensorNegate = tf.neg
 const TensorAbsolute = tf.abs
 const TensorSign = tf.sign
@@ -1529,6 +1535,8 @@ const DefaultEnvironment = {
   [Symbol.keyFor(Symbol.for("Null"))!]: Null,
   [Symbol.keyFor(Symbol.for("Documentation"))!]: Text(Documentation),
 
+  SymbolAssign,
+
   CodeParse,
   CodeEvaluate,
   CodePrint: PrettyPrintSyntaxTree,
@@ -1539,6 +1547,7 @@ const DefaultEnvironment = {
   FunctionApply,
 
   // MARK: Signals
+  
   Reactive,
   SignalCreate,
   SignalComputed,
@@ -1586,6 +1595,7 @@ const DefaultEnvironment = {
   TensorMean,
   TensorMin,
   TensorMax,
+  TensorNormalize,
 
   TensorNegate,
   TensorAbsolute,
@@ -1644,192 +1654,7 @@ const DefaultEnvironment = {
   "◌": Null,
   "null": Null,
 
-  // SymbolAssign(:, SymbolAssign)
-  ":": SymbolAssign,
-  // (.): FunctionApply
-  ".": FunctionApply,
-  // (⟳): FunctionIterate
-  "⟳": FunctionIterate,
-  // (@): FunctionEvaluate
-  "@": FunctionEvaluate,
-
-  // (⍴): TensorReshape
-  "⍴": TensorReshape,
-  // (⌈): TensorMaximum
-  // max : { a,b | [a,b] @ (a < b) }
-  "⌈": TensorMaximum,
-  // (⌊): TensorMinimum
-  // min : { a,b | [a,b] @ (a > b) }
-  "⌊": TensorMinimum,
-  // (_): TensorGather
-  "_": TensorGather,
-  // (#): TensorLength
-  "#": TensorLength,
-  // (+): FunctionCascade(TensorAdd, TensorAbsolute)
-  "+": (a: tf.Tensor, b: tf.Tensor) => {
-    if (b === undefined) {
-      return TensorAbsolute(a)
-    }
-    return TensorAdd(a, b)
-  },
-  // (-): FunctionCascade(TensorSubtract, TensorNegate)
-  "-": (a: tf.Tensor, b: tf.Tensor) => {
-    if (b === undefined) {
-      return TensorNegate(a)
-    }
-    return TensorSubtract(a, b)
-  },
-  // (*): FunctionCascade(TensorMultiply, TensorSign)
-  "*": (a: tf.Tensor, b: tf.Tensor) => {
-    if (b === undefined) {
-      return TensorSign(a)
-    }
-    return TensorMultiply(a, b)
-  },
-  // (×): FunctionCascade(TensorMultiply, TensorSign)
-  "×": (a: tf.Tensor, b: tf.Tensor) => {
-    if (b === undefined) {
-      return TensorSign(a)
-    }
-    return TensorMultiply(a, b)
-  },
-  // (/): TensorDivide
-  "/": TensorDivide,
-  // (÷): TensorDivide
-  "÷": TensorDivide,
-  // (%): TensorRemainder
-  "%": TensorRemainder,
-  // (^): TensorPower
-  "^": TensorPower,
-  // (√): TensorRoot
-  "√": TensorRoot,
-  // (<): TensorLess 
-  "<": TensorLess,
-  // (>): TensorGreater
-  ">": TensorGreater,
-  // (≤): TensorLessEqual
-  "≤": TensorLessEqual,
-  // (<=): TensorLessEqual
-  "<=": TensorLessEqual,
-  // (≥): TensorGreaterEqual
-  "≥": TensorGreaterEqual,
-  // (>=): TensorGreaterEqual
-  ">=": TensorGreaterEqual,
-  // (=): TensorEqual,
-  "=": TensorEqual,
-  // (≠): TensorNotEqual,
-  "≠": TensorNotEqual,
-  // (!=): TensorNotEqual,
-  "!=": TensorNotEqual,
-
-  // (:=): TensorAssign
-  // ":=": TensorAssign,
-
-  // (~): TensorVariable
-  "~": TensorVariable,
-
-  // (::): TensorRange
-  "::": TensorRange,
-
-  // (∇): TensorGradient
-  "∇": TensorGradient,
-  // (Σ): TensorSum
-  "Σ": TensorSum,
-  // (Π): TensorProduct
-  "Π": TensorProduct,
-  // (μ): TensorMean
-  // (μ): { a | ∑(a) / #(a) }
-  "μ": TensorMean,
-
-  // max: FunctionCascade(TensorMax, TensorMaximum),
-  "max": (a: tf.Tensor, b?: tf.Tensor) => b === undefined ? TensorMax(a) : TensorMaximum(a, b),
-  // min: FunctionCascade(TensorMin, TensorMinimum),
-  "min": (a: tf.Tensor, b?: tf.Tensor) => b === undefined ? TensorMin(a) : TensorMinimum(a, b),
-
-  "neg": TensorNegate,
-  "abs": TensorAbsolute,
-  "sign": TensorSign,
-  "round": TensorRound,
-  "floor": TensorFloor,
-  "ceil": TensorCeil,
-
-  "reciprocal": TensorReciprocal,
-  "pow": TensorPower,
-  "log": TensorLogarithm,
-  "exp": TensorExponential,
-
-  "sin": TensorSine,
-  "cos": TensorCosine,
-  "tan": TensorTangent,
-  "sinh": TensorSineHyperbolic,
-  "cosh": TensorCosineHyperbolic,
-  "tanh": TensorTangentHyperbolic,
-  "asinh": TensorSineHyperbolicInverse,
-  "acosh": TensorCosineHyperbolicInverse,
-  "atanh": TensorTangentHyperbolicInverse,
-
-  "equal": TensorEqual,
-  "notEqual": TensorNotEqual,
-  "less": TensorLess,
-  "lt": TensorLess,
-  "greater": TensorGreater,
-  "gt": TensorGreater,
-  "lessEqual": TensorLessEqual,
-  "le": TensorLessEqual,
-  "greaterEqual": TensorGreaterEqual,
-  "ge": TensorGreaterEqual,
-  "add": TensorAdd,
-  "sub": TensorSubtract,
-  "mul": TensorMultiply,
-  "div": TensorDivide,
-  "mod": TensorRemainder,
-  "root": TensorRoot,
-  "sum": TensorSum,
-  "prod": TensorProduct,
-  "mean": TensorMean,
-
-  "sort": TensorSort,
-  "shape": TensorShape,
-  "mask": TensorMask,
-  "where": TensorWhere,
-  "isNaN": TensorIsNaN,
-  "eye": TensorIdentity,
-  "slice": TensorSlice,
-  "reshape": TensorReshape,
-  "transpose": TensorTranspose,
-  "range": TensorRange,
-  "gradient": TensorGradient,
-  "length": TensorLength,
-  "len": TensorLength,
-  "dot": TensorDotProduct,
-  "matmul": TensorMatrixMultiply,
-  "adam": TensorOptimizationAdam,
-  "sgd": TensorOptimizationSgd,
-  "adagrad": TensorOptimizationAdaGrad,
-  "rand": TensorRandomUniform,
-  "randn": TensorRandomNormal,
-  "linspace": TensorLinearSpace,
-  "fill": TensorFill,
-  "stack": TensorStack,
-  "unstack": TensorUnstack,
-  "concat": TensorConcat,
-  "tile": TensorTile,
-  "gather": TensorGather,
-  "var": TensorVariable,
-  "reverse": TensorReverse,
-
-  "iter": FunctionIterate,
-  "cascade": FunctionCascade,
-  "apply": FunctionApply,
-  "eval": FunctionEvaluate,
-
-  // (?): { cond, choice | choice gather (1 sub cond) }
-  // TODO: doesn't work for some reason, copying code to editor works
-  // "?": evaluate(`{ cond, choice | choice tensorGather (1 tensorSubtract cond) }`),
-
   // MARK: Reactive + UI Components
-
-  "$": Reactive,
 
   Button,
   Grid,
@@ -1856,6 +1681,149 @@ const DefaultEnvironment = {
   ),
 } as const
 
+// MARK: Prelude
+
+const PRELUDE = `
+SymbolAssign(:, SymbolAssign),
+
+; Functions
+(.): FunctionApply,
+apply: FunctionApply,
+(⟳): FunctionIterate,
+iter: FunctionIterate,
+(@): FunctionEvaluate,
+eval: FunctionEvaluate,
+cascade: FunctionCascade,
+
+; Tensor shape/indexing
+(#): TensorLength,
+length: TensorLength,
+len: TensorLength,
+(_): TensorGather,
+gather: TensorGather,
+(⍴): TensorReshape,
+reshape: TensorReshape,
+(::): TensorRange,
+range: TensorRange,
+shape: TensorShape,
+slice: TensorSlice,
+transpose: TensorTranspose,
+reverse: TensorReverse,
+
+; Arithmetic
+(/): TensorDivide,
+(÷): TensorDivide,
+div: TensorDivide,
+(%): TensorRemainder,
+mod: TensorRemainder,
+(^): TensorPower,
+pow: TensorPower,
+(√): TensorRoot,
+root: TensorRoot,
+add: TensorAdd,
+sub: TensorSubtract,
+mul: TensorMultiply,
+(+): FunctionCascade((TensorAdd, TensorAbsolute)),
+(-): FunctionCascade((TensorSubtract, TensorNegate)),
+(*): FunctionCascade((TensorMultiply, TensorSign)),
+(×): FunctionCascade((TensorMultiply, TensorSign)),
+
+; Math
+neg: TensorNegate,
+abs: TensorAbsolute,
+sign: TensorSign,
+round: TensorRound,
+floor: TensorFloor,
+ceil: TensorCeil,
+reciprocal: TensorReciprocal,
+log: TensorLogarithm,
+exp: TensorExponential,
+
+; Trigonometry
+sin: TensorSine,
+cos: TensorCosine,
+tan: TensorTangent,
+sinh: TensorSineHyperbolic,
+cosh: TensorCosineHyperbolic,
+tanh: TensorTangentHyperbolic,
+asinh: TensorSineHyperbolicInverse,
+acosh: TensorCosineHyperbolicInverse,
+atanh: TensorTangentHyperbolicInverse,
+
+; Comparison
+(<): TensorLess,
+less: TensorLess,
+lt: TensorLess,
+(>): TensorGreater,
+greater: TensorGreater,
+gt: TensorGreater,
+(≤): TensorLessEqual,
+(<=): TensorLessEqual,
+lessEqual: TensorLessEqual,
+le: TensorLessEqual,
+(≥): TensorGreaterEqual,
+(>=): TensorGreaterEqual,
+greaterEqual: TensorGreaterEqual,
+ge: TensorGreaterEqual,
+(=): TensorEqual,
+equal: TensorEqual,
+(≠): TensorNotEqual,
+(!=): TensorNotEqual,
+notEqual: TensorNotEqual,
+
+; Reductions
+(∇): TensorGradient,
+gradient: TensorGradient,
+(Σ): TensorSum,
+sum: TensorSum,
+(Π): TensorProduct,
+prod: TensorProduct,
+(μ): TensorMean,
+mean: TensorMean,
+
+; Min/max
+(⌈): TensorMaximum,
+(⌊): TensorMinimum,
+max: FunctionCascade((TensorMaximum, TensorMax)),
+min: FunctionCascade((TensorMinimum, TensorMin)),
+
+; Variables
+(~): TensorVariable,
+var: TensorVariable,
+
+; Tensor ops
+sort: TensorSort,
+mask: TensorMask,
+where: TensorWhere,
+isNaN: TensorIsNaN,
+eye: TensorIdentity,
+dot: TensorDotProduct,
+matmul: TensorMatrixMultiply,
+
+; Creation
+rand: TensorRandomUniform,
+randn: TensorRandomNormal,
+linspace: TensorLinearSpace,
+fill: TensorFill,
+stack: TensorStack,
+unstack: TensorUnstack,
+concat: TensorConcat,
+tile: TensorTile,
+
+; Optimization
+adam: TensorOptimizationAdam,
+sgd: TensorOptimizationSgd,
+adagrad: TensorOptimizationAdaGrad,
+
+; Misc
+($): Reactive,
+`
+
+const createScope = () => {
+  const scope = Object.create(DefaultEnvironment)
+  evaluateProgramWithScope(PRELUDE, scope)
+  return scope
+}
 
 const treeNodePaddingVertical = 3
 const treeNodePaddingHorizontal = 8
@@ -2494,7 +2462,6 @@ const HeatPlot = ({ data }: { data: tf.Tensor }) => {
 // MARK: Examples
 
 const EXAMPLES = {
-  // Basic syntax and operators
   "no-precedence": `
 ; Left-to-right evaluation, no operator precedence
 1 + 2 * 3 - 4 / 5 ^ sin(2)
@@ -2511,8 +2478,6 @@ const EXAMPLES = {
 ; Element-wise vector addition
 a:[1,2,3], b:[4,5,6], a+b
 `,
-
-  // Functions and calling conventions
   "calling-conventions": `
 ; Multiple ways to call functions
 (
@@ -2536,8 +2501,6 @@ a:[1,2,3], b:[4,5,6], a+b
     1 ⌈ 2 ⌈ 3
 )
 `,
-
-  // Differentiation
   "gradient": `
 ; Automatic differentiation with ∇
 f : { x | x ^ 2 },
@@ -2545,8 +2508,6 @@ g : ∇(f),
 x : (1 :: 10),
 (f(x), g(x))
 `,
-
-  // Ad-hoc operators
   "ad-hoc-operators": `
 ; Defining custom operators
 (++): ListConcat,
@@ -2579,8 +2540,6 @@ x : (1 :: 10),
 normalize : { x | [min(x), max(x)] ≺ x },
 [10, 20, 30] . normalize
 `,
-
-  // Reactive programming
   "reactive-slider": `
 ; Reactive slider with computed value
 x: $(0.5),
@@ -2591,14 +2550,12 @@ $({ x() ^ 2 })
 ; Interactive function visualization
 PI: 3.14159,
 a: $(0.5),
-aa: $({ (a() * 9) + 1 }),
-S: $({ linspace(-(PI), PI, 1 / aa()) }),
+aa: $({ (a() * 90) + 1 }),
+S: $({ linspace([-(PI), PI], aa()) }),
 G: $({ sin(S()) }),
 
 (Slider(a), G)
 `,
-
-  // Apps
   "tasks": `
 (++): ListConcat,
 (=): { a, b | a(b) },
@@ -2818,11 +2775,61 @@ Slider(t),
 $({ a(t()) }),
 a(0::100 / 100)
 )
+`,
+  "deep-delta-residual-block": `
+; Deep Delta Learning → sin(x)
+; x' = x + β·k·(v - k·x)
+
+d: 160,
+
+; learnable params
+w: ~(randn([d]) × 0.1),
+κ: ~(randn([d]) × 0.1),
+ν: ~([0]),
+β: ~([0]),
+
+; sigmoid
+σ: { z | 1 ÷ (1 + exp(-z)) },
+
+; delta block
+Δ: { x |
+    k: (κ ÷ √(Σ(κ ^ 2) + 0.0000001)),
+    x + ((2 × σ(β)) × (ν - Σ(k × x)) × k)
+},
+
+; model
+f: { t | Δ(t × w) },
+
+; data
+t: (τ: linspace([0, 6.28], d)),
+ŷ: sin(τ),
+
+; loss
+𝓛: { mean((f(τ) - ŷ)^2) },
+
+; track losses during training
+(++): TensorConcat,
+(++=): { a, b | a(a() ++ b) },
+losses: $([]),
+opt: adam(0.001),
+A: $(f(τ)),
+
+{
+    losses ++= [𝓛()],
+    opt(𝓛),
+    A(f(τ))
+} ⟳ 500,
+
+(
+    Text("**Loss curve:**"),
+    losses,
+    Text("**Prediction vs Target:**"),
+    (ŷ, A),
+)
 `
 } as const
 
 const getExample = (k: keyof typeof EXAMPLES) => EXAMPLES[k].trim()
-
 
 // MARK: Generated Code
 
@@ -2853,6 +2860,12 @@ ${
 
 You can use the following built-in functions and environment variables:
 ${Object.keys(DefaultEnvironment).join(", ")}
+
+## Operator Definitions (Prelude)
+The following operators are defined as aliases to canonical functions:
+\`\`\`fluent
+${PRELUDE.trim()}
+\`\`\`
 `
 
 console.log('Fluent Generation System Prompt:', FLUENT_GENERATION_SYSTEM_PROMPT)
@@ -3405,7 +3418,7 @@ export function Playground() {
   //const code = useSignal<string>(codeFromUrl !== "" ? codeFromUrl : getExample("REPL"))
   const result = useComputed<Value>(() => {
     // return evaluate(read(code))
-    return evaluateSyntaxTreeNode(CodeParse(code.value), Object.create(DefaultEnvironment)) ?? null;
+    return evaluateSyntaxTreeNode(CodeParse(code.value), createScope()) ?? null;
   })
 
   return (
