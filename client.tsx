@@ -50,9 +50,16 @@ Button({ x(0) }, "Reset"),
   - assignment with \`:\`: \`a: 23, b: (a + 24)\`
   - letter and operator symbols do not conflict: \`foo+bar\`, \`α≠β\` work without spaces
 - Evaluation order
-  - left-to-right, NO operator precedence: \`1 + 2 * 3\` is \`(1 + 2) * 3\` = \`9\`
+  - EVERYTHING is left-to-right, NO operator precedence: \`1 + 2 * 3\` is \`(1 + 2) * 3\` = \`9\`
   - use parentheses to override: \`1 + (2 * 3)\` is \`7\`
-  - assignment is also left-to-right: write \`a: (1 + 2)\`, not \`a: 1 + 2\`
+  - CRITICAL: Assignment \`:\` is also just a left-to-right operator!
+    - \`a: 23\` ✓ – single value, no parens needed
+    - \`b: a + 1\` ✗ – parses as \`(b: a) + 1\`, NOT \`b: (a + 1)\`
+    - \`b: (a + 1)\` ✓ – correct, parentheses required
+    - \`c: fn(a)\` ✓ – function call is a single expression
+    - \`d: fn(a) + fn(b)\` ✗ – parses as \`(d: fn(a)) + fn(b)\`
+    - \`d: (fn(a) + fn(b))\` ✓ – correct, parentheses required
+  - Rule: if rvalue has ANY operator after it, wrap the ENTIRE rvalue in \`()\`
 - Comments
   - single-line with \`;\`: \`a: 1, ; this is a comment\`
 - Program structure
@@ -1727,22 +1734,22 @@ unsqueeze: { x, axis |
 },
 
 windows: { w, arr |
-  starts: (0 :: ((#arr) - w + 1)),
+  starts: (0 :: (#(arr) - w + 1)),
   offsets: (0 :: w),
   indices: (starts ⊗(+) offsets),
   arr _ indices
 },
 
 chunks: { w, arr |
-  n: (((#arr)) / w),
-  starts: (((0 :: n)) × w),
+  n: (#(arr) / w),
+  starts: (0 :: n × w),
   offsets: (0 :: w),
   indices: (starts ⊗(+) offsets),
   arr _ indices
 },
 
 stencil: { w, f, arr | unstack(windows(w, arr)) ListMap f . stack },
-conv: { kernel, arr | stencil((#kernel), { w | Σ(w × kernel) }, arr) },
+conv: { kernel, arr | stencil(#(kernel), { w | Σ(w × kernel) }, arr) },
 
 ; Arithmetic
 (/): TensorDivide,
@@ -2868,6 +2875,8 @@ const getExample = (k: keyof typeof EXAMPLES) => EXAMPLES[k].trim()
 // MARK: Generated Code
 
 const FLUENT_GENERATION_SYSTEM_PROMPT = `
+
+You are an expert Fluent code generator. Follow these rules when generating Fluent code:
 
 1. You generate Fluent code. Output ONLY valid code, no explanations.
 2. Make sure the generated code is syntactically correct.
