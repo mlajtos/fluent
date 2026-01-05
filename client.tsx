@@ -1709,6 +1709,40 @@ shape: TensorShape,
 slice: TensorSlice,
 transpose: TensorTranspose,
 reverse: TensorReverse,
+TensorOuter: { f | { a,b | f(a ⍴ [-1, 1], b ⍴ [1, -1]) } },
+(⊗): TensorOuter,
+outer: TensorOuter,
+
+; Shape manipulation
+flat: { x | x ⍴ [-1] },
+squeeze: { x |
+  s: shape(x),
+  newShape: mask(s, (s ≠ 1)),
+  x ⍴ newShape
+},
+unsqueeze: { x, axis |
+  s: shape(x),
+  newShape: concat(concat(slice(s, 0, axis), [1]), slice(s, axis)),
+  x ⍴ newShape
+},
+
+windows: { w, arr |
+  starts: (0 :: ((#arr) - w + 1)),
+  offsets: (0 :: w),
+  indices: (starts ⊗(+) offsets),
+  arr _ indices
+},
+
+chunks: { w, arr |
+  n: (((#arr)) / w),
+  starts: (((0 :: n)) × w),
+  offsets: (0 :: w),
+  indices: (starts ⊗(+) offsets),
+  arr _ indices
+},
+
+stencil: { w, f, arr | unstack(windows(w, arr)) ListMap f . stack },
+conv: { kernel, arr | stencil((#kernel), { w | Σ(w × kernel) }, arr) },
 
 ; Arithmetic
 (/): TensorDivide,
@@ -3241,6 +3275,8 @@ const editorBeforeMount: BeforeMount = (monaco) => {
     when: 'editorTextFocus'
   });
 
+  // Scope includes DefaultEnvironment + PRELUDE
+  const completionScope = createScope();
   monaco.languages.registerCompletionItemProvider('fluent', {
     provideCompletionItems: (model, position) => {
       const word = model.getWordUntilPosition(position);
@@ -3252,7 +3288,8 @@ const editorBeforeMount: BeforeMount = (monaco) => {
       };
 
       return ({
-        suggestions: Object.entries(DefaultEnvironment).map(([key, value]) => {
+        suggestions: Object.keys(completionScope).map((key) => {
+          const value = completionScope[key];
           return ({
             label: key,
             kind: monaco.languages.CompletionItemKind.Function,
