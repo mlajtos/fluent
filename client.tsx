@@ -1230,7 +1230,32 @@ const convertTextToHTML = async (value: string) => {
     codeBlockRenderer: colorizeCodeAsync,
   })
 
-  return result.element as HTMLElement
+  const element = result.element as HTMLElement
+
+  // Post-process: colorize inline <code> elements (not inside code blocks)
+  const inlineCodeElements = element.querySelectorAll('code:not(.code code)')
+
+  if (inlineCodeElements.length > 0) {
+    const colorize = (await getEditor()).colorize
+
+    await Promise.all(Array.from(inlineCodeElements).map(async (el) => {
+      const text = el.textContent ?? ''
+      if (text) {
+        try {
+          const colorized = await colorize(text, 'fluent', {})
+          // colorize wraps content in divs, extract inner HTML without line breaks
+          const temp = document.createElement('div')
+          temp.innerHTML = colorized
+          const inner = temp.querySelector('div')?.innerHTML ?? temp.innerHTML
+          el.innerHTML = inner.replace(/<br\/?>/g, '')
+        } catch {
+          // Keep original text as fallback
+        }
+      }
+    }))
+  }
+
+  return element
 }
 
 const colorizeCodeAsync = async (language: string, value: string) => {

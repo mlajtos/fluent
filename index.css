@@ -1,2 +1,8 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+
+/* Remove backticks from inline code in prose */
+.prose code::before,
+.prose code::after {
+  content: none;
+}
