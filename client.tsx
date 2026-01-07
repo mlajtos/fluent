@@ -98,6 +98,7 @@ Button({ x(0) }, "Reset"),
 - GPU-accelerated tensor operations
 - Auto-completion
 - Shareable URL links
+- LLM-backed code generation
 `
 
 /*
@@ -110,8 +111,6 @@ Button({ x(0) }, "Reset"),
 
 ## Features
 
-- LLM-assisted code generation
-  - proof-of-concept whether Grok can generate code in Fluent
 - `Canvas` UI component for rapid tensor creation
 - loading tensors (and models) from URLs
   - `fetchFromUrl` / `tensorLoad`
@@ -1181,10 +1180,19 @@ const TensorIsNaN = tf.isNaN
 // }
 
 const TensorVariable = (a: tf.Tensor) => {
-  // const s = signal(a)
-  const variableTensor = tf.variable(a, true);
+  const version = signal(0)
+  const variableTensor = tf.variable(a, true)
+
+  // Hook assign to trigger reactivity
+  const originalAssign = variableTensor.assign.bind(variableTensor)
+  variableTensor.assign = (newValue: tf.Tensor) => {
+    const result = originalAssign(newValue)
+    version.value++
+    return result
+  }
+
   // @ts-ignore
-  // variableTensor.signal = s;
+  variableTensor.__version__ = version
   return variableTensor
 }
 
@@ -1717,6 +1725,7 @@ const DefaultEnvironment = {
 
 const PRELUDE = `
 SymbolAssign(:, SymbolAssign),
+(:=): TensorAssign,
 
 ; Functions
 (.): FunctionApply,
@@ -2299,6 +2308,16 @@ function PrettyPrint(obj: any): JSX.Element {
       return obj;
     }
 
+    // Reactive variable: create computed that re-reads on version change
+    if (obj instanceof tf.Tensor && (obj as any).__version__) {
+      const version = (obj as any).__version__ as Signal<number>
+      const reactiveValue = computed(() => {
+        version.value  // subscribe to changes
+        return obj.clone()
+      })
+      return PrettyPrint(reactiveValue)
+    }
+
     if (obj instanceof tf.Tensor) {
       if (obj.rank === 0) {
         const color = COLORS.find(rule => rule.token === "number")?.foreground || "FFFFFF";
@@ -2738,6 +2757,16 @@ a: $([0,0]),
     θ,
 )
 `,
+  "linear-regression-compressed": `
+x: (0 :: 10),
+y: (x × 0.23 + 0.47),
+θ: ~([1, 1]),
+f: { x | x × (θ_0) + (θ_1) },
+𝓛: { μ((y - f(x)) ^ 2) },
+minimize: adam(0.03),
+losses: $([]),
+{ losses(losses() concat [minimize(𝓛)]), } ⟳ 400,
+(losses, θ)`,
   "experiment": `
 ; defs,
 (++): TensorConcat,
@@ -2774,38 +2803,6 @@ iterations: 10,
 {
   optimizer(loss)
 } ⟳ iterations,
-`,
-  "linreg-debug": `
-(++): TensorConcat,
-(++=): { a, b | a(a() ++ b) },
-
-x: (0 :: 10),
-y: (x × 0.23 + 0.47),
-
-θ: ~([0, 0]),
-f: { x | x × (θ_0) + (θ_1) },
-
-μ: { x | Σ(x) ÷ #(x) },
-(≈): { x, y | μ((y - x) ^ 2) },
-𝓛: { (f(x) ≈ y) },
-
-minimize: TensorOptimizationSgd(0.03),
-
-iters: $(0),
-
-{ i |
-    iters(i),
-    loss: 𝓛(),
-    minimize(𝓛),
-} ⟳ 100,
-
-(
-    iters,
-    θ,
-    minimize,
-    𝓛(),
-    minimize(𝓛)
-)
 `,
   "REPL": `
 make-cell: {
