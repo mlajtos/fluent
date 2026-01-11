@@ -909,8 +909,6 @@ const SignalRead = <T,>(s: Signal<T>) => {
 }
 
 const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
-  console.log("SignalUpdate", s, v)
-
   if (s instanceof Signal) {
     s.value = v
     return
@@ -920,7 +918,20 @@ const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
 }
 
 const SignalComputed = computed
+
 const SignalEffect = effect
+// @ts-ignore
+SignalEffect.noAutoLift = true
+
+// Read signal value once without creating reactive dependency
+const SignalOnce = <T,>(s: Signal<T> | T): T => {
+  if (s instanceof Signal) {
+    return s.peek()
+  }
+  return s
+}
+// @ts-ignore
+SignalOnce.noAutoLift = true
 
 const Reactive = (a: Value) => {
   if (typeof a === "function") {
@@ -1766,6 +1777,8 @@ const DefaultEnvironment = {
   SignalRead,
   SignalUpdate,
   SignalEffect,
+  SignalOnce,
+  once: SignalOnce,
 
   // MARK: Tensor operations
 
@@ -1843,6 +1856,7 @@ const DefaultEnvironment = {
   TensorOptimizationSgd,
   TensorOptimizationAdaGrad,
   TensorRandomNormal,
+  TensorRandomUniform,
 
   TensorMatrixMultiply,
   TensorDotProduct,
@@ -2914,12 +2928,21 @@ tasks: $(List()),
 )
 `,
   "tasks-compressed": `
-(++):ListConcat,task-name:$(""),task-create:{name|s:$(name),f:$("🔴"),Grid([1,10])(Button(f,{f("✅")}),TextEditor(s))},tasks:$(()),(Text("# TODO"),Grid([5,1])(TextEditor(task-name),Button("Add",{tasks(tasks()++List(task-create(task-name()))),task-name("")})),tasks)
+(++):ListConcat,task-name: $(""),task-create:{name|s: $(name),f: $("🔴"),Grid([1,10])(Button(f,{f("✅")}),TextEditor(s))},tasks: $(()),(Text("# TODO"),Grid([5,1])(TextEditor(task-name),Button("Add",{tasks(tasks()++List(task-create(task-name()))),task-name("")})),tasks)
 `,
   "tasks-mini": `
 ; Minimal TODO app
-(++):ListConcat,n:$(""),tasks:$(()),
-(TextEditor(n),Button("Add",{tasks(tasks()++List(n())),n("")}),tasks)
+(++): ListConcat,
+n: ($""),
+tasks: ($ List()),
+(
+    TextEditor(n),
+    Button("Add",{
+        tasks(tasks() ++ List(n())),
+        n("")
+    }),
+    tasks
+)
 `
   ,
   "calculator": `
@@ -2928,7 +2951,7 @@ tasks: $(List()),
 (++): StringConcat,
 
 expr: $(""),
-result: expr . evaluate,
+result: (expr . CodeEvaluate),
 append: { f | { expr(expr() . f) } },
 btn: { c | Button(c, { x | x ++ c } . append) },
 
@@ -2949,24 +2972,23 @@ btn: { c | Button(c, { x | x ++ c } . append) },
 
 ; Operators
 (++): TensorConcat,
-(++=): { a, b | a(a() ++ b) },
 
 ; Data: y = 0.23x + 0.47
 x: (0 :: 10),
-y: (x × 0.23) + 0.47,
+y: (x × 0.23 + 0.47),
 
 ; Model: f(x) = θ₀·x + θ₁
 θ: ~([0, 0]),
-f: { x | (x × θ_0) + θ_1 },
+f: { x | x × (θ_0) + (θ_1) },
 
 ; Loss: mean squared error
 𝓛: { mean((f(x) - y) ^ 2) },
 
 ; Training
-opt: sgd(0.03),
+opt: adam(0.03),
 losses: $([]),
 
-{ losses ++= [opt(𝓛)] } ⟳ 100,
+{ losses(losses() ++ [opt(𝓛)]) } ⟳ 200,
 
 ; Results
 (
@@ -2978,41 +3000,20 @@ losses: $([]),
   "linear-regression-compressed": `
 x: (0 :: 10),
 y: (x × 0.23 + 0.47),
-θ: ~([1, 1]),
+θ: ~([0, 0]),
 f: { x | x × (θ_0) + (θ_1) },
 𝓛: { μ((y - f(x)) ^ 2) },
 minimize: adam(0.03),
 losses: $([]),
 { losses(losses() concat [minimize(𝓛)]), } ⟳ 400,
 (losses, θ)`,
-  "outer-product-learning": `
-; Learn a smiley face via outer product: x·xᵀ ≈ target
-
-target: [
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 1, 0, 1, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 1, 0, 0, 0, 0],
-    [0, 0, 1, 0, 0, 0, 1, 0, 0],
-    [0, 0, 0, 1, 1, 1, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0],
-],
-
-x: ~(randn([9, 1]) × 0.1),
-𝓛: { mean((transpose(x) × x - target)²) },
-
-{ sgd(0.1)(𝓛) } ⟳ 100,
-
-(target, transpose(x) × x)
-`,
   "REPL": `
 ; Multi-cell REPL - each cell evaluates independently
+; BUG: CodeEditor's height doesn't auto-adjust on content change
 
 cell: {
     code: $("1 + 1"),
-    result: evaluate(code),
+    result: CodeEvaluate(code),
     Grid(1)(Print(result), CodeEditor(code))
 },
 
