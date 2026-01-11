@@ -22,7 +22,7 @@ square(a), ; [1, 4, 9]
 ; reactive UI
 x: $(0.5),
 Slider(x),
-$({ square(x()) }),
+square(x),  ; auto-lifts to reactive!
 Button({ x(0) }, "Reset"),
 \`\`\`
 
@@ -74,7 +74,8 @@ Button({ x(0) }, "Reset"),
   - create signal: \`x: $(0.5)\`
   - read signal: \`x()\`
   - update signal: \`x(0.7)\`
-  - computed signal: \`y: $({ x() + 1 })\` – re-evaluates when \`x\` changes
+  - computed signal: \`y: (x + 1)\` – auto-lifts to reactive when \`x\` is a signal
+  - explicit computed: \`y: $({ x() + 1 })\` – manual version (rarely needed)
 - Iteration
   - repeat N times with \`⟳\`: \`step ⟳ 100\`
 - Optimization
@@ -117,11 +118,6 @@ Button({ x(0) }, "Reset"),
 - first-class symbols
   - syntax for symbol literal – 'symbol'
   - (this is probably a subset of syntax tree literal)
-- first-class signals
-  - so I don't have to wrap everything – `$({ a() + b() })` -> `a + b`
-  - how to reference a signal object? if justs a mention of a symbol would automatically retrieve its value, how can i pass an object without looking inside of it? could first-class symbols help here?
-    - if signal would be "hot", so `a + b` would mean `a() + b()`, then `{ a }` would be a reference to signal, which could be passed around
-    - with "hot" signal, `:=` would be impossible to implement
 - string interpolation
   - a: "Hello `user`!"
 - literal for syntax tree
@@ -174,7 +170,7 @@ const Plot = (await import("react-plotly.js")).default.default as Plot
 
 import "./index.css"
 
-tf.setBackend('cpu');
+tf.setBackend('webgl');
 
 // MARK: Parse
 
@@ -287,7 +283,7 @@ Fluent {
   List
     = "(" NonemptyListOf<Expr, ","> ","? ")" --multi
     | "(" Expr "," ")" --single
-    | "()" --empty
+    | "(" ")" --empty
 
   Number          = number
   Tensor          = "[" ListOf<Expr, ","> ","? "]"
@@ -426,7 +422,7 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
       origin: getLocationOrigin(this),
     }
   },
-  List_empty(_) {
+  List_empty(_, __) {
     return {
       type: "List",
       content: {
@@ -793,6 +789,27 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       throw new Error("What are you trying to do with this poor signal?")
     }
 
+    // Auto-lift: wrap in computed() when args contain Signals
+    // @ts-ignore
+    const noAutoLift: boolean = fnValue.noAutoLift ?? false
+    const hasSignalArgs = argsValue.some(a => a instanceof Signal)
+
+    if (hasSignalArgs && !noAutoLift) {
+      let previousResult: any = null
+      return computed(() => {
+        // Dispose previous tensor to prevent GPU memory leak
+        if (previousResult instanceof tf.Tensor) {
+          previousResult.dispose()
+        }
+        const unwrapped = argsValue.map(a =>
+          a instanceof Signal ? a.value : a
+        )
+        const result = reify(fnValue.apply(env, unwrapped), env)
+        previousResult = result
+        return result
+      })
+    }
+
     // Reify return value so symbols get resolved
     return reify(fnValue.apply(env, argsValue), env)
   } catch (e) {
@@ -892,6 +909,8 @@ const SignalRead = <T,>(s: Signal<T>) => {
 }
 
 const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
+  console.log("SignalUpdate", s, v)
+
   if (s instanceof Signal) {
     s.value = v
     return
@@ -910,6 +929,8 @@ const Reactive = (a: Value) => {
   }
   return SignalCreate(a)
 }
+// @ts-ignore
+Reactive.noAutoLift = true
 
 const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
   if (typeof a === "symbol") {
@@ -923,6 +944,8 @@ const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
 // First argument (target symbol) should not be reified
 // @ts-ignore
 SymbolAssign.quotedArgs = [0]
+// @ts-ignore
+SymbolAssign.noAutoLift = true
 
 const FunctionEvaluate = function (this: CurrentScope, fn: Value, args: Value[]) {
   return safeApply(fn, args, this)
@@ -932,6 +955,14 @@ const FunctionApply = function (this: CurrentScope, a: Value, b: Value): Value {
   const arg = a instanceof Array ? a : [a]
   return safeApply(b, arg, this)
 }
+
+const FunctionNoAutoLift = (fn: Function) => {
+  // @ts-ignore
+  fn.noAutoLift = true
+  return fn
+}
+// @ts-ignore
+FunctionNoAutoLift.noAutoLift = true  // Don't auto-lift the wrapper itself!
 
 const List = (...args: unknown[]) => {
   return args
@@ -1231,6 +1262,8 @@ const Button = (label?: string | Signal<string>, onClick?: () => void) => {
     return <button className="bg-neutral-900 hover:bg-neutral-800 active:bg-neutral-700 rounded-xl border border-neutral-400 hover:border-neutral-300 active:border-neutral-200 disabled:border-neutral-800 disabled:cursor-not-allowed p-2 overflow-hidden" onClick={onClick} disabled={disabled}>{labelValue}</button>
   })
 }
+// @ts-ignore
+Button.noAutoLift = true
 
 const convertTextToHTML = async (value: string) => {
   const result = await renderMarkdown({ value }, {
@@ -1330,6 +1363,8 @@ const TextEditor = (editedValue: Signal<string>) => {
     </div>
   )
 }
+// @ts-ignore
+TextEditor.noAutoLift = true
 
 const Slider = (editedValue: Signal<tf.Tensor>) => {
   return SignalComputed(() => {
@@ -1350,6 +1385,8 @@ const Slider = (editedValue: Signal<tf.Tensor>) => {
     )
   })
 }
+// @ts-ignore
+Slider.noAutoLift = true
 
 const Grid = (cols: tf.Tensor, rows: tf.Tensor) => {
   let gridTemplateColumns = ""
@@ -1450,7 +1487,7 @@ function LoadSafeTensors(arrayBuffer: ArrayBuffer) {
   const tensors = {};
 
   for (const key in header) {
-    if (key === '__metadata__') continue; // Skip optional metadata
+    if (key === '__metadata__') { continue } // Skip optional metadata
 
     const info = header[key];
     if (!info.dtype || !info.shape || !info.data_offsets) {
@@ -1536,6 +1573,140 @@ function LoadTensorFromImageUrl(url: string): Signal<tf.Tensor> {
   return s
 }
 
+function Camera(width?: tf.Tensor, height?: tf.Tensor, fps?: tf.Tensor): Signal<tf.Tensor> {
+  const w = width ? getAsSyncList(width) as number : 640
+  const h = height ? getAsSyncList(height) as number : 480
+  const targetFps = fps ? getAsSyncList(fps) as number : 30
+  const frameInterval = 1000 / targetFps
+
+  // Initialize with black frame so operations don't fail before camera starts
+  const frameSignal = SignalCreate<tf.Tensor>(tf.zeros([h, w, 3], 'int32'))
+
+  const video = document.createElement('video')
+  video.autoplay = true
+  video.playsInline = true
+
+  navigator.mediaDevices.getUserMedia({
+    video: { width: w, height: h }
+  }).then(stream => {
+    video.srcObject = stream
+
+    video.onloadedmetadata = () => {
+      video.play()
+
+      let lastTime = 0
+      const captureFrame = (time: number) => {
+        if (time - lastTime >= frameInterval) {
+          if (video.readyState === video.HAVE_ENOUGH_DATA) {
+            // Dispose old tensor to prevent memory leak
+            const oldTensor = frameSignal.value
+            const tensor = tf.browser.fromPixels(video)
+            frameSignal.value = tensor
+            if (oldTensor) { oldTensor.dispose() }
+          }
+          lastTime = time
+        }
+        requestAnimationFrame(captureFrame)
+      }
+
+      requestAnimationFrame(captureFrame)
+    }
+  }).catch(err => {
+    console.error('Camera access denied:', err)
+  })
+
+  // Return read-only signal (computed) so Camera()("hello") isn't possible
+  return computed(() => frameSignal.value)
+}
+
+function Microphone(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
+  const size = bufferSize ? getAsSyncList(bufferSize) as number : 2048
+
+  // Initialize with silence
+  const audioSignal = SignalCreate<tf.Tensor>(tf.zeros([size]))
+
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    const audioContext = new AudioContext()
+    const source = audioContext.createMediaStreamSource(stream)
+    const analyser = audioContext.createAnalyser()
+    analyser.fftSize = size * 2
+
+    source.connect(analyser)
+
+    const dataArray = new Float32Array(size)
+
+    const captureAudio = () => {
+      analyser.getFloatTimeDomainData(dataArray)
+
+      const oldTensor = audioSignal.value
+      const tensor = tf.tensor1d(dataArray)
+      audioSignal.value = tensor
+      if (oldTensor) { oldTensor.dispose() }
+
+      requestAnimationFrame(captureAudio)
+    }
+
+    captureAudio()
+  }).catch(err => {
+    console.error('Microphone access denied:', err)
+  })
+
+  return computed(() => audioSignal.value)
+}
+
+function MicrophoneSpectrum(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
+  const size = bufferSize ? getAsSyncList(bufferSize) as number : 1024
+
+  // Initialize with silence
+  const spectrumSignal = SignalCreate<tf.Tensor>(tf.zeros([size]))
+
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    const audioContext = new AudioContext()
+    const source = audioContext.createMediaStreamSource(stream)
+    const analyser = audioContext.createAnalyser()
+    analyser.fftSize = size * 2
+    analyser.smoothingTimeConstant = 0.8
+
+    source.connect(analyser)
+
+    const dataArray = new Uint8Array(size)
+
+    const captureSpectrum = () => {
+      analyser.getByteFrequencyData(dataArray)
+
+      const oldTensor = spectrumSignal.value
+      // Normalize to 0-1 range
+      const tensor = tf.tensor1d(dataArray).div(255)
+      spectrumSignal.value = tensor
+      if (oldTensor) { oldTensor.dispose() }
+
+      requestAnimationFrame(captureSpectrum)
+    }
+
+    captureSpectrum()
+  }).catch(err => {
+    console.error('Microphone access denied:', err)
+  })
+
+  return computed(() => spectrumSignal.value)
+}
+
+function Time(): Signal<tf.Tensor> {
+  const startTime = performance.now()
+  const timeSignal = SignalCreate<tf.Tensor>(tf.scalar(0))
+
+  const updateTime = () => {
+    const oldTensor = timeSignal.value
+    const elapsed = (performance.now() - startTime) / 1000
+    timeSignal.value = tf.scalar(elapsed)
+    if (oldTensor) { oldTensor.dispose() }
+    requestAnimationFrame(updateTime)
+  }
+
+  requestAnimationFrame(updateTime)
+  return computed(() => timeSignal.value)
+}
+
 
 const LoadSafeTensorFromURL = (url?: string) => {
   if (!url) {
@@ -1585,6 +1756,7 @@ const DefaultEnvironment = {
   FunctionCascade,
   FunctionEvaluate,
   FunctionApply,
+  FunctionNoAutoLift,
 
   // MARK: Signals
   
@@ -1662,6 +1834,8 @@ const DefaultEnvironment = {
   TensorIsNaN,
   TensorIdentity,
   TensorMask,
+  TensorSlice,
+  TensorFill,
 
   TensorVariable,
   TensorAssign,
@@ -1709,6 +1883,10 @@ const DefaultEnvironment = {
   Fetch,
   LoadSafeTensorFromURL,
   LoadTensorFromImageUrl,
+  Camera,
+  Microphone,
+  MicrophoneSpectrum,
+  Time,
   // TensorEditor,
   // TensorCanvas,
   // ImageFromTensor,
@@ -1938,10 +2116,10 @@ type TreeNodeDescriptor = {
 let mainEditorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null;
 
 const setHoverHighlight = (origin: Origin | null) => {
-  if (!mainEditorRef) return
+  if (!mainEditorRef) { return }
   const { editor, monaco } = mainEditorRef
   const model = editor.getModel()
-  if (!model) return
+  if (!model) { return }
 
   if (!origin) {
     monaco.editor.setModelMarkers(model, "fluent-hover", [])
@@ -2258,6 +2436,8 @@ function Print(obj: Signal<unknown>) {
     </Panel>
   )
 }
+// @ts-ignore
+Print.noAutoLift = true
 
 function PrintFunction(fn: Function) {
   const sourceCode = computed(() => fn.toString())
@@ -2334,13 +2514,21 @@ function PrettyPrint(obj: any): JSX.Element {
       }
 
       if (obj.rank === 2) {
-        return (
-          <HeatPlot data={obj} />
-        );
+        // Use fast canvas for large tensors (images), Plotly for small
+        const size = obj.shape[0] * obj.shape[1]
+        if (size > 1000) {
+          return <TensorCanvas data={obj} />
+        }
+        return <HeatPlot data={obj} />
       }
 
-      if (obj.rank > 2) {
-        console.warn("Tensor with rank > 2 is not supported for plotting", obj);
+      if (obj.rank === 3) {
+        // RGB image - use canvas renderer
+        return <TensorCanvas data={obj} />
+      }
+
+      if (obj.rank > 3) {
+        console.warn("Tensor with rank > 3 is not supported for plotting", obj);
       }
 
       return (
@@ -2544,6 +2732,53 @@ const HeatPlot = ({ data }: { data: tf.Tensor }) => {
   );
 }
 
+// Fast canvas-based tensor renderer for real-time use (Camera, etc.)
+const TensorCanvas = ({ data }: { data: tf.Tensor }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  const height = data.shape[0] || 100
+  const width = data.shape[1] || 100
+  const aspect = width / height
+
+  useEffect(() => {
+    if (!canvasRef.current || !data) { return }
+
+    const canvas = canvasRef.current
+
+    // Only resize if dimensions changed (resizing clears canvas, causes flicker)
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width
+      canvas.height = height
+    }
+
+    // Normalize to 0-255 range if needed
+    const normalized = tf.tidy(() => {
+      const min = data.min()
+      const max = data.max()
+      const range = max.sub(min)
+      // Avoid division by zero
+      const safeRange = tf.where(range.equal(0), tf.scalar(1), range)
+      return data.sub(min).div(safeRange).mul(255).cast('int32')
+    })
+
+    tf.browser.toPixels(normalized as tf.Tensor2D | tf.Tensor3D, canvas).then(() => {
+      normalized.dispose()
+    })
+  }, [data])
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        width: '100%',
+        maxWidth: `${width}px`,
+        aspectRatio: `${aspect}`,
+        imageRendering: 'pixelated'
+      }}
+    />
+  )
+}
+
 // MARK: Examples
 
 const EXAMPLES = {
@@ -2627,45 +2862,47 @@ normalize : { x | [min(x), max(x)] ≺ x },
 `,
   "reactive-slider": `
 ; Reactive slider with computed value
-x: $(0.5),
-Slider(x),
-$({ x() ^ 2 })
+(
+  x: $(0.5),
+  Slider(x),
+  x ^ 2
+)
 `,
   "reactive-function-plot": `
-; Interactive function visualization
-PI: 3.14159,
-a: $(0.5),
-aa: $({ (a() * 90) + 1 }),
-S: $({ linspace([-(PI), PI], aa()) }),
-G: $({ sin(S()) }),
+; Interactive sine wave - adjust resolution with slider
 
-(Slider(a), G)
+PI: 3.14159,
+resolution: $(0.5),
+points: (resolution × 90 + 10),
+x: linspace([-PI, PI], points),
+
+(Slider(resolution), sin(x))
 `,
   "tasks": `
+; TODO App - reactive task management
+
+; Helper operators
 (++): ListConcat,
-(=): { a, b | a(b) },
-(++=): { a, b | a = (a() ++ List(b)) },
+(=): FunctionNoAutoLift({ a, b | a(b) }),
+(++=): FunctionNoAutoLift({ a, b | a(a() ++ List(b)) }),
 
-task-name: $(""),
-
+; Task factory - creates editable task with toggle
 task-create: { name |
-    s: $(name),
-    f: $("🔴"),
-
+    text: $(name),
+    done: $("🔴"),
     Grid([1, 9])(
-        Button(f, { f = "✅" }),
-        TextEditor(s),
+        Button(done, { done = "✅" }),
+        TextEditor(text),
     )
 },
 
+; App state
+task-name: $(""),
 tasks: $(List()),
 
+; UI
 (
-    Text("
-        # TODO app in 33 lines of code
-
-        Still *some* lines to spare. Please **suggest** features!
-    "),
+    Text("# TODO App"),
     Grid([5, 1])(
         TextEditor(task-name),
         Button("Add Task", {
@@ -2677,84 +2914,65 @@ tasks: $(List()),
 )
 `,
   "tasks-compressed": `
-(++):list-concat,(=):{a,b|a(b)},(++=):{a,b|a=(a()++(b))},task-name: $(""),task-create:{name|s: $(name),f: $("🔴"),Grid([1,10])($({Button(f(),{f="✅"})}),$({TextField(s(),s)}),)},tasks: $(()),(Text("# TODO app in 420 bytes
-Still some bytes to spare. Please **suggest** features!"),$({Grid([5,1])(TextField(task-name(),task-name),Button("Add Task",{tasks ++= task-create(task-name()),task-name="",}),)}),tasks)
+(++):ListConcat,task-name:$(""),task-create:{name|s:$(name),f:$("🔴"),Grid([1,10])(Button(f,{f("✅")}),TextEditor(s))},tasks:$(()),(Text("# TODO"),Grid([5,1])(TextEditor(task-name),Button("Add",{tasks(tasks()++List(task-create(task-name()))),task-name("")})),tasks)
 `,
-  "tasks-super-compressed-unrunable": `
-(++):list-concat,(++:):{a,b|a:(a++(b))},B:Button,G:Grid,T:Textfield,N:"",C:{n|s:n,f:"🔴",G([1,10])(B(f,{f:"✅"})}),T(s)}),)},t:(),(G([5,1])(T(N)}),B("Add Task",{t++=C(N),N="",}),),t)
+  "tasks-mini": `
+; Minimal TODO app
+(++):ListConcat,n:$(""),tasks:$(()),
+(TextEditor(n),Button("Add",{tasks(tasks()++List(n())),n("")}),tasks)
 `
   ,
   "calculator": `
+; Calculator - builds expression string and evaluates it
 
 (++): StringConcat,
 
-d: $(""),
-D: $({ d() . evaluate }),
-Δ: { f | { d(d() . f) } },
-B: { c | Button(c, { x | x ++ c } . Δ) },
+expr: $(""),
+result: expr . evaluate,
+append: { f | { expr(expr() . f) } },
+btn: { c | Button(c, { x | x ++ c } . append) },
 
 (
-    $({ TextField(d(), d) }),
-    D,
+    TextEditor(expr),
+    result,
     Grid([2,2,2,1])(
-        B("7"),
-        B("8"),
-        B("9"),
-        B(" ÷ "),
-
-        B("4"),
-        B("5"),
-        B("6"),
-        B(" × "),
-
-        B("1"),
-        B("2"),
-        B("3"),
-        B(" - "),
-
-        Button("Reset",  { "" } . Δ),
-        B("0"),
-        B("."),
-        B(" + "),
+        btn("7"), btn("8"), btn("9"), btn(" ÷ "),
+        btn("4"), btn("5"), btn("6"), btn(" × "),
+        btn("1"), btn("2"), btn("3"), btn(" - "),
+        Button("C", { "" } . append), btn("0"), btn("."), btn(" + "),
     ),
 )
 `,
   "linear-regression": `
-; defs,
+; Linear Regression with gradient descent
+; Find θ that minimizes (f(x) - y)²
+
+; Operators
 (++): TensorConcat,
 (++=): { a, b | a(a() ++ b) },
 
-; data
+; Data: y = 0.23x + 0.47
 x: (0 :: 10),
-y: (x × 0.23 + 0.47),
+y: (x × 0.23) + 0.47,
 
-; model
+; Model: f(x) = θ₀·x + θ₁
 θ: ~([0, 0]),
-f: { x | x × (θ_0) + (θ_1) },
+f: { x | (x × θ_0) + θ_1 },
 
-; loss function
-μ: { x | Σ(x) ÷ #(x) },
-(≈): { x, y | μ((y - x) ^ 2) },
-𝓛: { (f(x) ≈ y) },
+; Loss: mean squared error
+𝓛: { mean((f(x) - y) ^ 2) },
 
-; optimizer
-; minimize: TensorOptimizationAdam(0.01),
-minimize : TensorOptimizationSgd(0.03),
+; Training
+opt: sgd(0.03),
+losses: $([]),
 
-losses: $([0]),
-a: $([0,0]),
+{ losses ++= [opt(𝓛)] } ⟳ 100,
 
-{
-    loss: 𝓛(),
-    losses ++= [loss],
-    a ++= θ,
-    minimize(𝓛),
-} ⟳ 100,
-
+; Results
 (
-    losses,
-    a,
-    θ,
+    Text("**Loss:**"), losses,
+    Text("**θ (learned):**"), θ,
+    Text("**θ (target):**"), [0.23, 0.47],
 )
 `,
   "linear-regression-compressed": `
@@ -2767,23 +2985,10 @@ minimize: adam(0.03),
 losses: $([]),
 { losses(losses() concat [minimize(𝓛)]), } ⟳ 400,
 (losses, θ)`,
-  "experiment": `
-; defs,
-(++): TensorConcat,
-(++=): { a, b | a(a() ++ b) },
+  "outer-product-learning": `
+; Learn a smiley face via outer product: x·xᵀ ≈ target
 
-μ: { x | Σ(x) ÷ #(x) },
-(≈): { x, y | μ((y - x) ^ 2) },
-
-(
-    x: ~(TensorRandomNormal([9,1])),
-    ;x: (0 :: 10 TensorReshape [1, 10]),
-    x-trans: TensorTranspose(x),
-
-),
-
-target:
-[
+target: [
     [0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 1, 0, 1, 0, 0, 0],
@@ -2795,99 +3000,81 @@ target:
     [0, 0, 0, 0, 0, 0, 0, 0, 0],
 ],
 
-loss:
-{ (x-trans * x) ≈ target },
-optimizer: TensorOptimizationSgd(0.01),
-iterations: 10,
+x: ~(randn([9, 1]) × 0.1),
+𝓛: { mean((transpose(x) × x - target)²) },
 
-{
-  optimizer(loss)
-} ⟳ iterations,
+{ sgd(0.1)(𝓛) } ⟳ 100,
+
+(target, transpose(x) × x)
 `,
   "REPL": `
-make-cell: {
-    code: $("1 + 1"),
-    result: $({ evaluate(code()) }),
+; Multi-cell REPL - each cell evaluates independently
 
-    Grid(1)(
-        Print(result),
-        CodeEditor(code),
-    )
+cell: {
+    code: $("1 + 1"),
+    result: evaluate(code),
+    Grid(1)(Print(result), CodeEditor(code))
 },
 
-(
-    make-cell(),
-    make-cell(),
-    make-cell(),
-)
+(cell(), cell(), cell())
 `,
-  "some math": `
-(
-exp: TensorExponential,
+  "exponential-decay": `
+; Exponential decay: f(t) = b + c·e^(-k·t)
+; Interactive visualization with slider
 
-b: 0.1,
-c1: 1,
-k: 5,
+b: 0.1,   ; baseline
+c: 1,     ; amplitude
+k: 5,     ; decay rate
 
+f: { t | b + (c × exp(-(k) × t)) },
 
-a: { t | b + (c1 * exp(-(k) * t))},
-b + (c1 * exp(-(k) * 1)),
-
+; Interactive plot
 t: $(0),
-Slider(t),
-$({ a(t()) }),
-a(0::100 / 100)
+(
+  Slider(t),
+  f(t),
+  f(0::100 / 100)
 )
 `,
-  "deep-delta-residual-block": `
-; Deep Delta Learning → sin(x)
-; x' = x + β·k·(v - k·x)
+  "deep-delta-learning": `
+; Deep Delta Learning - learns sin(x)
+; Uses delta rule: x' = x + β·k·(v - k·x)
 
 d: 160,
 
-; learnable params
+; Learnable parameters
 w: ~(randn([d]) × 0.1),
 κ: ~(randn([d]) × 0.1),
 ν: ~([0]),
 β: ~([0]),
 
-; sigmoid
+; Activation & delta block
 σ: { z | 1 ÷ (1 + exp(-z)) },
-
-; delta block
 Δ: { x |
-    k: (κ ÷ √(Σ(κ ^ 2) + 0.0000001)),
-    x + ((2 × σ(β)) × (ν - Σ(k × x)) × k)
+    k: κ ÷ √(Σ(κ²) + 1e-7),
+    x + (2 × σ(β) × (ν - Σ(k × x)) × k)
 },
 
-; model
+; Model & data
 f: { t | Δ(t × w) },
-
-; data
-t: (τ: linspace([0, 6.28], d)),
+τ: linspace([0, 6.28], d),
 ŷ: sin(τ),
 
-; loss
-𝓛: { mean((f(τ) - ŷ)^2) },
-
-; track losses during training
+; Training
 (++): TensorConcat,
 (++=): { a, b | a(a() ++ b) },
-losses: $([]),
+
+𝓛: { mean((f(τ) - ŷ)²) },
 opt: adam(0.001),
-A: $(f(τ)),
+losses: $([]),
+pred: $(f(τ)),
 
-{
-    losses ++= [𝓛()],
-    opt(𝓛),
-    A(f(τ))
-} ⟳ 500,
+{ losses ++= [opt(𝓛)], pred(f(τ)) } ⟳ 500,
 
+; Results
 (
-    Text("**Loss curve:**"),
-    losses,
-    Text("**Prediction vs Target:**"),
-    (ŷ, A),
+    Text("**Loss:**"), losses,
+    Text("**Prediction vs Target:**"), (ŷ, pred),
 )
 `
 } as const
@@ -3111,12 +3298,14 @@ function Code(sourceCode: Signal<string>) {
     )
   })
 }
+// @ts-ignore
+Code.noAutoLift = true
 
 const validateCode = (code: string) => {
-  if (!mainEditorRef) return
+  if (!mainEditorRef) { return }
   const { editor, monaco } = mainEditorRef
   const model = editor.getModel()
-  if (!model) return
+  if (!model) { return }
 
   const errors = getParseErrors(code)
 
@@ -3179,6 +3368,8 @@ function CodeEditor(sourceCode: Signal<string>) {
     )
   })
 }
+// @ts-ignore
+CodeEditor.noAutoLift = true
 
 let EditorInstance: Monaco["editor"] | null = null
 
@@ -3318,8 +3509,14 @@ const editorBeforeMount: BeforeMount = (monaco) => {
         endColumn: word.endColumn,
       };
 
+      // Collect all keys from scope including parent scopes (prototype chain)
+      const allKeys: string[] = [];
+      for (const key in completionScope) {
+        allKeys.push(key);
+      }
+
       return ({
-        suggestions: Object.keys(completionScope).map((key) => {
+        suggestions: allKeys.map((key) => {
           const value = completionScope[key];
           return ({
             label: key,
