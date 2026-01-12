@@ -1,4 +1,4 @@
-import { serve } from "bun";
+import { serve, file } from "bun";
 import index from "./index.html";
 
 const server = serve({

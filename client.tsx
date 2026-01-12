@@ -796,22 +796,33 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
 
     if (hasSignalArgs && !noAutoLift) {
       let previousResult: any = null
+
       return computed(() => {
-        // Dispose previous tensor to prevent GPU memory leak
         if (previousResult instanceof tf.Tensor) {
           previousResult.dispose()
         }
-        const unwrapped = argsValue.map(a =>
-          a instanceof Signal ? a.value : a
-        )
-        const result = reify(fnValue.apply(env, unwrapped), env)
+
+        const unwrapped = argsValue.map(a => a instanceof Signal ? a.value : a)
+
+        let result: any = null
+
+        try {
+          result = tf.tidy(() => {
+            return fnValue.apply(env, unwrapped)
+          })
+        } catch (e) {
+          result = e
+        }
+
         previousResult = result
+
         return result
       })
     }
 
-    // Reify return value so symbols get resolved
-    return reify(fnValue.apply(env, argsValue), env)
+    return tf.tidy(() => {
+      return fnValue.apply(env, argsValue)
+    })
   } catch (e) {
     // inject cause to the caught error from argument errors
     if (e instanceof Error && errorArgs.length > 0) {
@@ -1597,9 +1608,13 @@ function Camera(width?: tf.Tensor, height?: tf.Tensor, fps?: tf.Tensor): Signal<
   video.autoplay = true
   video.playsInline = true
 
+  let active = true
+  let streamRef: MediaStream | null = null
+
   navigator.mediaDevices.getUserMedia({
     video: { width: w, height: h }
   }).then(stream => {
+    streamRef = stream
     video.srcObject = stream
 
     video.onloadedmetadata = () => {
@@ -1607,6 +1622,8 @@ function Camera(width?: tf.Tensor, height?: tf.Tensor, fps?: tf.Tensor): Signal<
 
       let lastTime = 0
       const captureFrame = (time: number) => {
+        if (!active) return
+
         if (time - lastTime >= frameInterval) {
           if (video.readyState === video.HAVE_ENOUGH_DATA) {
             // Dispose old tensor to prevent memory leak
@@ -1626,8 +1643,17 @@ function Camera(width?: tf.Tensor, height?: tf.Tensor, fps?: tf.Tensor): Signal<
     console.error('Camera access denied:', err)
   })
 
-  // Return read-only signal (computed) so Camera()("hello") isn't possible
-  return computed(() => frameSignal.value)
+  // Return read-only signal with dispose method
+  const result = computed(() => frameSignal.value) as Signal<tf.Tensor> & { dispose: () => void }
+  result.dispose = () => {
+    active = false
+    if (streamRef) {
+      streamRef.getTracks().forEach(track => track.stop())
+      streamRef = null
+    }
+    video.srcObject = null
+  }
+  return result
 }
 
 function Microphone(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
@@ -1636,8 +1662,14 @@ function Microphone(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
   // Initialize with silence
   const audioSignal = SignalCreate<tf.Tensor>(tf.zeros([size]))
 
+  let active = true
+  let streamRef: MediaStream | null = null
+  let audioContextRef: AudioContext | null = null
+
   navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    streamRef = stream
     const audioContext = new AudioContext()
+    audioContextRef = audioContext
     const source = audioContext.createMediaStreamSource(stream)
     const analyser = audioContext.createAnalyser()
     analyser.fftSize = size * 2
@@ -1647,6 +1679,8 @@ function Microphone(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
     const dataArray = new Float32Array(size)
 
     const captureAudio = () => {
+      if (!active) return
+
       analyser.getFloatTimeDomainData(dataArray)
 
       const oldTensor = audioSignal.value
@@ -1662,7 +1696,19 @@ function Microphone(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
     console.error('Microphone access denied:', err)
   })
 
-  return computed(() => audioSignal.value)
+  const result = computed(() => audioSignal.value) as Signal<tf.Tensor> & { dispose: () => void }
+  result.dispose = () => {
+    active = false
+    if (streamRef) {
+      streamRef.getTracks().forEach(track => track.stop())
+      streamRef = null
+    }
+    if (audioContextRef) {
+      audioContextRef.close()
+      audioContextRef = null
+    }
+  }
+  return result
 }
 
 function MicrophoneSpectrum(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
@@ -1671,8 +1717,14 @@ function MicrophoneSpectrum(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
   // Initialize with silence
   const spectrumSignal = SignalCreate<tf.Tensor>(tf.zeros([size]))
 
+  let active = true
+  let streamRef: MediaStream | null = null
+  let audioContextRef: AudioContext | null = null
+
   navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    streamRef = stream
     const audioContext = new AudioContext()
+    audioContextRef = audioContext
     const source = audioContext.createMediaStreamSource(stream)
     const analyser = audioContext.createAnalyser()
     analyser.fftSize = size * 2
@@ -1683,11 +1735,13 @@ function MicrophoneSpectrum(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
     const dataArray = new Uint8Array(size)
 
     const captureSpectrum = () => {
+      if (!active) return
+
       analyser.getByteFrequencyData(dataArray)
 
       const oldTensor = spectrumSignal.value
-      // Normalize to 0-1 range
-      const tensor = tf.tensor1d(dataArray).div(255)
+      // Normalize to 0-1 range (use tidy to dispose intermediate tensor)
+      const tensor = tf.tidy(() => tf.tensor1d(dataArray).div(255))
       spectrumSignal.value = tensor
       if (oldTensor) { oldTensor.dispose() }
 
@@ -1699,14 +1753,30 @@ function MicrophoneSpectrum(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
     console.error('Microphone access denied:', err)
   })
 
-  return computed(() => spectrumSignal.value)
+  const result = computed(() => spectrumSignal.value) as Signal<tf.Tensor> & { dispose: () => void }
+  result.dispose = () => {
+    active = false
+    if (streamRef) {
+      streamRef.getTracks().forEach(track => track.stop())
+      streamRef = null
+    }
+    if (audioContextRef) {
+      audioContextRef.close()
+      audioContextRef = null
+    }
+  }
+  return result
 }
 
 function Time(): Signal<tf.Tensor> {
   const startTime = performance.now()
   const timeSignal = SignalCreate<tf.Tensor>(tf.scalar(0))
 
+  let active = true
+
   const updateTime = () => {
+    if (!active) return
+
     const oldTensor = timeSignal.value
     const elapsed = (performance.now() - startTime) / 1000
     timeSignal.value = tf.scalar(elapsed)
@@ -1715,7 +1785,10 @@ function Time(): Signal<tf.Tensor> {
   }
 
   requestAnimationFrame(updateTime)
-  return computed(() => timeSignal.value)
+
+  const result = computed(() => timeSignal.value) as Signal<tf.Tensor> & { dispose: () => void }
+  result.dispose = () => { active = false }
+  return result
 }
 
 
@@ -2530,7 +2603,7 @@ function PrettyPrint(obj: any): JSX.Element {
       if (obj.rank === 2) {
         // Use fast canvas for large tensors (images), Plotly for small
         const size = obj.shape[0] * obj.shape[1]
-        if (size > 1000) {
+        if (size > 10000) {
           return <TensorCanvas data={obj} />
         }
         return <HeatPlot data={obj} />
@@ -2755,7 +2828,7 @@ const TensorCanvas = ({ data }: { data: tf.Tensor }) => {
   const aspect = width / height
 
   useEffect(() => {
-    if (!canvasRef.current || !data) { return }
+    if (!canvasRef.current || !data || data.isDisposed) { return }
 
     const canvas = canvasRef.current
 
@@ -2765,19 +2838,7 @@ const TensorCanvas = ({ data }: { data: tf.Tensor }) => {
       canvas.height = height
     }
 
-    // Normalize to 0-255 range if needed
-    const normalized = tf.tidy(() => {
-      const min = data.min()
-      const max = data.max()
-      const range = max.sub(min)
-      // Avoid division by zero
-      const safeRange = tf.where(range.equal(0), tf.scalar(1), range)
-      return data.sub(min).div(safeRange).mul(255).cast('int32')
-    })
-
-    tf.browser.toPixels(normalized as tf.Tensor2D | tf.Tensor3D, canvas).then(() => {
-      normalized.dispose()
-    })
+    tf.browser.toPixels(data as tf.Tensor2D | tf.Tensor3D, canvas)
   }, [data])
 
   return (
@@ -3120,8 +3181,6 @@ The following operators are defined as aliases to canonical functions:
 ${PRELUDE.trim()}
 \`\`\`
 `
-
-console.log('Fluent Generation System Prompt:', FLUENT_GENERATION_SYSTEM_PROMPT)
 
 const GENERATION_COMMENT_REGEX = /;;(.+?);;/g
 
