@@ -168,7 +168,7 @@ import { renderMarkdown } from "monaco-editor/esm/vs/base/browser/markdownRender
 // @ts-ignore
 import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/common/quickInput"
 
-const createEditorWorker = () => new Worker(new URL("./monaco.worker.js", import.meta.url), { type: "module" })
+const createEditorWorker = () => new Worker(new URL("/monaco.worker.js", self.location.origin), { type: "module" })
 
 const monacoWorkerEnvironment: MonacoEnvironment = {
   getWorker(_moduleId: string, _label: string) {
