@@ -3570,15 +3570,38 @@ const editorBeforeMount: BeforeMount = (monaco) => {
 
   // Scope includes DefaultEnvironment + PRELUDE
   const completionScope = createScope();
+  const symbolSuggestions = [
+    { label: '÷ divide', insertText: '÷', detail: 'Division operator', filterText: 'divide division' },
+    { label: '√ sqrt', insertText: '√', detail: 'Square root', filterText: 'sqrt square root' },
+    { label: '∑ sum', insertText: '∑', detail: 'Summation operator', filterText: 'sum summation sigma' },
+    { label: '∏ product', insertText: '∏', detail: 'Product operator', filterText: 'product pi' },
+    { label: '∞ infinity', insertText: '∞', detail: 'Infinity symbol', filterText: 'infinity inf' },
+    { label: '± plus-minus', insertText: '±', detail: 'Plus-minus operator', filterText: 'plus minus pm' },
+    { label: '≠ not equal', insertText: '≠', detail: 'Not equal operator', filterText: 'not equal neq' },
+    { label: '≈ approx', insertText: '≈', detail: 'Approximately equal operator', filterText: 'approx ~= equal' },
+    { label: '→ right arrow', insertText: '→', detail: 'Right arrow', filterText: 'arrow right ->' },
+    { label: '← left arrow', insertText: '←', detail: 'Left arrow', filterText: 'arrow left <-' },
+    { label: '↔ double arrow', insertText: '↔', detail: 'Double arrow', filterText: 'arrow double <->' },
+  ];
   monaco.languages.registerCompletionItemProvider('fluent', {
     provideCompletionItems: (model, position) => {
       const word = model.getWordUntilPosition(position);
+
       const range = {
         startLineNumber: position.lineNumber,
         endLineNumber: position.lineNumber,
         startColumn: word.startColumn,
         endColumn: word.endColumn,
       };
+
+      const symbolSuggestionItems = symbolSuggestions.map(item => ({
+        label: item.label,
+        kind: monaco.languages.CompletionItemKind.Text,
+        insertText: item.insertText,
+        detail: item.detail,
+        range,
+        filterText: item.filterText,
+      }));
 
       // Collect all keys from scope including parent scopes (prototype chain)
       const allKeys: string[] = [];
@@ -3587,7 +3610,9 @@ const editorBeforeMount: BeforeMount = (monaco) => {
       }
 
       return ({
-        suggestions: allKeys.map((key) => {
+        suggestions: [
+          ...symbolSuggestionItems,
+          ...allKeys.map((key) => {
           const value = completionScope[key];
           return ({
             label: key,
@@ -3598,55 +3623,11 @@ const editorBeforeMount: BeforeMount = (monaco) => {
             range,
             filterText: key,
           })
-        })
+        }),
+        ]
       })
     }
   });
-
-  /*
-const symbolSuggestions = [
-  { label: '÷ division sign', insertText: '÷', detail: 'Division operator' },
-  { label: '√ square root', insertText: '√', detail: 'Root function' },
-  { label: '∑ summation', insertText: '∑', detail: 'Summation operator' },
-  { label: '∏ product', insertText: '∏', detail: 'Product operator' },
-  { label: '∞ infinity', insertText: '∞', detail: 'Infinity symbol' },
-  { label: '± plus-minus sign', insertText: '±', detail: 'Plus-minus operator' },
-  { label: '≠ not equal to', insertText: '≠', detail: 'Not equal operator' },
-  { label: '≈ approximately equal to', insertText: '≈', detail: 'Approximately equal operator' },
-  { label: '→ right arrow', insertText: '→', detail: 'Right arrow operator' },
-  { label: '← left arrow', insertText: '←', detail: 'Left arrow operator' },
-  { label: '↔ double arrow', insertText: '↔', detail: 'Double arrow operator' },
-];
-
-monaco.languages.registerCompletionItemProvider('fluent', {
-  provideCompletionItems: (model, position) => {
-    const lineText = model.getLineContent(position.lineNumber);
-    const textBeforeCursor = lineText.substring(0, position.column - 1);
-
-    let prefixStart = textBeforeCursor.lastIndexOf('\\');
-
-    const word = model.getWordUntilPosition(position);
-    const range = { startLineNumber: position.lineNumber, endLineNumber: position.lineNumber, startColumn: word.startColumn, endColumn: word.endColumn };
-
-    // remove the trigger character '\' from the model
-    // model.pushEditOperations([], [{ range, text: "" }], () => []);
-
-    return {
-      suggestions: symbolSuggestions
-        .filter(item => item.label.toLowerCase().includes(word.word.toLowerCase().replace('\\', ''))) // Filter post-\
-        .map(item => ({
-          label: item.label,
-          kind: monaco.languages.CompletionItemKind.Text, // Or Snippet for advanced
-          insertText: item.insertText,
-          documentation: item.detail,
-          range: { ...range, endColumn: range.endColumn + item.insertText.length }, // Adjust range to include inserted text
-          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
-        })),
-    };
-  },
-});
-
-*/
 }
 
 const editorOnMount: OnMount = (editor, monaco) => {
