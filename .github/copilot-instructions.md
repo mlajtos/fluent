@@ -8,7 +8,7 @@ Fluent is a tiny language + IDE for differentiable tensors and reactive UIs. It 
 
 - **Runtime**: Bun (JavaScript runtime)
 - **Language**: TypeScript with strict mode enabled
-- **Frontend**: React (provided by Bun) with Preact Signals for reactivity
+- **Frontend**: React (via transitive dependencies) with Preact Signals for reactivity
 - **Editor**: Monaco Editor (from VS Code)
 - **Grammar**: Ohm.js for parsing the Fluent language
 - **ML/Tensors**: TensorFlow.js (with CPU, WASM, and WebGL backends)
@@ -20,7 +20,7 @@ Fluent is a tiny language + IDE for differentiable tensors and reactive UIs. It 
 ```
 .
 ├── server.ts        # Bun development server
-├── client.tsx       # Main IDE implementation (3700+ lines)
+├── client.tsx       # Main IDE implementation (3763 lines)
 ├── index.html       # HTML entry point
 ├── index.css        # Global styles
 ├── package.json     # Dependencies and scripts
@@ -63,7 +63,7 @@ The Fluent language has unique characteristics:
 ### Code Organization
 
 - **client.tsx** contains the entire IDE implementation:
-  - Documentation (lines 15-114)
+  - Documentation (lines 16-114)
   - Grammar definition (Ohm.js)
   - Parser and evaluator
   - Built-in functions and operators
