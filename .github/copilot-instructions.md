@@ -108,9 +108,3 @@ The Fluent language has unique characteristics:
 - **Modify syntax**: Update Ohm.js grammar definition
 - **Add UI component**: Create React component with signal support
 - **Change styling**: Use Tailwind utility classes (v4 syntax)
-
-## Potential Issues
-
-- Grid component has limitations with dynamically created lists
-- JavaScript lambdas in built-ins are "magical" but useful
-- No operator precedence can be surprising for new users
