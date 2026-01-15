@@ -171,7 +171,7 @@ import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/com
 const createMonacoWorker = () => new Worker(new URL("./monaco.worker.ts", import.meta.url), { type: "module" })
 
 const monacoWorkerEnvironment: MonacoEnvironment = {
-  getWorker() {
+  getWorker(_moduleId: string, _label: string) {
     return createMonacoWorker()
   },
 }
