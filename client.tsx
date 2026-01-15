@@ -170,7 +170,7 @@ import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/com
 
 const createMonacoWorker = (path: string) => new Worker(new URL(path, import.meta.url), { type: "module" })
 
-;(self as any).MonacoEnvironment = {
+const monacoWorkerEnvironment: MonacoEnvironment = {
   getWorker(_moduleId: string, label: string) {
     if (label === "json") {
       return createMonacoWorker("monaco-editor/esm/vs/language/json/json.worker.js")
@@ -187,6 +187,9 @@ const createMonacoWorker = (path: string) => new Worker(new URL(path, import.met
     return createMonacoWorker("monaco-editor/esm/vs/editor/editor.worker.js")
   },
 }
+
+const monacoGlobal = self as typeof globalThis & { MonacoEnvironment?: MonacoEnvironment }
+monacoGlobal.MonacoEnvironment = monacoWorkerEnvironment
 
 // Configure @monaco-editor/react to use local monaco-editor package
 loader.config({ monaco })
