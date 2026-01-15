@@ -8,11 +8,11 @@ Fluent is a tiny language + IDE for differentiable tensors and reactive UIs. It 
 
 - **Runtime**: Bun (JavaScript runtime)
 - **Language**: TypeScript with strict mode enabled
-- **Frontend**: React with Preact Signals for reactivity
+- **Frontend**: React (provided by Bun) with Preact Signals for reactivity
 - **Editor**: Monaco Editor (from VS Code)
 - **Grammar**: Ohm.js for parsing the Fluent language
 - **ML/Tensors**: TensorFlow.js (with CPU, WASM, and WebGL backends)
-- **Styling**: Tailwind CSS v4
+- **Styling**: Tailwind CSS v4.x
 - **Build**: Bun's built-in bundler with Tailwind plugin
 
 ## Project Structure
