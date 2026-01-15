@@ -1,3 +1,16 @@
+// MARK: Setup
+
+/*
+
+1. clone the repo: \`git clone https://github.com/mlajtos/fluent.git\`
+2. install dependencies: \`cd fluent && bun install\`
+3. start the development server: \`bun dev\`
+4. open \`http://localhost:3000/?code=RG9jdW1lbnRhdGlvbg\` in your browser
+5. edit \`client.tsx\` (this file) to modify the language and IDE
+6. share your changes with others
+
+*/
+
 // MARK: Documentation
 
 const Documentation = `
@@ -6,8 +19,6 @@ const Documentation = `
 Fluent is a tiny language + IDE for differentiable tensors and reactive UIs. Fluent is for programmers, researchers, and tinkerers who want to combine math, differentiation, and interactivity in a playful way.
 
 ## Quickstart
-
-- Try in browser: https://mlajtos.mu/fluent
 
 \`\`\`fluent
 ; tensors + broadcasting
