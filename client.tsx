@@ -2,11 +2,11 @@
 
 /*
 
-1. clone the repo: \`git clone https://github.com/mlajtos/fluent.git\`
-2. install dependencies: \`cd fluent && bun install\`
-3. start the development server: \`bun dev\`
-4. open \`http://localhost:3000/?code=RG9jdW1lbnRhdGlvbg\` in your browser
-5. edit \`client.tsx\` (this file) to modify the language and IDE
+1. clone the repo: `git clone https://github.com/mlajtos/fluent.git`
+2. install dependencies: `cd fluent && bun install`
+3. start the development server: `bun dev`
+4. open `http://localhost:3000/?code=RG9jdW1lbnRhdGlvbg` in your browser
+5. edit `client.tsx` (this file) to modify the language and IDE
 6. share your changes with others
 
 */
