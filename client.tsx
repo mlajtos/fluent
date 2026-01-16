@@ -3577,8 +3577,8 @@ const editorBeforeMount: BeforeMount = (monaco) => {
   const symbolSuggestions = [
     { label: '÷ divide', insertText: '÷', detail: 'Division operator', filterText: 'divide division' },
     { label: '√ sqrt', insertText: '√', detail: 'Square root', filterText: 'sqrt square root' },
-    { label: '∑ sum', insertText: '∑', detail: 'Summation operator', filterText: 'sum summation sigma' },
-    { label: '∏ product', insertText: '∏', detail: 'Product operator', filterText: 'product pi' },
+    { label: 'Σ sum', insertText: 'Σ', detail: 'Summation operator', filterText: 'sum summation sigma' },
+    { label: 'Π product', insertText: 'Π', detail: 'Product operator', filterText: 'product pi' },
     { label: '∞ infinity', insertText: '∞', detail: 'Infinity symbol', filterText: 'infinity inf' },
     { label: '± plus-minus', insertText: '±', detail: 'Plus-minus operator', filterText: 'plus minus pm' },
     { label: '≠ not equal', insertText: '≠', detail: 'Not equal operator', filterText: 'not equal neq' },
