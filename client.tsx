@@ -168,6 +168,10 @@ import { renderMarkdown } from "monaco-editor/esm/vs/base/browser/markdownRender
 // @ts-ignore
 import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/common/quickInput"
 
+(globalThis as { MonacoEnvironment?: typeof MonacoEnvironment }).MonacoEnvironment = {
+  getWorker: () => new Worker("/monaco.worker.js", { type: "module" }),
+}
+
 // Configure @monaco-editor/react to use local monaco-editor package
 loader.config({ monaco })
 
