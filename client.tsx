@@ -108,9 +108,11 @@ Button("Reset", { x(0) }),
 - Live evaluation with error reporting
 - Automatic visualization of values (tensors, lists, functions)
 - GPU-accelerated tensor operations (via TensorFlow.js and WebGL)
+- LLM-backed code generation (BYO Anthropic API key)
+- Command palette (Ctrl+P)
 - Auto-completion (Ctrl+Space)
 - Shareable URL links (Ctrl+S)
-- LLM-backed code generation (BYO Anthropic API key)
+- examples gallery (Ctrl+O)
 `
 
 /*
@@ -3568,6 +3570,12 @@ const editorBeforeMount: BeforeMount = (monaco) => {
   });
 
   monaco.editor.addKeybindingRule({
+    keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP,
+    command: 'editor.action.quickCommand',
+    when: 'editorTextFocus'
+  });
+
+  monaco.editor.addKeybindingRule({
     keybinding: monaco.KeyCode.F1,
     command: '-editor.action.quickCommand',
     when: 'editorTextFocus'
@@ -3757,6 +3765,7 @@ const editorOnMount: OnMount = (editor, monaco) => {
     label: "Load example",
     contextMenuGroupId: "navigation",
     contextMenuOrder: 1.5,
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyO],
 
     run: (editor) => {
       const exampleNames = Object.keys(EXAMPLES) as (keyof typeof EXAMPLES)[]
@@ -3787,7 +3796,7 @@ const editorOnMount: OnMount = (editor, monaco) => {
   editor.addAction({
     id: "fluent-save-example",
     label: "Save example",
-    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
+      
     run: function (editor) {
       const code = editor.getModel()?.getValue() ?? "";
       const encodedCode = StringSerialize(code);
