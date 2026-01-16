@@ -169,7 +169,7 @@ import { renderMarkdown } from "monaco-editor/esm/vs/base/browser/markdownRender
 import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/common/quickInput"
 
 (globalThis as { MonacoEnvironment?: typeof MonacoEnvironment }).MonacoEnvironment = {
-  getWorker: () => new Worker("/monaco.worker.js", { type: "module" }),
+  getWorker: () => new Worker(new URL("monaco.worker.js", document.baseURI), { type: "module" }),
 }
 
 // Configure @monaco-editor/react to use local monaco-editor package
@@ -180,12 +180,13 @@ import { Base64 } from 'js-base64'
 
 import { type Annotations } from "plotly.js"
 import * as tf from '@tensorflow/tfjs'
+// Import backend dynamically to prevent tree-shaking
+await import('@tensorflow/tfjs-backend-webgl')
+await tf.setBackend('webgl')
 // @ts-ignore
 const Plot = (await import("react-plotly.js")).default.default as Plot
 
 import "./index.css"
-
-tf.setBackend('webgl');
 
 // MARK: Parse
 
