@@ -3796,6 +3796,7 @@ const editorOnMount: OnMount = (editor, monaco) => {
   editor.addAction({
     id: "fluent-save-example",
     label: "Save example",
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
       
     run: function (editor) {
       const code = editor.getModel()?.getValue() ?? "";
