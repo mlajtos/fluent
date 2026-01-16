@@ -42,7 +42,7 @@ Button("Reset", { x(0) }),
 ### Syntax
 - Tensors
   - multi-dimensional arrays of numbers
-  - scalars: \`1\`, \`3.14\`, \`-42\`, \`6.02e23\`
+  - scalars: \`1\`, \`3.14\`, \`-42\`
   - vectors: \`[1, 2, 3]\`, matrices: \`[[1, 2], [3, 4]]\`
   - auto-broadcasting: \`[1, 2, 3] + 1\` is \`[2, 3, 4]\`
   - indexing with \`_\`: \`a_0\`, \`a_1\`, \`a_(i + 1)\`, \`a_(-1)\` (last element)
@@ -106,11 +106,11 @@ Button("Reset", { x(0) }),
 ### IDE
 - Syntax highlighting
 - Live evaluation with error reporting
-- Automatic visualization of values
-- GPU-accelerated tensor operations
-- Auto-completion
-- Shareable URL links
-- LLM-backed code generation
+- Automatic visualization of values (tensors, lists, functions)
+- GPU-accelerated tensor operations (via TensorFlow.js and WebGL)
+- Auto-completion (Ctrl+Space)
+- Shareable URL links (Ctrl+S)
+- LLM-backed code generation (BYO Anthropic API key)
 `
 
 /*
