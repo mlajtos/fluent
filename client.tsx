@@ -182,6 +182,8 @@ import { Base64 } from 'js-base64'
 
 import { type Annotations } from "plotly.js"
 import * as tf from '@tensorflow/tfjs'
+import { interpolateViridis } from 'd3-scale-chromatic'
+import { rgb } from 'd3-color'
 // Import backend dynamically to prevent tree-shaking
 await import('@tensorflow/tfjs-backend-webgl')
 await tf.setBackend('webgl')
@@ -1307,11 +1309,19 @@ Button.noAutoLift = true
 
 const convertTextToHTML = async (value: string) => {
   const result = await renderMarkdown({ value }, {
-    inline: false,
     codeBlockRenderer: colorizeCodeAsync,
   })
 
   const element = result.element as HTMLElement
+
+  // Unwrap single <p> elements for simple single-line text
+  if (element.children.length === 1 && element.children[0].tagName === 'P') {
+    const p = element.children[0]
+    while (p.firstChild) {
+      element.insertBefore(p.firstChild, p)
+    }
+    p.remove()
+  }
 
   // Post-process: colorize inline <code> elements (not inside code blocks)
   const inlineCodeElements = element.querySelectorAll('code:not(.code code)')
@@ -1356,13 +1366,15 @@ const NativeDOMElement = ({ fn }: { fn: () => Promise<HTMLElement> }) => {
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    let mounted = true
 
     async function mount() {
-      if (ref.current) {
+      if (ref.current && mounted) {
+        // Clear existing content first (handles HMR edge cases)
+        ref.current.innerHTML = ''
         const element = await fn()
-        ref.current.appendChild(element)
-        return () => {
-          ref.current?.removeChild(element)
+        if (ref.current && mounted) {
+          ref.current.appendChild(element)
         }
       }
     }
@@ -1370,10 +1382,9 @@ const NativeDOMElement = ({ fn }: { fn: () => Promise<HTMLElement> }) => {
     mount()
 
     return () => {
+      mounted = false
       if (ref.current) {
-        while (ref.current.firstChild) {
-          ref.current.removeChild(ref.current.firstChild)
-        }
+        ref.current.innerHTML = ''
       }
     }
   }, [fn])
@@ -2567,7 +2578,7 @@ function PrettyPrint(obj: any): JSX.Element {
 
   if (Array.isArray(obj)) {
     return (
-      <div className="grid gap-2 rounded-xl">
+      <div className="grid gap-1 rounded-xl">
         {obj.map((item, key) => <div key={key} className={`${frameStyle} !border-0 grid hover:bg-neutral-800`}>{PrettyPrint(item)}</div>)}
       </div>
     );
@@ -2619,11 +2630,12 @@ function PrettyPrint(obj: any): JSX.Element {
       }
 
       if (obj.rank === 2) {
-        // Use fast canvas for large tensors (images), Plotly for small
+        // Use fast canvas with viridis colormap for large tensors, Plotly for small (debugging)
         const size = obj.shape[0] * obj.shape[1]
-        if (size > 10000) {
-          return <TensorCanvas data={obj} />
+        if (size > 400) {
+          return <HeatCanvas data={obj} />
         }
+
         return <HeatPlot data={obj} />
       }
 
@@ -2857,6 +2869,69 @@ const TensorCanvas = ({ data }: { data: tf.Tensor }) => {
     }
 
     tf.browser.toPixels(data as tf.Tensor2D | tf.Tensor3D, canvas)
+  }, [data])
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{
+        width: '100%',
+        maxWidth: `${width}px`,
+        aspectRatio: `${aspect}`,
+        imageRendering: 'pixelated'
+      }}
+    />
+  )
+}
+
+// Generate viridis colormap LUT from d3-scale-chromatic (256 entries, RGB 0-1)
+const VIRIDIS_LUT = tf.tensor2d(
+  Array.from({ length: 256 }, (_, i) => {
+    const color = rgb(interpolateViridis(i / 255))
+    return [color.r / 255, color.g / 255, color.b / 255]
+  })
+)
+
+// Fast canvas-based heatmap with viridis colormap (GPU-accelerated via LUT)
+const HeatCanvas = ({ data }: { data: tf.Tensor }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  const height = data.shape[0] || 100
+  const width = data.shape[1] || 100
+  const aspect = width / height
+
+  useEffect(() => {
+    if (!canvasRef.current || !data || data.isDisposed) { return }
+
+    const canvas = canvasRef.current
+
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width
+      canvas.height = height
+    }
+
+    // Apply viridis colormap via lookup table
+    const rgb = tf.tidy(() => {
+      // Normalize to [0, 1]
+      const min = tf.min(data)
+      const max = tf.max(data)
+      const range = tf.maximum(tf.sub(max, min), 1e-6)
+      const normalized = tf.div(tf.sub(data, min), range)
+
+      // Scale to [0, 255] and convert to int for LUT indexing
+      const indices = tf.cast(tf.clipByValue(tf.mul(normalized, 255), 0, 255), 'int32')
+
+      // Gather colors from LUT
+      const flat = tf.reshape(indices, [-1])
+      const colors = tf.gather(VIRIDIS_LUT, flat)
+
+      // Reshape back to image dimensions
+      return tf.reshape(colors, [height, width, 3])
+    })
+
+    tf.browser.toPixels(rgb as tf.Tensor3D, canvas).then(() => {
+      rgb.dispose()
+    })
   }, [data])
 
   return (
@@ -3155,6 +3230,70 @@ pred: $(f(τ)),
 (
     Text("**Loss:**"), losses,
     Text("**Prediction vs Target:**"), (ŷ, pred),
+)
+`,
+"magnets-simulation": `
+; Animated Magnetic Field
+
+(≻): { t, v | ((v_0) × (1 - t)) + (((v_1) × t)) },
+(≺): { v, t | (t - (v_0)) / ((v_1) - (v_0)) },
+normalize: { x | [min(x), max(x)] ≺ x },
+
+numMagnets: 3,
+n: 700,
+
+; Grid
+xs: linspace([-2, 2], n),
+ys: linspace([-1.5, 1.5], n),
+X: ((xs ⍴ [n, 1]) tile [1, n]),
+Y: ((ys ⍴ [1, n]) tile [n, 1]),
+
+; Magnet positions using lerp
+rawPos: rand([numMagnets, 2]),
+posT: transpose(rawPos),
+magX: ((posT_0) ≻ [-1.5, 1.5]),
+magY: ((posT_1) ≻ [-1, 1]),
+
+; Animated angles
+t: Time(),
+baseAngles: (rand([numMagnets]) × 6.28),
+speeds: (rand([numMagnets]) ≻ [0.1, 0.5]),
+angles: (baseAngles + (t × speeds)),
+
+; Pole positions
+d: 0.12,
+nPoleX: (magX + (d × cos(angles))),
+nPoleY: (magY + (d × sin(angles))),
+sPoleX: (magX - (d × cos(angles))),
+sPoleY: (magY - (d × sin(angles))),
+
+; Reshape for broadcasting
+X3: (X ⍴ [n, n, 1]),
+Y3: (Y ⍴ [n, n, 1]),
+nX3: (nPoleX ⍴ [1, 1, numMagnets]),
+nY3: (nPoleY ⍴ [1, 1, numMagnets]),
+sX3: (sPoleX ⍴ [1, 1, numMagnets]),
+sY3: (sPoleY ⍴ [1, 1, numMagnets]),
+
+; Distances
+ε: 0.0001,
+rN: (√(((X3 - nX3)^2) + ((Y3 - nY3)^2)) + ε),
+rS: (√(((X3 - sX3)^2) + ((Y3 - sY3)^2)) + ε),
+
+; Potential
+;k: 0.5,
+; Pulsing strength
+k: (0.5 + (sin(t × 2) × 0.2)),
+potential: sum(((k/rN) - (k/rS)), 2),
+
+; Visualization
+lines: (abs(sin(potential × 25)) ^ 0.25),
+glow: (1 / (abs(potential) + 0.2)),
+field: ((lines × 0.7) + (glow × 0.3)),
+
+(
+  Text("# 🧲 Spinning Magnets"),
+  lines,
 )
 `
 } as const
