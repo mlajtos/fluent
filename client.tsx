@@ -55,6 +55,7 @@ Button("Reset", { x(0) }),
   - lambda with \`{}\`: \`{ x | x + 1 }\`, \`{ x, y | x * y }\`, \`{ 42 }\`
   - last expression is the return value: \`{ a: 1, b: 2, a + b }\` returns \`3\`
   - application: \`add(1, 2)\` or infix \`1 add 2\`
+  - self-reference: \`self\` refers to the current function (for recursion)
 - Symbols
   - letter-based: \`a\`, \`FooBar\`, \`bar-baz-1\`, \`α\`, \`β\`, \`θ\`
   - operator-based: \`+\`, \`≠\`, \`!=\`, \`√\`, \`∇\`
@@ -89,6 +90,10 @@ Button("Reset", { x(0) }),
   - explicit computed: \`y: $({ x() + 1 })\` – manual version (rarely needed)
 - Iteration
   - repeat N times with \`⟳\`: \`step ⟳ 100\`
+- Pattern matching
+  - \`guard(cond, { value })\`: returns a function that yields value if cond is truthy, else Error
+  - use with \`cascade\` for pattern matching: \`cascade((guard(...), { default }))(arg)\`
+  - example: \`fact: { n | f: self, cascade((guard(n = 0, { 1 }), { n * f(n - 1) }))(n) }\`
 - Optimization
   - create variable: \`θ: ~([0, 0])\`
   - define loss: \`loss: { sum(θ^2) }\`
@@ -637,6 +642,9 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
           return acc
         }, Object.create(env) as CurrentScope)
 
+      // FunctionSelf: inject self-reference for anonymous recursion
+      localEnv['self'] = fn
+
       // Reify in localEnv so symbols resolve to local values, not outer scope
       return reify(evaluateSyntaxTreeNode(node.content.expr, localEnv), localEnv)
     }
@@ -1005,6 +1013,33 @@ const FunctionNoAutoLift = (fn: Function) => {
 }
 // @ts-ignore
 FunctionNoAutoLift.noAutoLift = true  // Don't auto-lift the wrapper itself!
+
+const FunctionGuard = function (this: CurrentScope, cond: tf.Tensor, thunk: Function) {
+  // Capture condition value and thunk
+  const condValue = getAsSyncList(cond)
+  const scope = this
+
+  // Return a function that cascade can call as a candidate
+  return function () {
+    // Check if falsy: 0, all-zero tensor, NaN
+    const isFalsy = condValue === 0 ||
+      (Array.isArray(condValue) && (condValue.flat(Infinity) as number[]).every(v => v === 0)) ||
+      Number.isNaN(condValue)
+
+    if (isFalsy) {
+      return new Error('Guard condition not met')
+    }
+
+    // Condition passed - evaluate thunk
+    if (typeof thunk === 'function') {
+      return thunk.apply(scope)
+    }
+
+    return new Error('FunctionGuard: second argument must be a thunk { value }')
+  }
+}
+// @ts-ignore
+FunctionGuard.noAutoLift = true
 
 const List = (...args: unknown[]) => {
   return args
@@ -1870,6 +1905,7 @@ const DefaultEnvironment = {
   FunctionEvaluate,
   FunctionApply,
   FunctionNoAutoLift,
+  FunctionGuard,
 
   // MARK: Signals
   
@@ -2029,6 +2065,7 @@ iter: FunctionIterate,
 (@): FunctionEvaluate,
 eval: FunctionEvaluate,
 cascade: FunctionCascade,
+guard: FunctionGuard,
 
 ; Tensor shape/indexing
 (#): TensorLength,
