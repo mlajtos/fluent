@@ -1238,7 +1238,8 @@ const TensorRange = (a: tf.Tensor, b: tf.Tensor) => {
 
   const start = getAsSyncList(tf.cast(a, "int32")) as number
   const stop = getAsSyncList(tf.cast(b, "int32")) as number
-  return tf.range(start, stop)
+  const step = start <= stop ? 1 : -1
+  return tf.range(start, stop, step)
 }
 
 const TensorLinearSpace = (range: tf.Tensor, steps: tf.Tensor) => {
@@ -1987,6 +1988,7 @@ const DefaultEnvironment = {
   TensorMask,
   TensorSlice,
   TensorFill,
+  TensorReverse,
 
   TensorVariable,
   TensorAssign,
@@ -2115,6 +2117,33 @@ chunks: { w, arr |
 
 stencil: { w, f, arr | unstack(windows(w, arr)) ListMap f . stack },
 conv: { kernel, arr | stencil(#(kernel), { w | Σ(w × kernel) }, arr) },
+
+; List operations
+ListZip: { a, b |
+  n: TensorMin(ListLength(a), ListLength(b)),
+  TensorUnstack(0 :: n) ListMap { i | (a ListGet i, b ListGet i) }
+},
+ListTake: { list, n |
+  TensorUnstack(0 :: n) ListMap { i | list ListGet i }
+},
+ListDrop: { list, n |
+  len: ListLength(list),
+  TensorUnstack(n :: len) ListMap { i | list ListGet i }
+},
+ListReverse: { list |
+  n: ListLength(list),
+  TensorUnstack(TensorReverse(0 :: n)) ListMap { i | list ListGet i }
+},
+ListEnumerate: { list |
+  n: ListLength(list),
+  TensorUnstack(0 :: n) ListMap { i | (i, list ListGet i) }
+},
+ListScan: { list, f, init |
+  ListReduce(list, { acc, val |
+    prev: ListGet(acc, -1),
+    ListConcat(acc, List(f(prev, val)))
+  }, List(init)),
+},
 
 ; Arithmetic
 (/): TensorDivide,
@@ -2616,7 +2645,7 @@ function PrettyPrint(obj: any): JSX.Element {
   if (Array.isArray(obj)) {
     return (
       <div className="grid gap-1 rounded-xl">
-        {obj.map((item, key) => <div key={key} className={`${frameStyle} !border-0 grid hover:bg-neutral-800`}>{PrettyPrint(item)}</div>)}
+        {obj.map((item, key) => <div key={key} className={`${frameStyle} !border-0 grid hover:bg-neutral-900 mix-blend-screen`}>{PrettyPrint(item)}</div>)}
       </div>
     );
   }
