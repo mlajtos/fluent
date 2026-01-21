@@ -2586,8 +2586,6 @@ function PrettyPrintSyntaxTree(node: SyntaxTreeNode & { type: "Program" }): JSX.
 function WithOriginHighlight({ obj, children }: { obj: any, children: JSX.Element }): JSX.Element {
   const origin = getOrigin(obj)
   if (!origin) return children
-  // Note: Using inline style instead of className="contents" because display:contents
-  // doesn't generate a box and may not receive pointer events in some browsers
   return (
     <span
       style={{ display: 'contents' }}
@@ -2713,7 +2711,7 @@ function PrettyPrintInner(obj: any): JSX.Element {
           <li key={index}
             className="list-item px-2 py-0.5 text-red-700 cursor-pointer hover:bg-red-700 hover:text-red-200"
             onPointerOver={() => {
-              setHoverHighlight(getOrigin(error) || null)
+              setHoverHighlight(getOrigin(error) ?? null)
             }}
             onPointerOut={() => {
               setHoverHighlight(null)
