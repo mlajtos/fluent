@@ -2281,459 +2281,251 @@ const createScope = () => {
   return scope
 }
 
-const treeNodePaddingVertical = 3
-const treeNodePaddingHorizontal = 8
-
-const fontSize = 14
-const glyphWidth = fontSize * 0.6
-const glyphHeight = fontSize * 1.2
-
-const rectHeight = glyphHeight + (treeNodePaddingVertical * 2)
-const rowMargin = 15
-const rowHeight = rectHeight + rowMargin
-const columnGap = 24 // Gap between columns where vertical connection lines run
-
-type TreeNodeDescriptor = {
-  node: {
-    column: number,
-    row: number,
-    label: string,
-    origin: Origin,
-  },
-  frame: {
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-  },
-  text: {
-    x: number,
-    y: number,
-    color: string,
-    fontSize: number,
-    content: string,
-  }
+// Layout constants
+const TREE = {
+  fontSize: 14,
+  nodePadding: { x: 8, y: 3 },
+  gap: { row: 15, col: 24 },
+  cornerRadius: 5,
 }
+const GLYPH = { width: TREE.fontSize * 0.6, height: TREE.fontSize * 1.2 }
+const NODE_HEIGHT = GLYPH.height + 2 * TREE.nodePadding.y
+const ROW_HEIGHT = NODE_HEIGHT + TREE.gap.row
+
+// Simple types for layout
+type GridNode = { label: string, row: number, col: number, width: number, origin: Origin }
+type GridEdge = { parentRow: number, parentCol: number, childRow: number, childCol: number }
 
 // Reference to main editor for hover highlighting
-let mainEditorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null;
+let mainEditorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null
 
 const setHoverHighlight = (origin: Origin | null) => {
-  if (!mainEditorRef) { return }
+  if (!mainEditorRef) return
   const { editor, monaco } = mainEditorRef
   const model = editor.getModel()
-  if (!model) { return }
+  if (!model) return
 
-  if (!origin) {
-    monaco.editor.setModelMarkers(model, "fluent-hover", [])
-    return
+  monaco.editor.setModelMarkers(model, "fluent-hover", origin ? [{
+    startLineNumber: origin.start.line,
+    startColumn: origin.start.column,
+    endLineNumber: origin.end.line,
+    endColumn: origin.end.column,
+    message: "Error source",
+    severity: monaco.MarkerSeverity.Error,
+  }] : [])
+}
+
+function nodeWidth(label: string): number {
+  return label.length * GLYPH.width + 2 * TREE.nodePadding.x
+}
+
+function Tree(tree: SyntaxTreeNode & { type: "Program" }): JSX.Element {
+  const { nodes, edges } = layoutGrid(tree)
+  if (nodes.length === 0) return <svg />
+
+  // Compute column widths (max node width per column)
+  const colWidths: number[] = []
+  for (const n of nodes) {
+    colWidths[n.col] = Math.max(colWidths[n.col] || 0, n.width)
   }
 
-  monaco.editor.setModelMarkers(model, "fluent-hover", [
-    {
-      startLineNumber: origin.start.line,
-      startColumn: origin.start.column,
-      endLineNumber: origin.end.line,
-      endColumn: origin.end.column,
-      message: "Error source",
-      severity: monaco.MarkerSeverity.Error,
-    }
-  ])
-}
-
-function getColumnWidths(nodes: TreeNodeDescriptor[]): number[] {
-  const columnWidths: number[] = [];
-  for (const node of nodes) {
-    const col = node.node.column - 1; // Adjust for 0-based index
-    if (!columnWidths[col]) {
-      columnWidths[col] = 0;
-    }
-    columnWidths[col] = Math.max(columnWidths[col], node.frame.width);
+  // Compute column centers and gap centers (right-to-left: col 1 is rightmost)
+  const colCenter: number[] = []
+  const gapCenter: number[] = []  // gapCenter[c] = center of gap after column c
+  let x = 0
+  for (let c = 1; c < colWidths.length; c++) {
+    const w = colWidths[c] || 0
+    colCenter[c] = x + w / 2
+    x += w
+    gapCenter[c] = x + TREE.gap.col / 2
+    x += TREE.gap.col
   }
-  return columnWidths;
-}
+  const totalWidth = x - TREE.gap.col  // no gap after last column
 
-function getRowHeights(nodes: TreeNodeDescriptor[]): number[] {
-  const rowHeights: number[] = [];
-  for (const node of nodes) {
-    const row = node.node.row - 1; // Adjust for 0-based index
-    if (!rowHeights[row]) {
-      rowHeights[row] = 0;
-    }
-    rowHeights[row] = Math.max(rowHeights[row], node.frame.height);
-  }
-  return rowHeights;
-}
+  // Flip X coordinates (col 1 should be on the right)
+  for (let c = 1; c < colCenter.length; c++) colCenter[c] = totalWidth - (colCenter[c] ?? 0)
+  for (let c = 1; c < gapCenter.length; c++) gapCenter[c] = totalWidth - (gapCenter[c] ?? 0)
 
+  // Compute row centers
+  const maxRow = Math.max(...nodes.map(n => n.row))
+  const rowCenter = (r: number) => (r - 0.5) * ROW_HEIGHT
+  const totalHeight = maxRow * ROW_HEIGHT
 
-function TreeNodeLayout(label: string, column: number, row: number, origin: Origin): TreeNodeDescriptor {
-  const textWidth = label.length * glyphWidth;
-  const textHeight = glyphHeight;
-
-  const rectWidth = textWidth + (2 * treeNodePaddingHorizontal);
-  const rectHeight = textHeight + (2 * treeNodePaddingVertical);
-
-  return {
-    node: {
-      column,
-      row,
-      label,
-      origin
-    },
-    frame: {
-      x: 0,
-      y: row * rowHeight,
-      width: rectWidth,
-      height: rectHeight,
-    },
-    text: {
-      x: (rectWidth / 2),
-      y: (rectHeight / 2),
-      color: getColorForSyntaxTreeNode(label),
-      fontSize,
-      content: label
-    }
-  }
-}
-
-type TreeConnectionDescriptor = {
-  start: {
-    column: number,
-    row: number,
-    x: number,
-    y: number,
-  },
-  end: {
-    column: number,
-    row: number,
-    x: number,
-    y: number,
-  },
-  trunkX: number, // Fixed X position for vertical trunk (same for all siblings)
-}
-
-function TreeConnectionLayout(fromCol: number, fromRow: number, toCol: number, toRow: number): TreeConnectionDescriptor {
-  return {
-    start: {
-      row: fromRow,
-      column: fromCol,
-      x: 0,
-      y: 0,
-    },
-    end: {
-      row: toRow,
-      column: toCol,
-      x: 0,
-      y: 0,
-    },
-    trunkX: 0,
-  }
-}
-
-function Tree(node: SyntaxTreeNode & { type: "Program" }): JSX.Element {
-
-  const { nodes, connections } = layout(node);
-
-  // Calculate row heights for vertical positioning (rows = siblings)
-  const rowHeights = getRowHeights(nodes).map((h) => h + rowMargin);
-  const rowOffsets = (() => {
-    const [_, L] = rowHeights.reduce(([b, K], c) => [b + c, [...K, b + c]], [0, [0]] as [number, number[]])
-    return L
-  })()
-
-  // Step 1: Column widths = max node width in each column (no gap included)
-  const columnWidths = getColumnWidths(nodes);
-  const numColumns = columnWidths.length;
-
-  // Step 2: Total width = sum of column widths + gaps between columns
-  // There are (numColumns - 1) gaps between columns
-  const totalWidth = columnWidths.reduce((a, b) => a + b, 0) + (numColumns > 0 ? (numColumns - 1) * columnGap : 0);
-
-  const height = rowOffsets[rowOffsets.length - 1] || rowHeight;
-  const width = totalWidth || columnGap;
-
-  // Step 3: Calculate column centers (right-to-left: col 1 = rightmost)
-  // Layout: [col N] [gap] [col N-1] [gap] ... [gap] [col 1]
-  // From right: col 1 center = totalWidth - columnWidths[0]/2
-  //             col 2 center = totalWidth - columnWidths[0] - gap - columnWidths[1]/2
-  const getColumnCenter = (col: number): number => {
-    let x = totalWidth;
-    for (let c = 1; c < col; c++) {
-      x -= columnWidths[c - 1] || 0;
-      x -= columnGap; // gap after each column (except the last)
-    }
-    return x - (columnWidths[col - 1] || 0) / 2;
-  };
-
-  // Step 4: Calculate gap centers (where vertical trunk lines go)
-  // Gap between col c and col c+1 is centered at:
-  // totalWidth - columnWidths[0] - ... - columnWidths[c-1] - columnGap/2
-  const getGapCenter = (parentCol: number): number => {
-    let x = totalWidth;
-    for (let c = 1; c <= parentCol; c++) {
-      x -= columnWidths[c - 1] || 0;
-      if (c < parentCol) {
-        x -= columnGap;
-      }
-    }
-    return x - columnGap / 2;
-  };
-
-  // Step 5: Position nodes at column centers
-  const renderedNodes = nodes.map((node) => {
-    const col = node.node.column;
-    const row = node.node.row;
-
-    node.frame.x = getColumnCenter(col);
-    node.frame.y = (rowOffsets[row - 1] || 0) + ((rowHeights[row - 1] || rowHeight) - node.frame.height) / 2;
-
-    return TreeNode(node);
-  });
-
-  // Step 6: Position connections
-  const renderedConnections = connections.map((c) => {
-    const startCol = c.start.column;
-    const startRow = c.start.row;
-    const endCol = c.end.column;
-    const endRow = c.end.row;
-
-    // Find actual node widths
-    const startNode = nodes.find(n => n.node.column === startCol && n.node.row === startRow);
-    const endNode = nodes.find(n => n.node.column === endCol && n.node.row === endRow);
-    const startNodeWidth = startNode?.frame.width || columnWidths[startCol - 1] || 0;
-    const endNodeWidth = endNode?.frame.width || columnWidths[endCol - 1] || 0;
-
-    // Start: left edge of parent node
-    c.start.x = getColumnCenter(startCol) - startNodeWidth / 2;
-
-    // End: right edge of child node
-    c.end.x = getColumnCenter(endCol) + endNodeWidth / 2;
-
-    // Trunk: center of gap between parent and child columns
-    c.trunkX = getGapCenter(startCol);
-
-    // Y: center of row
-    c.start.y = (rowOffsets[startRow - 1] || 0) + (rowHeights[startRow - 1] || rowHeight) / 2;
-    c.end.y = (rowOffsets[endRow - 1] || 0) + (rowHeights[endRow - 1] || rowHeight) / 2;
-
-    return TreeConnection(c);
-  })
+  // Build lookup for node widths by position
+  const nodeAt = new Map(nodes.map(n => [`${n.row},${n.col}`, n]))
 
   return (
-    <svg style={{ width, height, shapeRendering: "optimizeSpeed" }} viewBox={`0 0 ${width} ${height}`} xmlns="http://www.w3.org/2000/svg">
-      {renderedConnections}
-      {renderedNodes}
+    <svg style={{ width: totalWidth, height: totalHeight, shapeRendering: "optimizeSpeed" }} viewBox={`0 0 ${totalWidth} ${totalHeight}`}>
+      {edges.map(e => {
+        const parent = nodeAt.get(`${e.parentRow},${e.parentCol}`)!
+        const child = nodeAt.get(`${e.childRow},${e.childCol}`)!
+        return (
+          <TreeEdge
+            key={`${e.parentRow},${e.parentCol}-${e.childRow},${e.childCol}`}
+            x1={(colCenter[e.parentCol] ?? 0) - parent.width / 2}
+            y1={rowCenter(e.parentRow)}
+            x2={(colCenter[e.childCol] ?? 0) + child.width / 2}
+            y2={rowCenter(e.childRow)}
+            trunkX={gapCenter[e.parentCol] ?? 0}
+          />
+        )
+      })}
+      {nodes.map(n => (
+        <TreeNode
+          key={`${n.row},${n.col}`}
+          x={colCenter[n.col] ?? 0}
+          y={rowCenter(n.row)}
+          label={n.label}
+          width={n.width}
+          origin={n.origin}
+        />
+      ))}
     </svg>
   )
 }
 
-function TreeConnection({ start, end, trunkX }: TreeConnectionDescriptor): JSX.Element {
-  const key = `connection-${start.column}-${start.row}-${end.column}-${end.row}`
-  // Mostly straight with smooth rounded corners
-  // Parent is on the right (start), child is on the left (end)
-  // trunkX is fixed for all siblings (based on column boundary)
-  const r = 5; // corner radius for smooth bends
-  const verticalDist = Math.abs(end.y - start.y);
+function TreeEdge({ x1, y1, x2, y2, trunkX }: { x1: number, y1: number, x2: number, y2: number, trunkX: number }): JSX.Element {
+  const r = TREE.cornerRadius
+  const dy = y2 - y1
+  const ady = Math.abs(dy)
 
-  // Case 1: Same Y level - straight horizontal line
-  if (verticalDist < 1) {
-    return (
-      <g key={key} fill="none" strokeWidth={1} className="stroke-neutral-600">
-        <path d={`M${start.x} ${start.y} L${end.x} ${end.y}`} />
-      </g>
-    )
+  // Straight horizontal line
+  if (ady < 1) {
+    return <path d={`M${x1} ${y1} L${x2} ${y2}`} fill="none" strokeWidth={1} className="stroke-neutral-600" />
   }
 
-  // Case 2: Small vertical distance - use smooth arc-like curve
-  if (verticalDist < 2 * r) {
-    // Use half the vertical distance as corner radius
-    const smallR = verticalDist / 2;
-    const goingDown = end.y > start.y;
-    const smallDy = goingDown ? smallR : -smallR;
-
+  // Small vertical distance - smooth S-curve
+  if (ady < 2 * r) {
+    const sr = ady / 2
+    const sdy = dy > 0 ? sr : -sr
     return (
-      <g key={key} fill="none" strokeWidth={1} className="stroke-neutral-600">
-        <path
-          d={`
-            M${start.x} ${start.y}
-            L${trunkX + smallR} ${start.y}
-            Q${trunkX} ${start.y}, ${trunkX} ${start.y + smallDy}
-            Q${trunkX} ${end.y}, ${trunkX - smallR} ${end.y}
-            L${end.x} ${end.y}
-          `}
-        />
-      </g>
-    )
-  }
-
-  // Case 3: Large vertical distance - use stepped path with rounded corners
-  const goingDown = end.y > start.y;
-  const dy = goingDown ? r : -r;
-
-  return (
-    <g key={key} fill="none" strokeWidth={1} className="stroke-neutral-600">
       <path
-        d={`
-          M${start.x} ${start.y}
-          L${trunkX + r} ${start.y}
-          Q${trunkX} ${start.y}, ${trunkX} ${start.y + dy}
-          L${trunkX} ${end.y - dy}
-          Q${trunkX} ${end.y}, ${trunkX - r} ${end.y}
-          L${end.x} ${end.y}
-        `}
+        d={`M${x1} ${y1} L${trunkX + sr} ${y1} Q${trunkX} ${y1}, ${trunkX} ${y1 + sdy} Q${trunkX} ${y2}, ${trunkX - sr} ${y2} L${x2} ${y2}`}
+        fill="none" strokeWidth={1} className="stroke-neutral-600"
       />
-    </g>
+    )
+  }
+
+  // Normal case - stepped path with rounded corners
+  const sdy = dy > 0 ? r : -r
+  return (
+    <path
+      d={`M${x1} ${y1} L${trunkX + r} ${y1} Q${trunkX} ${y1}, ${trunkX} ${y1 + sdy} L${trunkX} ${y2 - sdy} Q${trunkX} ${y2}, ${trunkX - r} ${y2} L${x2} ${y2}`}
+      fill="none" strokeWidth={1} className="stroke-neutral-600"
+    />
   )
 }
 
-function TreeNode(node: TreeNodeDescriptor): JSX.Element {
-  const key = `node-${node.node.column}-${node.node.row}`
-
+function TreeNode({ x, y, label, width, origin }: { x: number, y: number, label: string, width: number, origin: Origin }): JSX.Element {
   return (
-    <g key={key} transform={`translate(${node.frame.x - node.frame.width / 2}, ${node.frame.y})`}>
+    <g transform={`translate(${x - width / 2}, ${y - NODE_HEIGHT / 2})`}>
       <rect
-        //className="cursor-pointer fill-[#171717] hover:fill-[#101010] stroke-[0.5] hover:stroke-1"
-        className="cursor-pointer fill-[transparent] hover:fill-[#101010] stroke-[0.5] hover:stroke-1"
-        width={node.frame.width}
-        height={node.frame.height}
-        rx={node.frame.height / 4}
+        className="cursor-pointer fill-transparent hover:fill-[#101010] stroke-[0.5] hover:stroke-1"
+        width={width}
+        height={NODE_HEIGHT}
+        rx={NODE_HEIGHT / 4}
         stroke="rgba(255,255,255, 0.1)"
-        onPointerOver={() => {
-          setHoverHighlight(node.node.origin)
-        }}
-        onPointerOut={() => {
-          setHoverHighlight(null)
-        }}
+        onPointerOver={() => setHoverHighlight(origin)}
+        onPointerOut={() => setHoverHighlight(null)}
       />
       <text
-        transform={`translate(${node.text.x}, ${node.text.y})`}
+        transform={`translate(${width / 2}, ${NODE_HEIGHT / 2})`}
         textAnchor="middle"
         dominantBaseline="central"
-        fill={node.text.color}
-        style={{ fontSize: node.text.fontSize }}
-        className={`font-mono text-center pointer-events-none`}
+        fill={getColorForSyntaxTreeNode(label)}
+        style={{ fontSize: TREE.fontSize }}
+        className="font-mono pointer-events-none"
       >
-        {node.text.content}
+        {label}
       </text>
     </g>
   )
 }
 
-function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDescriptor[], connections: TreeConnectionDescriptor[] } {
+// Grid layout: assigns (row, col) positions to AST nodes
+function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNode[], edges: GridEdge[] } {
+  const nodes: GridNode[] = []
+  const edges: GridEdge[] = []
+  const used = new Set<string>()
 
-  function getLabel(node: SyntaxTreeNode) {
-    if (node.type === 'Symbol') {
-      return node.content.value;
-    } else if (node.type === 'Number') {
-      return node.content.value.toString();
-    } else if (node.type === 'Operation') {
-      return getLabel(node.content.operator) // .content.value;
-    } else if (node.type === 'Tensor') {
-      return '[]';
-    } else if (node.type === 'Lambda') {
-      return '{}';
-    } else if (node.type === 'List') {
-      return '()';
-    } else if (node.type === 'String') {
-      return `"${node.content.value}"`;
-    } else if (node.type === 'Code') {
-      return '``';
-    } else {
-      throw new Error(`Unknown type ${node.type}`);
+  function getLabel(node: SyntaxTreeNode): string {
+    switch (node.type) {
+      case 'Symbol': return node.content.value
+      case 'Number': return node.content.value.toString()
+      case 'Operation': return getLabel(node.content.operator)
+      case 'Tensor': return '[]'
+      case 'Lambda': return '{}'
+      case 'List': return '()'
+      case 'String': return `"${node.content.value}"`
+      case 'Code': return '``'
+      default: throw new Error(`Unknown type ${node.type}`)
     }
   }
 
   function getChildren(node: SyntaxTreeNode): SyntaxTreeNode[] {
-    if (node.type === 'Program') {
-      return node.content;
-    } else if (node.type === 'Operation') {
-      // If operator is also an Operation (chained call like cascade(...)()),
-      // include the inner operation's children so they're visible in the tree
-      if (node.content.operator.type === 'Operation') {
-        return [...getChildren(node.content.operator), ...node.content.args.content.value];
-      }
-      return node.content.args.content.value;
-    } else if (node.type === 'Tensor') {
-      return node.content.value;
-    } else if (node.type === 'Lambda') {
-      return [{ type: 'List', content: { value: node.content.args }, origin: node.origin }, ...(node.content.expr as SyntaxTreeNode & { type: "Program" }).content];
-    } else if (['Symbol', 'Number'].includes(node.type)) {
-      return [];
-    } else if (node.type === 'List') {
-      return node.content.value;
-    } else if (node.type === 'String') {
-      return [];
-    } else if (node.type === 'Code') {
-      return []
-    } else {
-      throw new Error(`Unknown type ${node.type}`);
-    }
-  }
-
-  function getFootprint(node: SyntaxTreeNode): Set<string> {
-    const fp = new Set<string>();
-    fp.add('0,0');  // row,col format
-    const children = getChildren(node);
-    let child_dr = 0;  // row offset for each child (sibling index)
-    for (const child of children) {
-      const child_fp = getFootprint(child);
-      for (let pos of child_fp) {
-        const [dr, dc] = pos.split(',').map(Number) as [number, number];
-        fp.add(`${child_dr + dr},${1 + dc}`);  // row shifts by child index, column increases (depth)
-      }
-      child_dr += 1;
-    }
-    return fp;
-  }
-
-  function layout(node: SyntaxTreeNode, row: number, col: number, nodes: TreeNodeDescriptor[], conns: TreeConnectionDescriptor[], used: Set<string>) {
-    let label = getLabel(node);
-
-    nodes.push(TreeNodeLayout(label, col, row, node.origin));
-    used.add(`${row},${col}`);
-
-    const children = getChildren(node);
-
-    if (children.length > 0) {
-      const child_col = col + 1;  // depth increases (children are to the LEFT when rendered)
-      for (let i = 0; i < children.length; i++) {
-        let child = children[i]!;
-        let tentative_row = row + i;  // siblings stack vertically
-        let fp = getFootprint(child);
-        while (Array.from(fp).some(pos => {
-          let [dr, dc] = pos.split(',').map(Number) as [number, number];
-          return used.has(`${tentative_row + dr},${child_col + dc}`);
-        })) {
-          tentative_row += 1;
+    switch (node.type) {
+      case 'Program': return node.content
+      case 'Operation':
+        // Flatten chained calls like cascade(...)()
+        if (node.content.operator.type === 'Operation') {
+          return [...getChildren(node.content.operator), ...node.content.args.content.value]
         }
-        conns.push(TreeConnectionLayout(col, row, child_col, tentative_row));
-
-        layout(child, tentative_row, child_col, nodes, conns, used);
-      }
+        return node.content.args.content.value
+      case 'Tensor': return node.content.value
+      case 'Lambda':
+        return [
+          { type: 'List', content: { value: node.content.args }, origin: node.origin },
+          ...(node.content.expr as SyntaxTreeNode & { type: "Program" }).content
+        ]
+      case 'List': return node.content.value
+      case 'Symbol':
+      case 'Number':
+      case 'String':
+      case 'Code': return []
+      default: throw new Error(`Unknown type ${node.type}`)
     }
   }
 
-  const nodes: TreeNodeDescriptor[] = [];
-  const conns: TreeConnectionDescriptor[] = [];
-  const used = new Set<string>();
-  let current_row = 1;  // Stack graphs vertically
+  // Returns the bounding box size of a subtree (rows × cols)
+  function getSize(node: SyntaxTreeNode): [number, number] {
+    const children = getChildren(node)
+    if (children.length === 0) return [1, 1]
+    let totalRows = 0, maxCols = 0
+    for (const child of children) {
+      const [r, c] = getSize(child)
+      totalRows += r
+      maxCols = Math.max(maxCols, c)
+    }
+    return [totalRows, 1 + maxCols]
+  }
+
+  function layout(node: SyntaxTreeNode, row: number, col: number) {
+    const label = getLabel(node)
+    nodes.push({ label, row, col, width: nodeWidth(label), origin: node.origin })
+    used.add(`${row},${col}`)
+
+    const children = getChildren(node)
+    let childRow = row
+    for (const child of children) {
+      const [childRows] = getSize(child)
+      // Find non-overlapping row
+      while (used.has(`${childRow},${col + 1}`)) childRow++
+      edges.push({ parentRow: row, parentCol: col, childRow, childCol: col + 1 })
+      layout(child, childRow, col + 1)
+      childRow += childRows
+    }
+  }
+
+  let row = 1
   for (const stmt of tree.content) {
-    const fp = getFootprint(stmt);
-    let tentative_row = current_row;
-    while (Array.from(fp).some(pos => {
-      let [dr, dc] = pos.split(',').map(Number) as [number, number];
-      return used.has(`${tentative_row + dr},${1 + dc}`);
-    })) {
-      tentative_row += 1;
-    }
-    layout(stmt, tentative_row, 1, nodes, conns, used);  // col=1 is root column (rightmost)
-    current_row = tentative_row + 1;
+    const [stmtRows] = getSize(stmt)
+    // Find non-overlapping row
+    while (used.has(`${row},1`)) row++
+    layout(stmt, row, 1)
+    row += stmtRows
   }
 
-  return {
-    nodes,
-    connections: conns
-  };
+  return { nodes, edges }
 }
 
 // MARK: Runtime
