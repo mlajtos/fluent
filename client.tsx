@@ -581,17 +581,30 @@ const getParseErrors = (program: string): ParseError[] => {
 
 // MARK: Evaluate
 
-type Value = tf.Tensor | Function | Signal<Value> | Error | string | symbol | null | Value[]
+type Value = tf.Tensor | Function | Signal<Value> | Error | string | String | symbol | null | Value[]
 type CurrentScope = Record<string, Value>
 
-const SymbolOrigin = Symbol.for('Origin')
+// WeakMap to store origin information for any object (including frozen ones like JSX)
+const originMap = new WeakMap<object, Origin>()
+
+function setOrigin(value: any, origin: Origin): void {
+  if (value !== null && typeof value === 'object') {
+    originMap.set(value, origin)
+  }
+}
+
+function getOrigin(value: any): Origin | undefined {
+  if (value !== null && typeof value === 'object') {
+    return originMap.get(value)
+  }
+  return undefined
+}
 
 function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value {
 
   if (node.type === "Error") {
     const error = new Error(node.content)
-    // @ts-ignore
-    error[SymbolOrigin] = node.origin
+    setOrigin(error, node.origin)
     return error
   }
 
@@ -603,32 +616,42 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "Number") {
-    return tf.scalar(node.content.value)
+    const value = tf.scalar(node.content.value)
+    setOrigin(value, node.origin)
+    return value
   }
 
   if (node.type === "Tensor") {
     const values = node.content.value.map((e) => evaluateSyntaxTreeNode(e, env))
     if (values.length === 0) {
-      //return safeApply(Tensor, [[]], env)
-      return tf.tensor([])
+      const value = tf.tensor([])
+      setOrigin(value, node.origin)
+      return value
     }
 
-    return safeApply(TensorStack, values, env)
-    //return tf.stack(values as tf.Tensor[])
+    const value = safeApply(TensorStack, values, env)
+    setOrigin(value, node.origin)
+    return value
   }
 
   if (node.type === "Symbol") {
     // Return raw symbol - resolve happens later in safeApply
+    // Note: Can't set origin on primitive Symbol
     return Symbol.for(node.content.value)
   }
 
   if (node.type === "String") {
-    return dedent(node.content.value)
+    // Use String object (not primitive) so we can track origin via WeakMap
+    const value = new String(dedent(node.content.value))
+    setOrigin(value, node.origin)
+    return value
   }
 
   if (node.type === "List") {
     // Reify elements - List as value should have resolved symbols
-    return node.content.value.map((e) => reify(evaluateSyntaxTreeNode(e, env), env))
+    const value = node.content.value.map((e) => reify(evaluateSyntaxTreeNode(e, env), env))
+    setOrigin(value, node.origin)
+    return value
   }
 
   if (node.type === "Lambda") {
@@ -650,6 +673,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     }
 
     fn.toString = () => node.origin.source
+    setOrigin(fn, node.origin)
 
     return fn
   }
@@ -665,13 +689,11 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
 
     const value = safeApply(fn, args, env)
 
-    if (Object.isExtensible(value)) {
-      // @ts-ignore
-      value[SymbolOrigin] = {
-        source: node.origin.source,
-        start: node.origin.start,
-        end: node.origin.end,
-      }
+    // Only set origin if value doesn't already have one - this preserves
+    // origins from the original source (e.g., ListGet returning an element
+    // should keep that element's original origin, not get the ListGet call's origin)
+    if (!getOrigin(value)) {
+      setOrigin(value, node.origin)
     }
 
     return value
@@ -680,7 +702,9 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   if (node.type === "Code") {
     // console.log("Evaluating embedded code:", node.content.value);
     // @ts-ignore
-    return PrettyPrintSyntaxTree(node.content.value)
+    const value: any = PrettyPrintSyntaxTree(node.content.value)
+    setOrigin(value, node.origin)
+    return value
   }
 
   return null
@@ -1428,11 +1452,12 @@ const NativeDOMElement = ({ fn }: { fn: () => Promise<HTMLElement> }) => {
   return <div ref={ref}></div>
 }
 
-const Text = (value: string) => {
-  if (typeof value !== "string") {
+const Text = (value: string | String) => {
+  if (typeof value !== "string" && !(value instanceof String)) {
     return new Error(`Text: expected string, got ${typeof value}`)
   }
-  const fn = () => { return convertTextToHTML(value) }
+  const str = String(value)  // normalize to primitive
+  const fn = () => { return convertTextToHTML(str) }
   return <div className="prose prose-neutral prose-invert"><NativeDOMElement fn={fn} /></div>
 }
 
@@ -2558,16 +2583,37 @@ function PrettyPrintSyntaxTree(node: SyntaxTreeNode & { type: "Program" }): JSX.
   return Tree(node)
 }
 
+function WithOriginHighlight({ obj, children }: { obj: any, children: JSX.Element }): JSX.Element {
+  const origin = getOrigin(obj)
+  if (!origin) return children
+  // Note: Using inline style instead of className="contents" because display:contents
+  // doesn't generate a box and may not receive pointer events in some browsers
+  return (
+    <span
+      style={{ display: 'contents' }}
+      onPointerOver={(e) => { e.stopPropagation(); setHoverHighlight(origin) }}
+      onPointerOut={() => setHoverHighlight(null)}
+    >
+      {children}
+    </span>
+  )
+}
+
 function PrettyPrint(obj: any): JSX.Element {
+  return <WithOriginHighlight obj={obj}>{PrettyPrintInner(obj)}</WithOriginHighlight>
+}
+
+function PrettyPrintInner(obj: any): JSX.Element {
   // console.log("PrettyPrint", obj);
 
   if (obj === null || obj === undefined) {
     return <div className="font-extrabold text-3xl">◌</div>;
   }
 
-  if (typeof obj === "string") {
+  if (typeof obj === "string" || obj instanceof String) {
+    const str = String(obj)  // normalize to primitive for display
     const color = COLORS.find(rule => rule.token === "string")?.foreground;
-    return <div style={{ color: `#${color}` }}>"{obj}"</div>;
+    return <div style={{ color: `#${color}` }}>"{str}"</div>;
   }
 
   if (Array.isArray(obj)) {
@@ -2667,8 +2713,7 @@ function PrettyPrint(obj: any): JSX.Element {
           <li key={index}
             className="list-item px-2 py-0.5 text-red-700 cursor-pointer hover:bg-red-700 hover:text-red-200"
             onPointerOver={() => {
-              // @ts-ignore
-              setHoverHighlight(error[SymbolOrigin] || null)
+              setHoverHighlight(getOrigin(error) || null)
             }}
             onPointerOut={() => {
               setHoverHighlight(null)
