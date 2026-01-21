@@ -2291,7 +2291,7 @@ const glyphHeight = fontSize * 1.2
 const rectHeight = glyphHeight + (treeNodePaddingVertical * 2)
 const rowMargin = 15
 const rowHeight = rectHeight + rowMargin
-const columnMargin = 5
+const columnGap = 24 // Gap between columns where vertical connection lines run
 
 type TreeNodeDescriptor = {
   node: {
@@ -2353,6 +2353,18 @@ function getColumnWidths(nodes: TreeNodeDescriptor[]): number[] {
   return columnWidths;
 }
 
+function getRowHeights(nodes: TreeNodeDescriptor[]): number[] {
+  const rowHeights: number[] = [];
+  for (const node of nodes) {
+    const row = node.node.row - 1; // Adjust for 0-based index
+    if (!rowHeights[row]) {
+      rowHeights[row] = 0;
+    }
+    rowHeights[row] = Math.max(rowHeights[row], node.frame.height);
+  }
+  return rowHeights;
+}
+
 
 function TreeNodeLayout(label: string, column: number, row: number, origin: Origin): TreeNodeDescriptor {
   const textWidth = label.length * glyphWidth;
@@ -2396,7 +2408,8 @@ type TreeConnectionDescriptor = {
     row: number,
     x: number,
     y: number,
-  }
+  },
+  trunkX: number, // Fixed X position for vertical trunk (same for all siblings)
 }
 
 function TreeConnectionLayout(fromCol: number, fromRow: number, toCol: number, toRow: number): TreeConnectionDescriptor {
@@ -2412,7 +2425,8 @@ function TreeConnectionLayout(fromCol: number, fromRow: number, toCol: number, t
       column: toCol,
       x: 0,
       y: 0,
-    }
+    },
+    trunkX: 0,
   }
 }
 
@@ -2420,27 +2434,87 @@ function Tree(node: SyntaxTreeNode & { type: "Program" }): JSX.Element {
 
   const { nodes, connections } = layout(node);
 
-  const columnWidths = getColumnWidths(nodes).map((w) => w + columnMargin);
-  const columnOffsets = (() => {
-    const [_, L] = columnWidths.reduce(([b, K], c) => [b + c, [...K, b + c]], [0, [0]])
+  // Calculate row heights for vertical positioning (rows = siblings)
+  const rowHeights = getRowHeights(nodes).map((h) => h + rowMargin);
+  const rowOffsets = (() => {
+    const [_, L] = rowHeights.reduce(([b, K], c) => [b + c, [...K, b + c]], [0, [0]] as [number, number[]])
     return L
   })()
 
-  const width = columnOffsets[columnOffsets.length - 1];
-  const height = (Math.max(...nodes.map(n => n.node.row))) * rowHeight;
+  // Step 1: Column widths = max node width in each column (no gap included)
+  const columnWidths = getColumnWidths(nodes);
+  const numColumns = columnWidths.length;
 
+  // Step 2: Total width = sum of column widths + gaps between columns
+  // There are (numColumns - 1) gaps between columns
+  const totalWidth = columnWidths.reduce((a, b) => a + b, 0) + (numColumns > 0 ? (numColumns - 1) * columnGap : 0);
+
+  const height = rowOffsets[rowOffsets.length - 1] || rowHeight;
+  const width = totalWidth || columnGap;
+
+  // Step 3: Calculate column centers (right-to-left: col 1 = rightmost)
+  // Layout: [col N] [gap] [col N-1] [gap] ... [gap] [col 1]
+  // From right: col 1 center = totalWidth - columnWidths[0]/2
+  //             col 2 center = totalWidth - columnWidths[0] - gap - columnWidths[1]/2
+  const getColumnCenter = (col: number): number => {
+    let x = totalWidth;
+    for (let c = 1; c < col; c++) {
+      x -= columnWidths[c - 1] || 0;
+      x -= columnGap; // gap after each column (except the last)
+    }
+    return x - (columnWidths[col - 1] || 0) / 2;
+  };
+
+  // Step 4: Calculate gap centers (where vertical trunk lines go)
+  // Gap between col c and col c+1 is centered at:
+  // totalWidth - columnWidths[0] - ... - columnWidths[c-1] - columnGap/2
+  const getGapCenter = (parentCol: number): number => {
+    let x = totalWidth;
+    for (let c = 1; c <= parentCol; c++) {
+      x -= columnWidths[c - 1] || 0;
+      if (c < parentCol) {
+        x -= columnGap;
+      }
+    }
+    return x - columnGap / 2;
+  };
+
+  // Step 5: Position nodes at column centers
   const renderedNodes = nodes.map((node) => {
-    node.frame.x = columnOffsets[node.node.column - 1]! + (columnWidths[node.node.column - 1]! / 2);
-    node.frame.y = (node.node.row - 1) * rowHeight;
+    const col = node.node.column;
+    const row = node.node.row;
+
+    node.frame.x = getColumnCenter(col);
+    node.frame.y = (rowOffsets[row - 1] || 0) + ((rowHeights[row - 1] || rowHeight) - node.frame.height) / 2;
 
     return TreeNode(node);
   });
 
+  // Step 6: Position connections
   const renderedConnections = connections.map((c) => {
-    c.start.x = columnOffsets[c.start.column - 1]! + (columnWidths[c.start.column - 1]! / 2);
-    c.start.y = (c.start.row - 1) * rowHeight + rectHeight;
-    c.end.x = columnOffsets[c.end.column - 1]! + (columnWidths[c.end.column - 1]! / 2);
-    c.end.y = (c.end.row - 1) * rowHeight;
+    const startCol = c.start.column;
+    const startRow = c.start.row;
+    const endCol = c.end.column;
+    const endRow = c.end.row;
+
+    // Find actual node widths
+    const startNode = nodes.find(n => n.node.column === startCol && n.node.row === startRow);
+    const endNode = nodes.find(n => n.node.column === endCol && n.node.row === endRow);
+    const startNodeWidth = startNode?.frame.width || columnWidths[startCol - 1] || 0;
+    const endNodeWidth = endNode?.frame.width || columnWidths[endCol - 1] || 0;
+
+    // Start: left edge of parent node
+    c.start.x = getColumnCenter(startCol) - startNodeWidth / 2;
+
+    // End: right edge of child node
+    c.end.x = getColumnCenter(endCol) + endNodeWidth / 2;
+
+    // Trunk: center of gap between parent and child columns
+    c.trunkX = getGapCenter(startCol);
+
+    // Y: center of row
+    c.start.y = (rowOffsets[startRow - 1] || 0) + (rowHeights[startRow - 1] || rowHeight) / 2;
+    c.end.y = (rowOffsets[endRow - 1] || 0) + (rowHeights[endRow - 1] || rowHeight) / 2;
 
     return TreeConnection(c);
   })
@@ -2453,25 +2527,60 @@ function Tree(node: SyntaxTreeNode & { type: "Program" }): JSX.Element {
   )
 }
 
-function TreeConnection({ start, end }: TreeConnectionDescriptor): JSX.Element {
-  const f = Math.sign(Math.abs(start.x - end.x));
-  const h = Math.abs(start.y - end.y)
-  const o = (h / 2) * f
+function TreeConnection({ start, end, trunkX }: TreeConnectionDescriptor): JSX.Element {
   const key = `connection-${start.column}-${start.row}-${end.column}-${end.row}`
+  // Mostly straight with smooth rounded corners
+  // Parent is on the right (start), child is on the left (end)
+  // trunkX is fixed for all siblings (based on column boundary)
+  const r = 5; // corner radius for smooth bends
+  const verticalDist = Math.abs(end.y - start.y);
+
+  // Case 1: Same Y level - straight horizontal line
+  if (verticalDist < 1) {
+    return (
+      <g key={key} fill="none" strokeWidth={1} className="stroke-neutral-600">
+        <path d={`M${start.x} ${start.y} L${end.x} ${end.y}`} />
+      </g>
+    )
+  }
+
+  // Case 2: Small vertical distance - use smooth arc-like curve
+  if (verticalDist < 2 * r) {
+    // Use half the vertical distance as corner radius
+    const smallR = verticalDist / 2;
+    const goingDown = end.y > start.y;
+    const smallDy = goingDown ? smallR : -smallR;
+
+    return (
+      <g key={key} fill="none" strokeWidth={1} className="stroke-neutral-600">
+        <path
+          d={`
+            M${start.x} ${start.y}
+            L${trunkX + smallR} ${start.y}
+            Q${trunkX} ${start.y}, ${trunkX} ${start.y + smallDy}
+            Q${trunkX} ${end.y}, ${trunkX - smallR} ${end.y}
+            L${end.x} ${end.y}
+          `}
+        />
+      </g>
+    )
+  }
+
+  // Case 3: Large vertical distance - use stepped path with rounded corners
+  const goingDown = end.y > start.y;
+  const dy = goingDown ? r : -r;
 
   return (
     <g key={key} fill="none" strokeWidth={1} className="stroke-neutral-600">
       <path
         d={`
           M${start.x} ${start.y}
-          C ${start.x} ${end.y - o},
-            ${start.x} ${end.y - o},
-            ${start.x + o} ${end.y - o},
-          L${end.x - o} ${end.y - o},
-          C ${end.x} ${end.y - o},
-            ${end.x} ${end.y - o},
-            ${end.x} ${end.y}
-            `}
+          L${trunkX + r} ${start.y}
+          Q${trunkX} ${start.y}, ${trunkX} ${start.y + dy}
+          L${trunkX} ${end.y - dy}
+          Q${trunkX} ${end.y}, ${trunkX - r} ${end.y}
+          L${end.x} ${end.y}
+        `}
       />
     </g>
   )
@@ -2538,8 +2647,12 @@ function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDe
     if (node.type === 'Program') {
       return node.content;
     } else if (node.type === 'Operation') {
-      let children = node.content.args.content.value;
-      return children;
+      // If operator is also an Operation (chained call like cascade(...)()),
+      // include the inner operation's children so they're visible in the tree
+      if (node.content.operator.type === 'Operation') {
+        return [...getChildren(node.content.operator), ...node.content.args.content.value];
+      }
+      return node.content.args.content.value;
     } else if (node.type === 'Tensor') {
       return node.content.value;
     } else if (node.type === 'Lambda') {
@@ -2559,16 +2672,16 @@ function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDe
 
   function getFootprint(node: SyntaxTreeNode): Set<string> {
     const fp = new Set<string>();
-    fp.add('0,0');
+    fp.add('0,0');  // row,col format
     const children = getChildren(node);
-    let child_dc = 0;
+    let child_dr = 0;  // row offset for each child (sibling index)
     for (const child of children) {
       const child_fp = getFootprint(child);
       for (let pos of child_fp) {
         const [dr, dc] = pos.split(',').map(Number) as [number, number];
-        fp.add(`${1 + dr},${child_dc + dc}`);
+        fp.add(`${child_dr + dr},${1 + dc}`);  // row shifts by child index, column increases (depth)
       }
-      child_dc += 1;
+      child_dr += 1;
     }
     return fp;
   }
@@ -2582,21 +2695,20 @@ function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDe
     const children = getChildren(node);
 
     if (children.length > 0) {
-      const child_row = row + 1;
-      const child_base = col;
+      const child_col = col + 1;  // depth increases (children are to the LEFT when rendered)
       for (let i = 0; i < children.length; i++) {
         let child = children[i]!;
-        let tentative = child_base + i;
+        let tentative_row = row + i;  // siblings stack vertically
         let fp = getFootprint(child);
         while (Array.from(fp).some(pos => {
           let [dr, dc] = pos.split(',').map(Number) as [number, number];
-          return used.has(`${child_row + dr},${tentative + dc}`);
+          return used.has(`${tentative_row + dr},${child_col + dc}`);
         })) {
-          tentative += 1;
+          tentative_row += 1;
         }
-        conns.push(TreeConnectionLayout(col, row, tentative, child_row));
+        conns.push(TreeConnectionLayout(col, row, child_col, tentative_row));
 
-        layout(child, child_row, tentative, nodes, conns, used);
+        layout(child, tentative_row, child_col, nodes, conns, used);
       }
     }
   }
@@ -2604,18 +2716,18 @@ function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDe
   const nodes: TreeNodeDescriptor[] = [];
   const conns: TreeConnectionDescriptor[] = [];
   const used = new Set<string>();
-  let current_col = 1;
+  let current_row = 1;  // Stack graphs vertically
   for (const stmt of tree.content) {
     const fp = getFootprint(stmt);
-    let tentative_col = current_col;
+    let tentative_row = current_row;
     while (Array.from(fp).some(pos => {
       let [dr, dc] = pos.split(',').map(Number) as [number, number];
-      return used.has(`${1 + dr},${tentative_col + dc}`);
+      return used.has(`${tentative_row + dr},${1 + dc}`);
     })) {
-      tentative_col += 1;
+      tentative_row += 1;
     }
-    layout(stmt, 1, tentative_col, nodes, conns, used);
-    current_col = tentative_col + 1;
+    layout(stmt, tentative_row, 1, nodes, conns, used);  // col=1 is root column (rightmost)
+    current_row = tentative_row + 1;
   }
 
   return {
