@@ -2324,34 +2324,30 @@ function Tree(tree: SyntaxTreeNode & { type: "Program" }): JSX.Element {
   if (nodes.length === 0) return <svg />
 
   // Compute column widths (max node width per column)
-  const colWidths: number[] = []
-  for (const n of nodes) {
-    colWidths[n.col] = Math.max(colWidths[n.col] || 0, n.width)
-  }
+  const maxCol = nodes.reduce((m, n) => Math.max(m, n.col), 0)
+  const colWidth: number[] = Array(maxCol + 1).fill(0)
+  for (const n of nodes) colWidth[n.col] = Math.max(colWidth[n.col]!, n.width)
 
-  // Compute column centers and gap centers (right-to-left: col 1 is rightmost)
-  const colCenter: number[] = []
-  const gapCenter: number[] = []  // gapCenter[c] = center of gap after column c
+  // Compute X positions right-to-left (col 1 = rightmost)
+  const colX: number[] = Array(maxCol + 1).fill(0)
+  const gapX: number[] = Array(maxCol + 1).fill(0)
   let x = 0
-  for (let c = 1; c < colWidths.length; c++) {
-    const w = colWidths[c] || 0
-    colCenter[c] = x + w / 2
-    x += w
-    gapCenter[c] = x + TREE.gap.col / 2
-    x += TREE.gap.col
+  for (let c = maxCol; c >= 1; c--) {
+    colX[c] = x + colWidth[c]! / 2
+    x += colWidth[c]!
+    if (c > 1) {
+      gapX[c - 1] = x + TREE.gap.col / 2
+      x += TREE.gap.col
+    }
   }
-  const totalWidth = x - TREE.gap.col  // no gap after last column
+  const totalWidth = x
 
-  // Flip X coordinates (col 1 should be on the right)
-  for (let c = 1; c < colCenter.length; c++) colCenter[c] = totalWidth - (colCenter[c] ?? 0)
-  for (let c = 1; c < gapCenter.length; c++) gapCenter[c] = totalWidth - (gapCenter[c] ?? 0)
-
-  // Compute row centers
-  const maxRow = Math.max(...nodes.map(n => n.row))
-  const rowCenter = (r: number) => (r - 0.5) * ROW_HEIGHT
+  // Compute Y positions
+  const maxRow = nodes.reduce((m, n) => Math.max(m, n.row), 0)
+  const rowY = (r: number) => (r - 0.5) * ROW_HEIGHT
   const totalHeight = maxRow * ROW_HEIGHT
 
-  // Build lookup for node widths by position
+  // Build node lookup by position
   const nodeAt = new Map(nodes.map(n => [`${n.row},${n.col}`, n]))
 
   return (
@@ -2362,19 +2358,19 @@ function Tree(tree: SyntaxTreeNode & { type: "Program" }): JSX.Element {
         return (
           <TreeEdge
             key={`${e.parentRow},${e.parentCol}-${e.childRow},${e.childCol}`}
-            x1={(colCenter[e.parentCol] ?? 0) - parent.width / 2}
-            y1={rowCenter(e.parentRow)}
-            x2={(colCenter[e.childCol] ?? 0) + child.width / 2}
-            y2={rowCenter(e.childRow)}
-            trunkX={gapCenter[e.parentCol] ?? 0}
+            x1={colX[e.parentCol]! - parent.width / 2}
+            y1={rowY(e.parentRow)}
+            x2={colX[e.childCol]! + child.width / 2}
+            y2={rowY(e.childRow)}
+            trunkX={gapX[e.parentCol]!}
           />
         )
       })}
       {nodes.map(n => (
         <TreeNode
           key={`${n.row},${n.col}`}
-          x={colCenter[n.col] ?? 0}
-          y={rowCenter(n.row)}
+          x={colX[n.col]!}
+          y={rowY(n.row)}
           label={n.label}
           width={n.width}
           origin={n.origin}
