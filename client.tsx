@@ -2124,34 +2124,34 @@ ListGather: { a, b |
 ListZip: { a, b |
   n: TensorMin(ListLength(a), ListLength(b)),
   ListMap(
-    TensorUnstack(0 :: n),
+    TensorUnstack(TensorRange(0, n)),
     { i | List(ListGet(a, i), ListGet(b, i)) }
   )
 },
 ListTake: { list, n |
   ListMap(
-    TensorUnstack(0 :: n),
+    TensorUnstack(TensorRange(0, n)),
     { i | ListGet(list, i) }
   )
 },
 ListDrop: { list, n |
   len: ListLength(list),
   ListMap(
-    TensorUnstack(n :: len),
+    TensorUnstack(TensorRange(n, len)),
     { i | ListGet(list, i) }
   )
 },
 ListReverse: { list |
   n: ListLength(list),
   ListMap(
-    TensorUnstack(TensorReverse(0 :: n)),
+    TensorUnstack(TensorReverse(TensorRange(0, n))),
     { i | ListGet(list, i) }
   )
 },
 ListEnumerate: { list |
   n: ListLength(list),
   ListMap(
-    TensorUnstack(0 :: n),
+    TensorUnstack(TensorRange(0, n)),
     { i | List(i, ListGet(list, i)) }
   )
 },
