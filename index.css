@@ -6,3 +6,9 @@
 .prose code::after {
   content: none;
 }
+
+/* AST node hover highlight in editor */
+.ast-hover-highlight {
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}

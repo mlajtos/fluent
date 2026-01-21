@@ -2298,20 +2298,27 @@ type GridEdge = { parentRow: number, parentCol: number, childRow: number, childC
 
 // Reference to main editor for hover highlighting
 let mainEditorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null
+let hoverDecorationsCollection: editor.IEditorDecorationsCollection | null = null
 
 const setHoverHighlight = (origin: Origin | null) => {
   if (!mainEditorRef) return
-  const { editor, monaco } = mainEditorRef
-  const model = editor.getModel()
-  if (!model) return
+  const { editor: ed } = mainEditorRef
 
-  monaco.editor.setModelMarkers(model, "fluent-hover", origin ? [{
-    startLineNumber: origin.start.line,
-    startColumn: origin.start.column,
-    endLineNumber: origin.end.line,
-    endColumn: origin.end.column,
-    message: "Error source",
-    severity: monaco.MarkerSeverity.Error,
+  if (!hoverDecorationsCollection) {
+    hoverDecorationsCollection = ed.createDecorationsCollection()
+  }
+
+  hoverDecorationsCollection.set(origin ? [{
+    range: {
+      startLineNumber: origin.start.line,
+      startColumn: origin.start.column,
+      endLineNumber: origin.end.line,
+      endColumn: origin.end.column,
+    },
+    options: {
+      className: 'ast-hover-highlight',
+      isWholeLine: false,
+    }
   }] : [])
 }
 
