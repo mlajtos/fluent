@@ -93,7 +93,7 @@ Button("Reset", { x(0) }),
 - Pattern matching
   - \`guard(cond, { value })\`: returns a function that yields value if cond is truthy, else Error
   - use with \`cascade\` for pattern matching: \`cascade((guard(...), { default }))(arg)\`
-  - example: \`fact: { n | f: self, cascade((guard(n = 0, { 1 }), { n * f(n - 1) }))(n) }\`
+  - example: \`fact: { n | f: self, cascade((guard(n = 0, { 1 }), { n * f(n - 1) }))() }\`
 - Optimization
   - create variable: \`θ: ~([0, 0])\`
   - define loss: \`loss: { sum(θ^2) }\`
@@ -2009,7 +2009,6 @@ const DefaultEnvironment = {
   ListGet,
   ListMap,
   ListReduce,
-  // ListGather: { a, b | b ListMap { i | a ListGet i } },
 
   // MARK: String operations
 
@@ -2119,30 +2118,52 @@ stencil: { w, f, arr | unstack(windows(w, arr)) ListMap f . stack },
 conv: { kernel, arr | stencil(#(kernel), { w | Σ(w × kernel) }, arr) },
 
 ; List operations
+ListGather: { a, b |
+  ListMap(b, { i | ListGet(a, i) })
+},
 ListZip: { a, b |
   n: TensorMin(ListLength(a), ListLength(b)),
-  TensorUnstack(0 :: n) ListMap { i | (a ListGet i, b ListGet i) }
+  ListMap(
+    TensorUnstack(0 :: n),
+    { i | List(ListGet(a, i), ListGet(b, i)) }
+  )
 },
 ListTake: { list, n |
-  TensorUnstack(0 :: n) ListMap { i | list ListGet i }
+  ListMap(
+    TensorUnstack(0 :: n),
+    { i | ListGet(list, i) }
+  )
 },
 ListDrop: { list, n |
   len: ListLength(list),
-  TensorUnstack(n :: len) ListMap { i | list ListGet i }
+  ListMap(
+    TensorUnstack(n :: len),
+    { i | ListGet(list, i) }
+  )
 },
 ListReverse: { list |
   n: ListLength(list),
-  TensorUnstack(TensorReverse(0 :: n)) ListMap { i | list ListGet i }
+  ListMap(
+    TensorUnstack(TensorReverse(0 :: n)),
+    { i | ListGet(list, i) }
+  )
 },
 ListEnumerate: { list |
   n: ListLength(list),
-  TensorUnstack(0 :: n) ListMap { i | (i, list ListGet i) }
+  ListMap(
+    TensorUnstack(0 :: n),
+    { i | List(i, ListGet(list, i)) }
+  )
 },
 ListScan: { list, f, init |
-  ListReduce(list, { acc, val |
-    prev: ListGet(acc, -1),
-    ListConcat(acc, List(f(prev, val)))
-  }, List(init)),
+  ListReduce(
+    list,
+    { acc, val |
+      prev: ListGet(acc, -1),
+      ListConcat(acc, List(f(prev, val)))
+    },
+    List(init)
+  ),
 },
 
 ; Arithmetic
@@ -3361,7 +3382,32 @@ field: ((lines × 0.7) + (glow × 0.3)),
   Text("# 🧲 Spinning Magnets"),
   lines,
 )
+`,
+"recursion": `
+; Recursive functions: factorial and Fibonacci
+fact: { n | 
+  f: self,
+  cascade((
+    guard(n = 0, { 1 }),
+    { n * f(n - 1) }
+  ))()
+},
+
+fib: { n | 
+  f: self,
+  cascade((
+    guard(n = 0, { 0 }),
+    guard(n = 1, { 1 }),
+    { f(n - 1) + f(n - 2) }
+  ))()
+},
+
+(
+  fact(5),
+  fib(10)
+)
 `
+
 } as const
 
 const getExample = (k: keyof typeof EXAMPLES) => EXAMPLES[k].trim()
