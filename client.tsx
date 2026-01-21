@@ -1351,12 +1351,12 @@ const convertTextToHTML = async (value: string) => {
   const element = result.element as HTMLElement
 
   // Unwrap single <p> elements for simple single-line text
-  if (element.children.length === 1 && element.children[0].tagName === 'P') {
-    const p = element.children[0]
-    while (p.firstChild) {
-      element.insertBefore(p.firstChild, p)
+  const firstChild = element.children[0]
+  if (element.children.length === 1 && firstChild?.tagName === 'P') {
+    while (firstChild.firstChild) {
+      element.insertBefore(firstChild.firstChild, firstChild)
     }
-    p.remove()
+    firstChild.remove()
   }
 
   // Post-process: colorize inline <code> elements (not inside code blocks)
@@ -1571,7 +1571,7 @@ function LoadSafeTensors(arrayBuffer: ArrayBuffer) {
 
   offset += headerLen;
 
-  const tensors = {};
+  const tensors: Record<string, { dtype: string; shape: number[]; data: ArrayBufferView }> = {};
 
   for (const key in header) {
     if (key === '__metadata__') { continue } // Skip optional metadata
@@ -1581,7 +1581,7 @@ function LoadSafeTensors(arrayBuffer: ArrayBuffer) {
       throw new Error(`Invalid tensor info for key: ${key}`);
     }
 
-    const { dtype, shape } = info;
+    const { dtype, shape }: { dtype: string; shape: number[] } = info;
     const [start, end] = info.data_offsets;
 
     if (start < 0 || end <= start || offset + end > arrayBuffer.byteLength) {
@@ -1646,7 +1646,7 @@ function LoadSafeTensors(arrayBuffer: ArrayBuffer) {
   return tensors;
 }
 
-function LoadTensorFromImageUrl(url: string): Signal<tf.Tensor> {
+function LoadTensorFromImageUrl(url: string): Signal<tf.Tensor | null> {
   const s = SignalCreate<tf.Tensor | null>(null);
 
   const imgElement = document.createElement('img');
@@ -2348,7 +2348,7 @@ function TreeNodeLayout(label: string, column: number, row: number, origin: Orig
       origin
     },
     frame: {
-      x: undefined,
+      x: 0,
       y: row * rowHeight,
       width: rectWidth,
       height: rectHeight,
@@ -2378,19 +2378,19 @@ type TreeConnectionDescriptor = {
   }
 }
 
-function TreeConnectionLayout(fromCol: number, fromRow: number, toCol: number, toRow: number) {
+function TreeConnectionLayout(fromCol: number, fromRow: number, toCol: number, toRow: number): TreeConnectionDescriptor {
   return {
     start: {
       row: fromRow,
       column: fromCol,
-      x: undefined,
-      y: undefined,
+      x: 0,
+      y: 0,
     },
     end: {
       row: toRow,
       column: toCol,
-      x: undefined,
-      y: undefined,
+      x: 0,
+      y: 0,
     }
   }
 }
@@ -2409,16 +2409,16 @@ function Tree(node: SyntaxTreeNode & { type: "Program" }): JSX.Element {
   const height = (Math.max(...nodes.map(n => n.node.row))) * rowHeight;
 
   const renderedNodes = nodes.map((node) => {
-    node.frame.x = columnOffsets[node.node.column - 1] + (columnWidths[node.node.column - 1] / 2);
+    node.frame.x = columnOffsets[node.node.column - 1]! + (columnWidths[node.node.column - 1]! / 2);
     node.frame.y = (node.node.row - 1) * rowHeight;
 
     return TreeNode(node);
   });
 
   const renderedConnections = connections.map((c) => {
-    c.start.x = columnOffsets[c.start.column - 1] + (columnWidths[c.start.column - 1] / 2);
+    c.start.x = columnOffsets[c.start.column - 1]! + (columnWidths[c.start.column - 1]! / 2);
     c.start.y = (c.start.row - 1) * rowHeight + rectHeight;
-    c.end.x = columnOffsets[c.end.column - 1] + (columnWidths[c.end.column - 1] / 2);
+    c.end.x = columnOffsets[c.end.column - 1]! + (columnWidths[c.end.column - 1]! / 2);
     c.end.y = (c.end.row - 1) * rowHeight;
 
     return TreeConnection(c);
@@ -2544,7 +2544,7 @@ function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDe
     for (const child of children) {
       const child_fp = getFootprint(child);
       for (let pos of child_fp) {
-        const [dr, dc] = pos.split(',').map(Number);
+        const [dr, dc] = pos.split(',').map(Number) as [number, number];
         fp.add(`${1 + dr},${child_dc + dc}`);
       }
       child_dc += 1;
@@ -2564,11 +2564,11 @@ function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDe
       const child_row = row + 1;
       const child_base = col;
       for (let i = 0; i < children.length; i++) {
-        let child = children[i];
+        let child = children[i]!;
         let tentative = child_base + i;
         let fp = getFootprint(child);
         while (Array.from(fp).some(pos => {
-          let [dr, dc] = pos.split(',').map(Number);
+          let [dr, dc] = pos.split(',').map(Number) as [number, number];
           return used.has(`${child_row + dr},${tentative + dc}`);
         })) {
           tentative += 1;
@@ -2588,7 +2588,7 @@ function layout(tree: SyntaxTreeNode & { type: "Program" }): { nodes: TreeNodeDe
     const fp = getFootprint(stmt);
     let tentative_col = current_col;
     while (Array.from(fp).some(pos => {
-      let [dr, dc] = pos.split(',').map(Number);
+      let [dr, dc] = pos.split(',').map(Number) as [number, number];
       return used.has(`${1 + dr},${tentative_col + dc}`);
     })) {
       tentative_col += 1;
@@ -3475,7 +3475,7 @@ function processGenerationComments(
 
   for (const match of matches) {
     const fullMatch = match[0]
-    const instruction = match[1].trim()
+    const instruction = match[1]!.trim()
     console.log('[Generation] Processing:', { fullMatch, instruction })
 
     // Skip if already processing this exact comment
