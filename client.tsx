@@ -103,7 +103,7 @@ Button("Reset", { x(0) }),
   - tensor math: \`+\`, \`-\`, \`*\`, \`/\`, \`^\`, \`√\`, \`sum\`, \`mean\`, \`max\`, \`min\`, \`sin\`, \`cos\`, \`log\`, \`exp\`, \`dot\`, \`matmul\`, \`transpose\`, \`reshape\`, etc.
   - tensor creation: \`::\` (range), \`linspace\`, \`eye\`, \`rand\`, \`randn\`
   - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
-  - UI: \`Slider\`, \`Button\`, \`Text\`, \`Grid\`
+  - UI: \`Slider\`, \`Scrubber\`, \`Button\`, \`Text\`, \`Grid\`
   - optimizers: \`adam\`, \`sgd\`, \`adagrad\`
 - Ad-hoc operators
   - define custom operators: \`(++): ListConcat, (1, 2) ++ (3, 4)\`
@@ -1500,6 +1500,44 @@ const Slider = (editedValue: Signal<tf.Tensor>) => {
 // @ts-ignore
 Slider.noAutoLift = true
 
+const Scrubber = (editedValue: Signal<tf.Tensor>, sensitivity?: tf.Tensor) => {
+  const step = sensitivity ? getAsSyncList(sensitivity) as number : 1  // 0=stuck, negative=flipped
+  const decimals = Math.max(0, Math.ceil(-Math.log10(Math.abs(step) || 1)))
+  const factor = Math.pow(10, decimals)
+  const color = COLORS.find(rule => rule.token === "number")?.foreground ?? "FFFFFF"
+
+  return SignalComputed(() => {
+    const value = getAsSyncList(editedValue?.value) as number
+
+    const handlePointerDown = (e: React.PointerEvent<HTMLSpanElement>) => {
+      e.preventDefault()
+      const startX = e.clientX, startValue = value
+
+      const onMove = (me: PointerEvent) => {
+        const raw = startValue + (me.clientX - startX) * step * 0.1
+        SignalUpdate(editedValue, tf.scalar(Math.round(raw * factor) / factor))
+      }
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+      }
+      window.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+    }
+
+    return (
+      <span
+        style={{ color: `#${color}`, cursor: 'ew-resize', userSelect: 'none' }}
+        onPointerDown={handlePointerDown}
+      >
+        {value.toLocaleString("en-US", { maximumFractionDigits: decimals }).replace(/,/g, "_")}
+      </span>
+    )
+  })
+}
+// @ts-ignore
+Scrubber.noAutoLift = true
+
 const Grid = (cols: tf.Tensor, rows: tf.Tensor) => {
   let gridTemplateColumns = ""
   let gridTemplateRows = ""
@@ -2051,6 +2089,7 @@ const DefaultEnvironment = {
   Button,
   Grid,
   Slider,
+  Scrubber,
 
   Text,
   TextEditor,
