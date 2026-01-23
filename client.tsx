@@ -138,8 +138,17 @@ Button("Reset", { x(0) }),
   - (this is probably a subset of syntax tree literal)
 - string interpolation
   - a: "Hello `user`!"
-- literal for syntax tree
-  - a: `1 + 1 = 2`
+- more economical syntax for tensors:
+  - `[1 2 3]` instead of `[1, 2, 3]`
+  - `[[1 2] [3 4]]` instead of `[[1, 2], [3, 4]]`
+  - `[1 2, 3 4]` for 2D matrices
+  - `[1 (1 + 1) 3]` for expressions
+    - brackets `()` would expect a single expression
+    - `[1 fn() 3]` – not allowed
+    - `[1 (fn()) 3]` – allowed
+- use syntax tree literals for macros / metaprogramming
+  - https://rosettacode.org/wiki/Metaprogramming
+
 
 ## Other
 
@@ -153,20 +162,30 @@ Button("Reset", { x(0) }),
   - ideograph – inspiration for visualization of syntax tree
 - https://github.com/Rogue-Frontier/Oblivia
   - APL+JS hybrid language
+- https://maggieappleton.com/learnable-programming/
+- effective fluent?
+  - https://github.com/vahidk/EffectivePyTorch
+- JAX autodiff resources
+  - https://docs.jax.dev/en/latest/notebooks/autodiff_cookbook.html
+  - https://docs.jax.dev/en/latest/autodidax.html
+- https://docs.google.com/presentation/d/1m16fO-oKQM_J6G4LZNNJ64kXTurS_T6eU5dcz_3n8XM/edit?slide=id.g361713f9018_1_65#slide=id.g361713f9018_1_65
+- Can Tensor Programming Be Liberated from the Fortran Data Paradigm? -- Conal Elliott
+  - https://www.youtube.com/watch?v=oaIMMclGuog
+- fancy signals
+  - https://www.npmjs.com/package/@preact-signals/utils
+  - https://rodydavis.com/posts/async-preact-signal
 
 */
 
+// MARK: Imports
+
 import { grammar, type ActionDict } from "ohm-js";
 import { toAST as ohmToAST } from "ohm-js/extras";
-
-// for fancy signals
-// https://www.npmjs.com/package/@preact-signals/utils
 import { signal, Signal, computed, effect } from "@preact/signals-core"
 import { useSignals, useSignal, useComputed } from '@preact/signals-react/runtime';
 import { ErrorBoundary } from 'react-error-boundary';
 import { useEffect, type JSX, isValidElement, useRef } from "react";
 import { createRoot } from "react-dom/client"
-
 import { type BeforeMount, type Monaco, type OnMount, Editor, loader } from '@monaco-editor/react';
 import * as monaco from "monaco-editor";
 import { type editor } from "monaco-editor";
@@ -174,7 +193,15 @@ import { type editor } from "monaco-editor";
 import { renderMarkdown } from "monaco-editor/esm/vs/base/browser/markdownRenderer.js"
 // @ts-ignore
 import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/common/quickInput"
+import dedent from "ts-dedent";
+import { Base64 } from 'js-base64'
+import { type Annotations } from "plotly.js"
+import * as tf from '@tensorflow/tfjs'
+import { interpolateViridis } from 'd3-scale-chromatic'
+import { rgb } from 'd3-color'
 
+
+// Web Worker setup for monaco-editor
 (globalThis as { MonacoEnvironment?: typeof MonacoEnvironment }).MonacoEnvironment = {
   getWorker: () => new Worker(new URL("monaco.worker.js", document.baseURI), { type: "module" }),
 }
@@ -182,16 +209,11 @@ import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/com
 // Configure @monaco-editor/react to use local monaco-editor package
 loader.config({ monaco })
 
-import dedent from "ts-dedent";
-import { Base64 } from 'js-base64'
-
-import { type Annotations } from "plotly.js"
-import * as tf from '@tensorflow/tfjs'
-import { interpolateViridis } from 'd3-scale-chromatic'
-import { rgb } from 'd3-color'
-// Import backend dynamically to prevent tree-shaking
+// Import tfjs backend dynamically to prevent tree-shaking
 await import('@tensorflow/tfjs-backend-webgl')
 await tf.setBackend('webgl')
+
+// react-plotly is weirdly packaged - need to access default twice
 // @ts-ignore
 const Plot = (await import("react-plotly.js")).default.default as Plot
 
@@ -944,6 +966,7 @@ const CodeEvaluate = function (this: CurrentScope, program: string) {
   return evaluateProgramWithScope(program, this);
 }
 
+// TODO: fix to be function iteration, i.e. `f(f(f(...)))` & rename this to FunctionRepeat or similar
 const FunctionIterate = (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar = tf.scalar(1)) => {
   if (!(typeof fn === "function" && iterations instanceof tf.Tensor)) {
     throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` must be a scalar Tensor");
