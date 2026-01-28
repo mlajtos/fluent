@@ -127,17 +127,33 @@ Button("Reset", { x(0) }),
 ## Bugs
 - Grid can't use dynamically created lists :'(
   - deeper issue: `(...args) => ...` JS lambdas (stack, grid, concat, etc.) are too magical, but very useful
+- syntax tree visualization:
+  - hovering over nodes in AST view does highlight in code editor, but at the same time, hovering over whole AST viz highlights code in backticks, so it's not very useful
+  - layout using bounding boxes waste space – simple pipeline `1 + 2 + 3 + ...` should be 2 lines, not dozens
+  - using result of function call as operator is not well visualized
+    - example `a (+ & -) b`
+    - an explicit node need to be shown for the function call, as in `(a,b) . (+ & -)`
 
 ## Features
 
 - `Canvas` UI component for rapid tensor creation
+  - draw pixels to create image tensors
+- `Curve` UI component for interactive function definition
+  - same UI as for easing curves in animation tools
+- useful UI components:
+  - `MousePosition` - get mouse position as (x, y) tensor
+  - `ImageUpload` - upload image, return as (h, w, c) tensor; would survive code changes
+  - `Checkbox` - boolean input, return as scalar tensor
+- useful functions:
+  - `Clamp`, `Softmax`, `OneHot`, `CrossEntropy`, etc.
 - loading tensors (and models) from URLs
-  - `fetchFromUrl` / `tensorLoad`
-- first-class symbols
-  - syntax for symbol literal – 'symbol'
-  - (this is probably a subset of syntax tree literal)
-- string interpolation
-  - a: "Hello `user`!"
+  - `LoadTensorFromImageUrl` & `LoadSafeTensorFromURL` should bypass CORS issues by using a server-side proxy
+- syntax tree literals:
+  - syntax for symbol literal – `symbol`
+  - string interpolation
+    - "Hello `user`!"
+  - use syntax tree literals for macros / metaprogramming
+    - https://rosettacode.org/wiki/Metaprogramming
 - more economical syntax for tensors:
   - `[1 2 3]` instead of `[1, 2, 3]`
   - `[[1 2] [3 4]]` instead of `[[1, 2], [3, 4]]`
@@ -146,9 +162,6 @@ Button("Reset", { x(0) }),
     - brackets `()` would expect a single expression
     - `[1 fn() 3]` – not allowed
     - `[1 (fn()) 3]` – allowed
-- use syntax tree literals for macros / metaprogramming
-  - https://rosettacode.org/wiki/Metaprogramming
-
 
 ## Other
 
