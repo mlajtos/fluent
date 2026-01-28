@@ -1396,7 +1396,7 @@ const StringDeserialize = (s: string) => Base64.decode(s)
 const Button = (label?: string | Signal<string>, onClick?: () => void) => {
   return computed(() => {
     const disabled = (typeof onClick !== "function")
-    const labelValue = typeof label === "string" ? label : label instanceof Signal ? label.value : "Button"
+    const labelValue = (typeof label === "string" || label instanceof String) ? label : label instanceof Signal ? label.value : "Button"
     return <button className="bg-neutral-900 hover:bg-neutral-800 active:bg-neutral-700 rounded-xl border border-neutral-400 hover:border-neutral-300 active:border-neutral-200 disabled:border-neutral-800 disabled:cursor-not-allowed p-2 overflow-hidden" onClick={onClick} disabled={disabled}>{labelValue}</button>
   })
 }
