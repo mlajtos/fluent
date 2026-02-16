@@ -187,6 +187,8 @@ Button("Reset", { x(0) }),
 - fancy signals
   - https://www.npmjs.com/package/@preact-signals/utils
   - https://rodydavis.com/posts/async-preact-signal
+- https://github.com/naver/lispe/wiki/5.3-A-la-APL
+  - lispE with APL-like operators
 
 */
 
