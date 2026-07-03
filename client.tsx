@@ -87,6 +87,7 @@ Button("Reset", { x(0) }),
   - update signal: \`x(0.7)\` or \`x ← 0.7\`
   - computed signal: \`y: x + 1\` – auto-lifts to reactive when \`x\` is a signal
   - explicit computed: \`y: $({ x() + 1 })\` – manual version (rarely needed)
+  - watch a trainable variable: \`watch(θ)\` – a signal that updates on every assignment
 - Iteration
   - repeat N times with \`⟳\`: \`step ⟳ 100\` (async, fire-and-forget)
   - function power with \`⍣\`: \`(double ⍣ 5)(1)\` is \`double(double(...))\` = \`32\`
@@ -105,7 +106,7 @@ Button("Reset", { x(0) }),
   - axis variants: \`stack((a, b), axis)\`, \`concat((a, b), axis)\`, \`unstack(x, axis)\`, \`sum(x, axis)\`
   - outer product \`⊗\`: \`a (⊗ f) b\` pairs every cell of a with every cell of b; \`a (f ⊗ k) b\` keeps trailing k axes zipped
   - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
-  - UI: \`Slider\`, \`Scrubber\`, \`Button\`, \`Text\`, \`Grid\`
+  - UI: \`Slider\`, \`Scrubber\`, \`Button\`, \`Text\`, \`Grid\`, \`Layers\`, \`Point2D\`, \`Trail\`
   - optimizers: \`adam\`, \`sgd\`, \`adagrad\`
   - metadata: \`Describe(fn, "doc")\` attaches a doc string, \`Describe(fn)\` queries it
 - Ad-hoc operators
@@ -1545,6 +1546,20 @@ const TensorAssign = (a: tf.Variable, b: tf.Tensor) => {
   return a.assign(b)
 }
 
+// Bridge a trainable variable into the reactive world: watch(θ) is a Signal
+// that updates on every assignment (drag, optimizer step, :=)
+const TensorWatch = (a: tf.Tensor): Signal<tf.Tensor> | tf.Tensor => {
+  const version = (a as any).__version__ as Signal<number> | undefined
+  if (!version) { return a }
+  let previous: tf.Tensor | null = null
+  return computed(() => {
+    version.value
+    if (previous) { previous.dispose() }
+    previous = a.clone()
+    return previous
+  })
+}
+
 const TensorOptimizationAdam = (a: tf.Tensor, b: tf.Variable[]) => {
   const optimizer = tf.train.adam(getAsSyncList(a) as number, 0.9, 0.999, 1e-8)
   return (fn: () => tf.Scalar) => optimizer.minimize(fn, true, b)
@@ -1794,8 +1809,21 @@ const Grid = (cols: tf.Tensor, rows: tf.Tensor) => {
 
 function WrapWithPrintIfNotReactElement(child: any): any {
   if (child instanceof Signal) {
-    // reactive island: only this cell re-renders when the signal changes
-    return computed(() => WrapWithPrintIfNotReactElement(child.value));
+    // Reactive island: render EAGERLY inside the same computed that reads the
+    // value – a second lazy layer (Print's computed) could otherwise render a
+    // tensor after its producer disposed it.
+    return computed(() => {
+      const value = (child as Signal<unknown>).value
+      if (value instanceof Signal) { return WrapWithPrintIfNotReactElement(value) }
+      if (isValidElement(value)) { return value }
+      return (
+        <Panel className="overflow-scroll">
+          <ErrorBoundary fallback={<div>Something went wrong</div>}>
+            {PrettyPrint(value)}
+          </ErrorBoundary>
+        </Panel>
+      )
+    });
   }
   if (isValidElement(child)) {
     return child;
@@ -1803,6 +1831,134 @@ function WrapWithPrintIfNotReactElement(child: any): any {
     return Print(child);
   }
 }
+
+// Stack visuals on top of each other: the first child defines the size,
+// the rest overlay it – Layers(surface, Point2D(θ, range))
+const Layers = (...children: any[]) => (
+  <div className="relative w-fit" data-layers="true">
+    {children.map((child, i) => (
+      <div key={i} className={i === 0 ? "" : "absolute inset-0"}>
+        {child instanceof Signal
+          ? computed(() => PrettyPrint((child as Signal<unknown>).value)) as unknown as JSX.Element
+          : PrettyPrint(child)}
+      </div>
+    ))}
+  </div>
+)
+setMeta(Layers, { noAutoLift: true })
+
+// Shared helpers for components bound to a [2] point in a data range
+const pointMapping = (range?: tf.Tensor) => {
+  const [[x0, x1], [y0, y1]] = (range
+    ? getAsSyncList(range)
+    : [[0, 1], [0, 1]]) as [[number, number], [number, number]]
+  return { x0, y0, spanX: x1 - x0 || 1, spanY: y1 - y0 || 1 }
+}
+const readPoint = (target: tf.Variable | Signal<tf.Tensor>): [number, number] => {
+  const value = target instanceof Signal ? target.peek() : target
+  return getAsSyncList(value as tf.Tensor) as [number, number]
+}
+
+// Draggable 2D point bound to a [2] variable (or signal), mapped to a data
+// range [[x0, x1], [y0, y1]]. Dragging the dot assigns; assignments (e.g. by
+// an optimizer) move the dot. The layer is transparent to pointer events, so
+// several Point2Ds can share one Layers stack.
+const Point2D = (target: tf.Variable | Signal<tf.Tensor>, range?: tf.Tensor, color?: Value) => {
+  const { x0, y0, spanX, spanY } = pointMapping(range)
+  const fill = String(color ?? "white")
+  const version: Signal<number> | undefined = (target as any).__version__
+
+  const write = (event: React.PointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.parentElement!.getBoundingClientRect()
+    const point = tf.tensor([
+      x0 + (event.clientX - rect.left) / rect.width * spanX,
+      y0 + (event.clientY - rect.top) / rect.height * spanY,
+    ])
+    if (target instanceof Signal) { SignalUpdate(target, point) }
+    else { (target as tf.Variable).assign(point) }
+  }
+
+  return SignalComputed(() => {
+    if (version) { version.value }
+    if (target instanceof Signal) { target.value }
+    const [px, py] = readPoint(target)
+
+    return (
+      <div className="absolute inset-0 pointer-events-none touch-none select-none">
+        <div
+          data-point2d="true"
+          className="absolute pointer-events-auto cursor-grab active:cursor-grabbing"
+          style={{
+            left: `${(px - x0) / spanX * 100}%`,
+            top: `${(py - y0) / spanY * 100}%`,
+            transform: "translate(-50%, -50%)",
+            width: 32, height: 32, display: "grid", placeItems: "center",
+          }}
+          onPointerDown={(e) => {
+            // Grab arbitration: stacked points would always give the drag to the
+            // topmost layer – instead, the dot whose center is nearest to the
+            // pointer wins (ties go to the earlier layer)
+            const layersRoot = e.currentTarget.closest('[data-layers]')
+            const dots = layersRoot ? [...layersRoot.querySelectorAll('[data-point2d]')] : []
+            const distanceTo = (el: Element) => {
+              const r = el.getBoundingClientRect()
+              return Math.hypot(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2))
+            }
+            let nearest: Element = e.currentTarget
+            let best = Infinity
+            for (const el of dots) {
+              const d = distanceTo(el)
+              if (d < best) { best = d; nearest = el }  // ties go to the earlier layer
+            }
+            if (nearest !== e.currentTarget) {
+              e.stopPropagation()
+              nearest.dispatchEvent(new PointerEvent("pointerdown", {
+                bubbles: true, clientX: e.clientX, clientY: e.clientY,
+                pointerId: e.pointerId, buttons: e.buttons, isPrimary: true,
+              }))
+              return
+            }
+            e.currentTarget.setPointerCapture(e.pointerId)
+          }}
+          onPointerMove={(e) => { if (e.buttons) { write(e) } }}
+        >
+          <div style={{ width: 12, height: 12, borderRadius: 999, background: fill, border: "2px solid black", boxShadow: "0 0 6px rgba(0,0,0,0.8)" }} />
+        </div>
+      </div>
+    )
+  })
+}
+setMeta(Point2D, { noAutoLift: true })
+
+// The path a point has taken: re-renders on every assignment to the target
+const Trail = (target: tf.Variable | Signal<tf.Tensor>, range?: tf.Tensor, color?: Value) => {
+  const { x0, y0, spanX, spanY } = pointMapping(range)
+  const stroke = String(color ?? "white")
+  const version: Signal<number> | undefined = (target as any).__version__
+  const points: string[] = []
+
+  return SignalComputed(() => {
+    if (version) { version.value }
+    if (target instanceof Signal) { target.value }
+    const [px, py] = readPoint(target)
+    points.push(`${(px - x0) / spanX * 100},${(py - y0) / spanY * 100}`)
+    if (points.length > 500) { points.shift() }
+
+    return (
+      <svg
+        className="absolute inset-0 w-full h-full pointer-events-none"
+        viewBox="0 0 100 100" preserveAspectRatio="none"
+      >
+        <polyline
+          points={points.join(" ")}
+          fill="none" stroke={stroke} strokeOpacity={0.75} strokeWidth={1.5}
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+    )
+  })
+}
+setMeta(Trail, { noAutoLift: true })
 
 const Fetch = (url: string) => {
   const s = SignalCreate<Value>(null)
@@ -2193,6 +2349,7 @@ const DefaultEnvironment = {
 
   TensorVariable,
   TensorAssign,
+  TensorWatch,
   TensorOptimizationAdam,
   TensorOptimizationSgd,
   TensorOptimizationAdaGrad,
@@ -2227,6 +2384,9 @@ const DefaultEnvironment = {
 
   Button,
   Grid,
+  Layers,
+  Point2D,
+  Trail,
   Slider,
   Scrubber,
 
@@ -2453,6 +2613,7 @@ min: FunctionCascade((TensorMinimum, TensorMin)),
 ; Variables
 (~): TensorVariable,
 var: TensorVariable,
+watch: TensorWatch,
 
 ; Tensor ops
 sort: TensorSort,
@@ -3470,6 +3631,55 @@ pred: $(f(τ)),
 (
     Text("**Loss:**"), losses,
     Text("**Prediction vs Target:**"), (ŷ, pred),
+)
+`,
+"loss-landscape": `
+; Touch the Loss Landscape
+; ONE loss definition drives both the surface and the descent – edit it live!
+
+𝓛: { p | (p_0^2 + p_1 - 11)^2 + (p_0 + p_1^2 - 7)^2 },   ; Himmelblau – four minima
+
+θ: ~([0, 0]),   ; the ball – grab it!
+lr: $(0.4),
+step: { sgd(once(lr) × 0.005)({ 𝓛(θ) }) },
+
+; the surface: the same 𝓛 evaluated over the whole view via ⊗
+n: 300,
+range: [[-5, 5], [-5, 5]],
+surface: log(linspace(range_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(range_0, n) + 1),
+
+(
+  Text("# Touch the Loss Landscape"),
+  Grid([1, 5])(Text("lr"), Slider(lr)),
+  Button("Descend ×100", { step ⟳ 100 }),
+  Layers(surface, Trail(θ, range), Point2D(θ, range)),
+  𝓛(watch(θ)),   ; live loss – updates while you drag
+)
+`,
+"optimizer-race": `
+; ⚔️ adam vs sgd – same start, same landscape, different characters
+
+𝓛: { p | (p_0^2 + p_1 - 11)^2 + (p_0 + p_1^2 - 7)^2 },   ; Himmelblau
+
+a: ~([0, -0.3]),   ; adam, orange
+s: ~([0, -0.3]),   ; sgd, blue
+opt: adam(0.08),
+step: { opt({ 𝓛(a) }), sgd(0.002)({ 𝓛(s) }) },
+
+n: 300,
+range: [[-5, 5], [-5, 5]],
+surface: log(linspace(range_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(range_0, n) + 1),
+
+(
+  Text("# ⚔️ adam vs sgd"),
+  Button("Race ×300", { step ⟳ 300 }),
+  Layers(
+    surface,
+    Trail(a, range, "orange"), Trail(s, range, "deepskyblue"),
+    Point2D(a, range, "orange"), Point2D(s, range, "deepskyblue"),
+  ),
+  Grid(2)(Text("**adam**"), Text("**sgd**")),
+  Grid(2)(𝓛(watch(a)), 𝓛(watch(s))),
 )
 `,
 "magnets-simulation": `

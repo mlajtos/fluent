@@ -15,7 +15,7 @@ Criteria for the list below:
 
 ---
 
-## ⭐ 1. Touch the Loss Landscape
+## ⭐ 1. Touch the Loss Landscape — **SHIPPED** (`loss-landscape` in the gallery)
 
 *The single most recognizable image in ML pedagogy — the ball rolling down the loss surface — as a live, editable program.*
 
@@ -47,7 +47,7 @@ step: { sgd(once(lr) × 0.05)(𝓛) },
 )
 ```
 
-**Runnable today** as heatmap + θ readout. Becomes *unforgettable* with two primitives (see wishlist): a draggable point (grab θ, drop it on a ridge, watch it roll) and a plot-overlay layer (the optimizer's trail drawn on the surface).
+**Shipped**: `Layers` + `Point2D` (draggable point bound to a tensor variable, with trail) landed, and the gallery version is the full experience — grab θ, drop it on a ridge, watch it roll, with the optimizer's trail drawn on the surface. The final form is 22 lines: one `𝓛` lambda drives both the surface (evaluated over the view via `⊗`) and the descent.
 
 Variants once it works: side-by-side `sgd` vs `adam` racing on the same surface; a "momentum" slider; saddle points; a loss with a local minimum trap.
 
