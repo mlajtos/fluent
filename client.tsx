@@ -101,12 +101,13 @@ Button("Reset", { x(0) }),
   - create optimizer: \`opt: adam(0.01)\`
   - minimize: \`{ opt(loss) } ⟳ 100\`
 - Built-in functions
-  - tensor math: \`+\`, \`-\`, \`*\`, \`/\`, \`^\`, \`√\`, \`sum\`, \`mean\`, \`max\`, \`min\`, \`sin\`, \`cos\`, \`log\`, \`exp\`, \`dot\`, \`matmul\`, \`transpose\`, \`reshape\`, etc.
+  - tensor math: \`+\`, \`-\`, \`*\`, \`/\`, \`^\`, \`√\`, \`sum\`, \`mean\`, \`max\`, \`min\`, \`sin\`, \`cos\`, \`log\`, \`exp\`, \`dot\`, \`matmul\`, \`transpose\`, \`reshape\`, \`clamp\`, \`sigmoid\`, \`relu\`, \`softmax\`, \`oneHot\`, \`crossEntropy\`, etc.
   - tensor creation: \`::\` (range), \`linspace\`, \`eye\`, \`rand\`, \`randn\`
   - axis variants: \`stack((a, b), axis)\`, \`concat((a, b), axis)\`, \`unstack(x, axis)\`, \`sum(x, axis)\`
   - outer product \`⊗\`: \`a (⊗ f) b\` pairs every cell of a with every cell of b; \`a (f ⊗ k) b\` keeps trailing k axes zipped
   - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
-  - UI: \`Slider\`, \`Scrubber\`, \`Button\`, \`Text\`, \`Grid\`, \`Layers\`, \`Point2D\`, \`Trail\`
+  - UI: \`Slider\`, \`Scrubber\`, \`Checkbox\`, \`Button\`, \`Text\`, \`Grid\`, \`Layers\`, \`Point2D\`, \`Trail\`, \`ImageUpload\`
+  - live inputs: \`Camera\`, \`Microphone\`, \`MicrophoneSpectrum\`, \`Time\`, \`MousePosition\`
   - optimizers: \`adam\`, \`sgd\`, \`adagrad\`
   - metadata: \`Describe(fn, "doc")\` attaches a doc string, \`Describe(fn)\` queries it
 - Ad-hoc operators
@@ -128,29 +129,13 @@ Button("Reset", { x(0) }),
 
 # TODO
 
-## Bugs
-- Grid can't use dynamically created lists :'(
-  - deeper issue: `(...args) => ...` JS lambdas (stack, grid, concat, etc.) are too magical, but very useful
-- syntax tree visualization:
-  - hovering over nodes in AST view does highlight in code editor, but at the same time, hovering over whole AST viz highlights code in backticks, so it's not very useful
-  - using result of function call as operator is not well visualized
-    - example `a (+ & -) b`
-    - an explicit node need to be shown for the function call, as in `(a,b) . (+ & -)`
-
 ## Features
 
 - `Canvas` UI component for rapid tensor creation
   - draw pixels to create image tensors
 - `Curve` UI component for interactive function definition
   - same UI as for easing curves in animation tools
-- useful UI components:
-  - `MousePosition` - get mouse position as (x, y) tensor
-  - `ImageUpload` - upload image, return as (h, w, c) tensor; would survive code changes
-  - `Checkbox` - boolean input, return as scalar tensor
-- useful functions:
-  - `Clamp`, `Softmax`, `OneHot`, `CrossEntropy`, etc.
-- loading tensors (and models) from URLs
-  - `LoadTensorFromImageUrl` & `LoadSafeTensorFromURL` should bypass CORS issues by using a server-side proxy
+- `ImageUpload` should survive code changes (image is lost on re-evaluation)
 - syntax tree literals:
   - syntax for symbol literal – `symbol`
   - string interpolation
@@ -1436,6 +1421,16 @@ const TensorRound = tf.round
 const TensorCeil = tf.ceil
 const TensorFloor = tf.floor
 const TensorErrorFunction = tf.erf
+const TensorSigmoid = tf.sigmoid
+const TensorRelu = tf.relu
+const TensorClamp = (x: tf.Tensor, min: tf.Tensor, max: tf.Tensor) =>
+  tf.clipByValue(x, getAsSyncList(min) as number, getAsSyncList(max) as number)
+const TensorSoftmax = (x: tf.Tensor, axis?: tf.Tensor) =>
+  axis === undefined ? tf.softmax(x) : tf.softmax(x, getAsSyncList(axis) as number)
+const TensorOneHot = (indices: tf.Tensor, depth: tf.Tensor) =>
+  tf.oneHot(tf.cast(indices, "int32"), getAsSyncList(depth) as number)
+const TensorCrossEntropy = (labels: tf.Tensor, logits: tf.Tensor) =>
+  tf.losses.softmaxCrossEntropy(labels, logits)
 
 const TensorSort = (x: tf.Tensor) => {
   return TensorReverse(tf.topk(x, x.size, true).values)
@@ -1761,6 +1756,53 @@ const Scrubber = (editedValue: Signal<tf.Tensor>, sensitivity?: tf.Tensor) => {
 }
 setMeta(Scrubber, { noAutoLift: true })
 
+const Checkbox = (editedValue: Signal<tf.Tensor>) => {
+  return SignalComputed(() => {
+    const checked = (getAsSyncList(editedValue?.value) as number) >= 0.5
+    return (
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => SignalUpdate(editedValue, tf.scalar(e.target.checked ? 1 : 0))}
+        className="w-5 h-5 accent-white cursor-pointer place-self-start"
+      />
+    )
+  })
+}
+setMeta(Checkbox, { noAutoLift: true })
+
+// File picker that writes the picked image into `target` as a [h, w, 3] tensor
+const ImageUpload = (target: Signal<tf.Tensor>) => {
+  return (
+    <input
+      type="file"
+      accept="image/*"
+      className="text-sm file:bg-neutral-900 file:hover:bg-neutral-800 file:rounded-xl file:border file:border-neutral-400 file:text-white file:px-3 file:py-1.5 file:mr-2 file:cursor-pointer"
+      onChange={async (e) => {
+        const file = e.target.files?.[0]
+        if (!file) { return }
+        const bitmap = await createImageBitmap(file)
+        SignalUpdate(target, tf.browser.fromPixels(bitmap))
+      }}
+    />
+  )
+}
+setMeta(ImageUpload, { noAutoLift: true })
+
+// Mouse position as a [2] tensor signal, normalized to the viewport (0..1)
+function MousePosition(): Signal<tf.Tensor> {
+  const s = SignalCreate<tf.Tensor>(tf.tensor([0.5, 0.5]))
+  const onMove = (e: PointerEvent) => {
+    const old = s.peek()
+    s.value = tf.tensor([e.clientX / window.innerWidth, e.clientY / window.innerHeight])
+    if (old) { old.dispose() }
+  }
+  window.addEventListener("pointermove", onMove)
+  const result = computed(() => s.value) as Signal<tf.Tensor> & { dispose: () => void }
+  result.dispose = () => window.removeEventListener("pointermove", onMove)
+  return result
+}
+
 const Grid = (cols: tf.Tensor, rows: tf.Tensor) => {
   let gridTemplateColumns = ""
   let gridTemplateRows = ""
@@ -1796,13 +1838,21 @@ const Grid = (cols: tf.Tensor, rows: tf.Tensor) => {
   }
 
   // noAutoLift: children arrive as signals (Button, TextEditor, ...) and each
-  // renders as its own reactive island – one changing cell doesn't rebuild the grid
-  const applyChildren = (...args: any[]) => (
-    <div className={`grid gap-2 overflow-scroll h-full`} style={{ gridTemplateColumns, gridTemplateRows }}>
-      {/* @ts-ignore */}
-      {args.map(WrapWithPrintIfNotReactElement)}
-    </div>
-  )
+  // renders as its own reactive island – one changing cell doesn't rebuild the grid.
+  // Lists flatten into cells, and a signal holding a list re-renders the cells
+  // dynamically: Grid(3)(tasks) works when tasks is $((...)).
+  const flattenCells = (xs: any[]): any[] => xs.flatMap(x => Array.isArray(x) ? flattenCells(x) : [x])
+  const isListSignal = (a: any) => a instanceof Signal && Array.isArray((a as Signal<unknown>).peek())
+  const applyChildren = (...args: any[]) => {
+    const buildCells = () => flattenCells(args.map(a => isListSignal(a) ? (a as Signal<unknown>).value : a))
+      .map(WrapWithPrintIfNotReactElement)
+    return (
+      <div className={`grid gap-2 overflow-scroll h-full`} style={{ gridTemplateColumns, gridTemplateRows }}>
+        {/* @ts-ignore */}
+        {args.some(isListSignal) ? computed(() => <>{buildCells()}</>) : buildCells()}
+      </div>
+    )
+  }
   setMeta(applyChildren, { noAutoLift: true })
   return applyChildren
 }
@@ -2081,6 +2131,9 @@ function LoadSafeTensors(arrayBuffer: ArrayBuffer) {
   return tensors;
 }
 
+// CORS fallback: retry blocked cross-origin loads through the dev server
+const proxied = (url: string) => `/proxy?url=${encodeURIComponent(url)}`
+
 function LoadTensorFromImageUrl(url: string): Signal<tf.Tensor | null> {
   const s = SignalCreate<tf.Tensor | null>(null);
 
@@ -2088,6 +2141,11 @@ function LoadTensorFromImageUrl(url: string): Signal<tf.Tensor | null> {
   imgElement.crossOrigin = "anonymous";
   imgElement.src = url;
 
+  imgElement.onerror = () => {
+    if (!imgElement.src.startsWith(proxied(""))) {
+      imgElement.src = proxied(url)
+    }
+  }
   imgElement.onload = () => {
     s.value = tf.browser.fromPixels(imgElement)
   }
@@ -2219,6 +2277,7 @@ const LoadSafeTensorFromURL = (url?: string) => {
   const s = SignalCreate("Loading tensors...");
 
   fetch(url)
+    .catch(() => fetch(proxied(url)))
     .then(res => res.arrayBuffer())
     .then(buffer => {
       const tensors = LoadSafeTensors(buffer);
@@ -2328,6 +2387,12 @@ const DefaultEnvironment = {
   TensorCeil,
   TensorFloor,
   TensorErrorFunction,
+  TensorSigmoid,
+  TensorRelu,
+  TensorClamp,
+  TensorSoftmax,
+  TensorOneHot,
+  TensorCrossEntropy,
   TensorSort,
 
   TensorGradient,
@@ -2383,8 +2448,11 @@ const DefaultEnvironment = {
   // MARK: Reactive + UI Components
 
   Button,
+  Checkbox,
   Grid,
+  ImageUpload,
   Layers,
+  MousePosition,
   Point2D,
   Trail,
   Slider,
@@ -2558,6 +2626,12 @@ ceil: TensorCeil,
 reciprocal: TensorReciprocal,
 log: TensorLogarithm,
 exp: TensorExponential,
+clamp: TensorClamp,
+sigmoid: TensorSigmoid,
+relu: TensorRelu,
+softmax: TensorSoftmax,
+oneHot: TensorOneHot,
+crossEntropy: TensorCrossEntropy,
 
 ; Trigonometry
 sin: TensorSine,
@@ -2800,8 +2874,8 @@ function TreeNode({ x, y, label, width, origin }: { x: number, y: number, label:
         height={NODE_HEIGHT}
         rx={NODE_HEIGHT / 4}
         stroke="rgba(255,255,255, 0.1)"
-        onPointerOver={() => setHoverHighlight(origin)}
-        onPointerOut={() => setHoverHighlight(null)}
+        onPointerOver={(e) => { e.stopPropagation(); setHoverHighlight(origin) }}
+        onPointerOut={(e) => { e.stopPropagation(); setHoverHighlight(null) }}
       />
       <text
         transform={`translate(${width / 2}, ${NODE_HEIGHT / 2})`}
@@ -2827,7 +2901,10 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
     switch (node.type) {
       case 'Symbol': return node.content.value
       case 'Number': return node.content.value.toString()
-      case 'Operation': return getLabel(node.content.operator)
+      case 'Operation':
+        // computed operator (e.g. a (+ & -) b) shows as an explicit apply node
+        if (node.content.operator.type === 'Operation') { return '.' }
+        return getLabel(node.content.operator)
       case 'Tensor': return '[]'
       case 'Lambda': return '{}'
       case 'List': return '()'
@@ -2841,9 +2918,9 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
     switch (node.type) {
       case 'Program': return node.content
       case 'Operation':
-        // Flatten chained calls like cascade(...)()
+        // computed operator: explicit apply – (a,b) . (+ & -)
         if (node.content.operator.type === 'Operation') {
-          return [...getChildren(node.content.operator), ...node.content.args.content.value]
+          return [node.content.args, node.content.operator]
         }
         return node.content.args.content.value
       case 'Tensor': return node.content.value
