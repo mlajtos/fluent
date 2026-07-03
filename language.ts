@@ -43,11 +43,10 @@ const getSymbolRange = (range: [string, string]) => {
 }
 
 const getSymbolsRange = (symbolRangeObject: Record<string, [string, string]>) => {
-  // console.log("getSymbolsRange", symbolRangeObject);
   return `(${Object.values(symbolRangeObject).map(range => getSymbolRange(range)).join(" | ")})`;
 };
 
-const operatorRegexp = /[^\p{L}\p{L}]/u
+const operatorRegexp = /[^\p{L}\p{N}]/u
 
 const delimiterRegexp = new RegExp(RESERVED_SYMBOLS, "u")
 
@@ -336,7 +335,6 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
     }
   },
   Code(_, value, __) {
-    // console.log("Code node", value.sourceString);
     return {
       type: "Code",
       content: {
@@ -363,8 +361,18 @@ const indexToLineAndColumn = (str: string, index: number): { line: number; colum
   };
 }
 
+// One parse per source: CodeParse and getParseErrors share the match result
+let matchCache: { input: string, match: ReturnType<typeof CodeGrammarCompiled.match> } | null = null
+const matchProgram = (program: string) => {
+  const input = String(program)
+  if (matchCache?.input === input) { return matchCache.match }
+  const match = CodeGrammarCompiled.match(input)
+  matchCache = { input, match }
+  return match
+}
+
 const CodeParse = (program: string): SyntaxTreeNode => {
-  const matchResult = CodeGrammarCompiled.match(program);
+  const matchResult = matchProgram(program);
 
   if (matchResult.succeeded()) {
     const result = ohmToAST(matchResult, syntaxTreeMapping) as SyntaxTreeNode;
@@ -388,7 +396,7 @@ const CodeParse = (program: string): SyntaxTreeNode => {
 
 // Validate code and return parse errors for editor markers
 const getParseErrors = (program: string): ParseError[] => {
-  const matchResult = CodeGrammarCompiled.match(program);
+  const matchResult = matchProgram(program);
 
   if (matchResult.succeeded()) {
     return [];
@@ -566,7 +574,9 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
 }
 
 tf.Tensor.prototype.toString = function () {
-  return `${getAsSyncList(this)}`
+  if (this.isDisposed) { return "Tensor (disposed)" }
+  if (this.size <= 32) { return `${getAsSyncList(this)}` }
+  return `Tensor [${this.shape.join(" ")}]`
 }
 
 // Extend the Symbol interface to include 'resolve' and 'assign'
@@ -579,7 +589,6 @@ declare global {
 
 // @ts-ignore
 Symbol.prototype.resolve = function (this: Symbol, env: CurrentScope): Value {
-  // console.log("resolve", this, env)
 
   const s = this[Symbol.toPrimitive]("symbol")
   const k = Symbol.keyFor(s) ?? ""
@@ -602,48 +611,12 @@ Symbol.prototype.assign = function (env: CurrentScope, value: any) {
   })
 }
 
-// Extend SymbolConstructor to include reverseResolve
-declare global {
-  interface SymbolConstructor {
-    reverseResolve(env: CurrentScope, value: any): symbol | undefined;
-  }
-}
-
-// hierarchically traverse the environment to find the symbol that resolves to the given value
-Symbol.reverseResolve = function (env: CurrentScope, value: any): symbol | undefined {
-  // console.log("reverseResolve", env, value)
-
-  const symbolKeys = Object.getOwnPropertyNames(env);
-  for (const key of symbolKeys) {
-    // console.log("checking symbol", key, "with value", env[key], "against", value);
-
-    if (env[key] === value) {
-      // console.log("found symbol", key, value)
-      return Symbol.for(key);
-    }
-  }
-
-  // traverse recursively parents
-
-  const prototypeEnv = Object.getPrototypeOf(env);
-  if (prototypeEnv) {
-    // console.log("checking prototype", prototypeEnv);
-    const resolved = Symbol.reverseResolve(prototypeEnv, value);
-    if (resolved) {
-      return resolved;
-    }
-  }
-
-  return undefined;
-}
-
 const reify = (v: Value, env: CurrentScope): Value => {
   if (typeof v === "symbol") {
     // @ts-ignore
     const resolved = v.resolve(env)
 
     if (resolved === v) {
-      // console.log("unresolved symbol", v, Object.keys(env))
       return v
     }
 
@@ -736,7 +709,6 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
   let errorArgs: Error[] = []
 
   try {
-    // console.log("safeApply", fn, args, env)
 
     let fnValue: Value = reify(fn, env);
     let argsValue: Value[] = args;
@@ -751,9 +723,6 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
     )
 
     errorArgs = argsValue.filter(a => a instanceof Error)
-    // if (errorArgs.length > 0) {
-    //    throw new Error(`Error in arguments`, { cause: errorArgs[0] })
-    //}
 
     if (typeof fnValue !== "function" && !(fnValue instanceof Signal)) {
       throw new Error(`'${String(fnValue)}' is not a function.`)
@@ -876,7 +845,6 @@ const evaluateProgramWithScope = (program: string, scope: CurrentScope) => {
 }
 
 const CodeEvaluate = function (this: CurrentScope, program: string) {
-  // console.log("Evaluating program:", program, this);
   return evaluateProgramWithScope(program, this);
 }
 
@@ -1044,9 +1012,6 @@ const ListConcat = (...args: Value[]) => {
     }
   }, [] as unknown[]
   )
-
-  // does unwanted spread
-  // return [].concat(args)
 }
 
 const ListLength = (a: unknown[]) => {
@@ -1305,13 +1270,6 @@ const TensorGather = (a: tf.Tensor, b: tf.Tensor) => {
 const TensorWhere = (a: tf.Tensor, b: tf.Tensor, c: tf.Tensor) => tf.where(TensorBoolean(a), b, c)
 const TensorIsNaN = tf.isNaN
 
-// const tensorVariableAssignOriginal = Variable.prototype.assign
-
-// Variable.prototype.assign = function (newValue: tf.Tensor<tf.Rank>) {
-//   update(this.signal, newValue);
-//   tensorVariableAssignOriginal.bind(this)(newValue)
-// }
-
 const TensorVariable = (a: tf.Tensor) => {
   const version = signal(0)
   const variableTensor = tf.variable(a, true)
@@ -1365,7 +1323,6 @@ const TensorOptimizationAdaGrad = (a: tf.Tensor) => {
 const TensorRandomNormal = (a: tf.Tensor) => tf.randomStandardNormal(getAsSyncList(a) as number[])
 const TensorRandomUniform = (a: tf.Tensor) => tf.randomUniform(getAsSyncList(a) as number[])
 
-// const String = (a: unknown) => `${a.toString()}`
 const StringConcat = (...args: any[]) => "".concat(...args)
 const StringLength = (a: string) => tf.scalar(a.length)
 
@@ -1399,7 +1356,6 @@ const DefaultEnvironment: Record<string, Value> = {
   SignalUpdate,
   SignalEffect,
   SignalOnce,
-  once: SignalOnce,
 
   // Tensor operations
   Tensor,
@@ -1756,6 +1712,7 @@ adagrad: TensorOptimizationAdaGrad,
 ; Misc
 ($): Reactive,
 (←): FunctionNoAutoLift({ s, v | s(v) }),
+once: SignalOnce,
 `
 
 // Parse the prelude once – createScope runs on every evaluation (each keystroke)

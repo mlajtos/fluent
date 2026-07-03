@@ -19,8 +19,10 @@ Fluent is a tiny language + IDE for differentiable tensors and reactive UIs. It 
 
 ```
 .
-├── server.ts        # Bun development server
-├── client.tsx       # Main IDE implementation (3763 lines)
+├── server.ts        # Bun development server (+ /proxy CORS relay)
+├── language.ts      # Fluent language core: grammar, evaluator, environment, prelude
+├── client.tsx       # IDE: components, printers, plots, editor, playground
+├── tests.ts         # End-to-end tests (source → evaluated result), `bun test ./tests.ts`
 ├── index.html       # HTML entry point
 ├── index.css        # Global styles
 ├── package.json     # Dependencies and scripts
@@ -64,16 +66,12 @@ The Fluent language has unique characteristics:
 
 ### Code Organization
 
-- **client.tsx** contains the entire IDE implementation:
-  - Documentation (lines 16-114)
-  - Grammar definition (Ohm.js)
-  - Parser and evaluator
-  - Built-in functions and operators
-  - UI components (Slider, Button, Text, Grid)
-  - Monaco Editor integration
-  - TensorFlow.js tensor operations
-
-- **server.ts** is minimal: just serves the app with Bun
+- **language.ts** is the Fluent language: grammar (Ohm.js), parser,
+  evaluator, built-in functions/operators, prelude, evaluation generations
+- **client.tsx** is the IDE: documentation, UI components (Slider, Button,
+  Text, Grid, Layers, Point2D, ...), printers/plots, Monaco integration,
+  examples, playground
+- **server.ts** is minimal: serves the app with Bun + a /proxy CORS relay
 
 ## Key Features to Preserve
 
@@ -92,21 +90,22 @@ The Fluent language has unique characteristics:
 
 ## Testing and Building
 
-- **No formal test suite**: This is an experimental/research project
+- **End-to-end tests**: `bun run test` – Fluent source in, evaluated result out (CPU backend)
 - **Manual testing**: Run `bun dev` and test in browser
 - **Type checking**: `bun tsc --noEmit` (TypeScript compiler check)
 
 ## Important Notes
 
-- Single-file architecture: Most code is in `client.tsx` for simplicity
-- The Fluent language itself is embedded in the client
+- Two-file architecture: the language lives in `language.ts` (headless,
+  testable), the IDE in `client.tsx` (registers UI into the environment
+  via `extendEnvironment`)
 - Grammar changes require updating Ohm.js definitions
 - UI components are built with React and Preact Signals
 - Tensor operations delegate to TensorFlow.js
 
 ## Common Tasks
 
-- **Add built-in function**: Add to built-ins object in client.tsx
+- **Add built-in function**: add to DefaultEnvironment in language.ts (UI components extend it from client.tsx)
 - **Modify syntax**: Update Ohm.js grammar definition
 - **Add UI component**: Create React component with signal support
 - **Change styling**: Use Tailwind utility classes (v4 syntax)

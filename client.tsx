@@ -235,7 +235,7 @@ import "./index.css"
 
 // MARK: Parse
 
-const colors = {
+const tokenColors = {
   number: "0A81EF",
   identifier: "30CD50",
   operator: "F238E3",
@@ -245,7 +245,7 @@ const colors = {
 }
 
 const COLORS: editor.ITokenThemeRule[] = [
-  ...Object.entries(colors).map(([key, value]) => ({ token: key, foreground: value })),
+  ...Object.entries(tokenColors).map(([key, value]) => ({ token: key, foreground: value })),
   { token: "comment.md", foreground: "7F7F7F" },
   { token: "keyword.md", foreground: "7F7F7F" },
 ]
@@ -254,16 +254,16 @@ function getColorForSyntaxTreeNode(code: string) {
   let color: string
   switch (true) {
     case numberRegexp.test(code):
-      color = colors["number"]
+      color = tokenColors["number"]
       break;
     case stringRegexp.test(code):
-      color = colors["string"]
+      color = tokenColors["string"]
       break;
     case identifierRegexp.test(code):
-      color = colors["identifier"]
+      color = tokenColors["identifier"]
       break;
     case operatorRegexp.test(code):
-      color = colors["operator"]
+      color = tokenColors["operator"]
       break;
     default:
       color = "#D4D4D4"
@@ -565,7 +565,7 @@ function WrapWithPrintIfNotReactElement(child: any): any {
       if (isValidElement(value)) { return value }
       return (
         <Panel className="overflow-scroll">
-          <ErrorBoundary fallback={<div>Something went wrong</div>}>
+          <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[value]}>
             {PrettyPrint(value)}
           </ErrorBoundary>
         </Panel>
@@ -1260,7 +1260,7 @@ const frameStyle = "rounded-xl border border-neutral-800 hover:border-neutral-70
 function Print(obj: Signal<unknown>) {
   return computed(() =>
     <Panel className="overflow-scroll">
-      <ErrorBoundary fallback={<div>Something went wrong</div>}>
+      <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[obj]}>
         {PrettyPrint(obj)}
       </ErrorBoundary>
     </Panel>
@@ -1444,7 +1444,7 @@ function PrettyPrintInner(obj: any): JSX.Element {
 
 function Panel({ children, className }: { children: JSX.Element, className?: string }) {
   return (
-    <div className={`${frameStyle} ${className}`}>
+    <div className={`${frameStyle} ${className ?? ""}`}>
       {children}
     </div>
   )
@@ -1489,18 +1489,6 @@ const BarPlot = ({ data }: { data: tf.Tensor }) => {
         annotations,
         xaxis: {
           automargin: true,
-          // // remove 0.5, 1.5, 2.5, etc. from x-axis
-          // // tickvals: data.as1D().arraySync().map((_, i) => i + 1),
-          // tick0: 0,
-          // dtick: 1,
-          // //ticktext: data.as1D().arraySync().map((_, i) => i + 1),
-          // maxallowed: 20,
-
-          // ticks: 'outside',
-          // tickcolor: '#444444',
-          // ticklen: 5,
-          // tickwidth: 1,
-          // tickfont: { size: 12, color: '#D4D4D4' },
         },
         yaxis: {
           gridcolor: '#444444',
@@ -1722,10 +1710,6 @@ extendEnvironment({
 
   Print,
   PrettyPrint,
-  Frame: (children: JSX.Element) => { return <Panel>{children}</Panel> },
-  Page: (...args: JSX.Element[]) => (
-    <div className="h-full max-h-full w-full max-w-full">{args}</div>
-  ),
 } as Record<string, Value>)
 
 // MARK: Examples
@@ -2241,7 +2225,6 @@ const setAnthropicApiKey = (key: string) => localStorage.setItem(ANTHROPIC_API_K
 let pendingGenerationRequests = new Set<string>()
 
 async function generateFluentCode(instruction: string, context: string, apiKey: string): Promise<string> {
-  console.log('[Generation] Starting...', { instruction })
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -2252,7 +2235,7 @@ async function generateFluentCode(instruction: string, context: string, apiKey: 
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-opus-4-5-20251101',
+      model: 'claude-sonnet-5',
       max_tokens: 16000,
       thinking: {
         type: 'enabled',
@@ -2266,10 +2249,8 @@ async function generateFluentCode(instruction: string, context: string, apiKey: 
     })
   })
 
-  console.log('[Generation] Response status:', response.status)
 
   const data = await response.json()
-  console.log('[Generation] Response data:', data)
 
   if (data.error) {
     throw new Error(data.error.message)
@@ -2286,7 +2267,6 @@ async function generateFluentCode(instruction: string, context: string, apiKey: 
   // Strip markdown code fences if present
   result = result.replace(/^```(?:fluent)?\n?/gm, '').replace(/```$/gm, '').trim()
 
-  console.log('[Generation] Generated code:', result)
 
   return result
 }
@@ -2296,18 +2276,14 @@ function processGenerationComments(
   apiKey: string,
   onUpdate: (newCode: string) => void
 ): string {
-  console.log('[Generation] Processing comments in code...')
   const matches = [...code.matchAll(GENERATION_COMMENT_REGEX)]
-  console.log('[Generation] Found matches:', matches.length)
 
   for (const match of matches) {
     const fullMatch = match[0]
     const instruction = match[1]!.trim()
-    console.log('[Generation] Processing:', { fullMatch, instruction })
 
     // Skip if already processing this exact comment
     if (pendingGenerationRequests.has(fullMatch)) {
-      console.log('[Generation] Skipping, already pending:', fullMatch)
       continue
     }
     pendingGenerationRequests.add(fullMatch)
@@ -2315,7 +2291,6 @@ function processGenerationComments(
     // Fire off async generation
     generateFluentCode(instruction, code, apiKey)
       .then(generatedCode => {
-        console.log('[Generation] Success, replacing code')
         pendingGenerationRequests.delete(fullMatch)
         const newCode = code.replace(fullMatch, generatedCode)
         onUpdate(newCode)
@@ -2410,32 +2385,31 @@ function Code(sourceCode: Signal<string>) {
 }
 setMeta(Code, { noAutoLift: true })
 
-const validateCode = (code: string) => {
-  if (!mainEditorRef) { return }
-  const { editor, monaco } = mainEditorRef
-  const model = editor.getModel()
-  if (!model) { return }
-
-  const errors = getParseErrors(code)
-
-  const markers = errors.map(error => ({
-    startLineNumber: error.start.line,
-    startColumn: error.start.column,
-    endLineNumber: error.end.line,
-    endColumn: error.end.column,
-    message: error.message,
-    severity: monaco.MarkerSeverity.Error,
-  }))
-
-  monaco.editor.setModelMarkers(model, "fluent-syntax", markers)
-}
-
 function CodeEditor(sourceCode: Signal<string>) {
   const height = SignalCreate("100%")
 
+  // each editor validates its own model (REPL cells stay independent)
+  let editorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null
+  const validateCode = (code: string) => {
+    const model = editorRef?.editor.getModel()
+    if (!editorRef || !model) { return }
+
+    const markers = getParseErrors(code).map(error => ({
+      startLineNumber: error.start.line,
+      startColumn: error.start.column,
+      endLineNumber: error.end.line,
+      endColumn: error.end.column,
+      message: error.message,
+      severity: editorRef!.monaco.MarkerSeverity.Error,
+    }))
+    editorRef.monaco.editor.setModelMarkers(model, "fluent-syntax", markers)
+  }
+
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorOnMount(editor, monaco)
-    mainEditorRef = { editor, monaco }
+    editorRef = { editor, monaco }
+    // hover highlighting targets the first (main) editor
+    if (!mainEditorRef) { mainEditorRef = { editor, monaco } }
 
     // Validate on initial load
     const model = editor.getModel()
@@ -2516,20 +2490,6 @@ const editorBeforeMount: BeforeMount = (monaco) => {
   });
 
   monaco.languages.setLanguageConfiguration("fluent", {
-    // onEnterRules: [
-    //   {
-    //     beforeText: /^\s*[\(\{\[]/,
-    //     action: { indentAction: monaco.languages.IndentAction.Indent }
-    //   },
-    //   {
-    //     beforeText: /^\s*[\)\}\]]/,
-    //     action: { indentAction: monaco.languages.IndentAction.Outdent }
-    //   },
-    //   {
-    //     beforeText: /^\s*;/,
-    //     action: { indentAction: monaco.languages.IndentAction.None }
-    //   },
-    // ],
     brackets: [
       ["{", "}"],
       ["[", "]"],
@@ -2580,13 +2540,6 @@ const editorBeforeMount: BeforeMount = (monaco) => {
       "focusBorder": "#FF000000",
     },
   });
-
-  // monaco.editor.addKeybindingRule(
-  //   {
-  //     // Reindent lines with Ctrl + Shift + F
-  //     keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF,
-  //     command: "editor.action.reindentlines",
-  //   },);
 
   monaco.editor.addKeybindingRule({
     keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF,
@@ -2842,7 +2795,6 @@ const editorOnMount: OnMount = (editor, monaco) => {
       const url = new URL(window.location.href);
       url.searchParams.set("code", encodedCode);
       window.history.pushState({}, "", url.toString());
-      console.log("Saved example to URL:", url.toString());
     },
   });
 
@@ -2860,7 +2812,6 @@ const editorOnMount: OnMount = (editor, monaco) => {
         }).then((value: string | undefined) => {
           if (value !== undefined) {
             setAnthropicApiKey(value)
-            console.log('API key saved to localStorage')
           }
         })
       })
