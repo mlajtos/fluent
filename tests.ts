@@ -1,15 +1,10 @@
 // End-to-end tests: Fluent source in, evaluated result out.
-// Runs the real pipeline – grammar → AST → evaluator → tensors – on the CPU
-// backend. `bun test` runs this file.
+// Runs the real pipeline – grammar → AST → evaluator → tensors – on the Wasm
+// backend (language.ts initializes jax-js on import). `bun test` runs this file.
 
-import { describe, test, expect, beforeAll } from "bun:test"
-import * as tf from "@tensorflow/tfjs"
+import { describe, test, expect } from "bun:test"
 import { Signal } from "@preact/signals-core"
-import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope } from "./language"
-
-beforeAll(async () => {
-  await tf.setBackend("cpu")
-})
+import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, np, FluentVariable } from "./language"
 
 const run = (source: string) =>
   evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope()))
@@ -18,7 +13,8 @@ const run = (source: string) =>
 const value = (source: string): any => {
   let v: any = run(source)
   while (v instanceof Signal) { v = v.value }
-  if (v instanceof tf.Tensor) { return v.arraySync() }
+  if (v instanceof FluentVariable) { v = v.current }
+  if (v instanceof np.Array) { return v.ref.js() }
   return v
 }
 

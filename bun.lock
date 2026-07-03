@@ -4,6 +4,8 @@
     "": {
       "name": "fluent",
       "dependencies": {
+        "@jax-js/jax": "^0.1.16",
+        "@jax-js/optax": "^0.1.2",
         "@monaco-editor/react": "^4.7.0",
         "@preact/signals-core": "^1.12.1",
         "@preact/signals-react": "^3.3.1",
@@ -46,6 +48,10 @@
     "@babel/runtime": ["@babel/runtime@7.28.4", "", {}, "sha512-Q/N6JNWvIvPnLDvjlE1OUBLPQHH6l3CltCEsHIujp45zQUSSh8K+gHnaEX45yAT1nyngnINhvWtzN+Nb9D8RAQ=="],
 
     "@choojs/findup": ["@choojs/findup@0.2.1", "", { "dependencies": { "commander": "^2.15.1" }, "bin": { "findup": "bin/findup.js" } }, "sha512-YstAqNb0MCN8PjdLCDfRsBcGVRN41f3vgLvaI0IrIcBp4AqILRSS0DeWNGkicC+f/zRIPJLc+9RURVSepwvfBw=="],
+
+    "@jax-js/jax": ["@jax-js/jax@0.1.16", "", {}, "sha512-gIawtoz9hS5lh0IxxttDZrmA6IBTB2P6yR8J+fN3KPfHnWe2lnoTb/wo7XM+uVD0nggVVSy3e6hBzzbpLoXRfw=="],
+
+    "@jax-js/optax": ["@jax-js/optax@0.1.2", "", { "dependencies": { "@jax-js/jax": "^0.1.4" } }, "sha512-pJ/N0FIlrZTRALTc2rlAFSDEn/wBXbpaiqpaw2a+vwH+Br/fCX5dZ1ZckZFTG+iTPOm+oZ/xA+cjaocu47+0HA=="],
 
     "@mapbox/geojson-rewind": ["@mapbox/geojson-rewind@0.5.2", "", { "dependencies": { "get-stream": "^6.0.1", "minimist": "^1.2.6" }, "bin": { "geojson-rewind": "geojson-rewind" } }, "sha512-tJaT+RbYGJYStt7wI3cq4Nl4SXxG8W7JDG5DMJu97V25RnbNg3QtQtf+KD+VLjNpWKYsRvXDNmNrBgEETr1ifA=="],
 

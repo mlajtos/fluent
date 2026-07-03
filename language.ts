@@ -6,7 +6,20 @@ import { grammar, type ActionDict } from "ohm-js";
 import { toAST as ohmToAST } from "ohm-js/extras";
 import { signal, Signal, computed, effect } from "@preact/signals-core"
 import dedent from "ts-dedent";
-import * as tf from '@tensorflow/tfjs'
+import { numpy as np, nn, lax, random, tree, grad as jaxGrad, valueAndGrad, init as initBackends, defaultDevice } from "@jax-js/jax"
+import * as optax from "@jax-js/optax"
+
+// jax-js compiles kernels per backend – initialize before the first array op.
+// Prefer WebGPU, fall back to Wasm (bun, older browsers), then WebGL.
+const BACKEND_PREFERENCE = ["webgpu", "wasm", "webgl", "cpu"] as const
+const availableBackends = await initBackends()
+defaultDevice(BACKEND_PREFERENCE.find((d) => availableBackends.includes(d)) ?? availableBackends[0])
+
+// np.Array extends an abstract Tracer class; inside grad()/jit() the evaluator
+// sees tracers instead of concrete arrays. Fluent treats both as tensors –
+// only concrete arrays participate in arena ownership below.
+const Tracer = Object.getPrototypeOf(np.Array.prototype).constructor as abstract new () => np.Array
+const isTensor = (v: unknown): v is np.Array => v instanceof Tracer
 
 
 const OPERATOR_RANGES: Record<string, [string, string]> = {
@@ -422,7 +435,7 @@ const getParseErrors = (program: string): ParseError[] => {
 
 // MARK: Evaluate
 
-type Value = tf.Tensor | Function | Signal<Value> | Error | string | String | symbol | null | Value[]
+type Value = np.Array | FluentVariable | Function | Signal<Value> | Error | string | String | symbol | null | Value[]
 type CurrentScope = Record<string, Value>
 
 // Unified metadata map on function objects
@@ -481,7 +494,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "Number") {
-    const value = tf.scalar(node.content.value)
+    const value = track(np.array(node.content.value))
     setOrigin(value, node.origin)
     return value
   }
@@ -489,7 +502,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   if (node.type === "Tensor") {
     const values = node.content.value.map((e) => evaluateSyntaxTreeNode(e, env))
     if (values.length === 0) {
-      const value = tf.tensor([])
+      const value = track(np.array([]))
       setOrigin(value, node.origin)
       return value
     }
@@ -573,10 +586,17 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   return null
 }
 
-tf.Tensor.prototype.toString = function () {
-  if (this.isDisposed) { return "Tensor (disposed)" }
+np.Array.prototype.toString = function () {
+  if (this.refCount === 0) { return "Tensor (disposed)" }
   if (this.size <= 32) { return `${getAsSyncList(this)}` }
   return `Tensor [${this.shape.join(" ")}]`
+}
+
+// String coercion (`${x}`, String(x)) goes through Symbol.toPrimitive, which
+// jax-js only defines for scalars – route it through the printer instead.
+;(np.Array.prototype as any)[Symbol.toPrimitive] = function (hint: string) {
+  if (hint === "number" && this.ndim === 0 && this.refCount > 0) { return this.ref.item() }
+  return this.toString()
 }
 
 // Extend the Symbol interface to include 'resolve' and 'assign'
@@ -630,48 +650,130 @@ const reify = (v: Value, env: CurrentScope): Value => {
   return v
 }
 
-// tf.tidy() decides which result tensors survive by recursively walking every
-// enumerable property of the returned value. For UI results (JSX, signals) that
-// walk escapes into the reactive graph and the DOM and costs hundreds of ms per
-// operation. Fluent values only carry tensors as: Tensor, List, or Signal payload
-// – collect exactly those and let tidy keep a plain tensor array instead.
-function collectResultTensors(v: unknown, out: tf.Tensor[], seen: Set<unknown> = new Set()): void {
-  if (v === null || v === undefined) { return }
-  if (typeof v === "object") {
-    if (seen.has(v)) { return }
+// MARK: Ownership
+// jax-js arrays are reference-counted with move semantics: operations consume
+// their array arguments, `.ref` borrows one. Fluent's convention on top:
+//
+//  - Wrappers BORROW – every op call site takes `.ref`, so arguments stay
+//    owned by whatever holds them (scope, list, signal, arena). A failing
+//    candidate in a cascade can therefore retry with the same arguments.
+//  - Every array a wrapper creates is TRACKED in the active arena. When the
+//    arena closes (one operator application), arrays unreachable from its
+//    result are disposed; survivors bubble up to the enclosing arena, or to
+//    the evaluation generation at the top level. This replaces tf.tidy().
+//  - Long-lived containers (signals, variables) OWN one reference of their
+//    payload and release it on update.
+
+// Borrow a value for use in an op: +1 on tensors, unwrap variables. This is
+// the boundary between Fluent's dynamic values and jax-js – ill-typed
+// arguments flow through and the op's validation error becomes an Error value.
+const borrow = (v: any): any => {
+  if (v instanceof FluentVariable) { return v.current.ref }
+  if (isTensor(v)) { return v.ref }
+  return v
+}
+
+const shapeOf = (v: Value): number[] =>
+  (v instanceof FluentVariable ? v.current : (v as np.Array)).shape
+
+type Arena = Set<np.Array>
+const arenaStack: Arena[] = []
+
+// Track a freshly created array (or a list holding some) in the active arena –
+// the generation arena when no expression arena is open. Tracers pass through.
+const track = <T>(value: T): T => {
+  const arena = arenaStack[arenaStack.length - 1] ?? currentGeneration?.arena
+  if (arena) { addConcreteArrays(value, arena) }
+  return value
+}
+
+function addConcreteArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set()): void {
+  if (v instanceof np.Array) { out.add(v); return }
+  if (Array.isArray(v) && !seen.has(v)) {
     seen.add(v)
-  }
-  if (v instanceof tf.Tensor) {
-    out.push(v)
-    return
-  }
-  if (v instanceof Signal) {
-    // read the cached value without forcing lazy computeds to evaluate
-    collectResultTensors((v as any)._value, out, seen)
-    return
-  }
-  if (Array.isArray(v)) {
-    for (const item of v) { collectResultTensors(item, out, seen) }
+    for (const item of v) { addConcreteArrays(item, out, seen) }
   }
 }
 
-function fluentTidy<T>(fn: () => T): T {
-  let result!: T
-  tf.tidy(() => {
-    result = fn()
-    const tensors: tf.Tensor[] = []
-    collectResultTensors(result, tensors)
-    return tensors
-  })
-  return result
+// Arrays reachable from an arena result survive the sweep. Unlike tf.tidy's
+// walk this descends into plain objects (JSX props) but treats the reactive
+// graph shallowly: signal payloads are peeked, never computed.
+function collectLiveArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set()): void {
+  if (v === null || typeof v !== "object") { return }
+  if (seen.has(v)) { return }
+  seen.add(v)
+  if (v instanceof np.Array) { out.add(v); return }
+  if (v instanceof Tracer) { return }
+  if (v instanceof FluentVariable) { out.add(v.current); return }
+  if (v instanceof Signal) { collectLiveArrays((v as any)._value, out, seen); return }
+  if (v instanceof Error) { collectLiveArrays(v.cause, out, seen); return }
+  if (Array.isArray(v)) {
+    for (const item of v) { collectLiveArrays(item, out, seen) }
+    return
+  }
+  for (const key of Object.keys(v)) { collectLiveArrays((v as any)[key], out, seen) }
 }
+
+function arena<T>(fn: () => T): T {
+  const parent = arenaStack[arenaStack.length - 1] ?? currentGeneration?.arena ?? null
+  const scratch: Arena = new Set()
+  arenaStack.push(scratch)
+  let result: T | undefined
+  try {
+    result = fn()
+  } finally {
+    arenaStack.pop()
+    const live: Arena = new Set()
+    collectLiveArrays(result, live)
+    for (const array of scratch) {
+      if (live.has(array)) { parent?.add(array) }
+      else if (array.refCount > 0) { array.dispose() }
+    }
+  }
+  return result as T
+}
+
+// Trainable variable: the jax-js replacement for tf.Variable. Owns one
+// reference of its current value; assignment takes ownership of the next
+// value and bumps the version signal (drag, optimizer step, :=).
+class FluentVariable {
+  current: np.Array
+  readonly version = signal(0)
+
+  // takes ownership of `initial`
+  constructor(initial: np.Array) {
+    this.current = initial
+    trainableVariables.add(this)
+    registerDisposable(() => {
+      trainableVariables.delete(this)
+      if (this.current.refCount > 0) { this.current.dispose() }
+    })
+  }
+
+  get shape() { return this.current.shape }
+  get size() { return this.current.size }
+
+  // takes ownership of `next`
+  assign(next: np.Array): void {
+    const previous = this.current
+    this.current = next
+    if (previous.refCount > 0) { previous.dispose() }
+    this.version.value++
+  }
+
+  toString() { return this.current.toString() }
+}
+
+// Optimizers with no explicit variable list train everything alive – the
+// same contract as TFJS's global variable registry.
+const trainableVariables = new Set<FluentVariable>()
 
 // MARK: Evaluation generations
 // Each top-level evaluation owns the resources it creates: live sources
 // (Time, Camera, ...), pending ⟳ loops, and the tensors bound into its scope.
 // A new evaluation retires the previous generation – loops stop, sources
 // release their hardware, tensors free their GPU memory.
-type Generation = { disposables: Set<() => void> }
+type Generation = { disposables: Set<() => void>, arena: Arena }
 let currentGeneration: Generation | null = null
 
 const registerDisposable = (dispose: () => void) => {
@@ -680,7 +782,7 @@ const registerDisposable = (dispose: () => void) => {
 
 function evaluateGeneration<T>(evaluate: () => T): T {
   const previous = currentGeneration
-  currentGeneration = { disposables: new Set() }
+  currentGeneration = { disposables: new Set(), arena: new Set() }
   const result = evaluate()
   if (previous) {
     // dispose after the new UI committed, so old islands never touch freed tensors
@@ -688,15 +790,22 @@ function evaluateGeneration<T>(evaluate: () => T): T {
       for (const dispose of previous.disposables) {
         try { dispose() } catch { /* already gone */ }
       }
+      // every array the generation's evaluations created and kept lives here –
+      // signals and variables released their own references via disposables
+      for (const array of previous.arena) {
+        if (array.refCount > 0) { array.dispose() }
+      }
     }, 50)
   }
   return result
 }
 
 const disposeValueTensors = (value: unknown) => {
-  const tensors: tf.Tensor[] = []
-  collectResultTensors(value, tensors)
-  for (const tensor of tensors) { tensor.dispose() }
+  const arrays: Arena = new Set()
+  collectLiveArrays(value, arrays)
+  for (const array of arrays) {
+    if (array.refCount > 0) { array.dispose() }
+  }
 }
 
 const disposeScopeTensors = (scope: CurrentScope) => {
@@ -755,7 +864,7 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       let previousResult: any = null
 
       return computed(() => {
-        if (previousResult instanceof tf.Tensor) {
+        if (previousResult instanceof np.Array && previousResult.refCount > 0) {
           previousResult.dispose()
         }
 
@@ -764,7 +873,7 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
         let result: any = null
 
         try {
-          result = fluentTidy(() => {
+          result = arena(() => {
             return fnValue.apply(env, unwrapped)
           })
         } catch (e) {
@@ -777,7 +886,7 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       })
     }
 
-    return fluentTidy(() => {
+    return arena(() => {
       return fnValue.apply(env, argsValue)
     })
   } catch (e) {
@@ -825,9 +934,12 @@ const FunctionCascade = (candidates: Function[]) => (a: Value, b: Value) => {
   return result
 }
 
-function getAsSyncList(value: tf.Tensor) {
-  if (value instanceof tf.Tensor) {
-    return value.arraySync()
+// Synchronous, non-consuming read of a tensor's data as nested JS values.
+// jax-js `.js()` consumes the array, so read through a borrowed reference.
+function getAsSyncList(value: unknown) {
+  if (value instanceof FluentVariable) { value = value.current }
+  if (value instanceof np.Array) {
+    return value.ref.js()
   }
 }
 
@@ -849,8 +961,8 @@ const CodeEvaluate = function (this: CurrentScope, program: string) {
 }
 
 // APL-style power operator: FunctionPower(f, n) is { x | f(f(...f(x))) }, n times
-const FunctionPower = (fn: Function, n: tf.Tensor) => {
-  if (typeof fn !== "function" || !(n instanceof tf.Tensor)) {
+const FunctionPower = (fn: Function, n: Value) => {
+  if (typeof fn !== "function" || !isTensor(n)) {
     return new Error("`FunctionPower(fn, n)`: `fn` must be a function and `n` must be a scalar Tensor")
   }
 
@@ -868,23 +980,24 @@ const FunctionPower = (fn: Function, n: tf.Tensor) => {
 // Async repeat (⟳): runs fn between frames so the UI stays live. The loop
 // belongs to the evaluation that started it – a re-evaluation cancels it.
 // (For synchronous function iteration f(f(f(x))) use ⍣ / FunctionPower.)
-const FunctionIterate = (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar = tf.scalar(1)) => {
-  if (!(typeof fn === "function" && iterations instanceof tf.Tensor)) {
+const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => {
+  if (!(typeof fn === "function" && (iterations === undefined || isTensor(iterations)))) {
     throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` must be a scalar Tensor");
   }
 
-  const maxIterations = getAsSyncList(iterations) as number
+  const maxIterations = iterations === undefined ? 1 : getAsSyncList(iterations) as number
   const generation = currentGeneration
   let i = 0
 
   const step = () => {
     if (generation !== currentGeneration || i >= maxIterations) { return }
-    const index = tf.scalar(i)
-    try {
+    // each step gets its own arena: per-iteration garbage dies immediately,
+    // values that persist do so through signal/variable assignments
+    arena(() => {
+      const index = track(np.array(i))
       fn(index)
-    } finally {
-      index.dispose()
-    }
+      return null
+    })
     i++
     setTimeout(step, 0)
   }
@@ -893,7 +1006,10 @@ const FunctionIterate = (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar 
   return null
 }
 
-const SignalCreate = signal
+// Signals own one reference of their tensor payload: created with a borrowed
+// reference, released on every update. Reads hand out the payload unowned –
+// wrappers borrow at their call sites.
+const SignalCreate = (<T,>(initial: T) => signal(borrow(initial))) as typeof signal
 
 const SignalRead = <T,>(s: Signal<T>) => {
   if (!(s instanceof Signal)) {
@@ -904,7 +1020,11 @@ const SignalRead = <T,>(s: Signal<T>) => {
 
 const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
   if (s instanceof Signal) {
-    s.value = v
+    const previous = s.peek() as unknown
+    s.value = borrow(v)
+    if (previous instanceof np.Array && previous.refCount > 0) {
+      previous.dispose()
+    }
     return
   }
 
@@ -961,16 +1081,17 @@ const FunctionNoAutoLift = (fn: Function) => {
 }
 setMeta(FunctionNoAutoLift, { noAutoLift: true })
 
-const FunctionGuard = function (this: CurrentScope, cond: tf.Tensor, thunk: Function) {
+const FunctionGuard = function (this: CurrentScope, cond: Value, thunk: Function) {
   // Capture condition value and thunk
   const condValue = getAsSyncList(cond)
   const scope = this
 
   // Return a function that cascade can call as a candidate
   return function () {
-    // Check if falsy: 0, all-zero tensor, NaN
-    const isFalsy = condValue === 0 ||
-      (Array.isArray(condValue) && (condValue.flat(Infinity) as number[]).every(v => v === 0)) ||
+    // Check if falsy: 0/false, all-zero tensor, NaN (comparisons are bool dtype)
+    const falsy = (v: unknown) => v === 0 || v === false
+    const isFalsy = falsy(condValue) ||
+      (Array.isArray(condValue) && (condValue.flat(Infinity) as unknown[]).every(falsy)) ||
       Number.isNaN(condValue)
 
     if (isFalsy) {
@@ -1015,10 +1136,10 @@ const ListConcat = (...args: Value[]) => {
 }
 
 const ListLength = (a: unknown[]) => {
-  return tf.scalar(a.length)
+  return track(np.array(a.length))
 }
 
-const ListGet = (a: any[], b: tf.Scalar) => {
+const ListGet = (a: any[], b: Value) => {
   if (!Array.isArray(a)) {
     return new Error("'ListGet': 'a' must be an array")
   }
@@ -1031,7 +1152,7 @@ const ListGet = (a: any[], b: tf.Scalar) => {
   return a.at(index)
 }
 
-const ListMap = (a: any[], fn: (value: any, index: tf.Scalar) => any) => {
+const ListMap = (a: any[], fn: (value: any, index: Value) => any) => {
   if (typeof fn !== "function") {
     return new Error("'ListMap': 'fn' must be a function")
   }
@@ -1058,39 +1179,57 @@ const ListReduce = (a: any[], fn: (acc: any, value: any) => any, initialValue?: 
   return a.reduce(fn, initialValue)
 }
 
-const Tensor = tf.tensor
-const TensorScalar = tf.scalar
+// Read scalar/vector metadata (axis, sizes) out of a tensor argument
+const asNumber = (v: Value): number => Number(getAsSyncList(v))
+const asNumberList = (v: Value): number[] => ([] as number[]).concat(getAsSyncList(v) as any)
+
+const Tensor = (values: unknown, shape?: Value) => {
+  const source: any = isTensor(values) || values instanceof FluentVariable ? borrow(values) : values
+  return track(np.array(source, shape === undefined ? undefined : { shape: asNumberList(shape) }))
+}
+const TensorScalar = (value: number) => track(np.array(value))
+
+// Wrapper factories: borrow the tensor arguments, track the result.
+const unaryOp = (op: (x: any) => np.Array) => (a: Value) => track(op(borrow(a)))
+const binaryOp = (op: (x: any, y: any) => np.Array) => (a: Value, b: Value) => track(op(borrow(a), borrow(b)))
+
 // stack broadcasts its inputs to a common shape, like arithmetic does:
-// stack(x - a, y - b) works even when the pieces only meet by broadcasting
-const broadcastAll = (tensors: tf.Tensor[]): tf.Tensor[] => {
-  if (tensors.length === 0 || !tensors.every(t => t instanceof tf.Tensor)) { return tensors }
-  const rank = Math.max(...tensors.map(t => t.shape.length))
+// stack(x - a, y - b) works even when the pieces only meet by broadcasting.
+// Returns owned references, ready to be consumed by stack/concatenate.
+const broadcastRefs = (values: Value[]): np.Array[] => {
+  const tensors = values.map(v => v instanceof FluentVariable ? v.current : v)
+  if (tensors.length === 0 || !tensors.every(isTensor)) { return tensors.map(borrow) as np.Array[] }
+  const arrays = tensors as np.Array[]
+  const rank = Math.max(...arrays.map(t => t.shape.length))
   const shape = Array.from({ length: rank }, (_, i) =>
-    Math.max(...tensors.map(t => t.shape[t.shape.length - rank + i] ?? 1)))
-  return tensors.map(t =>
-    t.shape.length === rank && t.shape.every((d, i) => d === shape[i]) ? t : tf.broadcastTo(t, shape))
+    Math.max(...arrays.map(t => t.shape[t.shape.length - rank + i] ?? 1)))
+  return arrays.map(t =>
+    t.shape.length === rank && t.shape.every((d, i) => d === shape[i]) ? t.ref : np.broadcastTo(t.ref, shape))
 }
 
 // stack(a, b, ...) joins along axis 0; stack((a, b, ...), axis) picks the axis
 const TensorStack = (...args: unknown[]) => {
   if (Array.isArray(args[0])) {
-    const axis = args[1] === undefined ? 0 : getAsSyncList(args[1] as tf.Tensor) as number
-    return tf.stack(broadcastAll(args[0] as tf.Tensor[]), axis)
+    const axis = args[1] === undefined ? 0 : asNumber(args[1] as Value)
+    return track(np.stack(broadcastRefs(args[0] as Value[]), axis))
   }
-  return tf.stack(broadcastAll(args as tf.Tensor[]))
+  return track(np.stack(broadcastRefs(args as Value[])))
 }
-const TensorUnstack = (a: tf.Tensor, b?: tf.Tensor) =>
-  tf.unstack(a, b === undefined ? 0 : getAsSyncList(b) as number)
+const TensorUnstack = (a: Value, b?: Value) => {
+  const axis = b === undefined ? 0 : asNumber(b)
+  const array = borrow(a) as np.Array
+  // the iterator consumes the array and yields slices along the first axis
+  return track([...(axis === 0 ? array : np.moveaxis(array, axis, 0))])
+}
 const TensorConcat = (...args: unknown[]) => {
   if (Array.isArray(args[0])) {
-    const axis = args[1] === undefined ? 0 : getAsSyncList(args[1] as tf.Tensor) as number
-    return tf.concat(args[0] as tf.Tensor[], axis)
+    const axis = args[1] === undefined ? 0 : asNumber(args[1] as Value)
+    return track(np.concatenate((args[0] as Value[]).map(borrow) as np.Array[], axis))
   }
-  return tf.concat(args as tf.Tensor[])
+  return track(np.concatenate((args as Value[]).map(borrow) as np.Array[]))
 }
-const TensorTile = (a: tf.Tensor, reps: tf.Tensor) => {
-  const repsList = getAsSyncList(reps) as number[]
-  return tf.tile(a, repsList)
+const TensorTile = (a: Value, reps: Value) => {
+  return track(np.tile(borrow(a), asNumberList(reps)))
 }
 
 // Generalized outer product – J's "table" adverb. `a ⊗(f) b` applies f between
@@ -1098,233 +1237,339 @@ const TensorTile = (a: tf.Tensor, reps: tf.Tensor) => {
 // Cells are the trailing `rank` axes (default 0, scalar cells), so with rank 1
 // `dx ⊗((+), 1) dy` crosses the frames while zipping the shared trailing axis.
 // rank can be a scalar or a [rankA, rankB] pair.
-const TensorOuter = function (this: CurrentScope, f: Value, rank?: tf.Tensor) {
+const TensorOuter = function (this: CurrentScope, f: Value, rank?: Value) {
   const r = rank === undefined ? 0 : getAsSyncList(rank) as (number | number[])
   const [rankA, rankB] = Array.isArray(r) ? r : [r, r]
   const scope = this
 
-  return function (a: tf.Tensor, b: tf.Tensor) {
-    const split = Math.max(0, a.shape.length - (rankA ?? 0))
-    const frameA = a.shape.slice(0, split)
-    const cellA = a.shape.slice(split)
-    const frameBLength = Math.max(0, b.shape.length - (rankB ?? 0))
+  return function (a: Value, b: Value) {
+    const shapeA = shapeOf(a)
+    const split = Math.max(0, shapeA.length - (rankA ?? 0))
+    const frameA = shapeA.slice(0, split)
+    const cellA = shapeA.slice(split)
+    const frameBLength = Math.max(0, shapeOf(b).length - (rankB ?? 0))
     const cellPad = Math.max(0, (rankB ?? 0) - cellA.length)
-    const lifted = tf.reshape(a, [...frameA, ...Array(frameBLength + cellPad).fill(1), ...cellA])
+    const lifted = track(np.reshape(borrow(a), [...frameA, ...Array(frameBLength + cellPad).fill(1), ...cellA]))
     return safeApply(f, [lifted, b], scope)
   }
 }
 
-const TensorAdd = tf.add
-const TensorSubtract = tf.sub
-const TensorMultiply = tf.mul
-const TensorDivide = tf.div
-const TensorPower = tf.pow
-const TensorRoot = (a: tf.Tensor, b: tf.Tensor) => {
+const TensorAdd = binaryOp(np.add)
+const TensorSubtract = binaryOp(np.subtract)
+const TensorMultiply = binaryOp(np.multiply)
+const TensorDivide = binaryOp(np.trueDivide)
+
+// Exponentiation by squaring – consumes `base`, exact where exp(e·ln x) is
+// not: 3^2 is 9, (-2)^2 is 4, and x^2 differentiates as x·x.
+const intPow = (base: np.Array, exponent: number): np.Array => {
+  if (exponent === 0) { return np.onesLike(base) }
+  let e = Math.abs(exponent)
+  let square = base
+  let result: np.Array | null = null
+  while (true) {
+    if (e & 1) { result = result === null ? square.ref : np.multiply(result, square.ref) }
+    e >>= 1
+    if (e === 0) { break }
+    square = np.multiply(square.ref, square)
+  }
+  square.dispose()
+  return exponent < 0 ? np.reciprocal(result!) : result!
+}
+
+const TensorPower = (a: Value, b: Value) => {
+  const exponent = b instanceof FluentVariable ? b.current : b
+  if (exponent instanceof np.Array && exponent.ndim === 0) {
+    const e = asNumber(exponent)
+    if (Number.isInteger(e) && Math.abs(e) <= 64) {
+      return track(intPow(borrow(a) as np.Array, e))
+    }
+  }
+  return track(np.power(borrow(a), borrow(b)))
+}
+const TensorRoot = (a: Value, b?: Value) => {
   if (b === undefined) {
-    return tf.sqrt(a)
+    return track(np.sqrt(borrow(a)))
   }
   return TensorPower(b, TensorReciprocal(a))
-} 
-const TensorRemainder = tf.mod
-const TensorMaximum = tf.maximum
-const TensorMinimum = tf.minimum
+}
+const TensorRemainder = binaryOp(np.remainder)
+const TensorMaximum = binaryOp(np.maximum)
+const TensorMinimum = binaryOp(np.minimum)
 
-const TensorLess = tf.less
-const TensorGreater = tf.greater
-const TensorLessEqual = tf.lessEqual
-const TensorGreaterEqual = tf.greaterEqual
-const TensorEqual = tf.equal
-const TensorNotEqual = tf.notEqual
+const TensorLess = binaryOp(np.less)
+const TensorGreater = binaryOp(np.greater)
+const TensorLessEqual = binaryOp(np.lessEqual)
+const TensorGreaterEqual = binaryOp(np.greaterEqual)
+const TensorEqual = binaryOp(np.equal)
+const TensorNotEqual = binaryOp(np.notEqual)
 
-const TensorSine = tf.sin
-const TensorCosine = tf.cos
-const TensorTangent = tf.tan
-const TensorSineHyperbolic = tf.sinh
-const TensorCosineHyperbolic = tf.cosh
-const TensorTangentHyperbolic = tf.tanh
-const TensorSineInverse = tf.asin
-const TensorCosineInverse = tf.acos
-const TensorTangentInverse = tf.atan
-const TensorSineHyperbolicInverse = tf.asinh
-const TensorCosineHyperbolicInverse = tf.acosh
-const TensorTangentHyperbolicInverse = tf.atanh
+const TensorSine = unaryOp(np.sin)
+const TensorCosine = unaryOp(np.cos)
+const TensorTangent = unaryOp(np.tan)
+const TensorSineHyperbolic = unaryOp(np.sinh)
+const TensorCosineHyperbolic = unaryOp(np.cosh)
+const TensorTangentHyperbolic = unaryOp(np.tanh)
+const TensorSineInverse = unaryOp(np.asin)
+const TensorCosineInverse = unaryOp(np.acos)
+const TensorTangentInverse = unaryOp(np.atan)
+const TensorSineHyperbolicInverse = unaryOp(np.arcsinh)
+const TensorCosineHyperbolicInverse = unaryOp(np.arccosh)
+const TensorTangentHyperbolicInverse = unaryOp(np.arctanh)
 
 // Reductions take an optional axis (scalar or vector tensor) as second argument
-const withOptionalAxis = (op: (a: tf.Tensor, axis?: number | number[]) => tf.Tensor) =>
-  (a: tf.Tensor, b?: tf.Tensor) =>
-    b === undefined ? op(a) : op(a, getAsSyncList(b) as (number | number[]))
+const withOptionalAxis = (op: (a: any, axis?: number | number[]) => np.Array) =>
+  (a: Value, b?: Value) =>
+    track(b === undefined ? op(borrow(a)) : op(borrow(a), getAsSyncList(b) as (number | number[])))
 
-const TensorSum = withOptionalAxis(tf.sum)      // TensorReduce(a, 0, +)
-const TensorProduct = withOptionalAxis(tf.prod) // TensorReduce(a, 1, *)
-const TensorMean = withOptionalAxis(tf.mean)
-const TensorMin = withOptionalAxis(tf.min)
-const TensorMax = withOptionalAxis(tf.max)
+const TensorSum = withOptionalAxis(np.sum)      // TensorReduce(a, 0, +)
+const TensorProduct = withOptionalAxis(np.prod) // TensorReduce(a, 1, *)
+const TensorMean = withOptionalAxis(np.mean)
+const TensorMin = withOptionalAxis(np.min)
+const TensorMax = withOptionalAxis(np.max)
 
-const TensorNormalize = (a: tf.Tensor, p?: tf.Tensor) => {
-  const pVal = p !== undefined ? getAsSyncList(p) as number : 2
-  const norm = tf.norm(a, pVal)
-  return tf.div(a, norm)
+const TensorNormalize = (a: Value, p?: Value) => {
+  const ord = p !== undefined ? asNumber(p) : 2
+  return track(np.trueDivide(borrow(a), np.linalg.vectorNorm(borrow(a), { ord })))
 }
 
-const TensorNegate = tf.neg
-const TensorAbsolute = tf.abs
-const TensorSign = tf.sign
-const TensorLogarithm = tf.log
-const TensorExponential = tf.exp
-const TensorReciprocal = tf.reciprocal
-const TensorRound = tf.round
-const TensorCeil = tf.ceil
-const TensorFloor = tf.floor
-const TensorErrorFunction = tf.erf
-const TensorSigmoid = tf.sigmoid
-const TensorRelu = tf.relu
-const TensorClamp = (x: tf.Tensor, min: tf.Tensor, max: tf.Tensor) =>
-  tf.clipByValue(x, getAsSyncList(min) as number, getAsSyncList(max) as number)
-const TensorSoftmax = (x: tf.Tensor, axis?: tf.Tensor) =>
-  axis === undefined ? tf.softmax(x) : tf.softmax(x, getAsSyncList(axis) as number)
-const TensorOneHot = (indices: tf.Tensor, depth: tf.Tensor) =>
-  tf.oneHot(tf.cast(indices, "int32"), getAsSyncList(depth) as number)
-const TensorCrossEntropy = (labels: tf.Tensor, logits: tf.Tensor) =>
-  tf.losses.softmaxCrossEntropy(labels, logits)
+const TensorNegate = unaryOp(np.negative)
+const TensorAbsolute = unaryOp(np.absolute)
+const TensorSign = unaryOp(np.sign)
+const TensorLogarithm = unaryOp(np.log)
+const TensorExponential = unaryOp(np.exp)
+const TensorReciprocal = unaryOp(np.reciprocal)
+const TensorRound = unaryOp(np.round)
+const TensorCeil = unaryOp(np.ceil)
+const TensorFloor = unaryOp(np.floor)
+const TensorErrorFunction = unaryOp(lax.erf)
+const TensorSigmoid = unaryOp(nn.sigmoid)
+const TensorRelu = unaryOp(nn.relu)
+const TensorClamp = (x: Value, min: Value, max: Value) =>
+  track(np.clip(borrow(x), borrow(min), borrow(max)))
+const TensorSoftmax = (x: Value, axis?: Value) =>
+  track(nn.softmax(borrow(x), axis === undefined ? undefined : asNumber(axis)))
+const TensorOneHot = (indices: Value, depth: Value) =>
+  track(nn.oneHot(np.astype(borrow(indices), np.int32), asNumber(depth)))
+const TensorCrossEntropy = (labels: Value, logits: Value) =>
+  track(np.mean(np.negative(np.sum(np.multiply(borrow(labels), nn.logSoftmax(borrow(logits))), -1))))
 
-const TensorSort = (x: tf.Tensor) => {
-  return TensorReverse(tf.topk(x, x.size, true).values)
+const TensorSort = (x: Value) => track(np.sort(borrow(x)))
+const TensorSlice = (a: Value, begin: Value, size?: Value) => {
+  const beginList = asNumberList(begin)
+  const sizeList = size === undefined ? undefined : asNumberList(size)
+  const spec = beginList.map((b, i) => {
+    const s = sizeList?.[i]
+    return (s === undefined || s === -1 ? [b] : [b, b + s]) as [number] | [number, number]
+  })
+  return track((borrow(a) as np.Array).slice(...spec))
 }
-const TensorSlice = (a: tf.Tensor, begin: tf.Tensor, size: tf.Tensor) => {
-  const beginList = getAsSyncList(begin) as number[]
-  const sizeList = getAsSyncList(size) as number[]
-  return tf.slice(a, beginList, sizeList)
+const TensorMask = (a: Value, b: Value) => {
+  const count = asNumber(TensorSum(TensorBoolean(b)))
+  const size = shapeOf(a)[0] ?? 0
+  const indices = track(np.arange(size).astype(np.float32))
+  const holes = track(np.full([size], -1))
+  const mu = TensorWhere(b, indices, holes)
+  const top = TensorReverse(TensorSort(mu))
+  const valid = TensorSlice(top, TensorScalar(0), TensorScalar(count))
+  return TensorGather(a, TensorReverse(valid))
 }
-const TensorMask = (a: tf.Tensor, b: tf.Tensor) => {
-  const count = TensorSum(TensorBoolean(b))
-  const indices = TensorRange(tf.tensor(0), TensorShape(a));
-  const mu = TensorWhere(b, indices, TensorFill(TensorShape(a), tf.tensor(-1)));
-  const top = TensorReverse(TensorSort(mu));
-  const i = TensorSlice(top, tf.tensor(0), count);
-  return TensorGather(a, TensorReverse(tf.cast(i, "int32")));
+const TensorFill = (shape: Value, value: Value) => {
+  return track(np.full(asNumberList(shape), asNumber(value)))
 }
-const TensorFill = (shape: tf.Tensor, value: tf.Tensor) => {
-  const shapeList = getAsSyncList(shape) as number[]
-  const valueScalar = getAsSyncList(value) as number
-  return tf.fill(shapeList, valueScalar)
-}
-const TensorBoolean = (a: tf.Tensor) => tf.cast(a, "bool")
+const TensorBoolean = (a: Value) => track(np.astype(borrow(a), np.bool))
 
-const TensorGradient = tf.grad
-const TensorTranspose = tf.transpose
-const TensorIdentity = (a: tf.Tensor) => {
-  const size = getAsSyncList(a) as number
-  return tf.eye(size)
+const TensorGradient = (f: Value) => {
+  if (typeof f !== "function") {
+    return new Error("`gradient(f)`: `f` must be a function")
+  }
+  return (x: Value) => {
+    const dfdx = jaxGrad((primal: np.Array) => {
+      const out = (f as Function)(primal)
+      const value = out instanceof Signal ? out.peek() : out
+      if (value instanceof Error) { throw value }
+      if (!isTensor(value)) { throw new Error("`gradient(f)`: `f` must return a scalar tensor") }
+      return value as np.Array
+    })
+    return track(dfdx(borrow(x) as np.Array))
+  }
+}
+const TensorTranspose = unaryOp(np.transpose)
+const TensorIdentity = (a: Value) => {
+  return track(np.eye(asNumber(a)))
 }
 
-const TensorRange = (a: tf.Tensor, b: tf.Tensor) => {
+const TensorRange = (a: Value, b?: Value) => {
+  // jax-js arange is int32 and weak-typed floats truncate against it – Fluent
+  // tensors are float32 throughout
   if (b === undefined) {
-    const stop = getAsSyncList(tf.cast(a, "int32")) as number
-    return tf.range(0, stop)
+    return track(np.arange(Math.trunc(asNumber(a))).astype(np.float32))
   }
 
-  const start = getAsSyncList(tf.cast(a, "int32")) as number
-  const stop = getAsSyncList(tf.cast(b, "int32")) as number
+  const start = Math.trunc(asNumber(a))
+  const stop = Math.trunc(asNumber(b))
   const step = start <= stop ? 1 : -1
-  return tf.range(start, stop, step)
+  return track(np.arange(start, stop, step).astype(np.float32))
 }
 
-const TensorLinearSpace = (range: tf.Tensor, steps: tf.Tensor) => {
+const TensorLinearSpace = (range: Value, steps: Value) => {
   const [start, stop] = getAsSyncList(range) as [number, number]
-  const num = getAsSyncList(steps) as number
-  return tf.linspace(start, stop, num)
+  return track(np.linspace(start, stop, asNumber(steps)))
 }
 
-const TensorReshape = (a: tf.Tensor, b: tf.Tensor) => {
+const TensorReshape = (a: Value, b?: Value) => {
   if (b !== undefined) {
-    return tf.reshape(a, getAsSyncList(b) as number[])
+    return track(np.reshape(borrow(a), asNumberList(b)))
   }
 
-  return tf.tensor(a.shape)
+  return track(np.array(shapeOf(a)))
 }
 
-const TensorReverse = tf.reverse
+const TensorReverse = (a: Value, axis?: Value) =>
+  track(np.flip(borrow(a), axis === undefined ? undefined : getAsSyncList(axis) as number | number[]))
 
-const TensorMatrixMultiply = (a: tf.Tensor, b: tf.Tensor) => tf.matMul(a, b, false, false)
-const TensorDotProduct = tf.dot
+const TensorMatrixMultiply = binaryOp(np.matmul)
+const TensorDotProduct = binaryOp(np.dot)
 
-const TensorLength = (a: tf.Tensor, b?: tf.Tensor) => {
+const TensorLength = (a: Value, b?: Value) => {
   if (b !== undefined) {
-    // @ts-ignore
-    return tf.scalar(a.shape[getAsSyncList(b) as number])
+    return track(np.array(shapeOf(a)[asNumber(b)] ?? NaN))
   }
 
-  return tf.scalar(a.shape[0])
+  return track(np.array(shapeOf(a)[0] ?? NaN))
 }
 
-const TensorShape = (a: tf.Tensor) => tf.tensor(a.shape)
+const TensorShape = (a: Value) => track(np.array(shapeOf(a)))
 
-const TensorGather = (a: tf.Tensor, b: tf.Tensor) => {
-  const indices = tf.cast(b, "int32")
-  // negative indices count from the end: a_(-1) is the last element
-  const size = tf.scalar(a.shape[0] ?? 0, "int32")
-  const wrapped = tf.where(tf.less(indices, 0), tf.add(indices, size), indices)
-  return tf.gather(a, wrapped)
-}
-
-const TensorWhere = (a: tf.Tensor, b: tf.Tensor, c: tf.Tensor) => tf.where(TensorBoolean(a), b, c)
-const TensorIsNaN = tf.isNaN
-
-const TensorVariable = (a: tf.Tensor) => {
-  const version = signal(0)
-  const variableTensor = tf.variable(a, true)
-
-  // Hook assign to trigger reactivity
-  const originalAssign = variableTensor.assign.bind(variableTensor)
-  variableTensor.assign = (newValue: tf.Tensor) => {
-    const result = originalAssign(newValue)
-    version.value++
-    return result
+const TensorGather = (a: Value, b: Value) => {
+  const size = shapeOf(a)[0] ?? 0
+  const raw = np.astype(borrow(b), np.int32)
+  // negative indices count from the end: a_(-1) is the last element. The
+  // outer cast makes the dtype strongly int32 – astype keeps weak typing, and
+  // weak int32 promotes to float32 in the where().
+  const wrapped = np.astype(np.where(np.less(raw.ref, 0), np.add(raw.ref, size), raw), np.int32)
+  const array = borrow(a)
+  if (array instanceof np.Array) {
+    return track(np.take(array, wrapped, 0))
   }
-
-  // @ts-ignore
-  variableTensor.__version__ = version
-  return variableTensor
+  // inside grad(): jax-js gather has no transpose rule yet, so express the
+  // gather as a one-hot contraction, which differentiates
+  const selector = nn.oneHot(wrapped, size)
+  return track(np.tensordot(selector, array, [[selector.ndim - 1], [0]]))
 }
 
-const TensorAssign = (a: tf.Variable, b: tf.Tensor) => {
-  return a.assign(b)
+const TensorWhere = (a: Value, b: Value, c: Value) =>
+  track(np.where(np.astype(borrow(a), np.bool), borrow(b), borrow(c)))
+const TensorIsNaN = unaryOp(np.isnan)
+
+const TensorVariable = (a: Value) => {
+  if (!isTensor(a) && !(a instanceof FluentVariable)) {
+    return new Error("`~(init)`: initial value must be a tensor")
+  }
+  return new FluentVariable(borrow(a) as np.Array)
+}
+
+const TensorAssign = (a: Value, b: Value) => {
+  if (!(a instanceof FluentVariable)) {
+    return new Error("`:=`: left side must be a variable created with ~")
+  }
+  a.assign(borrow(b) as np.Array)
+  return null
 }
 
 // Bridge a trainable variable into the reactive world: watch(θ) is a Signal
 // that updates on every assignment (drag, optimizer step, :=)
-const TensorWatch = (a: tf.Tensor): Signal<tf.Tensor> | tf.Tensor => {
-  const version = (a as any).__version__ as Signal<number> | undefined
-  if (!version) { return a }
-  let previous: tf.Tensor | null = null
+const TensorWatch = (a: Value): Value => {
+  if (!(a instanceof FluentVariable)) { return a }
+  let previous: np.Array | null = null
   return computed(() => {
-    version.value
-    if (previous) { previous.dispose() }
-    previous = a.clone()
+    a.version.value
+    if (previous && previous.refCount > 0) { previous.dispose() }
+    previous = a.current.ref
     return previous
   })
 }
 
-const TensorOptimizationAdam = (a: tf.Tensor, b: tf.Variable[]) => {
-  const optimizer = tf.train.adam(getAsSyncList(a) as number, 0.9, 0.999, 1e-8)
-  return (fn: () => tf.Scalar) => optimizer.minimize(fn, true, b)
+// Optimizers: optax gradient transformations driven by valueAndGrad. The loss
+// thunk closes over the variables – during tracing each variable temporarily
+// carries its tracer, so reads inside the thunk differentiate.
+const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: FluentVariable[]) => {
+  let state: optax.OptState | null = null
+  let stateVars: FluentVariable[] = []
+  registerDisposable(() => {
+    if (state !== null) {
+      tree.dispose(state)
+      state = null
+    }
+  })
+
+  return (lossThunk: Value) => {
+    if (typeof lossThunk !== "function") {
+      return new Error("optimizer expects a loss thunk { ... }")
+    }
+    const vars = explicitVars ?? [...trainableVariables]
+    if (vars.length === 0) {
+      return new Error("no trainable variables – create one with ~(init)")
+    }
+    if (state !== null && (stateVars.length !== vars.length || stateVars.some((v, i) => v !== vars[i]))) {
+      tree.dispose(state)
+      state = null
+    }
+    if (state === null) {
+      state = transform.init(vars.map(v => v.current.ref))
+      stateVars = vars
+    }
+
+    const [loss, grads] = valueAndGrad((params: np.Array[]) => {
+      const saved = vars.map(v => v.current)
+      vars.forEach((v, i) => { v.current = params[i]! })
+      try {
+        const out = (lossThunk as Function)()
+        const value = out instanceof Signal ? out.peek() : out
+        if (value instanceof Error) { throw value }
+        if (!isTensor(value)) { throw new Error("loss must evaluate to a scalar tensor") }
+        return value as np.Array
+      } finally {
+        vars.forEach((v, i) => { v.current = saved[i]! })
+      }
+    })(vars.map(v => v.current.ref))
+
+    const [updates, nextState] = transform.update(grads as np.Array[], state, vars.map(v => v.current.ref))
+    state = nextState
+    const fresh = optax.applyUpdates(vars.map(v => v.current.ref), updates as np.Array[]) as np.Array[]
+    vars.forEach((v, i) => { v.assign(fresh[i]!) })
+    return track(loss)
+  }
 }
 
-const TensorOptimizationSgd = (a: tf.Tensor) => {
-  const optimizer = tf.train.sgd(getAsSyncList(a) as number)
-  return (fn: () => tf.Scalar) => optimizer.minimize(fn, true)
-}
+// optax has no adagrad – accumulate squared gradients ourselves
+const adagradTransform = (learningRate: number, eps = 1e-7): optax.GradientTransformation => ({
+  init: (params) => tree.map((p: np.Array) => np.zerosLike(p), params as any),
+  update: (updates, state, params) => {
+    if (params) { tree.dispose(params) }
+    const accum = tree.map((g: np.Array, s: np.Array) => np.add(np.square(g.ref), s), updates as any, state as any)
+    const scaled = tree.map(
+      (g: np.Array, s: np.Array) => np.multiply(np.trueDivide(g, np.add(np.sqrt(s.ref), eps)), -learningRate),
+      updates as any, tree.ref(accum) as any)
+    return [scaled as any, accum]
+  },
+})
 
-const TensorOptimizationAdaGrad = (a: tf.Tensor) => {
-  const optimizer = tf.train.adagrad(getAsSyncList(a) as number)
-  return (fn: () => tf.Scalar) => optimizer.minimize(fn, true)  
-}
+const TensorOptimizationAdam = (a: Value, b?: Value) =>
+  makeOptimizer(optax.adam(asNumber(a)), Array.isArray(b) ? b as FluentVariable[] : undefined)
 
-const TensorRandomNormal = (a: tf.Tensor) => tf.randomStandardNormal(getAsSyncList(a) as number[])
-const TensorRandomUniform = (a: tf.Tensor) => tf.randomUniform(getAsSyncList(a) as number[])
+const TensorOptimizationSgd = (a: Value) => makeOptimizer(optax.sgd(asNumber(a)))
+
+const TensorOptimizationAdaGrad = (a: Value) => makeOptimizer(adagradTransform(asNumber(a)))
+
+// Stateful convenience RNG: a fresh Threefry key per call, mirroring the feel
+// of TFJS's tf.random* – deterministic per page load, not across reloads.
+let rngCounter = 0
+const nextRngKey = () => random.key(rngCounter++)
+const TensorRandomNormal = (a: Value) => track(random.normal(nextRngKey(), asNumberList(a)))
+const TensorRandomUniform = (a: Value) => track(random.uniform(nextRngKey(), asNumberList(a)))
 
 const StringConcat = (...args: any[]) => "".concat(...args)
-const StringLength = (a: string) => tf.scalar(a.length)
+const StringLength = (a: string) => track(np.array(a.length))
 
 const Null = null
 
@@ -1728,6 +1973,14 @@ const createScope = () => {
 // MARK: Exports
 
 export {
+  // tensors
+  np,
+  FluentVariable,
+  isTensor,
+  borrow,
+  track,
+  arena,
+  TensorScalar,
   // parse
   CodeParse,
   getParseErrors,

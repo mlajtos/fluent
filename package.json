@@ -18,6 +18,8 @@
     "test": "bun test ./tests.ts"
   },
   "dependencies": {
+    "@jax-js/jax": "^0.1.16",
+    "@jax-js/optax": "^0.1.2",
     "@monaco-editor/react": "^4.7.0",
     "@preact/signals-core": "^1.12.1",
     "@preact/signals-react": "^3.3.1",
