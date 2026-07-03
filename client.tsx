@@ -103,6 +103,7 @@ Button("Reset", { x(0) }),
   - tensor math: \`+\`, \`-\`, \`*\`, \`/\`, \`^\`, \`√\`, \`sum\`, \`mean\`, \`max\`, \`min\`, \`sin\`, \`cos\`, \`log\`, \`exp\`, \`dot\`, \`matmul\`, \`transpose\`, \`reshape\`, etc.
   - tensor creation: \`::\` (range), \`linspace\`, \`eye\`, \`rand\`, \`randn\`
   - axis variants: \`stack((a, b), axis)\`, \`concat((a, b), axis)\`, \`unstack(x, axis)\`, \`sum(x, axis)\`
+  - outer product \`⊗\`: \`a (⊗ f) b\` pairs every cell of a with every cell of b; \`a (f ⊗ k) b\` keeps trailing k axes zipped
   - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
   - UI: \`Slider\`, \`Scrubber\`, \`Button\`, \`Text\`, \`Grid\`
   - optimizers: \`adam\`, \`sgd\`, \`adagrad\`
@@ -1351,6 +1352,27 @@ const TensorTile = (a: tf.Tensor, reps: tf.Tensor) => {
   return tf.tile(a, repsList)
 }
 
+// Generalized outer product – J's "table" adverb. `a ⊗(f) b` applies f between
+// every cell of a and every cell of b: result shape [frame(a), frame(b), cell].
+// Cells are the trailing `rank` axes (default 0, scalar cells), so with rank 1
+// `dx ⊗((+), 1) dy` crosses the frames while zipping the shared trailing axis.
+// rank can be a scalar or a [rankA, rankB] pair.
+const TensorOuter = function (this: CurrentScope, f: Value, rank?: tf.Tensor) {
+  const r = rank === undefined ? 0 : getAsSyncList(rank) as (number | number[])
+  const [rankA, rankB] = Array.isArray(r) ? r : [r, r]
+  const scope = this
+
+  return function (a: tf.Tensor, b: tf.Tensor) {
+    const split = Math.max(0, a.shape.length - (rankA ?? 0))
+    const frameA = a.shape.slice(0, split)
+    const cellA = a.shape.slice(split)
+    const frameBLength = Math.max(0, b.shape.length - (rankB ?? 0))
+    const cellPad = Math.max(0, (rankB ?? 0) - cellA.length)
+    const lifted = tf.reshape(a, [...frameA, ...Array(frameBLength + cellPad).fill(1), ...cellA])
+    return safeApply(f, [lifted, b], scope)
+  }
+}
+
 const TensorAdd = tf.add
 const TensorSubtract = tf.sub
 const TensorMultiply = tf.mul
@@ -2179,6 +2201,7 @@ const DefaultEnvironment = {
 
   TensorMatrixMultiply,
   TensorDotProduct,
+  TensorOuter,
 
   // MARK: List operations
 
@@ -2263,7 +2286,6 @@ shape: TensorShape,
 slice: TensorSlice,
 transpose: TensorTranspose,
 reverse: TensorReverse,
-TensorOuter: { f | { a,b | f(a ⍴ [-1, 1], b ⍴ [1, -1]) } },
 (⊗): TensorOuter,
 outer: TensorOuter,
 
@@ -3516,10 +3538,9 @@ field: (lines × 0.7) + (glow × 0.3),
 `,
 "magnets-minimal": `
 ; Animated Magnetic Field – minimal
-; a magnet is two opposite charges; broadcasting is the meshgrid
+; a magnet is two opposite charges; ⊗ is the meshgrid
 
 (≻): { t, v | (v_0 × 1-t) + (v_1 × t) },  ; lerp
-norm: { v, dim | √(sum(v^2, dim)) },
 
 m: 3,    ; magnets
 n: 600,  ; resolution
@@ -3531,9 +3552,10 @@ pos: rand([2, m]) ≻ [-1.4, 1.4],               ; [2 m] centers
 pole: concat((pos + dir, pos - dir), 1),       ; [2 2m] all six poles
 q: concat(fill([m], 1), fill([m], -1)),        ; charge of each pole
 
-x: linspace([-2, 2], n) ⍴ [n, 1, 1],
-y: linspace([-2, 2], n) ⍴ [1, n, 1],
-r: stack(x - pole_0, y - pole_1) norm 0 + 1e-4,
+grid: linspace([-2, 2], n),
+dx: grid (⊗ -) pole_0,          ; [n 2m]
+dy: grid (⊗ -) pole_1,          ; [n 2m]
+r: √(dx^2 (+ ⊗ 1) dy^2) + 1e-4, ; [n n 2m] – frames cross, poles zip
 
 k: sin(t × 2) × 0.2 + 0.5,   ; pulsing strength
 potential: sum(q×k / r, 2),
