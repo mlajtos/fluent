@@ -42,10 +42,11 @@ Button("Reset", { x(0) }),
 ### Syntax
 - Tensors
   - multi-dimensional arrays of numbers
-  - scalars: \`1\`, \`3.14\`, \`-42\`
+  - scalars: \`1\`, \`3.14\`, \`-42\`, \`1e-7\`
   - vectors: \`[1, 2, 3]\`, matrices: \`[[1, 2], [3, 4]]\`
   - auto-broadcasting: \`[1, 2, 3] + 1\` is \`[2, 3, 4]\`
-  - indexing with \`_\`: \`a_0\`, \`a_1\`, \`a_(i + 1)\`, \`a_(-1)\` (last element)
+  - indexing with \`_\`: \`a_0\`, \`a_(i + 1)\`, \`a_(-1)\` (last element)
+    - glued \`_\` binds tight: \`x × θ_0 + θ_1\` needs no parentheses
   - length with \`#\`: \`#([1, 2, 3])\` is \`3\`
   - range with \`::\`: \`0 :: 10\` is \`[0, 1, 2, ..., 9]\`
 - Lists
@@ -59,19 +60,17 @@ Button("Reset", { x(0) }),
 - Symbols
   - letter-based: \`a\`, \`FooBar\`, \`bar-baz-1\`, \`α\`, \`β\`, \`θ\`
   - operator-based: \`+\`, \`≠\`, \`!=\`, \`√\`, \`∇\`
-  - assignment with \`:\`: \`a: 23, b: (a + 24)\`
-  - letter and operator symbols do not conflict: \`foo+bar\`, \`α≠β\` work without spaces
-- Evaluation order
-  - EVERYTHING is left-to-right, NO operator precedence: \`1 + 2 * 3\` is \`(1 + 2) * 3\` = \`9\`
-  - use parentheses to override: \`1 + (2 * 3)\` is \`7\`
-  - CRITICAL: Assignment \`:\` is also just a left-to-right operator!
-    - \`a: 23\` ✓ – single value, no parens needed
-    - \`b: a + 1\` ✗ – parses as \`(b: a) + 1\`, NOT \`b: (a + 1)\`
-    - \`b: (a + 1)\` ✓ – correct, parentheses required
-    - \`c: fn(a)\` ✓ – function call is a single expression
-    - \`d: fn(a) + fn(b)\` ✗ – parses as \`(d: fn(a)) + fn(b)\`
-    - \`d: (fn(a) + fn(b))\` ✓ – correct, parentheses required
-  - Rule: if rvalue has ANY operator after it, wrap the ENTIRE rvalue in \`()\`
+  - assignment with \`:\`: \`a: 23, b: a + 24\`
+- Evaluation order – whitespace IS precedence
+  - spaced operators go left-to-right, NO numeric precedence: \`1 + 2 * 3\` is \`(1 + 2) * 3\` = \`9\`
+  - glued operators bind tighter than spaced ones: \`1 + 2*3\` is \`1 + (2 * 3)\` = \`7\`
+    - \`a*b + c*d\` is \`(a * b) + (c * d)\` – hug what belongs together
+  - operator glued ONLY to its left operand takes everything to its right:
+    - \`a: 1 + 2\` is \`a: (1 + 2)\` – assignment without parentheses
+    - chains right: \`a: b: 1 + 2\` is \`a: (b: (1 + 2))\`
+  - parentheses always override: \`1 + (2 * 3)\` is \`7\`
+  - within a tier, evaluation is left-to-right: \`2*3^2\` is \`(2 * 3) ^ 2\` = \`36\`
+  - one trap: glued \`-\` after a letter is part of the name (\`n-1\` is a symbol, kebab-case) – write \`n - 1\`
 - Comments
   - single-line with \`;\`: \`a: 1, ; this is a comment\`
 - Program structure
@@ -85,11 +84,12 @@ Button("Reset", { x(0) }),
 - Reactive programming
   - create signal: \`x: $(0.5)\`
   - read signal: \`x()\`
-  - update signal: \`x(0.7)\`
-  - computed signal: \`y: (x + 1)\` – auto-lifts to reactive when \`x\` is a signal
+  - update signal: \`x(0.7)\` or \`x ← 0.7\`
+  - computed signal: \`y: x + 1\` – auto-lifts to reactive when \`x\` is a signal
   - explicit computed: \`y: $({ x() + 1 })\` – manual version (rarely needed)
 - Iteration
-  - repeat N times with \`⟳\`: \`step ⟳ 100\`
+  - repeat N times with \`⟳\`: \`step ⟳ 100\` (async, fire-and-forget)
+  - function power with \`⍣\`: \`(double ⍣ 5)(1)\` is \`double(double(...))\` = \`32\`
 - Pattern matching
   - \`guard(cond, { value })\`: returns a function that yields value if cond is truthy, else Error
   - use with \`cascade\` for pattern matching: \`cascade((guard(...), { default }))(arg)\`
@@ -102,9 +102,11 @@ Button("Reset", { x(0) }),
 - Built-in functions
   - tensor math: \`+\`, \`-\`, \`*\`, \`/\`, \`^\`, \`√\`, \`sum\`, \`mean\`, \`max\`, \`min\`, \`sin\`, \`cos\`, \`log\`, \`exp\`, \`dot\`, \`matmul\`, \`transpose\`, \`reshape\`, etc.
   - tensor creation: \`::\` (range), \`linspace\`, \`eye\`, \`rand\`, \`randn\`
+  - axis variants: \`stack((a, b), axis)\`, \`concat((a, b), axis)\`, \`unstack(x, axis)\`, \`sum(x, axis)\`
   - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
   - UI: \`Slider\`, \`Scrubber\`, \`Button\`, \`Text\`, \`Grid\`
   - optimizers: \`adam\`, \`sgd\`, \`adagrad\`
+  - metadata: \`Describe(fn, "doc")\` attaches a doc string, \`Describe(fn)\` queries it
 - Ad-hoc operators
   - define custom operators: \`(++): ListConcat, (1, 2) ++ (3, 4)\`
 
@@ -129,7 +131,6 @@ Button("Reset", { x(0) }),
   - deeper issue: `(...args) => ...` JS lambdas (stack, grid, concat, etc.) are too magical, but very useful
 - syntax tree visualization:
   - hovering over nodes in AST view does highlight in code editor, but at the same time, hovering over whole AST viz highlights code in backticks, so it's not very useful
-  - layout using bounding boxes waste space – simple pipeline `1 + 2 + 3 + ...` should be 2 lines, not dozens
   - using result of function call as operator is not well visualized
     - example `a (+ & -) b`
     - an explicit node need to be shown for the function call, as in `(a,b) . (+ & -)`
@@ -189,6 +190,10 @@ Button("Reset", { x(0) }),
   - https://rodydavis.com/posts/async-preact-signal
 - https://github.com/naver/lispe/wiki/5.3-A-la-APL
   - lispE with APL-like operators
+- https://tinyapl.rubenverg.com/docs/info/combinators
+  - combinators with diagrams
+- https://github.com/aburjg/k.py
+  - K golfed in Python
 
 */
 
@@ -284,6 +289,9 @@ const OPERATOR_RANGES: Record<string, [string, string]> = {
   MULTIPLICATION_SIGN: ["\u00D7", "\u00D7"], // Multiplication Sign
   DIVISION_SIGN: ["\u00F7", "\u00F7"], // Division Sign
   MISCELLANEOUS_MATH_SYMBOLS_B: ["\u2980", "\u29FF"],  // Miscellaneous Mathematical Symbols-B
+  MIDDLE_DOT: ["\u00B7", "\u00B7"], // Middle Dot (multiplication)
+  DOUBLE_VERTICAL_LINE: ["\u2016", "\u2016"], // Norm
+  VARIATION_SELECTORS: ["\uFE00", "\uFE0F"], // Variation Selectors (e.g. \u2194\uFE0E = \u2194 + U+FE0E)
 };
 
 const RESERVED_SYMBOLS = "[|,{}()\\[\\];]"
@@ -294,7 +302,7 @@ const IDENTIFIER_RANGES: Record<string, [string, string]> = {
 }
 const identifierRegexp = /(?:\p{L})[\p{L}\p{N}\-]*/u
 
-const numberRegexp = /-?\d[\d_]*(?:\.\d[\d_]*)?/
+const numberRegexp = /-?\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d[\d_]*)?/
 const stringRegexp = /"(?:[^"\\]|\\.)*"/
 
 const getSymbolRange = (range: [string, string]) => {
@@ -323,17 +331,33 @@ Fluent {
     = Operation
 
   Operation
-    = 
-    | (Expr | Atom) Atom Atom --infix
-    | Atom Atom --prefix
+    = LongOperation
+    | SpacedOperation
+
+  // operator glued to its left operand, space after it:
+  // everything to the right is the right operand – "a: 1 + 2" is "a: (1 + 2)"
+  LongOperation
+    = TightOperation #(~space) operator #(space) Expr
+
+  // spaced operators chain left-to-right – "1 + 2 * 3" is "(1 + 2) * 3"
+  SpacedOperation
+    = (SpacedOperation | TightOperation) TightOperation TightOperation --infix
+    | TightOperation TightOperation --prefix
+    | TightOperation
+
+  // glued operators bind tighter than spaced ones – "1 + 2*3" is "1 + (2 * 3)"
+  TightOperation
+    = TightOperation #(~space) operator #(~space) Application --infix
+    | Application
+
+  // application binds tightest – "f(x)", "∇(f)(x)"
+  Application
+    = Application #(~space) (List | NestedExpr) --apply
     | Atom
 
-  Hack
-    = (Atom #(~space) (List | NestedExpr))
-    
   Atom
-    = Number | Hack | Lambda | NestedExpr | List | Symbol | String | Code | Tensor | Null
-    
+    = Number | Lambda | NestedExpr | List | Symbol | String | Code | Tensor | Null
+
   NestedExpr
     = "(" Expr ")"
 
@@ -353,7 +377,9 @@ Fluent {
   Symbol          = identifier | ${getSymbolsRange(IDENTIFIER_RANGES)} | operator
   identifier      = &letter (alnum | "-")+
   number
-    = "-"? digitGroup ("." digitGroup?)?
+    = "-"? digitGroup ("." digitGroup?)? exponent?
+  exponent
+    = ("e" | "E") ("+" | "-")? digitGroup
   digitGroup
     = digit ("_"? digit)*
   String          = #("\"" (~"\"" any)* "\"")
@@ -402,6 +428,13 @@ function getLocationOrigin(node: any): Origin {
   }
 }
 
+// Lexical operator (from Tight/Long operations) -> Symbol node
+const operatorSymbolNode = (op: { sourceString: string }): SyntaxTreeNode => ({
+  type: "Symbol",
+  content: { value: op.sourceString },
+  origin: getLocationOrigin(op),
+})
+
 const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
   Program(expressions, _) {
     return {
@@ -410,7 +443,23 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
       origin: getLocationOrigin(this),
     }
   },
-  Operation_infix(left, operator, right) {
+  LongOperation(left, operator, _space, right) {
+    return {
+      type: "Operation",
+      content: {
+        operator: operatorSymbolNode(operator),
+        args: {
+          type: "List",
+          origin: getLocationOrigin(this),
+          content: {
+            value: [left.toAST(this.args.mapping), right.toAST(this.args.mapping)]
+          },
+        }
+      },
+      origin: getLocationOrigin(this),
+    }
+  },
+  SpacedOperation_infix(left, operator, right) {
     return {
       type: "Operation",
       content: {
@@ -426,7 +475,23 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
       origin: getLocationOrigin(this),
     }
   },
-  Hack(left, right) {
+  TightOperation_infix(left, operator, right) {
+    return {
+      type: "Operation",
+      content: {
+        operator: operatorSymbolNode(operator),
+        args: {
+          type: "List",
+          origin: getLocationOrigin(this),
+          content: {
+            value: [left.toAST(this.args.mapping), right.toAST(this.args.mapping)]
+          },
+        }
+      },
+      origin: getLocationOrigin(this),
+    }
+  },
+  Application_apply(left, right) {
     const rightValue: SyntaxTreeNode = right.toAST(this.args.mapping);
     const isList = rightValue.type === "List";
     const args: SyntaxTreeNode = isList ? rightValue : {
@@ -446,7 +511,7 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
       origin: getLocationOrigin(this),
     }
   },
-  Operation_prefix(left, right) {
+  SpacedOperation_prefix(left, right) {
     const rightValue: SyntaxTreeNode = right.toAST(this.args.mapping);
     const isList = rightValue.type === "List";
     const args: SyntaxTreeNode = isList ? rightValue : {
@@ -620,6 +685,30 @@ const getParseErrors = (program: string): ParseError[] => {
 
 type Value = tf.Tensor | Function | Signal<Value> | Error | string | String | symbol | null | Value[]
 type CurrentScope = Record<string, Value>
+
+// Unified metadata map on function objects
+interface FunctionMeta {
+  doc?: string
+  noAutoLift?: boolean
+  quotedArgs?: number[]
+}
+
+function getMeta(fn: Function): FunctionMeta {
+  return (fn as any).__meta__ ?? {}
+}
+
+function setMeta(fn: Function, updates: Partial<FunctionMeta>): void {
+  const prev = getMeta(fn)
+  const changed = Object.keys(updates).some(k => prev[k as keyof FunctionMeta] !== updates[k as keyof FunctionMeta]);
+  (fn as any).__meta__ = { ...prev, ...updates }
+  if (!(fn as any).__meta_v__) {
+    (fn as any).__meta_v__ = signal(0)
+  }
+  if (changed) {
+    const v = (fn as any).__meta_v__
+    queueMicrotask(() => v.value++)
+  }
+}
 
 // WeakMap to store origin information for any object (including frozen ones like JSX)
 const originMap = new WeakMap<object, Origin>()
@@ -839,6 +928,42 @@ const reify = (v: Value, env: CurrentScope): Value => {
   return v
 }
 
+// tf.tidy() decides which result tensors survive by recursively walking every
+// enumerable property of the returned value. For UI results (JSX, signals) that
+// walk escapes into the reactive graph and the DOM and costs hundreds of ms per
+// operation. Fluent values only carry tensors as: Tensor, List, or Signal payload
+// – collect exactly those and let tidy keep a plain tensor array instead.
+function collectResultTensors(v: unknown, out: tf.Tensor[], seen: Set<unknown> = new Set()): void {
+  if (v === null || v === undefined) { return }
+  if (typeof v === "object") {
+    if (seen.has(v)) { return }
+    seen.add(v)
+  }
+  if (v instanceof tf.Tensor) {
+    out.push(v)
+    return
+  }
+  if (v instanceof Signal) {
+    // read the cached value without forcing lazy computeds to evaluate
+    collectResultTensors((v as any)._value, out, seen)
+    return
+  }
+  if (Array.isArray(v)) {
+    for (const item of v) { collectResultTensors(item, out, seen) }
+  }
+}
+
+function fluentTidy<T>(fn: () => T): T {
+  let result!: T
+  tf.tidy(() => {
+    result = fn()
+    const tensors: tf.Tensor[] = []
+    collectResultTensors(result, tensors)
+    return tensors
+  })
+  return result
+}
+
 function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
   let errorArgs: Error[] = []
 
@@ -848,9 +973,11 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
     let fnValue: Value = reify(fn, env);
     let argsValue: Value[] = args;
 
+    // Read function metadata
+    const meta = typeof fnValue === 'function' ? getMeta(fnValue) : {}
+    const { quotedArgs = [], noAutoLift = false } = meta
+
     // Selectively reify arguments - quoted args stay as symbols
-    // @ts-ignore
-    const quotedArgs: number[] = fnValue.quotedArgs ?? []
     argsValue = args.map((arg, i) =>
       quotedArgs.includes(i) ? arg : reify(arg, env)
     )
@@ -878,10 +1005,14 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       throw new Error("What are you trying to do with this poor signal?")
     }
 
-    // Auto-lift: wrap in computed() when args contain Signals
-    // @ts-ignore
-    const noAutoLift: boolean = fnValue.noAutoLift ?? false
-    const hasSignalArgs = argsValue.some(a => a instanceof Signal)
+    // Auto-lift: wrap in computed() when args contain Signals – also inside
+    // lists, so e.g. `concat((a, b), axis)` stays reactive when a/b are computed
+    const containsSignal = (a: Value): boolean =>
+      a instanceof Signal || (Array.isArray(a) && a.some(containsSignal))
+    const unwrapSignals = (a: any): any =>
+      a instanceof Signal ? a.value : Array.isArray(a) ? a.map(unwrapSignals) : a
+
+    const hasSignalArgs = argsValue.some(containsSignal)
 
     if (hasSignalArgs && !noAutoLift) {
       let previousResult: any = null
@@ -891,12 +1022,12 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
           previousResult.dispose()
         }
 
-        const unwrapped = argsValue.map(a => a instanceof Signal ? a.value : a)
+        const unwrapped = argsValue.map(unwrapSignals)
 
         let result: any = null
 
         try {
-          result = tf.tidy(() => {
+          result = fluentTidy(() => {
             return fnValue.apply(env, unwrapped)
           })
         } catch (e) {
@@ -909,7 +1040,7 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       })
     }
 
-    return tf.tidy(() => {
+    return fluentTidy(() => {
       return fnValue.apply(env, argsValue)
     })
   } catch (e) {
@@ -981,6 +1112,23 @@ const CodeEvaluate = function (this: CurrentScope, program: string) {
   return evaluateProgramWithScope(program, this);
 }
 
+// APL-style power operator: FunctionPower(f, n) is { x | f(f(...f(x))) }, n times
+const FunctionPower = (fn: Function, n: tf.Tensor) => {
+  if (typeof fn !== "function" || !(n instanceof tf.Tensor)) {
+    return new Error("`FunctionPower(fn, n)`: `fn` must be a function and `n` must be a scalar Tensor")
+  }
+
+  const times = getAsSyncList(n) as number
+
+  return (...args: unknown[]) => {
+    let value: unknown = args[0] ?? null
+    for (let i = 0; i < times; i++) {
+      value = fn(value)
+    }
+    return value
+  }
+}
+
 // TODO: fix to be function iteration, i.e. `f(f(f(...)))` & rename this to FunctionRepeat or similar
 const FunctionIterate = (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar = tf.scalar(1)) => {
   if (!(typeof fn === "function" && iterations instanceof tf.Tensor)) {
@@ -1021,8 +1169,7 @@ const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
 const SignalComputed = computed
 
 const SignalEffect = effect
-// @ts-ignore
-SignalEffect.noAutoLift = true
+setMeta(SignalEffect, { noAutoLift: true })
 
 // Read signal value once without creating reactive dependency
 const SignalOnce = <T,>(s: Signal<T> | T): T => {
@@ -1031,8 +1178,7 @@ const SignalOnce = <T,>(s: Signal<T> | T): T => {
   }
   return s
 }
-// @ts-ignore
-SignalOnce.noAutoLift = true
+setMeta(SignalOnce, { noAutoLift: true })
 
 const Reactive = (a: Value) => {
   if (typeof a === "function") {
@@ -1041,8 +1187,7 @@ const Reactive = (a: Value) => {
   }
   return SignalCreate(a)
 }
-// @ts-ignore
-Reactive.noAutoLift = true
+setMeta(Reactive, { noAutoLift: true })
 
 const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
   if (typeof a === "symbol") {
@@ -1054,10 +1199,7 @@ const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
 }
 
 // First argument (target symbol) should not be reified
-// @ts-ignore
-SymbolAssign.quotedArgs = [0]
-// @ts-ignore
-SymbolAssign.noAutoLift = true
+setMeta(SymbolAssign, { quotedArgs: [0], noAutoLift: true })
 
 const FunctionEvaluate = function (this: CurrentScope, fn: Value, args: Value[]) {
   return safeApply(fn, args, this)
@@ -1069,12 +1211,10 @@ const FunctionApply = function (this: CurrentScope, a: Value, b: Value): Value {
 }
 
 const FunctionNoAutoLift = (fn: Function) => {
-  // @ts-ignore
-  fn.noAutoLift = true
+  setMeta(fn, { noAutoLift: true })
   return fn
 }
-// @ts-ignore
-FunctionNoAutoLift.noAutoLift = true  // Don't auto-lift the wrapper itself!
+setMeta(FunctionNoAutoLift, { noAutoLift: true })
 
 const FunctionGuard = function (this: CurrentScope, cond: tf.Tensor, thunk: Function) {
   // Capture condition value and thunk
@@ -1100,8 +1240,19 @@ const FunctionGuard = function (this: CurrentScope, cond: tf.Tensor, thunk: Func
     return new Error('FunctionGuard: second argument must be a thunk { value }')
   }
 }
-// @ts-ignore
-FunctionGuard.noAutoLift = true
+setMeta(FunctionGuard, { noAutoLift: true })
+
+const Describe = (target: Value, doc?: string): Value => {
+  if (doc === undefined) {
+    if (typeof target === 'function') return getMeta(target).doc ?? null
+    return null
+  }
+  if (typeof target === 'function') {
+    setMeta(target as Function, { doc: String(doc) })
+  }
+  return target
+}
+setMeta(Describe, { noAutoLift: true })
 
 const List = (...args: unknown[]) => {
   return args
@@ -1167,9 +1318,34 @@ const ListReduce = (a: any[], fn: (acc: any, value: any) => any, initialValue?: 
 
 const Tensor = tf.tensor
 const TensorScalar = tf.scalar
-const TensorStack = (...args: tf.Tensor[]) => tf.stack(args)
-const TensorUnstack = tf.unstack
-const TensorConcat = (...args: tf.Tensor[]) => tf.concat(args)
+// stack broadcasts its inputs to a common shape, like arithmetic does:
+// stack(x - a, y - b) works even when the pieces only meet by broadcasting
+const broadcastAll = (tensors: tf.Tensor[]): tf.Tensor[] => {
+  if (tensors.length === 0 || !tensors.every(t => t instanceof tf.Tensor)) { return tensors }
+  const rank = Math.max(...tensors.map(t => t.shape.length))
+  const shape = Array.from({ length: rank }, (_, i) =>
+    Math.max(...tensors.map(t => t.shape[t.shape.length - rank + i] ?? 1)))
+  return tensors.map(t =>
+    t.shape.length === rank && t.shape.every((d, i) => d === shape[i]) ? t : tf.broadcastTo(t, shape))
+}
+
+// stack(a, b, ...) joins along axis 0; stack((a, b, ...), axis) picks the axis
+const TensorStack = (...args: unknown[]) => {
+  if (Array.isArray(args[0])) {
+    const axis = args[1] === undefined ? 0 : getAsSyncList(args[1] as tf.Tensor) as number
+    return tf.stack(broadcastAll(args[0] as tf.Tensor[]), axis)
+  }
+  return tf.stack(broadcastAll(args as tf.Tensor[]))
+}
+const TensorUnstack = (a: tf.Tensor, b?: tf.Tensor) =>
+  tf.unstack(a, b === undefined ? 0 : getAsSyncList(b) as number)
+const TensorConcat = (...args: unknown[]) => {
+  if (Array.isArray(args[0])) {
+    const axis = args[1] === undefined ? 0 : getAsSyncList(args[1] as tf.Tensor) as number
+    return tf.concat(args[0] as tf.Tensor[], axis)
+  }
+  return tf.concat(args as tf.Tensor[])
+}
 const TensorTile = (a: tf.Tensor, reps: tf.Tensor) => {
   const repsList = getAsSyncList(reps) as number[]
   return tf.tile(a, repsList)
@@ -1203,47 +1379,23 @@ const TensorTangent = tf.tan
 const TensorSineHyperbolic = tf.sinh
 const TensorCosineHyperbolic = tf.cosh
 const TensorTangentHyperbolic = tf.tanh
-const TensorSineHyperbolicInverse = tf.asin
-const TensorCosineHyperbolicInverse = tf.acos
-const TensorTangentHyperbolicInverse = tf.atan
+const TensorSineInverse = tf.asin
+const TensorCosineInverse = tf.acos
+const TensorTangentInverse = tf.atan
+const TensorSineHyperbolicInverse = tf.asinh
+const TensorCosineHyperbolicInverse = tf.acosh
+const TensorTangentHyperbolicInverse = tf.atanh
 
-// TensorReduce(a, 0, +)
-const TensorSum = (a: tf.Tensor, b?: tf.Tensor) => {
-  if (b !== undefined) {
-    const axis = getAsSyncList(b) as (number | number[])
-    return tf.sum(a, axis)
-  }
-  return tf.sum(a)
-}
-// TensorReduce(a, 1, *)
-const TensorProduct = (a: tf.Tensor, b: tf.Tensor) => {
-  if (b !== undefined) {
-    const axis = getAsSyncList(b) as (number | number[])
-    return tf.prod(a, axis)
-  }
-  return tf.prod(a)
-}
-const TensorMean = (a: tf.Tensor, b: tf.Tensor) => {
-  if (b !== undefined) {
-    const axis = getAsSyncList(b) as (number | number[])
-    return tf.mean(a, axis)
-  }
-  return tf.mean(a)
-}
-const TensorMin = (a: tf.Tensor, b?: tf.Tensor) => {
-  if (b !== undefined) {
-    const axis = getAsSyncList(b) as (number | number[])
-    return tf.min(a, axis)
-  }
-  return tf.min(a)
-}
-const TensorMax = (a: tf.Tensor, b?: tf.Tensor) => {
-  if (b !== undefined) {
-    const axis = getAsSyncList(b) as (number | number[])
-    return tf.max(a, axis)
-  }
-  return tf.max(a)
-}
+// Reductions take an optional axis (scalar or vector tensor) as second argument
+const withOptionalAxis = (op: (a: tf.Tensor, axis?: number | number[]) => tf.Tensor) =>
+  (a: tf.Tensor, b?: tf.Tensor) =>
+    b === undefined ? op(a) : op(a, getAsSyncList(b) as (number | number[]))
+
+const TensorSum = withOptionalAxis(tf.sum)      // TensorReduce(a, 0, +)
+const TensorProduct = withOptionalAxis(tf.prod) // TensorReduce(a, 1, *)
+const TensorMean = withOptionalAxis(tf.mean)
+const TensorMin = withOptionalAxis(tf.min)
+const TensorMax = withOptionalAxis(tf.max)
 
 const TensorNormalize = (a: tf.Tensor, p?: tf.Tensor) => {
   const pVal = p !== undefined ? getAsSyncList(p) as number : 2
@@ -1402,8 +1554,7 @@ const Button = (label?: string | Signal<string>, onClick?: () => void) => {
     return <button className="bg-neutral-900 hover:bg-neutral-800 active:bg-neutral-700 rounded-xl border border-neutral-400 hover:border-neutral-300 active:border-neutral-200 disabled:border-neutral-800 disabled:cursor-not-allowed p-2 overflow-hidden" onClick={onClick} disabled={disabled}>{labelValue}</button>
   })
 }
-// @ts-ignore
-Button.noAutoLift = true
+setMeta(Button, { noAutoLift: true })
 
 const convertTextToHTML = async (value: string) => {
   const result = await renderMarkdown({ value }, {
@@ -1513,8 +1664,7 @@ const TextEditor = (editedValue: Signal<string>) => {
     </div>
   )
 }
-// @ts-ignore
-TextEditor.noAutoLift = true
+setMeta(TextEditor, { noAutoLift: true })
 
 const Slider = (editedValue: Signal<tf.Tensor>) => {
   return SignalComputed(() => {
@@ -1535,8 +1685,7 @@ const Slider = (editedValue: Signal<tf.Tensor>) => {
     )
   })
 }
-// @ts-ignore
-Slider.noAutoLift = true
+setMeta(Slider, { noAutoLift: true })
 
 const Scrubber = (editedValue: Signal<tf.Tensor>, sensitivity?: tf.Tensor) => {
   const step = sensitivity ? getAsSyncList(sensitivity) as number : 1  // 0=stuck, negative=flipped
@@ -1573,8 +1722,7 @@ const Scrubber = (editedValue: Signal<tf.Tensor>, sensitivity?: tf.Tensor) => {
     )
   })
 }
-// @ts-ignore
-Scrubber.noAutoLift = true
+setMeta(Scrubber, { noAutoLift: true })
 
 const Grid = (cols: tf.Tensor, rows: tf.Tensor) => {
   let gridTemplateColumns = ""
@@ -1610,15 +1758,23 @@ const Grid = (cols: tf.Tensor, rows: tf.Tensor) => {
     }
   }
 
-  return (...args: any[]) => (
+  // noAutoLift: children arrive as signals (Button, TextEditor, ...) and each
+  // renders as its own reactive island – one changing cell doesn't rebuild the grid
+  const applyChildren = (...args: any[]) => (
     <div className={`grid gap-2 overflow-scroll h-full`} style={{ gridTemplateColumns, gridTemplateRows }}>
       {/* @ts-ignore */}
       {args.map(WrapWithPrintIfNotReactElement)}
     </div>
   )
+  setMeta(applyChildren, { noAutoLift: true })
+  return applyChildren
 }
 
-function WrapWithPrintIfNotReactElement(child: any) {
+function WrapWithPrintIfNotReactElement(child: any): any {
+  if (child instanceof Signal) {
+    // reactive island: only this cell re-renders when the signal changes
+    return computed(() => WrapWithPrintIfNotReactElement(child.value));
+  }
   if (isValidElement(child)) {
     return child;
   } else {
@@ -1761,200 +1917,117 @@ function LoadTensorFromImageUrl(url: string): Signal<tf.Tensor | null> {
   return s
 }
 
+// Shared engine for realtime tensor sources (Camera, Microphone, Time):
+// a read-only signal driven by requestAnimationFrame that disposes stale tensors.
+// `frame` returns the next tensor, or null to keep the current one.
+function FrameSignal(initial: tf.Tensor, frame: (time: number) => tf.Tensor | null, cleanup?: () => void): Signal<tf.Tensor> & { dispose: () => void } {
+  const source = SignalCreate<tf.Tensor>(initial)
+  let active = true
+
+  const tick = (time: number) => {
+    if (!active) return
+
+    const next = frame(time)
+    if (next) {
+      const oldTensor = source.value
+      source.value = next
+      if (oldTensor) { oldTensor.dispose() }
+    }
+    requestAnimationFrame(tick)
+  }
+  requestAnimationFrame(tick)
+
+  const result = computed(() => source.value) as Signal<tf.Tensor> & { dispose: () => void }
+  result.dispose = () => {
+    active = false
+    cleanup?.()
+  }
+  return result
+}
+
 function Camera(width?: tf.Tensor, height?: tf.Tensor, fps?: tf.Tensor): Signal<tf.Tensor> {
   const w = width ? getAsSyncList(width) as number : 640
   const h = height ? getAsSyncList(height) as number : 480
-  const targetFps = fps ? getAsSyncList(fps) as number : 30
-  const frameInterval = 1000 / targetFps
-
-  // Initialize with black frame so operations don't fail before camera starts
-  const frameSignal = SignalCreate<tf.Tensor>(tf.zeros([h, w, 3], 'int32'))
+  const frameInterval = 1000 / (fps ? getAsSyncList(fps) as number : 30)
 
   const video = document.createElement('video')
   video.autoplay = true
   video.playsInline = true
 
-  let active = true
-  let streamRef: MediaStream | null = null
+  let stream: MediaStream | null = null
+  navigator.mediaDevices.getUserMedia({ video: { width: w, height: h } }).then(s => {
+    stream = s
+    video.srcObject = s
+    video.onloadedmetadata = () => video.play()
+  }).catch(err => console.error('Camera access denied:', err))
 
-  navigator.mediaDevices.getUserMedia({
-    video: { width: w, height: h }
-  }).then(stream => {
-    streamRef = stream
-    video.srcObject = stream
-
-    video.onloadedmetadata = () => {
-      video.play()
-
-      let lastTime = 0
-      const captureFrame = (time: number) => {
-        if (!active) return
-
-        if (time - lastTime >= frameInterval) {
-          if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            // Dispose old tensor to prevent memory leak
-            const oldTensor = frameSignal.value
-            const tensor = tf.browser.fromPixels(video)
-            frameSignal.value = tensor
-            if (oldTensor) { oldTensor.dispose() }
-          }
-          lastTime = time
-        }
-        requestAnimationFrame(captureFrame)
-      }
-
-      requestAnimationFrame(captureFrame)
-    }
-  }).catch(err => {
-    console.error('Camera access denied:', err)
-  })
-
-  // Return read-only signal with dispose method
-  const result = computed(() => frameSignal.value) as Signal<tf.Tensor> & { dispose: () => void }
-  result.dispose = () => {
-    active = false
-    if (streamRef) {
-      streamRef.getTracks().forEach(track => track.stop())
-      streamRef = null
-    }
+  let lastTime = 0
+  // Initialize with black frame so operations don't fail before camera starts
+  return FrameSignal(tf.zeros([h, w, 3], 'int32'), (time) => {
+    if (time - lastTime < frameInterval || video.readyState !== video.HAVE_ENOUGH_DATA) { return null }
+    lastTime = time
+    return tf.browser.fromPixels(video)
+  }, () => {
+    stream?.getTracks().forEach(track => track.stop())
     video.srcObject = null
+  })
+}
+
+// Shared getUserMedia/AnalyserNode setup for Microphone and MicrophoneSpectrum
+function AudioAnalyser(fftSize: number, smoothing?: number): { get: () => AnalyserNode | null, cleanup: () => void } {
+  let stream: MediaStream | null = null
+  let audioContext: AudioContext | null = null
+  let analyser: AnalyserNode | null = null
+
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(s => {
+    stream = s
+    audioContext = new AudioContext()
+    analyser = audioContext.createAnalyser()
+    analyser.fftSize = fftSize
+    if (smoothing !== undefined) { analyser.smoothingTimeConstant = smoothing }
+    audioContext.createMediaStreamSource(s).connect(analyser)
+  }).catch(err => console.error('Microphone access denied:', err))
+
+  return {
+    get: () => analyser,
+    cleanup: () => {
+      stream?.getTracks().forEach(track => track.stop())
+      audioContext?.close()
+    }
   }
-  return result
 }
 
 function Microphone(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
   const size = bufferSize ? getAsSyncList(bufferSize) as number : 2048
+  const audio = AudioAnalyser(size * 2)
+  const dataArray = new Float32Array(size)
 
   // Initialize with silence
-  const audioSignal = SignalCreate<tf.Tensor>(tf.zeros([size]))
-
-  let active = true
-  let streamRef: MediaStream | null = null
-  let audioContextRef: AudioContext | null = null
-
-  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-    streamRef = stream
-    const audioContext = new AudioContext()
-    audioContextRef = audioContext
-    const source = audioContext.createMediaStreamSource(stream)
-    const analyser = audioContext.createAnalyser()
-    analyser.fftSize = size * 2
-
-    source.connect(analyser)
-
-    const dataArray = new Float32Array(size)
-
-    const captureAudio = () => {
-      if (!active) return
-
-      analyser.getFloatTimeDomainData(dataArray)
-
-      const oldTensor = audioSignal.value
-      const tensor = tf.tensor1d(dataArray)
-      audioSignal.value = tensor
-      if (oldTensor) { oldTensor.dispose() }
-
-      requestAnimationFrame(captureAudio)
-    }
-
-    captureAudio()
-  }).catch(err => {
-    console.error('Microphone access denied:', err)
-  })
-
-  const result = computed(() => audioSignal.value) as Signal<tf.Tensor> & { dispose: () => void }
-  result.dispose = () => {
-    active = false
-    if (streamRef) {
-      streamRef.getTracks().forEach(track => track.stop())
-      streamRef = null
-    }
-    if (audioContextRef) {
-      audioContextRef.close()
-      audioContextRef = null
-    }
-  }
-  return result
+  return FrameSignal(tf.zeros([size]), () => {
+    const analyser = audio.get()
+    if (!analyser) { return null }
+    analyser.getFloatTimeDomainData(dataArray)
+    return tf.tensor1d(dataArray)
+  }, audio.cleanup)
 }
 
 function MicrophoneSpectrum(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
   const size = bufferSize ? getAsSyncList(bufferSize) as number : 1024
+  const audio = AudioAnalyser(size * 2, 0.8)
+  const dataArray = new Uint8Array(size)
 
-  // Initialize with silence
-  const spectrumSignal = SignalCreate<tf.Tensor>(tf.zeros([size]))
-
-  let active = true
-  let streamRef: MediaStream | null = null
-  let audioContextRef: AudioContext | null = null
-
-  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-    streamRef = stream
-    const audioContext = new AudioContext()
-    audioContextRef = audioContext
-    const source = audioContext.createMediaStreamSource(stream)
-    const analyser = audioContext.createAnalyser()
-    analyser.fftSize = size * 2
-    analyser.smoothingTimeConstant = 0.8
-
-    source.connect(analyser)
-
-    const dataArray = new Uint8Array(size)
-
-    const captureSpectrum = () => {
-      if (!active) return
-
-      analyser.getByteFrequencyData(dataArray)
-
-      const oldTensor = spectrumSignal.value
-      // Normalize to 0-1 range (use tidy to dispose intermediate tensor)
-      const tensor = tf.tidy(() => tf.tensor1d(dataArray).div(255))
-      spectrumSignal.value = tensor
-      if (oldTensor) { oldTensor.dispose() }
-
-      requestAnimationFrame(captureSpectrum)
-    }
-
-    captureSpectrum()
-  }).catch(err => {
-    console.error('Microphone access denied:', err)
-  })
-
-  const result = computed(() => spectrumSignal.value) as Signal<tf.Tensor> & { dispose: () => void }
-  result.dispose = () => {
-    active = false
-    if (streamRef) {
-      streamRef.getTracks().forEach(track => track.stop())
-      streamRef = null
-    }
-    if (audioContextRef) {
-      audioContextRef.close()
-      audioContextRef = null
-    }
-  }
-  return result
+  // Initialize with silence; normalized to 0-1 range
+  return FrameSignal(tf.zeros([size]), () => {
+    const analyser = audio.get()
+    if (!analyser) { return null }
+    analyser.getByteFrequencyData(dataArray)
+    return tf.tidy(() => tf.tensor1d(dataArray).div(255))
+  }, audio.cleanup)
 }
 
 function Time(): Signal<tf.Tensor> {
   const startTime = performance.now()
-  const timeSignal = SignalCreate<tf.Tensor>(tf.scalar(0))
-
-  let active = true
-
-  const updateTime = () => {
-    if (!active) return
-
-    const oldTensor = timeSignal.value
-    const elapsed = (performance.now() - startTime) / 1000
-    timeSignal.value = tf.scalar(elapsed)
-    if (oldTensor) { oldTensor.dispose() }
-    requestAnimationFrame(updateTime)
-  }
-
-  requestAnimationFrame(updateTime)
-
-  const result = computed(() => timeSignal.value) as Signal<tf.Tensor> & { dispose: () => void }
-  result.dispose = () => { active = false }
-  return result
+  return FrameSignal(tf.scalar(0), () => tf.scalar((performance.now() - startTime) / 1000))
 }
 
 
@@ -2003,11 +2076,13 @@ const DefaultEnvironment = {
   CodePrint: PrettyPrintSyntaxTree,
 
   FunctionIterate,
+  FunctionPower,
   FunctionCascade,
   FunctionEvaluate,
   FunctionApply,
   FunctionNoAutoLift,
   FunctionGuard,
+  Describe,
 
   // MARK: Signals
   
@@ -2048,6 +2123,9 @@ const DefaultEnvironment = {
   TensorSine,
   TensorCosine,
   TensorTangent,
+  TensorSineInverse,
+  TensorCosineInverse,
+  TensorTangentInverse,
   TensorSineHyperbolic,
   TensorCosineHyperbolic,
   TensorTangentHyperbolic,
@@ -2165,6 +2243,7 @@ SymbolAssign(:, SymbolAssign),
 apply: FunctionApply,
 (⟳): FunctionIterate,
 iter: FunctionIterate,
+(⍣): FunctionPower,
 (@): FunctionEvaluate,
 eval: FunctionEvaluate,
 cascade: FunctionCascade,
@@ -2285,6 +2364,7 @@ mul: TensorMultiply,
 (-): FunctionCascade((TensorSubtract, TensorNegate)),
 (*): FunctionCascade((TensorMultiply, TensorSign)),
 (×): FunctionCascade((TensorMultiply, TensorSign)),
+(·): FunctionCascade((TensorMultiply, TensorSign)),
 
 ; Math
 neg: TensorNegate,
@@ -2301,6 +2381,9 @@ exp: TensorExponential,
 sin: TensorSine,
 cos: TensorCosine,
 tan: TensorTangent,
+asin: TensorSineInverse,
+acos: TensorCosineInverse,
+atan: TensorTangentInverse,
 sinh: TensorSineHyperbolic,
 cosh: TensorCosineHyperbolic,
 tanh: TensorTangentHyperbolic,
@@ -2375,11 +2458,15 @@ adagrad: TensorOptimizationAdaGrad,
 
 ; Misc
 ($): Reactive,
+(←): FunctionNoAutoLift({ s, v | s(v) }),
 `
+
+// Parse the prelude once – createScope runs on every evaluation (each keystroke)
+const PRELUDE_TREE = CodeParse(PRELUDE)
 
 const createScope = () => {
   const scope = Object.create(DefaultEnvironment)
-  evaluateProgramWithScope(PRELUDE, scope)
+  evaluateSyntaxTreeNode(PRELUDE_TREE, scope)
   return scope
 }
 
@@ -2591,43 +2678,45 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
     }
   }
 
-  // Returns the bounding box size of a subtree (rows × cols)
-  function getSize(node: SyntaxTreeNode): [number, number] {
+  // A node sits on the same row as its first child, so the leftmost spine of
+  // every subtree is horizontal. spineLength = how many columns it spans.
+  function spineLength(node: SyntaxTreeNode): number {
     const children = getChildren(node)
-    if (children.length === 0) return [1, 1]
-    let totalRows = 0, maxCols = 0
-    for (const child of children) {
-      const [r, c] = getSize(child)
-      totalRows += r
-      maxCols = Math.max(maxCols, c)
-    }
-    return [totalRows, 1 + maxCols]
+    return children.length === 0 ? 1 : 1 + spineLength(children[0]!)
   }
 
-  function layout(node: SyntaxTreeNode, row: number, col: number) {
+  // Snug packing: anchor each subtree at the first row where its whole spine
+  // fits, then pack the remaining children greedily below.
+  function layout(node: SyntaxTreeNode, minRow: number, col: number): { row: number, maxRow: number } {
+    const spine = spineLength(node)
+    const fitsAt = (r: number) => {
+      for (let i = 0; i < spine; i++) {
+        if (used.has(`${r},${col + i}`)) { return false }
+      }
+      return true
+    }
+    let row = minRow
+    while (!fitsAt(row)) row++
+
     const label = getLabel(node)
     nodes.push({ label, row, col, width: nodeWidth(label), origin: node.origin })
     used.add(`${row},${col}`)
 
-    const children = getChildren(node)
-    let childRow = row
-    for (const child of children) {
-      const [childRows] = getSize(child)
-      // Find non-overlapping row
-      while (used.has(`${childRow},${col + 1}`)) childRow++
-      edges.push({ parentRow: row, parentCol: col, childRow, childCol: col + 1 })
-      layout(child, childRow, col + 1)
-      childRow += childRows
+    let maxRow = row
+    let childMin = row
+    for (const child of getChildren(node)) {
+      const placed = layout(child, childMin, col + 1)
+      edges.push({ parentRow: row, parentCol: col, childRow: placed.row, childCol: col + 1 })
+      maxRow = Math.max(maxRow, placed.maxRow)
+      childMin = placed.row + 1
     }
+    return { row, maxRow }
   }
 
+  // Top-level statements keep disjoint row bands
   let row = 1
   for (const stmt of tree.content) {
-    const [stmtRows] = getSize(stmt)
-    // Find non-overlapping row
-    while (used.has(`${row},1`)) row++
-    layout(stmt, row, 1)
-    row += stmtRows
+    row = layout(stmt, row, 1).maxRow + 1
   }
 
   return { nodes, edges }
@@ -2648,11 +2737,17 @@ function Print(obj: Signal<unknown>) {
     </Panel>
   )
 }
-// @ts-ignore
-Print.noAutoLift = true
+setMeta(Print, { noAutoLift: true })
 
 function PrintFunction(fn: Function) {
+  // Subscribe to meta version for reactive updates
+  if ((fn as any).__meta_v__) (fn as any).__meta_v__.value
+
+  const { doc } = getMeta(fn)
   const sourceCode = computed(() => fn.toString())
+  if (doc) {
+    return <>{Text(doc)}{Code(sourceCode)}</>
+  }
   return Code(sourceCode)
 }
 
@@ -2679,8 +2774,6 @@ function PrettyPrint(obj: any): JSX.Element {
 }
 
 function PrettyPrintInner(obj: any): JSX.Element {
-  // console.log("PrettyPrint", obj);
-
   if (obj === null || obj === undefined) {
     return <div className="font-extrabold text-3xl">◌</div>;
   }
@@ -2711,8 +2804,10 @@ function PrettyPrintInner(obj: any): JSX.Element {
     }
 
     if (obj instanceof Signal) {
-      // return <div className="bg-neutral-900 focus:bg-neutral-800 rounded-xl border border-neutral-800 hover:border-neutral-700 focus:border-neutral-600 outline-none p-2">{PrettyPrint(obj.value)}</div>;
-      return <div className="contents">{PrettyPrint(obj.value)}</div>;
+      // Reactive island: read `.value` inside a fresh computed so outer printers
+      // don't subscribe – a signal update re-renders only this subtree instead of
+      // the whole output panel.
+      return <div className="contents">{computed(() => PrettyPrint(obj.value)) as unknown as JSX.Element}</div>;
     }
 
     if (isValidElement(obj)) {
@@ -3068,6 +3163,16 @@ const EXAMPLES = {
 ; Left-to-right evaluation, no operator precedence
 1 + 2 * 3 - 4 / 5 ^ sin(2)
 `,
+  "whitespace-precedence": `
+; Whitespace IS precedence
+(
+    1 + 2 * 3,       ; spaced: left-to-right = 9
+    1 + 2*3,         ; glued * binds first = 7
+    a: 1 + 2,        ; glued ':' takes the whole right side
+    θ: [3, 4],
+    √(θ_0^2 + θ_1^2) ; tight chains: (θ_0)^2 + (θ_1)^2
+)
+`,
   "infix-lambda": `
 ; Using lambda as infix operator
 1 {x,y | x+y} 2
@@ -3165,7 +3270,6 @@ x: linspace([-PI, PI], points),
 
 ; Helper operators
 (++): ListConcat,
-(=): FunctionNoAutoLift({ a, b | a(b) }),
 (++=): FunctionNoAutoLift({ a, b | a(a() ++ List(b)) }),
 
 ; Task factory - creates editable task with toggle
@@ -3173,7 +3277,7 @@ task-create: { name |
     text: $(name),
     done: $("🔴"),
     Grid([1, 9])(
-        Button(done, { done = "✅" }),
+        Button(done, { done ← "✅" }),
         TextEditor(text),
     )
 },
@@ -3189,7 +3293,7 @@ tasks: $(List()),
         TextEditor(task-name),
         Button("Add Task", {
             tasks ++= task-create(task-name()),
-            task-name = "",
+            task-name ← "",
         }),
     ),
     tasks,
@@ -3242,15 +3346,15 @@ btn: { c | Button(c, { x | x ++ c } . append) },
 (++): TensorConcat,
 
 ; Data: y = 0.23x + 0.47
-x: (0 :: 10),
-y: (x × 0.23 + 0.47),
+x: 0 :: 10,
+y: x×0.23 + 0.47,
 
 ; Model: f(x) = θ₀·x + θ₁
 θ: ~([0, 0]),
-f: { x | x × (θ_0) + (θ_1) },
+f: { x | x × θ_0 + θ_1 },
 
 ; Loss: mean squared error
-𝓛: { mean((f(x) - y) ^ 2) },
+𝓛: { mean((f(x) - y)^2) },
 
 ; Training
 opt: adam(0.03),
@@ -3320,7 +3424,7 @@ w: ~(randn([d]) × 0.1),
 ; Activation & delta block
 σ: { z | 1 ÷ (1 + exp(-z)) },
 Δ: { x |
-    k: κ ÷ √(Σ(κ²) + 1e-7),
+    k: κ ÷ √(Σ(κ^2) + 1e-7),
     x + (2 × σ(β) × (ν - Σ(k × x)) × k)
 },
 
@@ -3333,7 +3437,7 @@ f: { t | Δ(t × w) },
 (++): TensorConcat,
 (++=): { a, b | a(a() ++ b) },
 
-𝓛: { mean((f(τ) - ŷ)²) },
+𝓛: { mean((f(τ) - ŷ)^2) },
 opt: adam(0.001),
 losses: $([]),
 pred: $(f(τ)),
@@ -3349,8 +3453,8 @@ pred: $(f(τ)),
 "magnets-simulation": `
 ; Animated Magnetic Field
 
-(≻): { t, v | ((v_0) × (1 - t)) + (((v_1) × t)) },
-(≺): { v, t | (t - (v_0)) / ((v_1) - (v_0)) },
+(≻): { t, v | (v_0 × 1-t) + (v_1 × t) },
+(≺): { v, t | (t - v_0) / (v_1 - v_0) },
 normalize: { x | [min(x), max(x)] ≺ x },
 
 numMagnets: 3,
@@ -3359,55 +3463,84 @@ n: 700,
 ; Grid
 xs: linspace([-2, 2], n),
 ys: linspace([-1.5, 1.5], n),
-X: ((xs ⍴ [n, 1]) tile [1, n]),
-Y: ((ys ⍴ [1, n]) tile [n, 1]),
+X: xs ⍴ [n, 1] tile [1, n],
+Y: ys ⍴ [1, n] tile [n, 1],
 
 ; Magnet positions using lerp
 rawPos: rand([numMagnets, 2]),
 posT: transpose(rawPos),
-magX: ((posT_0) ≻ [-1.5, 1.5]),
-magY: ((posT_1) ≻ [-1, 1]),
+magX: posT_0 ≻ [-1.5, 1.5],
+magY: posT_1 ≻ [-1, 1],
 
 ; Animated angles
 t: Time(),
-baseAngles: (rand([numMagnets]) × 6.28),
-speeds: (rand([numMagnets]) ≻ [0.1, 0.5]),
-angles: (baseAngles + (t × speeds)),
+baseAngles: rand([numMagnets]) × 6.28,
+speeds: rand([numMagnets]) ≻ [0.1, 0.5],
+angles: baseAngles + (t × speeds),
 
 ; Pole positions
 d: 0.12,
-nPoleX: (magX + (d × cos(angles))),
-nPoleY: (magY + (d × sin(angles))),
-sPoleX: (magX - (d × cos(angles))),
-sPoleY: (magY - (d × sin(angles))),
+nPoleX: magX + d×cos(angles),
+nPoleY: magY + d×sin(angles),
+sPoleX: magX - d×cos(angles),
+sPoleY: magY - d×sin(angles),
 
 ; Reshape for broadcasting
-X3: (X ⍴ [n, n, 1]),
-Y3: (Y ⍴ [n, n, 1]),
-nX3: (nPoleX ⍴ [1, 1, numMagnets]),
-nY3: (nPoleY ⍴ [1, 1, numMagnets]),
-sX3: (sPoleX ⍴ [1, 1, numMagnets]),
-sY3: (sPoleY ⍴ [1, 1, numMagnets]),
+X3: X ⍴ [n, n, 1],
+Y3: Y ⍴ [n, n, 1],
+nX3: nPoleX ⍴ [1, 1, numMagnets],
+nY3: nPoleY ⍴ [1, 1, numMagnets],
+sX3: sPoleX ⍴ [1, 1, numMagnets],
+sY3: sPoleY ⍴ [1, 1, numMagnets],
 
 ; Distances
 ε: 0.0001,
-rN: (√(((X3 - nX3)^2) + ((Y3 - nY3)^2)) + ε),
-rS: (√(((X3 - sX3)^2) + ((Y3 - sY3)^2)) + ε),
+rN: √(((X3 - nX3)^2) + ((Y3 - nY3)^2)) + ε,
+rS: √(((X3 - sX3)^2) + ((Y3 - sY3)^2)) + ε,
 
 ; Potential
 ;k: 0.5,
 ; Pulsing strength
-k: (0.5 + (sin(t × 2) × 0.2)),
-potential: sum(((k/rN) - (k/rS)), 2),
+k: sin(t × 2) × 0.2 + 0.5,
+potential: sum(k/rN - k/rS, 2),
 
 ; Visualization
-lines: (abs(sin(potential × 25)) ^ 0.25),
-glow: (1 / (abs(potential) + 0.2)),
-field: ((lines × 0.7) + (glow × 0.3)),
+lines: abs(sin(potential × 25)) ^ 0.25,
+glow: 1 / (abs(potential) + 0.2),
+field: (lines × 0.7) + (glow × 0.3),
 
 (
   Text("# 🧲 Spinning Magnets"),
   lines,
+)
+`,
+"magnets-minimal": `
+; Animated Magnetic Field – minimal
+; a magnet is two opposite charges; broadcasting is the meshgrid
+
+(≻): { t, v | (v_0 × 1-t) + (v_1 × t) },  ; lerp
+norm: { v, dim | √(sum(v^2, dim)) },
+
+m: 3,    ; magnets
+n: 600,  ; resolution
+t: Time(),
+
+angles: rand([m])×6.28 + t×(rand([m]) ≻ [0.1, 0.5]),
+dir: stack(cos(angles), sin(angles)) × 0.12,   ; [2 m] headings
+pos: rand([2, m]) ≻ [-1.4, 1.4],               ; [2 m] centers
+pole: concat((pos + dir, pos - dir), 1),       ; [2 2m] all six poles
+q: concat(fill([m], 1), fill([m], -1)),        ; charge of each pole
+
+x: linspace([-2, 2], n) ⍴ [n, 1, 1],
+y: linspace([-2, 2], n) ⍴ [1, n, 1],
+r: stack(x - pole_0, y - pole_1) norm 0 + 1e-4,
+
+k: sin(t × 2) × 0.2 + 0.5,   ; pulsing strength
+potential: sum(q×k / r, 2),
+
+(
+  Text("# 🧲 Spinning & Pulsating Magnets"),
+  abs(sin(potential × 25)) ^ 0.25,
 )
 `,
 "recursion": `
@@ -3645,8 +3778,8 @@ function Code(sourceCode: Signal<string>) {
           height="100%"
           defaultLanguage="fluent"
           theme="fluentThemeReadOnly"
-          // @ts-ignore
-          value={SignalRead(sourceCode)}
+          // Fluent strings are String objects (origin tracking) – Monaco needs a primitive
+          value={String(SignalRead(sourceCode) ?? "")}
           onChange={(updatedSourceCode) => { SignalUpdate(sourceCode, updatedSourceCode) }}
           options={getEditorOptions("readonly")}
         />
@@ -3654,8 +3787,7 @@ function Code(sourceCode: Signal<string>) {
     )
   })
 }
-// @ts-ignore
-Code.noAutoLift = true
+setMeta(Code, { noAutoLift: true })
 
 const validateCode = (code: string) => {
   if (!mainEditorRef) { return }
@@ -3702,8 +3834,8 @@ function CodeEditor(sourceCode: Signal<string>) {
         defaultLanguage="fluent"
         className={`${frameStyle} !p-0 overflow-hidden`}
         theme="fluentTheme"
-        // @ts-ignore
-        value={SignalRead(sourceCode)}
+        // Fluent strings are String objects (origin tracking) – Monaco needs a primitive
+        value={String(SignalRead(sourceCode) ?? "")}
         onChange={(updatedSourceCode) => {
           SignalUpdate(sourceCode, updatedSourceCode)
           if (updatedSourceCode !== undefined) {
@@ -3724,8 +3856,7 @@ function CodeEditor(sourceCode: Signal<string>) {
     )
   })
 }
-// @ts-ignore
-CodeEditor.noAutoLift = true
+setMeta(CodeEditor, { noAutoLift: true })
 
 let EditorInstance: Monaco["editor"] | null = null
 
@@ -3861,129 +3992,137 @@ const editorBeforeMount: BeforeMount = (monaco) => {
 
   // Scope includes DefaultEnvironment + PRELUDE
   const completionScope = createScope();
-  const symbolSuggestions = [
+  // [symbol, name, detail, filter terms] – rendered into completion items below
+  const SYMBOL_TABLE: [string, string, string, string][] = [
     // Greek lowercase
-    { label: 'α alpha', insertText: 'α', detail: 'Greek lowercase alpha', filterText: 'alpha a' },
-    { label: 'β beta', insertText: 'β', detail: 'Greek lowercase beta', filterText: 'beta b' },
-    { label: 'γ gamma', insertText: 'γ', detail: 'Greek lowercase gamma', filterText: 'gamma g' },
-    { label: 'δ delta', insertText: 'δ', detail: 'Greek lowercase delta', filterText: 'delta d' },
-    { label: 'ε epsilon', insertText: 'ε', detail: 'Greek lowercase epsilon', filterText: 'epsilon e' },
-    { label: 'ζ zeta', insertText: 'ζ', detail: 'Greek lowercase zeta', filterText: 'zeta z' },
-    { label: 'η eta', insertText: 'η', detail: 'Greek lowercase eta', filterText: 'eta' },
-    { label: 'θ theta', insertText: 'θ', detail: 'Greek lowercase theta', filterText: 'theta' },
-    { label: 'ι iota', insertText: 'ι', detail: 'Greek lowercase iota', filterText: 'iota i' },
-    { label: 'κ kappa', insertText: 'κ', detail: 'Greek lowercase kappa', filterText: 'kappa k' },
-    { label: 'λ lambda', insertText: 'λ', detail: 'Greek lowercase lambda', filterText: 'lambda l' },
-    { label: 'μ mu', insertText: 'μ', detail: 'Greek lowercase mu', filterText: 'mu m' },
-    { label: 'ν nu', insertText: 'ν', detail: 'Greek lowercase nu', filterText: 'nu n' },
-    { label: 'ξ xi', insertText: 'ξ', detail: 'Greek lowercase xi', filterText: 'xi x' },
-    { label: 'π pi', insertText: 'π', detail: 'Greek lowercase pi', filterText: 'pi p' },
-    { label: 'ρ rho', insertText: 'ρ', detail: 'Greek lowercase rho', filterText: 'rho r' },
-    { label: 'σ sigma', insertText: 'σ', detail: 'Greek lowercase sigma', filterText: 'sigma s' },
-    { label: 'τ tau', insertText: 'τ', detail: 'Greek lowercase tau', filterText: 'tau t' },
-    { label: 'υ upsilon', insertText: 'υ', detail: 'Greek lowercase upsilon', filterText: 'upsilon u' },
-    { label: 'φ phi', insertText: 'φ', detail: 'Greek lowercase phi', filterText: 'phi f' },
-    { label: 'χ chi', insertText: 'χ', detail: 'Greek lowercase chi', filterText: 'chi c' },
-    { label: 'ψ psi', insertText: 'ψ', detail: 'Greek lowercase psi', filterText: 'psi' },
-    { label: 'ω omega', insertText: 'ω', detail: 'Greek lowercase omega', filterText: 'omega o' },
+    ["α", "alpha", "Greek lowercase alpha", "alpha a"],
+    ["β", "beta", "Greek lowercase beta", "beta b"],
+    ["γ", "gamma", "Greek lowercase gamma", "gamma g"],
+    ["δ", "delta", "Greek lowercase delta", "delta d"],
+    ["ε", "epsilon", "Greek lowercase epsilon", "epsilon e"],
+    ["ζ", "zeta", "Greek lowercase zeta", "zeta z"],
+    ["η", "eta", "Greek lowercase eta", "eta"],
+    ["θ", "theta", "Greek lowercase theta", "theta"],
+    ["ι", "iota", "Greek lowercase iota", "iota i"],
+    ["κ", "kappa", "Greek lowercase kappa", "kappa k"],
+    ["λ", "lambda", "Greek lowercase lambda", "lambda l"],
+    ["μ", "mu", "Greek lowercase mu", "mu m"],
+    ["ν", "nu", "Greek lowercase nu", "nu n"],
+    ["ξ", "xi", "Greek lowercase xi", "xi x"],
+    ["π", "pi", "Greek lowercase pi", "pi p"],
+    ["ρ", "rho", "Greek lowercase rho", "rho r"],
+    ["σ", "sigma", "Greek lowercase sigma", "sigma s"],
+    ["τ", "tau", "Greek lowercase tau", "tau t"],
+    ["υ", "upsilon", "Greek lowercase upsilon", "upsilon u"],
+    ["φ", "phi", "Greek lowercase phi", "phi f"],
+    ["χ", "chi", "Greek lowercase chi", "chi c"],
+    ["ψ", "psi", "Greek lowercase psi", "psi"],
+    ["ω", "omega", "Greek lowercase omega", "omega o"],
     // Greek uppercase
-    { label: 'Γ Gamma', insertText: 'Γ', detail: 'Greek uppercase Gamma', filterText: 'Gamma G' },
-    { label: 'Δ Delta', insertText: 'Δ', detail: 'Greek uppercase Delta', filterText: 'Delta D' },
-    { label: 'Θ Theta', insertText: 'Θ', detail: 'Greek uppercase Theta', filterText: 'Theta' },
-    { label: 'Λ Lambda', insertText: 'Λ', detail: 'Greek uppercase Lambda', filterText: 'Lambda L' },
-    { label: 'Ξ Xi', insertText: 'Ξ', detail: 'Greek uppercase Xi', filterText: 'Xi X' },
-    { label: 'Π Pi', insertText: 'Π', detail: 'Greek uppercase Pi / Product', filterText: 'Pi P product' },
-    { label: 'Σ Sigma', insertText: 'Σ', detail: 'Greek uppercase Sigma / Sum', filterText: 'Sigma S sum summation' },
-    { label: 'Φ Phi', insertText: 'Φ', detail: 'Greek uppercase Phi', filterText: 'Phi F' },
-    { label: 'Ψ Psi', insertText: 'Ψ', detail: 'Greek uppercase Psi', filterText: 'Psi' },
-    { label: 'Ω Omega', insertText: 'Ω', detail: 'Greek uppercase Omega', filterText: 'Omega O' },
+    ["Γ", "Gamma", "Greek uppercase Gamma", "Gamma G"],
+    ["Δ", "Delta", "Greek uppercase Delta", "Delta D"],
+    ["Θ", "Theta", "Greek uppercase Theta", "Theta"],
+    ["Λ", "Lambda", "Greek uppercase Lambda", "Lambda L"],
+    ["Ξ", "Xi", "Greek uppercase Xi", "Xi X"],
+    ["Π", "Pi", "Greek uppercase Pi / Product", "Pi P product"],
+    ["Σ", "Sigma", "Greek uppercase Sigma / Sum", "Sigma S sum summation"],
+    ["Φ", "Phi", "Greek uppercase Phi", "Phi F"],
+    ["Ψ", "Psi", "Greek uppercase Psi", "Psi"],
+    ["Ω", "Omega", "Greek uppercase Omega", "Omega O"],
     // Calculus & Analysis
-    { label: '∇ nabla', insertText: '∇', detail: 'Nabla / Gradient', filterText: 'nabla gradient grad del' },
-    { label: '∂ partial', insertText: '∂', detail: 'Partial derivative', filterText: 'partial derivative' },
-    { label: '∫ integral', insertText: '∫', detail: 'Integral', filterText: 'integral int' },
-    { label: '∮ contour', insertText: '∮', detail: 'Contour integral', filterText: 'contour integral oint' },
-    { label: '∬ double integral', insertText: '∬', detail: 'Double integral', filterText: 'double integral iint' },
-    { label: '∞ infinity', insertText: '∞', detail: 'Infinity', filterText: 'infinity inf' },
-    { label: '′ prime', insertText: '′', detail: 'Prime (derivative)', filterText: 'prime derivative' },
-    { label: '″ double prime', insertText: '″', detail: 'Double prime', filterText: 'double prime pprime' },
+    ["∇", "nabla", "Nabla / Gradient", "nabla gradient grad del"],
+    ["∂", "partial", "Partial derivative", "partial derivative"],
+    ["∫", "integral", "Integral", "integral int"],
+    ["∮", "contour", "Contour integral", "contour integral oint"],
+    ["∬", "double integral", "Double integral", "double integral iint"],
+    ["∞", "infinity", "Infinity", "infinity inf"],
+    ["′", "prime", "Prime (derivative)", "prime derivative"],
+    ["″", "double prime", "Double prime", "double prime pprime"],
     // Arithmetic operators
-    { label: '× times', insertText: '×', detail: 'Multiplication / Cross product', filterText: 'times cross multiply x' },
-    { label: '÷ divide', insertText: '÷', detail: 'Division', filterText: 'divide division' },
-    { label: '± plus-minus', insertText: '±', detail: 'Plus-minus', filterText: 'plus minus pm plusminus' },
-    { label: '∓ minus-plus', insertText: '∓', detail: 'Minus-plus', filterText: 'minus plus mp minusplus' },
-    { label: '√ sqrt', insertText: '√', detail: 'Square root', filterText: 'sqrt square root' },
-    { label: '∛ cbrt', insertText: '∛', detail: 'Cube root', filterText: 'cbrt cube root' },
-    { label: '· dot', insertText: '·', detail: 'Dot product / Multiplication', filterText: 'dot cdot multiply' },
-    { label: '∘ compose', insertText: '∘', detail: 'Function composition', filterText: 'compose circ circle' },
+    ["×", "times", "Multiplication / Cross product", "times cross multiply x"],
+    ["÷", "divide", "Division", "divide division"],
+    ["±", "plus-minus", "Plus-minus", "plus minus pm plusminus"],
+    ["∓", "minus-plus", "Minus-plus", "minus plus mp minusplus"],
+    ["√", "sqrt", "Square root", "sqrt square root"],
+    ["∛", "cbrt", "Cube root", "cbrt cube root"],
+    ["·", "dot", "Dot product / Multiplication", "dot cdot multiply"],
+    ["∘", "compose", "Function composition", "compose circ circle"],
     // Comparison & Relations
-    { label: '≠ not equal', insertText: '≠', detail: 'Not equal', filterText: 'not equal neq !=' },
-    { label: '≈ approx', insertText: '≈', detail: 'Approximately equal', filterText: 'approx approximately' },
-    { label: '≡ equiv', insertText: '≡', detail: 'Equivalent / Identical', filterText: 'equiv equivalent identical' },
-    { label: '≢ not equiv', insertText: '≢', detail: 'Not equivalent', filterText: 'not equiv nequiv' },
-    { label: '≤ leq', insertText: '≤', detail: 'Less than or equal', filterText: 'leq less equal <=' },
-    { label: '≥ geq', insertText: '≥', detail: 'Greater than or equal', filterText: 'geq greater equal >=' },
-    { label: '≪ much less', insertText: '≪', detail: 'Much less than', filterText: 'much less ll' },
-    { label: '≫ much greater', insertText: '≫', detail: 'Much greater than', filterText: 'much greater gg' },
-    { label: '∝ proportional', insertText: '∝', detail: 'Proportional to', filterText: 'proportional propto' },
-    { label: '≅ congruent', insertText: '≅', detail: 'Congruent / Isomorphic', filterText: 'congruent cong isomorphic' },
-    { label: '∼ similar', insertText: '∼', detail: 'Similar to', filterText: 'similar sim tilde' },
+    ["≠", "not equal", "Not equal", "not equal neq !="],
+    ["≈", "approx", "Approximately equal", "approx approximately"],
+    ["≡", "equiv", "Equivalent / Identical", "equiv equivalent identical"],
+    ["≢", "not equiv", "Not equivalent", "not equiv nequiv"],
+    ["≤", "leq", "Less than or equal", "leq less equal <="],
+    ["≥", "geq", "Greater than or equal", "geq greater equal >="],
+    ["≪", "much less", "Much less than", "much less ll"],
+    ["≫", "much greater", "Much greater than", "much greater gg"],
+    ["∝", "proportional", "Proportional to", "proportional propto"],
+    ["≅", "congruent", "Congruent / Isomorphic", "congruent cong isomorphic"],
+    ["∼", "similar", "Similar to", "similar sim tilde"],
     // Set theory
-    { label: '∈ element of', insertText: '∈', detail: 'Element of', filterText: 'element of in' },
-    { label: '∉ not element', insertText: '∉', detail: 'Not element of', filterText: 'not element notin' },
-    { label: '∋ contains', insertText: '∋', detail: 'Contains as member', filterText: 'contains ni' },
-    { label: '⊂ subset', insertText: '⊂', detail: 'Subset', filterText: 'subset sub' },
-    { label: '⊃ superset', insertText: '⊃', detail: 'Superset', filterText: 'superset sup' },
-    { label: '⊆ subseteq', insertText: '⊆', detail: 'Subset or equal', filterText: 'subseteq subset equal' },
-    { label: '⊇ supseteq', insertText: '⊇', detail: 'Superset or equal', filterText: 'supseteq superset equal' },
-    { label: '∪ union', insertText: '∪', detail: 'Union', filterText: 'union cup' },
-    { label: '∩ intersection', insertText: '∩', detail: 'Intersection', filterText: 'intersection cap' },
-    { label: '∅ empty set', insertText: '∅', detail: 'Empty set', filterText: 'empty set emptyset null' },
-    { label: '∖ set minus', insertText: '∖', detail: 'Set minus', filterText: 'set minus setminus difference' },
+    ["∈", "element of", "Element of", "element of in"],
+    ["∉", "not element", "Not element of", "not element notin"],
+    ["∋", "contains", "Contains as member", "contains ni"],
+    ["⊂", "subset", "Subset", "subset sub"],
+    ["⊃", "superset", "Superset", "superset sup"],
+    ["⊆", "subseteq", "Subset or equal", "subseteq subset equal"],
+    ["⊇", "supseteq", "Superset or equal", "supseteq superset equal"],
+    ["∪", "union", "Union", "union cup"],
+    ["∩", "intersection", "Intersection", "intersection cap"],
+    ["∅", "empty set", "Empty set", "empty set emptyset null"],
+    ["∖", "set minus", "Set minus", "set minus setminus difference"],
     // Logic
-    { label: '∀ forall', insertText: '∀', detail: 'For all', filterText: 'forall for all universal' },
-    { label: '∃ exists', insertText: '∃', detail: 'There exists', filterText: 'exists exist existential' },
-    { label: '∄ not exists', insertText: '∄', detail: 'There does not exist', filterText: 'not exists nexists' },
-    { label: '¬ not', insertText: '¬', detail: 'Logical not', filterText: 'not neg lnot' },
-    { label: '∧ and', insertText: '∧', detail: 'Logical and', filterText: 'and land wedge' },
-    { label: '∨ or', insertText: '∨', detail: 'Logical or', filterText: 'or lor vee' },
-    { label: '⊕ xor', insertText: '⊕', detail: 'Exclusive or / Direct sum', filterText: 'xor oplus direct sum' },
-    { label: '⊗ tensor', insertText: '⊗', detail: 'Tensor product', filterText: 'tensor otimes product' },
-    { label: '⊥ perpendicular', insertText: '⊥', detail: 'Perpendicular / Bottom', filterText: 'perpendicular perp bottom false' },
-    { label: '⊤ top', insertText: '⊤', detail: 'Top / True', filterText: 'top true tautology' },
-    { label: '⊢ proves', insertText: '⊢', detail: 'Proves / Entails', filterText: 'proves vdash entails turnstile' },
-    { label: '⊨ models', insertText: '⊨', detail: 'Models / Satisfies', filterText: 'models vDash satisfies' },
+    ["∀", "forall", "For all", "forall for all universal"],
+    ["∃", "exists", "There exists", "exists exist existential"],
+    ["∄", "not exists", "There does not exist", "not exists nexists"],
+    ["¬", "not", "Logical not", "not neg lnot"],
+    ["∧", "and", "Logical and", "and land wedge"],
+    ["∨", "or", "Logical or", "or lor vee"],
+    ["⊕", "xor", "Exclusive or / Direct sum", "xor oplus direct sum"],
+    ["⊗", "tensor", "Tensor product", "tensor otimes product"],
+    ["⊥", "perpendicular", "Perpendicular / Bottom", "perpendicular perp bottom false"],
+    ["⊤", "top", "Top / True", "top true tautology"],
+    ["⊢", "proves", "Proves / Entails", "proves vdash entails turnstile"],
+    ["⊨", "models", "Models / Satisfies", "models vDash satisfies"],
     // Arrows
-    { label: '→ right arrow', insertText: '→', detail: 'Right arrow', filterText: 'right arrow to ->' },
-    { label: '← left arrow', insertText: '←', detail: 'Left arrow', filterText: 'left arrow from <-' },
-    { label: '↔ bidir arrow', insertText: '↔', detail: 'Bidirectional arrow', filterText: 'bidir arrow leftrightarrow <->' },
-    { label: '⇒ implies', insertText: '⇒', detail: 'Implies', filterText: 'implies Rightarrow =>' },
-    { label: '⇐ implied by', insertText: '⇐', detail: 'Implied by', filterText: 'implied by Leftarrow <=' },
-    { label: '⇔ iff', insertText: '⇔', detail: 'If and only if', filterText: 'iff Leftrightarrow biconditional <=>' },
-    { label: '↑ up arrow', insertText: '↑', detail: 'Up arrow', filterText: 'up arrow uparrow' },
-    { label: '↓ down arrow', insertText: '↓', detail: 'Down arrow', filterText: 'down arrow downarrow' },
-    { label: '↦ maps to', insertText: '↦', detail: 'Maps to', filterText: 'maps to mapsto' },
-    { label: '⟳ loop', insertText: '⟳', detail: 'Loop / Repeat', filterText: 'loop repeat cycle' },
+    ["→", "right arrow", "Right arrow", "right arrow to ->"],
+    ["←", "left arrow", "Left arrow / Signal write", "left arrow from <- assign write"],
+    ["↔", "bidir arrow", "Bidirectional arrow", "bidir arrow leftrightarrow <->"],
+    ["⇒", "implies", "Implies", "implies Rightarrow =>"],
+    ["⇐", "implied by", "Implied by", "implied by Leftarrow <="],
+    ["⇔", "iff", "If and only if", "iff Leftrightarrow biconditional <=>"],
+    ["↑", "up arrow", "Up arrow", "up arrow uparrow"],
+    ["↓", "down arrow", "Down arrow", "down arrow downarrow"],
+    ["↦", "maps to", "Maps to", "maps to mapsto"],
+    ["⟳", "loop", "Loop / Repeat", "loop repeat cycle"],
+    ["⍣", "power", "Function power / Iterate", "power iterate repeat star"],
     // Number sets
-    { label: 'ℕ naturals', insertText: 'ℕ', detail: 'Natural numbers', filterText: 'naturals N natural numbers' },
-    { label: 'ℤ integers', insertText: 'ℤ', detail: 'Integers', filterText: 'integers Z integer numbers' },
-    { label: 'ℚ rationals', insertText: 'ℚ', detail: 'Rational numbers', filterText: 'rationals Q rational numbers' },
-    { label: 'ℝ reals', insertText: 'ℝ', detail: 'Real numbers', filterText: 'reals R real numbers' },
-    { label: 'ℂ complex', insertText: 'ℂ', detail: 'Complex numbers', filterText: 'complex C complex numbers' },
+    ["ℕ", "naturals", "Natural numbers", "naturals N natural numbers"],
+    ["ℤ", "integers", "Integers", "integers Z integer numbers"],
+    ["ℚ", "rationals", "Rational numbers", "rationals Q rational numbers"],
+    ["ℝ", "reals", "Real numbers", "reals R real numbers"],
+    ["ℂ", "complex", "Complex numbers", "complex C complex numbers"],
     // Other useful symbols
-    { label: '° degree', insertText: '°', detail: 'Degree', filterText: 'degree deg' },
-    { label: '‖ norm', insertText: '‖', detail: 'Norm', filterText: 'norm parallel Vert' },
-    { label: '∥ parallel', insertText: '∥', detail: 'Parallel', filterText: 'parallel' },
-    { label: '⟨ langle', insertText: '⟨', detail: 'Left angle bracket', filterText: 'langle left angle bracket' },
-    { label: '⟩ rangle', insertText: '⟩', detail: 'Right angle bracket', filterText: 'rangle right angle bracket' },
-    { label: '⌊ floor', insertText: '⌊', detail: 'Floor (left)', filterText: 'floor lfloor' },
-    { label: '⌋ floor', insertText: '⌋', detail: 'Floor (right)', filterText: 'floor rfloor' },
-    { label: '⌈ ceil', insertText: '⌈', detail: 'Ceiling (left)', filterText: 'ceil ceiling lceil' },
-    { label: '⌉ ceil', insertText: '⌉', detail: 'Ceiling (right)', filterText: 'ceil ceiling rceil' },
-    { label: 'ℏ hbar', insertText: 'ℏ', detail: 'Reduced Planck constant', filterText: 'hbar planck' },
-    { label: 'ℓ ell', insertText: 'ℓ', detail: 'Script small l', filterText: 'ell script l' },
-    { label: '℘ wp', insertText: '℘', detail: 'Weierstrass p', filterText: 'wp weierstrass' },
-    { label: 'ℵ aleph', insertText: 'ℵ', detail: 'Aleph (cardinal)', filterText: 'aleph cardinal' },
-  ];
+    ["°", "degree", "Degree", "degree deg"],
+    ["‖", "norm", "Norm", "norm parallel Vert"],
+    ["∥", "parallel", "Parallel", "parallel"],
+    ["⟨", "langle", "Left angle bracket", "langle left angle bracket"],
+    ["⟩", "rangle", "Right angle bracket", "rangle right angle bracket"],
+    ["⌊", "floor", "Floor (left)", "floor lfloor"],
+    ["⌋", "floor", "Floor (right)", "floor rfloor"],
+    ["⌈", "ceil", "Ceiling (left)", "ceil ceiling lceil"],
+    ["⌉", "ceil", "Ceiling (right)", "ceil ceiling rceil"],
+    ["ℏ", "hbar", "Reduced Planck constant", "hbar planck"],
+    ["ℓ", "ell", "Script small l", "ell script l"],
+    ["℘", "wp", "Weierstrass p", "wp weierstrass"],
+    ["ℵ", "aleph", "Aleph (cardinal)", "aleph cardinal"],
+  ]
+  const symbolSuggestions = SYMBOL_TABLE.map(([symbol, name, detail, filterText]) => ({
+    label: `${symbol} ${name}`,
+    insertText: symbol,
+    detail,
+    filterText,
+  }));
   monaco.languages.registerCompletionItemProvider('fluent', {
     provideCompletionItems: (model, position) => {
       const word = model.getWordUntilPosition(position);

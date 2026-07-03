@@ -49,10 +49,12 @@ Fluent is a tiny language + IDE for differentiable tensors and reactive UIs. It 
 
 The Fluent language has unique characteristics:
 
-- **Left-to-right evaluation**: NO operator precedence (`1 + 2 * 3` = 9, not 7)
-- **Assignment operator** `:` requires parentheses for complex right-hand sides
-  - Correct: `b: (a + 1)`, `d: (fn(a) + fn(b))`
-  - Incorrect: `b: a + 1` (parses as `(b: a) + 1`)
+- **Left-to-right evaluation**: NO numeric operator precedence (`1 + 2 * 3` = 9, not 7)
+- **Whitespace IS precedence**:
+  - glued operators bind tighter than spaced ones: `1 + 2*3` = 7
+  - operator glued only to its left operand takes everything to its right:
+    `b: a + 1` parses as `b: (a + 1)` — assignment needs no parentheses
+  - fully spaced (`a : b + 1`) or fully glued (`a:b + 1`) operators chain left-to-right
 - **Symbols**: Can use Unicode (α, β, θ, ∇, √, etc.)
 - **Comments**: Single-line with `;`
 - **Functions**: Lambda syntax with `{ params | body }` or `{ body }`
