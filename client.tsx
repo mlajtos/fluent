@@ -951,6 +951,45 @@ function fluentTidy<T>(fn: () => T): T {
   return result
 }
 
+// MARK: Evaluation generations
+// Each top-level evaluation owns the resources it creates: live sources
+// (Time, Camera, ...), pending ⟳ loops, and the tensors bound into its scope.
+// A new evaluation retires the previous generation – loops stop, sources
+// release their hardware, tensors free their GPU memory.
+type Generation = { disposables: Set<() => void> }
+let currentGeneration: Generation | null = null
+
+const registerDisposable = (dispose: () => void) => {
+  currentGeneration?.disposables.add(dispose)
+}
+
+function evaluateGeneration<T>(evaluate: () => T): T {
+  const previous = currentGeneration
+  currentGeneration = { disposables: new Set() }
+  const result = evaluate()
+  if (previous) {
+    // dispose after the new UI committed, so old islands never touch freed tensors
+    setTimeout(() => {
+      for (const dispose of previous.disposables) {
+        try { dispose() } catch { /* already gone */ }
+      }
+    }, 50)
+  }
+  return result
+}
+
+const disposeValueTensors = (value: unknown) => {
+  const tensors: tf.Tensor[] = []
+  collectResultTensors(value, tensors)
+  for (const tensor of tensors) { tensor.dispose() }
+}
+
+const disposeScopeTensors = (scope: CurrentScope) => {
+  for (const key of Object.getOwnPropertyNames(scope)) {
+    disposeValueTensors(scope[key])
+  }
+}
+
 function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
   let errorArgs: Error[] = []
 
@@ -1116,21 +1155,30 @@ const FunctionPower = (fn: Function, n: tf.Tensor) => {
   }
 }
 
-// TODO: fix to be function iteration, i.e. `f(f(f(...)))` & rename this to FunctionRepeat or similar
+// Async repeat (⟳): runs fn between frames so the UI stays live. The loop
+// belongs to the evaluation that started it – a re-evaluation cancels it.
+// (For synchronous function iteration f(f(f(x))) use ⍣ / FunctionPower.)
 const FunctionIterate = (fn: (index?: tf.Scalar) => void, iterations: tf.Scalar = tf.scalar(1)) => {
   if (!(typeof fn === "function" && iterations instanceof tf.Tensor)) {
     throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` must be a scalar Tensor");
   }
 
   const maxIterations = getAsSyncList(iterations) as number
+  const generation = currentGeneration
+  let i = 0
 
-  setTimeout(() => {
-    for (let i = 0; i < maxIterations; i++) {
-      setTimeout(() => {
-        return fn(tf.scalar(i))
-      }, 0)
+  const step = () => {
+    if (generation !== currentGeneration || i >= maxIterations) { return }
+    const index = tf.scalar(i)
+    try {
+      fn(index)
+    } finally {
+      index.dispose()
     }
-  }, 0)
+    i++
+    setTimeout(step, 0)
+  }
+  setTimeout(step, 0)
 
   return null
 }
@@ -1800,6 +1848,7 @@ function MousePosition(): Signal<tf.Tensor> {
   window.addEventListener("pointermove", onMove)
   const result = computed(() => s.value) as Signal<tf.Tensor> & { dispose: () => void }
   result.dispose = () => window.removeEventListener("pointermove", onMove)
+  registerDisposable(result.dispose)
   return result
 }
 
@@ -2178,6 +2227,7 @@ function FrameSignal(initial: tf.Tensor, frame: (time: number) => tf.Tensor | nu
     active = false
     cleanup?.()
   }
+  registerDisposable(result.dispose)
   return result
 }
 
@@ -4585,8 +4635,13 @@ export function Playground() {
   const code = useSignal<string>(codeFromUrl !== "" ? codeFromUrl : "1 + 1")
   //const code = useSignal<string>(codeFromUrl !== "" ? codeFromUrl : getExample("REPL"))
   const result = useComputed<Value>(() => {
-    // return evaluate(read(code))
-    return evaluateSyntaxTreeNode(CodeParse(code.value), createScope()) ?? null;
+    return evaluateGeneration(() => {
+      const scope = createScope()
+      const value = evaluateSyntaxTreeNode(CodeParse(code.value), scope) ?? null
+      registerDisposable(() => disposeScopeTensors(scope))
+      registerDisposable(() => disposeValueTensors(value))
+      return value
+    })
   })
 
   return (
