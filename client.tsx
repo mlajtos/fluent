@@ -467,20 +467,33 @@ const Checkbox = (editedValue: Signal<tf.Tensor>) => {
 }
 setMeta(Checkbox, { noAutoLift: true })
 
-// File picker that writes the picked image into `target` as a [h, w, 3] tensor
+// Image picker + drop zone: writes the image into `target` as a [h, w, 3]
+// tensor. Drag & drop works even where native file dialogs are unavailable
+// (embedded webviews like VS Code's Simple Browser).
 const ImageUpload = (target: Signal<tf.Tensor>) => {
+  const load = async (file: File | null | undefined) => {
+    if (!file || !file.type.startsWith("image")) { return }
+    const bitmap = await createImageBitmap(file)
+    SignalUpdate(target, tf.browser.fromPixels(bitmap))
+  }
+
   return (
-    <input
-      type="file"
-      accept="image/*"
-      className="text-sm file:bg-neutral-900 file:hover:bg-neutral-800 file:rounded-xl file:border file:border-neutral-400 file:text-white file:px-3 file:py-1.5 file:mr-2 file:cursor-pointer"
-      onChange={async (e) => {
-        const file = e.target.files?.[0]
-        if (!file) { return }
-        const bitmap = await createImageBitmap(file)
-        SignalUpdate(target, tf.browser.fromPixels(bitmap))
-      }}
-    />
+    <div
+      className="text-sm text-neutral-400 hover:text-neutral-200 border border-dashed border-neutral-600 hover:border-neutral-400 rounded-xl p-3 text-center cursor-pointer select-none"
+      // open the picker explicitly – label→hidden-input forwarding is flaky
+      onClick={(e) => { e.currentTarget.querySelector("input")?.click() }}
+      onDragOver={(e) => { e.preventDefault() }}
+      onDrop={(e) => { e.preventDefault(); load(e.dataTransfer.files?.[0]) }}
+    >
+      drop an image here – or click to choose
+      <input
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onClick={(e) => { e.stopPropagation() }}
+        onChange={(e) => load(e.target.files?.[0])}
+      />
+    </div>
   )
 }
 setMeta(ImageUpload, { noAutoLift: true })
