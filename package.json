@@ -14,7 +14,8 @@
     "dev": "bun server.ts",
     "build": "bun build.ts",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "bun test ./tests.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
