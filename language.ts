@@ -6,7 +6,7 @@ import { grammar, type ActionDict } from "ohm-js";
 import { toAST as ohmToAST } from "ohm-js/extras";
 import { signal, Signal, computed, effect } from "@preact/signals-core"
 import dedent from "ts-dedent";
-import { numpy as np, nn, lax, random, tree, grad as jaxGrad, valueAndGrad, jit as jaxJit, init as initBackends, defaultDevice } from "@jax-js/jax"
+import { numpy as np, nn, lax, random, tree, vjp as jaxVjp, valueAndGrad, jit as jaxJit, init as initBackends, defaultDevice } from "@jax-js/jax"
 import * as optax from "@jax-js/optax"
 
 // jax-js compiles kernels per backend – initialize before the first array op.
@@ -1651,14 +1651,22 @@ const TensorGradient = (f: Value) => {
     return new Error("`gradient(f)`: `f` must be a function")
   }
   return (x: Value) => {
-    const dfdx = jaxGrad((primal: np.Array) => {
-      const out = (f as Function)(primal)
-      const value = out instanceof Signal ? out.peek() : out
+    // vjp with a ones cotangent: scalar outputs give the classic gradient,
+    // elementwise outputs get per-element derivatives – ∇({x | x^2}) works
+    // on vectors like it did on TFJS
+    const [out, pullback] = jaxVjp((primal: np.Array) => {
+      const result = (f as Function)(primal)
+      const value = result instanceof Signal ? result.peek() : result
       if (value instanceof Error) { throw value }
-      if (!isTensor(value)) { throw new Error("`gradient(f)`: `f` must return a scalar tensor") }
+      if (!isTensor(value)) { throw new Error("`gradient(f)`: `f` must return a tensor") }
       return value as np.Array
-    })
-    return track(dfdx(borrow(x) as np.Array))
+    }, [borrow(x) as np.Array])
+    try {
+      const [dx] = pullback(np.onesLike(out))
+      return track(dx)
+    } finally {
+      pullback.dispose()
+    }
   }
 }
 const TensorTranspose = unaryOp(np.transpose)

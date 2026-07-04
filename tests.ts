@@ -183,6 +183,10 @@ describe("differentiation and optimization", () => {
   test("higher-order gradient", () => {
     expect(value("∇(∇({ x | x^3 }))(2)")).toBe(12)
   })
+  test("gradient of an elementwise function maps over vectors", () => {
+    // TFJS ∇ semantics: non-scalar outputs pull back a ones cotangent
+    expect(value("∇({ x | x^2 })([1, 2, 3])")).toEqual([2, 4, 6])
+  })
   test("sgd fits y = 3x end-to-end", () => {
     const program = `
       x: 0 :: 8,
