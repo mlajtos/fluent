@@ -117,7 +117,7 @@ Button("Reset", { x(0) }),
 - Syntax highlighting
 - Live evaluation with error reporting
 - Automatic visualization of values (tensors, lists, functions)
-- GPU-accelerated tensor operations (via TensorFlow.js and WebGL)
+- GPU-accelerated tensor operations (via jax-js on WebGPU, with Wasm/WebGL fallback)
 - LLM-backed code generation (BYO Anthropic API key)
 - Command palette (Ctrl+P)
 - Auto-completion (Ctrl+Space)
@@ -194,6 +194,7 @@ import {
   getAsSyncList, getMeta, setMeta, setOrigin, getOrigin,
   SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalOnce,
   identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
+  np, FluentVariable, isTensor,
   type Value, type CurrentScope, type SyntaxTreeNode, type Origin,
 } from "./language"
 import { useSignals, useSignal, useComputed } from '@preact/signals-react/runtime';
@@ -210,7 +211,6 @@ import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/com
 import dedent from "ts-dedent";
 import { Base64 } from 'js-base64'
 import { type Annotations } from "plotly.js"
-import * as tf from '@tensorflow/tfjs'
 import { interpolateViridis } from 'd3-scale-chromatic'
 import { rgb } from 'd3-color'
 
@@ -223,9 +223,55 @@ import { rgb } from 'd3-color'
 // Configure @monaco-editor/react to use local monaco-editor package
 loader.config({ monaco })
 
-// Import tfjs backend dynamically to prevent tree-shaking
-await import('@tensorflow/tfjs-backend-webgl')
-await tf.setBackend('webgl')
+// jax-js backends are initialized by language.ts on import (WebGPU → Wasm → WebGL)
+
+// MARK: Pixel I/O
+// jax-js has no tf.browser – bridge ImageData ↔ arrays by hand. Convention
+// follows TFJS: int32 arrays hold 0–255, float32 arrays hold 0–1.
+
+const pixelReader = new OffscreenCanvas(1, 1)
+
+// ImageBitmap / <video> / <img> → [h, w, 3] int32 tensor (0–255), untracked –
+// the caller owns the result
+const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): np.Array => {
+  const width = (source as HTMLVideoElement).videoWidth || (source as { width: number }).width
+  const height = (source as HTMLVideoElement).videoHeight || (source as { height: number }).height
+  if (pixelReader.width !== width || pixelReader.height !== height) {
+    pixelReader.width = width
+    pixelReader.height = height
+  }
+  const context = pixelReader.getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D
+  context.drawImage(source, 0, 0)
+  const { data } = context.getImageData(0, 0, width, height)
+  const rgbFlat = new Int32Array(width * height * 3)
+  for (let i = 0, j = 0; i < data.length; i += 4, j += 3) {
+    rgbFlat[j] = data[i]!
+    rgbFlat[j + 1] = data[i + 1]!
+    rgbFlat[j + 2] = data[i + 2]!
+  }
+  return np.array(rgbFlat, { shape: [height, width, 3] })
+}
+
+// [h, w] | [h, w, 1] | [h, w, 3] tensor → canvas. Borrows `data`.
+const toPixels = (data: np.Array, canvas: HTMLCanvasElement) => {
+  const [height = 1, width = 1, channels = 1] = data.shape
+  const scale = data.dtype === np.int32 || data.dtype === np.uint32 ? 1 : 255
+  const flat = data.ref.dataSync()
+  const image = new ImageData(width, height)
+  for (let p = 0, s = 0; p < image.data.length; p += 4, s += channels) {
+    image.data[p] = (flat[s] as number) * scale
+    image.data[p + 1] = (flat[channels < 3 ? s : s + 1] as number) * scale
+    image.data[p + 2] = (flat[channels < 3 ? s : s + 2] as number) * scale
+    image.data[p + 3] = 255
+  }
+  canvas.getContext('2d')?.putImageData(image, 0, 0)
+}
+
+// Hand a freshly created tensor to a signal: the signal becomes sole owner
+const updateWithFresh = (target: Signal<any>, fresh: np.Array) => {
+  SignalUpdate(target, fresh)
+  fresh.dispose()
+}
 
 // react-plotly is weirdly packaged - need to access default twice
 // @ts-ignore
@@ -394,7 +440,7 @@ const TextEditor = (editedValue: Signal<string>) => {
 }
 setMeta(TextEditor, { noAutoLift: true })
 
-const Slider = (editedValue: Signal<tf.Tensor>) => {
+const Slider = (editedValue: Signal<np.Array>) => {
   return SignalComputed(() => {
     const valueAsList = getAsSyncList(editedValue?.value) as number
 
@@ -406,7 +452,7 @@ const Slider = (editedValue: Signal<tf.Tensor>) => {
           max={1}
           step={0.01}
           value={valueAsList}
-          onChange={(e) => SignalUpdate(editedValue, tf.scalar(parseFloat(e.target.value)))}
+          onChange={(e) => updateWithFresh(editedValue, np.array(parseFloat(e.target.value)))}
           className="bg-neutral-900 focus:bg-neutral-800 rounded-xl border border-neutral-800 hover:border-neutral-700 focus:border-neutral-600 outline-none p-2 w-full h-2 cursor-pointer dark:bg-gray-700 place-self-center"
         />
       </div>
@@ -415,7 +461,7 @@ const Slider = (editedValue: Signal<tf.Tensor>) => {
 }
 setMeta(Slider, { noAutoLift: true })
 
-const Scrubber = (editedValue: Signal<tf.Tensor>, sensitivity?: tf.Tensor) => {
+const Scrubber = (editedValue: Signal<np.Array>, sensitivity?: np.Array) => {
   const step = sensitivity ? getAsSyncList(sensitivity) as number : 1  // 0=stuck, negative=flipped
   const decimals = Math.max(0, Math.ceil(-Math.log10(Math.abs(step) || 1)))
   const factor = Math.pow(10, decimals)
@@ -430,7 +476,7 @@ const Scrubber = (editedValue: Signal<tf.Tensor>, sensitivity?: tf.Tensor) => {
 
       const onMove = (me: PointerEvent) => {
         const raw = startValue + (me.clientX - startX) * step * 0.1
-        SignalUpdate(editedValue, tf.scalar(Math.round(raw * factor) / factor))
+        updateWithFresh(editedValue, np.array(Math.round(raw * factor) / factor))
       }
       const onUp = () => {
         window.removeEventListener('pointermove', onMove)
@@ -452,14 +498,14 @@ const Scrubber = (editedValue: Signal<tf.Tensor>, sensitivity?: tf.Tensor) => {
 }
 setMeta(Scrubber, { noAutoLift: true })
 
-const Checkbox = (editedValue: Signal<tf.Tensor>) => {
+const Checkbox = (editedValue: Signal<np.Array>) => {
   return SignalComputed(() => {
     const checked = (getAsSyncList(editedValue?.value) as number) >= 0.5
     return (
       <input
         type="checkbox"
         checked={checked}
-        onChange={(e) => SignalUpdate(editedValue, tf.scalar(e.target.checked ? 1 : 0))}
+        onChange={(e) => updateWithFresh(editedValue, np.array(e.target.checked ? 1 : 0))}
         className="w-5 h-5 accent-white cursor-pointer place-self-start"
       />
     )
@@ -470,11 +516,11 @@ setMeta(Checkbox, { noAutoLift: true })
 // Image picker + drop zone: writes the image into `target` as a [h, w, 3]
 // tensor. Drag & drop works even where native file dialogs are unavailable
 // (embedded webviews like VS Code's Simple Browser).
-const ImageUpload = (target: Signal<tf.Tensor>) => {
+const ImageUpload = (target: Signal<np.Array>) => {
   const load = async (file: File | null | undefined) => {
     if (!file || !file.type.startsWith("image")) { return }
     const bitmap = await createImageBitmap(file)
-    SignalUpdate(target, tf.browser.fromPixels(bitmap))
+    updateWithFresh(target, fromPixels(bitmap))
   }
 
   return (
@@ -499,26 +545,26 @@ const ImageUpload = (target: Signal<tf.Tensor>) => {
 setMeta(ImageUpload, { noAutoLift: true })
 
 // Mouse position as a [2] tensor signal, normalized to the viewport (0..1)
-function MousePosition(): Signal<tf.Tensor> {
-  const s = SignalCreate<tf.Tensor>(tf.tensor([0.5, 0.5]))
+function MousePosition(): Signal<np.Array> {
+  const initial = np.array([0.5, 0.5])
+  const s = SignalCreate<np.Array>(initial)
+  initial.dispose()
   const onMove = (e: PointerEvent) => {
-    const old = s.peek()
-    s.value = tf.tensor([e.clientX / window.innerWidth, e.clientY / window.innerHeight])
-    if (old) { old.dispose() }
+    updateWithFresh(s, np.array([e.clientX / window.innerWidth, e.clientY / window.innerHeight]))
   }
   window.addEventListener("pointermove", onMove)
-  const result = computed(() => s.value) as Signal<tf.Tensor> & { dispose: () => void }
+  const result = computed(() => s.value) as Signal<np.Array> & { dispose: () => void }
   result.dispose = () => window.removeEventListener("pointermove", onMove)
   registerDisposable(result.dispose)
   return result
 }
 
-const Grid = (cols: tf.Tensor, rows: tf.Tensor) => {
+const Grid = (cols: np.Array, rows: np.Array) => {
   let gridTemplateColumns = ""
   let gridTemplateRows = ""
 
   const colsValue = getAsSyncList(cols)
-  switch (cols.rank) {
+  switch (cols.ndim) {
     case 0:
       gridTemplateColumns = `repeat(${colsValue}, minmax(auto, 1fr))`
       break;
@@ -534,7 +580,7 @@ const Grid = (cols: tf.Tensor, rows: tf.Tensor) => {
     const rowsValue = getAsSyncList(rows)
 
 
-    switch (rows.rank) {
+    switch (rows.ndim) {
       case 0:
         gridTemplateRows = `repeat(${rowsValue}, minmax(auto, 1fr))`
         break;
@@ -608,34 +654,34 @@ const Layers = (...children: any[]) => (
 setMeta(Layers, { noAutoLift: true })
 
 // Shared helpers for components bound to a [2] point in a data range
-const pointMapping = (range?: tf.Tensor) => {
+const pointMapping = (range?: np.Array) => {
   const [[x0, x1], [y0, y1]] = (range
     ? getAsSyncList(range)
     : [[0, 1], [0, 1]]) as [[number, number], [number, number]]
   return { x0, y0, spanX: x1 - x0 || 1, spanY: y1 - y0 || 1 }
 }
-const readPoint = (target: tf.Variable | Signal<tf.Tensor>): [number, number] => {
+const readPoint = (target: FluentVariable | Signal<np.Array>): [number, number] => {
   const value = target instanceof Signal ? target.peek() : target
-  return getAsSyncList(value as tf.Tensor) as [number, number]
+  return getAsSyncList(value) as [number, number]
 }
 
 // Draggable 2D point bound to a [2] variable (or signal), mapped to a data
 // range [[x0, x1], [y0, y1]]. Dragging the dot assigns; assignments (e.g. by
 // an optimizer) move the dot. The layer is transparent to pointer events, so
 // several Point2Ds can share one Layers stack.
-const Point2D = (target: tf.Variable | Signal<tf.Tensor>, range?: tf.Tensor, color?: Value) => {
+const Point2D = (target: FluentVariable | Signal<np.Array>, range?: np.Array, color?: Value) => {
   const { x0, y0, spanX, spanY } = pointMapping(range)
   const fill = String(color ?? "white")
-  const version: Signal<number> | undefined = (target as any).__version__
+  const version: Signal<number> | undefined = target instanceof FluentVariable ? target.version : undefined
 
   const write = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.parentElement!.getBoundingClientRect()
-    const point = tf.tensor([
+    const point = np.array([
       x0 + (event.clientX - rect.left) / rect.width * spanX,
       y0 + (event.clientY - rect.top) / rect.height * spanY,
     ])
-    if (target instanceof Signal) { SignalUpdate(target, point) }
-    else { (target as tf.Variable).assign(point) }
+    if (target instanceof Signal) { updateWithFresh(target, point) }
+    else { target.assign(point) }
   }
 
   return SignalComputed(() => {
@@ -691,10 +737,10 @@ const Point2D = (target: tf.Variable | Signal<tf.Tensor>, range?: tf.Tensor, col
 setMeta(Point2D, { noAutoLift: true })
 
 // The path a point has taken: re-renders on every assignment to the target
-const Trail = (target: tf.Variable | Signal<tf.Tensor>, range?: tf.Tensor, color?: Value) => {
+const Trail = (target: FluentVariable | Signal<np.Array>, range?: np.Array, color?: Value) => {
   const { x0, y0, spanX, spanY } = pointMapping(range)
   const stroke = String(color ?? "white")
-  const version: Signal<number> | undefined = (target as any).__version__
+  const version: Signal<number> | undefined = target instanceof FluentVariable ? target.version : undefined
   const points: string[] = []
 
   return SignalComputed(() => {
@@ -844,8 +890,8 @@ function LoadSafeTensors(arrayBuffer: ArrayBuffer) {
 // CORS fallback: retry blocked cross-origin loads through the dev server
 const proxied = (url: string) => `/proxy?url=${encodeURIComponent(url)}`
 
-function LoadTensorFromImageUrl(url: string): Signal<tf.Tensor | null> {
-  const s = SignalCreate<tf.Tensor | null>(null);
+function LoadTensorFromImageUrl(url: string): Signal<np.Array | null> {
+  const s = SignalCreate<np.Array | null>(null);
 
   const imgElement = document.createElement('img');
   imgElement.crossOrigin = "anonymous";
@@ -857,17 +903,19 @@ function LoadTensorFromImageUrl(url: string): Signal<tf.Tensor | null> {
     }
   }
   imgElement.onload = () => {
-    s.value = tf.browser.fromPixels(imgElement)
+    updateWithFresh(s, fromPixels(imgElement))
   }
 
   return s
 }
 
 // Shared engine for realtime tensor sources (Camera, Microphone, Time):
-// a read-only signal driven by requestAnimationFrame that disposes stale tensors.
-// `frame` returns the next tensor, or null to keep the current one.
-function FrameSignal(initial: tf.Tensor, frame: (time: number) => tf.Tensor | null, cleanup?: () => void): Signal<tf.Tensor> & { dispose: () => void } {
-  const source = SignalCreate<tf.Tensor>(initial)
+// a read-only signal driven by requestAnimationFrame that disposes stale
+// tensors. `frame` returns a fresh tensor (ownership transfers here), or
+// null to keep the current one. Takes ownership of `initial`.
+function FrameSignal(initial: np.Array, frame: (time: number) => np.Array | null, cleanup?: () => void): Signal<np.Array> & { dispose: () => void } {
+  const source = SignalCreate<np.Array>(initial)
+  initial.dispose()
   let active = true
 
   const tick = (time: number) => {
@@ -875,15 +923,13 @@ function FrameSignal(initial: tf.Tensor, frame: (time: number) => tf.Tensor | nu
 
     const next = frame(time)
     if (next) {
-      const oldTensor = source.value
-      source.value = next
-      if (oldTensor) { oldTensor.dispose() }
+      updateWithFresh(source, next)
     }
     requestAnimationFrame(tick)
   }
   requestAnimationFrame(tick)
 
-  const result = computed(() => source.value) as Signal<tf.Tensor> & { dispose: () => void }
+  const result = computed(() => source.value) as Signal<np.Array> & { dispose: () => void }
   result.dispose = () => {
     active = false
     cleanup?.()
@@ -892,7 +938,7 @@ function FrameSignal(initial: tf.Tensor, frame: (time: number) => tf.Tensor | nu
   return result
 }
 
-function Camera(width?: tf.Tensor, height?: tf.Tensor, fps?: tf.Tensor): Signal<tf.Tensor> {
+function Camera(width?: np.Array, height?: np.Array, fps?: np.Array): Signal<np.Array> {
   const w = width ? getAsSyncList(width) as number : 640
   const h = height ? getAsSyncList(height) as number : 480
   const frameInterval = 1000 / (fps ? getAsSyncList(fps) as number : 30)
@@ -910,10 +956,10 @@ function Camera(width?: tf.Tensor, height?: tf.Tensor, fps?: tf.Tensor): Signal<
 
   let lastTime = 0
   // Initialize with black frame so operations don't fail before camera starts
-  return FrameSignal(tf.zeros([h, w, 3], 'int32'), (time) => {
+  return FrameSignal(np.zeros([h, w, 3], { dtype: np.int32 }), (time) => {
     if (time - lastTime < frameInterval || video.readyState !== video.HAVE_ENOUGH_DATA) { return null }
     lastTime = time
-    return tf.browser.fromPixels(video)
+    return fromPixels(video)
   }, () => {
     stream?.getTracks().forEach(track => track.stop())
     video.srcObject = null
@@ -944,37 +990,37 @@ function AudioAnalyser(fftSize: number, smoothing?: number): { get: () => Analys
   }
 }
 
-function Microphone(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
+function Microphone(bufferSize?: np.Array): Signal<np.Array> {
   const size = bufferSize ? getAsSyncList(bufferSize) as number : 2048
   const audio = AudioAnalyser(size * 2)
   const dataArray = new Float32Array(size)
 
   // Initialize with silence
-  return FrameSignal(tf.zeros([size]), () => {
+  return FrameSignal(np.zeros([size]), () => {
     const analyser = audio.get()
     if (!analyser) { return null }
     analyser.getFloatTimeDomainData(dataArray)
-    return tf.tensor1d(dataArray)
+    return np.array(dataArray.slice())
   }, audio.cleanup)
 }
 
-function MicrophoneSpectrum(bufferSize?: tf.Tensor): Signal<tf.Tensor> {
+function MicrophoneSpectrum(bufferSize?: np.Array): Signal<np.Array> {
   const size = bufferSize ? getAsSyncList(bufferSize) as number : 1024
   const audio = AudioAnalyser(size * 2, 0.8)
   const dataArray = new Uint8Array(size)
 
   // Initialize with silence; normalized to 0-1 range
-  return FrameSignal(tf.zeros([size]), () => {
+  return FrameSignal(np.zeros([size]), () => {
     const analyser = audio.get()
     if (!analyser) { return null }
     analyser.getByteFrequencyData(dataArray)
-    return tf.tidy(() => tf.tensor1d(dataArray).div(255))
+    return np.trueDivide(np.array(Float32Array.from(dataArray)), 255)
   }, audio.cleanup)
 }
 
-function Time(): Signal<tf.Tensor> {
+function Time(): Signal<np.Array> {
   const startTime = performance.now()
-  return FrameSignal(tf.scalar(0), () => tf.scalar((performance.now() - startTime) / 1000))
+  return FrameSignal(np.array(0), () => np.array((performance.now() - startTime) / 1000))
 }
 
 
@@ -994,8 +1040,8 @@ const LoadSafeTensorFromURL = (url?: string) => {
       const tensors = LoadSafeTensors(buffer);
 
       const mu = Object.entries(tensors).map(([key, value]) => {
-        // @ts-ignore
-        return [key, tf.tensor(value.data, value.shape, "float32")]
+        const data = Float32Array.from(value.data as unknown as ArrayLike<number>, Number)
+        return [key, np.array(data, { shape: value.shape })]
       })
 
       return mu
@@ -1357,23 +1403,26 @@ function PrettyPrintInner(obj: any): JSX.Element {
     }
 
     // Reactive variable: create computed that re-reads on version change
-    if (obj instanceof tf.Tensor && (obj as any).__version__) {
-      const version = (obj as any).__version__ as Signal<number>
+    if (obj instanceof FluentVariable) {
+      const variable = obj
+      let previous: np.Array | null = null
       const reactiveValue = computed(() => {
-        version.value  // subscribe to changes
-        return obj.clone()
+        variable.version.value  // subscribe to changes
+        if (previous && previous.refCount > 0) { previous.dispose() }
+        previous = variable.current.ref
+        return previous
       })
       return PrettyPrint(reactiveValue)
     }
 
-    if (obj instanceof tf.Tensor) {
-      if (obj.rank === 0) {
+    if (isTensor(obj)) {
+      if (obj.ndim === 0) {
         const color = COLORS.find(rule => rule.token === "number")?.foreground || "FFFFFF";
-        const formattedNumber = (obj.arraySync()).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 6, useGrouping: true }).replace(/,/g, "_");
+        const formattedNumber = (getAsSyncList(obj) as number).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 6, useGrouping: true }).replace(/,/g, "_");
         return <span style={{ color: `#${color}` }}>{formattedNumber}</span>;
       }
 
-      if (obj.rank === 1) {
+      if (obj.ndim === 1) {
         return (
           <div className="">
             <BarPlot data={obj} />
@@ -1381,9 +1430,9 @@ function PrettyPrintInner(obj: any): JSX.Element {
         );
       }
 
-      if (obj.rank === 2) {
+      if (obj.ndim === 2) {
         // Use fast canvas with viridis colormap for large tensors, Plotly for small (debugging)
-        const size = obj.shape[0] * obj.shape[1]
+        const size = (obj.shape[0] ?? 0) * (obj.shape[1] ?? 0)
         if (size > 400) {
           return <HeatCanvas data={obj} />
         }
@@ -1391,12 +1440,12 @@ function PrettyPrintInner(obj: any): JSX.Element {
         return <HeatPlot data={obj} />
       }
 
-      if (obj.rank === 3) {
+      if (obj.ndim === 3) {
         // RGB image - use canvas renderer
         return <TensorCanvas data={obj} />
       }
 
-      if (obj.rank > 3) {
+      if (obj.ndim > 3) {
         console.warn("Tensor with rank > 3 is not supported for plotting", obj);
       }
 
@@ -1465,13 +1514,14 @@ function Panel({ children, className }: { children: JSX.Element, className?: str
 
 // MARK: Plots
 
-const BarPlot = ({ data }: { data: tf.Tensor }) => {
+const BarPlot = ({ data }: { data: np.Array }) => {
 
   const annotations: Partial<Annotations>[] = [];
+  const values = getAsSyncList(data) as number[]
 
-  if (data.shape.reduce((a, b) => a * b) < 20) {
+  if (data.shape.reduce((a, b) => a * b, 1) < 20) {
     // @ts-ignore
-    annotations.push(...data.arraySync().map((value: number, i: number) => ({
+    annotations.push(...values.map((value: number, i: number) => ({
       xref: "x1",
       yref: "y1",
       yanchor: "bottom",
@@ -1487,10 +1537,10 @@ const BarPlot = ({ data }: { data: tf.Tensor }) => {
     <Plot
       data={[
         {
-          y: data.arraySync(),
+          y: values,
           type: 'bar',
           marker: {
-          color: data.arraySync(),
+          color: values,
           colorscale: 'Viridis',
         },
         },
@@ -1525,12 +1575,12 @@ const BarPlot = ({ data }: { data: tf.Tensor }) => {
   );
 }
 
-const HeatPlot = ({ data }: { data: tf.Tensor }) => {
+const HeatPlot = ({ data }: { data: np.Array }) => {
   const z = getAsSyncList(data) as number[][];
 
   let annotations: Partial<Annotations>[] = [];
 
-  if (data.shape.reduce((a, b) => a * b) < 20) {
+  if (data.shape.reduce((a, b) => a * b, 1) < 20) {
     // @ts-ignore
     annotations = z.map((row, i) => {
       return row.map((value, j) => ({
@@ -1589,7 +1639,7 @@ const HeatPlot = ({ data }: { data: tf.Tensor }) => {
 }
 
 // Fast canvas-based tensor renderer for real-time use (Camera, etc.)
-const TensorCanvas = ({ data }: { data: tf.Tensor }) => {
+const TensorCanvas = ({ data }: { data: np.Array }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   const height = data.shape[0] || 100
@@ -1597,7 +1647,7 @@ const TensorCanvas = ({ data }: { data: tf.Tensor }) => {
   const aspect = width / height
 
   useEffect(() => {
-    if (!canvasRef.current || !data || data.isDisposed) { return }
+    if (!canvasRef.current || !data || data.refCount === 0) { return }
 
     const canvas = canvasRef.current
 
@@ -1607,7 +1657,7 @@ const TensorCanvas = ({ data }: { data: tf.Tensor }) => {
       canvas.height = height
     }
 
-    tf.browser.toPixels(data as tf.Tensor2D | tf.Tensor3D, canvas)
+    toPixels(data, canvas)
   }, [data])
 
   return (
@@ -1624,7 +1674,7 @@ const TensorCanvas = ({ data }: { data: tf.Tensor }) => {
 }
 
 // Generate viridis colormap LUT from d3-scale-chromatic (256 entries, RGB 0-1)
-const VIRIDIS_LUT = tf.tensor2d(
+const VIRIDIS_LUT = np.array(
   Array.from({ length: 256 }, (_, i) => {
     const color = rgb(interpolateViridis(i / 255))
     return [color.r / 255, color.g / 255, color.b / 255]
@@ -1632,7 +1682,7 @@ const VIRIDIS_LUT = tf.tensor2d(
 )
 
 // Fast canvas-based heatmap with viridis colormap (GPU-accelerated via LUT)
-const HeatCanvas = ({ data }: { data: tf.Tensor }) => {
+const HeatCanvas = ({ data }: { data: np.Array }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   const height = data.shape[0] || 100
@@ -1640,7 +1690,7 @@ const HeatCanvas = ({ data }: { data: tf.Tensor }) => {
   const aspect = width / height
 
   useEffect(() => {
-    if (!canvasRef.current || !data || data.isDisposed) { return }
+    if (!canvasRef.current || !data || data.refCount === 0) { return }
 
     const canvas = canvasRef.current
 
@@ -1649,28 +1699,17 @@ const HeatCanvas = ({ data }: { data: tf.Tensor }) => {
       canvas.height = height
     }
 
-    // Apply viridis colormap via lookup table
-    const rgb = tf.tidy(() => {
-      // Normalize to [0, 1]
-      const min = tf.min(data)
-      const max = tf.max(data)
-      const range = tf.maximum(tf.sub(max, min), 1e-6)
-      const normalized = tf.div(tf.sub(data, min), range)
+    // Apply viridis colormap via lookup table: normalize to [0, 1], scale to
+    // LUT indices, gather colors. Move semantics free the intermediates.
+    const min = np.min(data.ref)
+    const range = np.maximum(np.subtract(np.max(data.ref), min.ref), 1e-6)
+    const normalized = np.trueDivide(np.subtract(data.ref, min), range)
+    const indices = np.astype(np.clip(np.multiply(normalized, 255), 0, 255), np.int32)
+    const colors = np.take(VIRIDIS_LUT.ref, np.reshape(indices, [-1]), 0)
+    const image = np.reshape(colors, [height, width, 3])
 
-      // Scale to [0, 255] and convert to int for LUT indexing
-      const indices = tf.cast(tf.clipByValue(tf.mul(normalized, 255), 0, 255), 'int32')
-
-      // Gather colors from LUT
-      const flat = tf.reshape(indices, [-1])
-      const colors = tf.gather(VIRIDIS_LUT, flat)
-
-      // Reshape back to image dimensions
-      return tf.reshape(colors, [height, width, 3])
-    })
-
-    tf.browser.toPixels(rgb as tf.Tensor3D, canvas).then(() => {
-      rgb.dispose()
-    })
+    toPixels(image, canvas)
+    image.dispose()
   }, [data])
 
   return (
@@ -2874,7 +2913,7 @@ export function Playground() {
     <>
       <div className="absolute inset-0 z-50 p-2 bg-neutral-900 grid text-white">
         {
-          Grid(tf.scalar(2), tf.scalar(1))(
+          Grid(np.array(2), np.array(1))(
             Print(result),
             CodeEditor(code)
           )
@@ -2884,7 +2923,9 @@ export function Playground() {
   );
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+// Module evaluation finishes after the backends initialize, which can be
+// later than DOMContentLoaded – mount immediately when the DOM is ready.
+const mountPlayground = () => {
   const root = document.getElementById("root")
 
   if (!root) {
@@ -2892,4 +2933,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   createRoot(root).render(<Playground />)
-})
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", mountPlayground)
+} else {
+  mountPlayground()
+}

@@ -733,6 +733,33 @@ function arena<T>(fn: () => T): T {
   return result as T
 }
 
+// A computed's cached payload is reachable only through its closure, which
+// arenas cannot see – so like signals, a computed OWNS one reference of each
+// tensor in its result, released on recompute and at generation end.
+const takeOwnedRefs = (v: unknown): void => {
+  if (v instanceof np.Array) { v.ref; return }
+  if (Array.isArray(v)) { for (const item of v) { takeOwnedRefs(item) } }
+}
+const releaseOwnedRefs = (v: unknown): void => {
+  if (v instanceof np.Array) { if (v.refCount > 0) { v.dispose() } return }
+  if (Array.isArray(v)) { for (const item of v) { releaseOwnedRefs(item) } }
+}
+
+const computedOwned = <T,>(fn: () => T): Signal<T> => {
+  let previous: unknown = null
+  registerDisposable(() => {
+    releaseOwnedRefs(previous)
+    previous = null
+  })
+  return computed(() => {
+    releaseOwnedRefs(previous)
+    const result = fn()
+    takeOwnedRefs(result)
+    previous = result
+    return result
+  })
+}
+
 // Trainable variable: the jax-js replacement for tf.Variable. Owns one
 // reference of its current value; assignment takes ownership of the next
 // value and bumps the version signal (drag, optimizer step, :=).
@@ -861,28 +888,16 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
     const hasSignalArgs = argsValue.some(containsSignal)
 
     if (hasSignalArgs && !noAutoLift) {
-      let previousResult: any = null
-
-      return computed(() => {
-        if (previousResult instanceof np.Array && previousResult.refCount > 0) {
-          previousResult.dispose()
-        }
-
+      return computedOwned(() => {
         const unwrapped = argsValue.map(unwrapSignals)
 
-        let result: any = null
-
         try {
-          result = arena(() => {
+          return arena(() => {
             return fnValue.apply(env, unwrapped)
           })
         } catch (e) {
-          result = e
+          return e
         }
-
-        previousResult = result
-
-        return result
       })
     }
 
@@ -1031,7 +1046,8 @@ const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
   return new Error(`'SignalUpdate': ${s} is not a signal`)
 }
 
-const SignalComputed = computed
+// user-facing computeds own their cached tensors, like auto-lifted ones
+const SignalComputed = (<T,>(fn: () => T) => computedOwned(fn)) as typeof computed
 
 const SignalEffect = effect
 setMeta(SignalEffect, { noAutoLift: true })
