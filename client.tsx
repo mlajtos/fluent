@@ -2362,10 +2362,11 @@ potential: sum(q×k / r, 2),
 "mandelbrot": `
 ; Mandelbrot set – z ← z² + c until |z| escapes
 ; complex numbers as (re, im) pairs, ⍣ iterates the whole plane at once
+; scrub the depth and watch the set sharpen
 
-w: 560,       ; resolution, 7:5 like the view
-h: 400,
-depth: 60,    ; iterations
+w: 350,        ; resolution, 7:5 like the view
+h: 250,
+depth: $(40),  ; iterations – drag me
 
 re: linspace([-2.5, 1], w) ⍴ [1, w] tile [h, 1],
 im: linspace([-1.25, 1.25], h) ⍴ [h, 1] tile [1, w],
@@ -2384,11 +2385,16 @@ step: { s |
 },
 
 zero: re × 0,
-counts: ListGet((step ⍣ depth)((zero, zero, zero)), 2),
+render: { d |
+  n: (1 ⌈ d),
+  counts: ListGet((step ⍣ n)((zero, zero, zero)), 2),
+  √(counts ÷ n)
+},
 
 (
   Text("# 🌀 Mandelbrot"),
-  √(counts ÷ depth),
+  Grid([1, 9])(Text("**depth:**"), Scrubber(depth)),
+  render(depth),
 )
 `,
   "recursion": `
