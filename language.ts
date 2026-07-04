@@ -6,7 +6,7 @@ import { grammar, type ActionDict } from "ohm-js";
 import { toAST as ohmToAST } from "ohm-js/extras";
 import { signal, Signal, computed, effect } from "@preact/signals-core"
 import dedent from "ts-dedent";
-import { numpy as np, nn, lax, random, tree, grad as jaxGrad, valueAndGrad, init as initBackends, defaultDevice } from "@jax-js/jax"
+import { numpy as np, nn, lax, random, tree, grad as jaxGrad, valueAndGrad, jit as jaxJit, init as initBackends, defaultDevice } from "@jax-js/jax"
 import * as optax from "@jax-js/optax"
 
 // jax-js compiles kernels per backend – initialize before the first array op.
@@ -665,11 +665,22 @@ const reify = (v: Value, env: CurrentScope): Value => {
 //  - Long-lived containers (signals, variables) OWN one reference of their
 //    payload and release it on update.
 
+// While a lifted application is being traced by jit (see makeLiftedApply),
+// reads of outside state – signals, variables, the RNG – would be frozen
+// into the compiled program. Reads mark the trace non-replayable (the traced
+// result is still valid this round); writes abort it outright.
+class TraceBailout extends Error {}
+let tracingActive = false
+let traceTouchedState = false
+
 // Borrow a value for use in an op: +1 on tensors, unwrap variables. This is
 // the boundary between Fluent's dynamic values and jax-js – ill-typed
 // arguments flow through and the op's validation error becomes an Error value.
 const borrow = (v: any): any => {
-  if (v instanceof FluentVariable) { return v.current.ref }
+  if (v instanceof FluentVariable) {
+    if (tracingActive) { traceTouchedState = true }
+    return v.current.ref
+  }
   if (isTensor(v)) { return v.ref }
   return v
 }
@@ -859,6 +870,89 @@ const containsSignal = (a: Value): boolean =>
 const unwrapSignals = (a: any): any =>
   a instanceof Signal ? a.value : Array.isArray(a) ? a.map(unwrapSignals) : a
 
+// MARK: Lifted apply
+// A signal-driven application re-executes an identical tensor graph on every
+// recompute. Trace it once with jit() – fused kernels instead of per-op
+// dispatch – and replay the compiled program with the current payloads.
+// Anything a trace cannot capture faithfully drops back to the eager
+// evaluator, permanently for this application:
+//  - value-dependent control flow (guard, mask, sort counts – any data read)
+//  - randomness (a replay would freeze the sample)
+//  - signal/variable access inside the body (a replay would freeze the value)
+//  - non-tensor results (JSX, lists) and signals nested inside list arguments
+const makeLiftedApply = (fnValue: Function, argsValue: Value[], env: CurrentScope) => {
+  const signalSlots: number[] = []
+  argsValue.forEach((a, i) => { if (a instanceof Signal) { signalSlots.push(i) } })
+  const hasNestedSignals = argsValue.some((a) => !(a instanceof Signal) && containsSignal(a))
+
+  let compiled: (((...xs: np.Array[]) => np.Array) & { dispose: () => void }) | null = null
+  let mode: "probe" | "jit" | "eager" = hasNestedSignals ? "eager" : "probe"
+
+  const eagerApply = (unwrapped: any[]): Value => {
+    try {
+      return fnValue.apply(env, unwrapped)
+    } catch (e) {
+      return e as Value
+    }
+  }
+
+  const demote = () => {
+    compiled?.dispose()
+    compiled = null
+    mode = "eager"
+  }
+  registerDisposable(demote)
+
+  return (): Value => {
+    // reading .value here subscribes this computed to its signals
+    const unwrapped = argsValue.map(unwrapSignals)
+    if (mode === "eager") { return eagerApply(unwrapped) }
+
+    const payloads = signalSlots.map((i) => unwrapped[i])
+    if (!payloads.every((p) => p instanceof np.Array)) {
+      // dynamic payload – not a tensor (yet); Fluent stays dynamic
+      demote()
+      return eagerApply(unwrapped)
+    }
+
+    compiled ??= jaxJit((...params: np.Array[]) => {
+      const rebuilt = [...unwrapped]
+      signalSlots.forEach((slot, j) => { rebuilt[slot] = params[j] })
+      const out = fnValue.apply(env, rebuilt)
+      if (out instanceof Error) { throw out }
+      if (!isTensor(out)) { throw new TraceBailout("non-tensor result") }
+      return out as np.Array
+    }) as any
+
+    // a compiled call may retrace at any time (new payload shapes), so the
+    // trace guards are armed on every call – a pure replay never trips them
+    const rngBefore = rngCounter
+    const outerTracing = tracingActive
+    const outerTouched = traceTouchedState
+    tracingActive = true
+    traceTouchedState = false
+    try {
+      const result = track(compiled!(...payloads.map((p) => (p as np.Array).ref)))
+      if (traceTouchedState || rngCounter !== rngBefore) {
+        // the trace froze outside state or a random draw – this round's
+        // result is valid, but a replay would not be
+        demote()
+      } else {
+        mode = "jit"
+      }
+      return result
+    } catch (e) {
+      demote()
+      // TraceBailout: the body is untraceable – run it for real.
+      // Anything else: eager reruns and surfaces it as an Error value.
+      return eagerApply(unwrapped)
+    } finally {
+      tracingActive = outerTracing
+      traceTouchedState = outerTouched || traceTouchedState
+    }
+  }
+}
+
 function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
   let errorArgs: Error[] = []
 
@@ -896,20 +990,12 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       throw new Error("What are you trying to do with this poor signal?")
     }
 
-    // Auto-lift: wrap in computed() when args contain Signals
+    // Auto-lift: wrap in computed() when args contain Signals. The recompute
+    // goes through makeLiftedApply, which jit-compiles traceable bodies.
     const hasSignalArgs = argsValue.some(containsSignal)
 
     if (hasSignalArgs && !noAutoLift) {
-      return computedOwned(() => {
-        const unwrapped = argsValue.map(unwrapSignals)
-
-        try {
-          // computedOwned already provides the arena for this recompute
-          return fnValue.apply(env, unwrapped)
-        } catch (e) {
-          return e
-        }
-      })
+      return computedOwned(makeLiftedApply(fnValue, argsValue, env))
     }
 
     return arena(() => {
@@ -973,6 +1059,11 @@ function getAsSyncList(value: unknown) {
     const data = value.ref.js()
     syncReadCache.set(value, data)
     return data
+  }
+  if (isTensor(value)) {
+    // a non-concrete tracer: the body's control flow depends on data a
+    // compiled replay wouldn't see – abort the trace, stay eager
+    throw new TraceBailout("value read during trace")
   }
 }
 
@@ -1086,11 +1177,13 @@ const SignalRead = <T,>(s: Signal<T>) => {
   if (!(s instanceof Signal)) {
     return new Error(`'SignalRead': ${String(s)} is not a signal`)
   }
+  if (tracingActive) { traceTouchedState = true }
   return s.value
 }
 
 const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
   if (s instanceof Signal) {
+    if (tracingActive) { throw new TraceBailout("signal write during trace") }
     const previous = s.peek() as unknown
     s.value = (bufferBackedScalar(v) ?? borrow(v)) as T
     if (previous instanceof np.Array && previous.refCount > 0) {
@@ -1111,6 +1204,7 @@ setMeta(SignalEffect, { noAutoLift: true })
 // Read signal value once without creating reactive dependency
 const SignalOnce = <T,>(s: Signal<T> | T): T => {
   if (s instanceof Signal) {
+    if (tracingActive) { traceTouchedState = true }
     return s.peek()
   }
   return s
@@ -1555,6 +1649,7 @@ const TensorAssign = (a: Value, b: Value) => {
   if (!(a instanceof FluentVariable)) {
     return new Error("`:=`: left side must be a variable created with ~")
   }
+  if (tracingActive) { throw new TraceBailout("variable write during trace") }
   a.assign(borrow(b) as np.Array)
   return null
 }
