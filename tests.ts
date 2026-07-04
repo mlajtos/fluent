@@ -137,6 +137,18 @@ describe("reactive recomputes stay dynamic", () => {
   test("variable reads in lambda bodies see fresh assignments", () => {
     expect(value("θ: ~([5]), f: { v | v + θ_0 }, x: $(1), y: f(x), θ := [9], x(2), y")).toBe(11)
   })
+  test("chains of computeds recompute end-to-end", () => {
+    expect(value("x: $(2), a: x × 3, b: a + 1, x(4), x(5), b")).toBe(16)
+  })
+  test("diamond dependencies stay consistent", () => {
+    expect(value("x: $(2), a: x × 3, b: a + a, x(4), b")).toBe(24)
+  })
+  test("untraceable middles keep the chain reactive", () => {
+    expect(value("x: $([3, 1, 2]), m: mask(x, x > 1), s: sum(m), x([5, 0, 6]), s")).toBe(11)
+  })
+  test("chains fed by watch(θ) track assignments", () => {
+    expect(value("θ: ~([2]), w: watch(θ), y: w + 1, θ := [7], y")).toEqual([8])
+  })
 })
 
 describe("reactivity", () => {

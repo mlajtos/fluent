@@ -874,18 +874,34 @@ const unwrapSignals = (a: any): any =>
 // A signal-driven application re-executes an identical tensor graph on every
 // recompute. Trace it once with jit() – fused kernels instead of per-op
 // dispatch – and replay the compiled program with the current payloads.
+//
+// When an argument is itself a lifted computed, its body is INLINED into the
+// trace instead of being read: the compiled program spans the whole chain
+// down to the true source signals (Time, sliders), jax-js chooses the
+// materialization points, and intermediate computeds never execute unless
+// something displays them. Shared intermediates (diamonds) trace once via a
+// per-trace memo.
+//
 // Anything a trace cannot capture faithfully drops back to the eager
 // evaluator, permanently for this application:
 //  - value-dependent control flow (guard, mask, sort counts – any data read)
 //  - randomness (a replay would freeze the sample)
 //  - signal/variable access inside the body (a replay would freeze the value)
 //  - non-tensor results (JSX, lists) and signals nested inside list arguments
+type Lift = {
+  args: Value[]
+  demoted: () => boolean
+  // trace this lift's body, resolving leaves through `bind`; memoized per trace
+  inline: (bind: (leaf: Signal<Value>) => np.Array) => np.Array
+}
+const liftRegistry = new WeakMap<Signal<Value>, Lift>()
+let currentTraceMemo: Map<Lift, np.Array> | null = null
+
 const makeLiftedApply = (fnValue: Function, argsValue: Value[], env: CurrentScope) => {
-  const signalSlots: number[] = []
-  argsValue.forEach((a, i) => { if (a instanceof Signal) { signalSlots.push(i) } })
   const hasNestedSignals = argsValue.some((a) => !(a instanceof Signal) && containsSignal(a))
 
   let compiled: (((...xs: np.Array[]) => np.Array) & { dispose: () => void }) | null = null
+  let leaves: Signal<Value>[] = []
   let mode: "probe" | "jit" | "eager" = hasNestedSignals ? "eager" : "probe"
 
   const eagerApply = (unwrapped: any[]): Value => {
@@ -903,25 +919,86 @@ const makeLiftedApply = (fnValue: Function, argsValue: Value[], env: CurrentScop
   }
   registerDisposable(demote)
 
-  return (): Value => {
-    // reading .value here subscribes this computed to its signals
-    const unwrapped = argsValue.map(unwrapSignals)
-    if (mode === "eager") { return eagerApply(unwrapped) }
+  // the source signals this lift's chain depends on: walk through inlinable
+  // children, stop at plain signals and demoted (eager) lifts
+  const collectLeaves = (args: Value[], out: Set<Signal<Value>>): void => {
+    for (const arg of args) {
+      if (!(arg instanceof Signal)) { continue }
+      const child = liftRegistry.get(arg)
+      if (child && !child.demoted()) { collectLeaves(child.args, out) }
+      else { out.add(arg) }
+    }
+  }
 
-    const payloads = signalSlots.map((i) => unwrapped[i])
+  // run the body on traced values: leaves resolve through `bind`, inlinable
+  // children splice their own traced bodies in
+  const runTraced = (bind: (leaf: Signal<Value>) => np.Array): np.Array => {
+    const rebuilt = argsValue.map((arg) => {
+      if (!(arg instanceof Signal)) { return arg }
+      const child = liftRegistry.get(arg)
+      if (child && !child.demoted()) { return child.inline(bind) }
+      return bind(arg)
+    })
+    const out = fnValue.apply(env, rebuilt)
+    if (out instanceof Error) { throw out }
+    if (!isTensor(out)) { throw new TraceBailout("non-tensor result") }
+    return out as np.Array
+  }
+
+  const lift: Lift = {
+    args: argsValue,
+    demoted: () => mode === "eager",
+    inline: (bind) => {
+      if (mode === "eager") { throw new TraceBailout("eager child") }
+      const memo = currentTraceMemo!
+      const cached = memo.get(lift)
+      if (cached) { return cached.ref }
+      const traced = runTraced(bind)
+      memo.set(lift, traced)
+      return traced.ref
+    },
+  }
+
+  const recompute = (): Value => {
+    if (mode === "eager") {
+      // reading .value subscribes this computed to its (possibly derived) args
+      return eagerApply(argsValue.map(unwrapSignals))
+    }
+
+    if (mode === "probe") {
+      const found = new Set<Signal<Value>>()
+      collectLeaves(argsValue, found)
+      leaves = [...found]
+    }
+
+    // reading the leaves subscribes this computed to the chain's sources
+    const payloads = leaves.map((s) => s.value)
     if (!payloads.every((p) => p instanceof np.Array)) {
-      // dynamic payload – not a tensor (yet); Fluent stays dynamic
       demote()
-      return eagerApply(unwrapped)
+      return eagerApply(argsValue.map(unwrapSignals))
     }
 
     compiled ??= jaxJit((...params: np.Array[]) => {
-      const rebuilt = [...unwrapped]
-      signalSlots.forEach((slot, j) => { rebuilt[slot] = params[j] })
-      const out = fnValue.apply(env, rebuilt)
-      if (out instanceof Error) { throw out }
-      if (!isTensor(out)) { throw new TraceBailout("non-tensor result") }
-      return out as np.Array
+      const bound = new Map(leaves.map((leaf, i) => [leaf, params[i]!]))
+      const previousMemo = currentTraceMemo
+      const memo: Map<Lift, np.Array> = new Map()
+      currentTraceMemo = memo
+      try {
+        const result = runTraced((leaf) => {
+          const param = bound.get(leaf)
+          if (param === undefined) { throw new TraceBailout("unbound leaf") }
+          return param.ref
+        })
+        return result
+      } finally {
+        currentTraceMemo = previousMemo
+        for (const traced of memo.values()) {
+          if (traced.refCount > 0) { traced.dispose() }
+        }
+        for (const param of params) {
+          if (param.refCount > 0) { param.dispose() }
+        }
+      }
     }) as any
 
     // a compiled call may retrace at any time (new payload shapes), so the
@@ -945,12 +1022,14 @@ const makeLiftedApply = (fnValue: Function, argsValue: Value[], env: CurrentScop
       demote()
       // TraceBailout: the body is untraceable – run it for real.
       // Anything else: eager reruns and surfaces it as an Error value.
-      return eagerApply(unwrapped)
+      return eagerApply(argsValue.map(unwrapSignals))
     } finally {
       tracingActive = outerTracing
       traceTouchedState = outerTouched || traceTouchedState
     }
   }
+
+  return { recompute, lift }
 }
 
 function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
@@ -991,11 +1070,15 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
     }
 
     // Auto-lift: wrap in computed() when args contain Signals. The recompute
-    // goes through makeLiftedApply, which jit-compiles traceable bodies.
+    // goes through makeLiftedApply, which jit-compiles traceable bodies and
+    // inlines chains of lifted computeds into a single compiled program.
     const hasSignalArgs = argsValue.some(containsSignal)
 
     if (hasSignalArgs && !noAutoLift) {
-      return computedOwned(makeLiftedApply(fnValue, argsValue, env))
+      const { recompute, lift } = makeLiftedApply(fnValue, argsValue, env)
+      const lifted = computedOwned(recompute)
+      liftRegistry.set(lifted as Signal<Value>, lift)
+      return lifted
     }
 
     return arena(() => {
