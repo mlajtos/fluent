@@ -1030,6 +1030,16 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
       fn(index)
       return null
     })
+    // drain the lazy queue: jax-js never dispatches on its own, so a training
+    // loop whose variables nobody displays would grow an unbounded pending
+    // graph – realize what each step retained
+    for (const variable of trainableVariables) {
+      const held = variable.current.ref
+      held.blockUntilReady().then(
+        () => { if (held.refCount > 0) { held.dispose() } },
+        () => { /* generation retired mid-flight */ },
+      )
+    }
     i++
     setTimeout(step, 0)
   }
@@ -1056,9 +1066,11 @@ const bufferBackedScalar = (v: unknown): np.Array | null => {
 
 // Fresh scalar for time-varying sources (Time, sliders, scrubbers): buffer-
 // backed so downstream kernels cache, pre-seeded so display reads are free.
-// Owned by the caller, not arena-tracked.
+// Owned by the caller, not arena-tracked. The NaN sentinel keeps the pair
+// from ever being all-equal – jax-js collapses all-equal data (including
+// [0, 0]) back into an inline constant.
 const TensorScalarLive = (value: number): np.Array => {
-  const backed = np.array(new Float32Array([value, 0])).slice(0)
+  const backed = np.array(new Float32Array([value, NaN])).slice(0)
   syncReadCache.set(backed, value)
   alreadyBufferBacked.add(backed)
   return backed

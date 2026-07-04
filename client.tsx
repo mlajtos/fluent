@@ -252,11 +252,14 @@ const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): 
   return np.array(rgbFlat, { shape: [height, width, 3] })
 }
 
-// [h, w] | [h, w, 1] | [h, w, 3] tensor → canvas. Borrows `data`.
-const toPixels = (data: np.Array, canvas: HTMLCanvasElement) => {
+// [h, w] | [h, w, 1] | [h, w, 3] tensor → canvas. Borrows `data`; the
+// reference is taken synchronously, so the buffer outlives later disposal.
+// The async read keeps the main thread free at 60fps (sync reads also
+// disable the wasm backend's worker parallelism).
+const toPixels = async (data: np.Array, canvas: HTMLCanvasElement) => {
   const [height = 1, width = 1, channels = 1] = data.shape
   const scale = data.dtype === np.int32 || data.dtype === np.uint32 ? 1 : 255
-  const flat = data.ref.dataSync()
+  const flat = await data.ref.data()
   const image = new ImageData(width, height)
   for (let p = 0, s = 0; p < image.data.length; p += 4, s += channels) {
     image.data[p] = (flat[s] as number) * scale
