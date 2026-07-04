@@ -495,6 +495,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
 
   if (node.type === "Number") {
     const value = track(np.array(node.content.value))
+    syncReadCache.set(value, node.content.value)
     setOrigin(value, node.origin)
     return value
   }
@@ -714,8 +715,9 @@ function collectLiveArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set(
   for (const key of Object.keys(v)) { collectLiveArrays((v as any)[key], out, seen) }
 }
 
-function arena<T>(fn: () => T): T {
-  const parent = arenaStack[arenaStack.length - 1] ?? currentGeneration?.arena ?? null
+// Run fn under a fresh scratch arena. Arrays it creates and keeps (reachable
+// from the result) are handed to `owner`; the rest are disposed.
+function arenaInto<T>(owner: Arena | null, fn: () => T): T {
   const scratch: Arena = new Set()
   arenaStack.push(scratch)
   let result: T | undefined
@@ -723,40 +725,39 @@ function arena<T>(fn: () => T): T {
     result = fn()
   } finally {
     arenaStack.pop()
-    const live: Arena = new Set()
-    collectLiveArrays(result, live)
-    for (const array of scratch) {
-      if (live.has(array)) { parent?.add(array) }
-      else if (array.refCount > 0) { array.dispose() }
+    if (scratch.size > 0) {
+      const live: Arena = new Set()
+      collectLiveArrays(result, live)
+      for (const array of scratch) {
+        if (live.has(array)) { owner?.add(array) }
+        else if (array.refCount > 0) { array.dispose() }
+      }
     }
   }
   return result as T
 }
 
-// A computed's cached payload is reachable only through its closure, which
-// arenas cannot see – so like signals, a computed OWNS one reference of each
-// tensor in its result, released on recompute and at generation end.
-const takeOwnedRefs = (v: unknown): void => {
-  if (v instanceof np.Array) { v.ref; return }
-  if (Array.isArray(v)) { for (const item of v) { takeOwnedRefs(item) } }
-}
-const releaseOwnedRefs = (v: unknown): void => {
-  if (v instanceof np.Array) { if (v.refCount > 0) { v.dispose() } return }
-  if (Array.isArray(v)) { for (const item of v) { releaseOwnedRefs(item) } }
+function arena<T>(fn: () => T): T {
+  return arenaInto(arenaStack[arenaStack.length - 1] ?? currentGeneration?.arena ?? null, fn)
 }
 
+// A computed's cached payload is reachable only through its closure, which
+// arenas cannot see – so a computed owns every array its recompute created
+// and kept, disposing the previous batch on recompute and at generation end.
+// (Handing survivors to the generation instead would pin one batch per frame
+// until the next evaluation – exactly what a Time()-driven demo must avoid.)
 const computedOwned = <T,>(fn: () => T): Signal<T> => {
-  let previous: unknown = null
-  registerDisposable(() => {
-    releaseOwnedRefs(previous)
-    previous = null
-  })
+  let owned: Arena = new Set()
+  const release = () => {
+    for (const array of owned) {
+      if (array.refCount > 0) { array.dispose() }
+    }
+    owned = new Set()
+  }
+  registerDisposable(release)
   return computed(() => {
-    releaseOwnedRefs(previous)
-    const result = fn()
-    takeOwnedRefs(result)
-    previous = result
-    return result
+    release()
+    return arenaInto(owned, fn)
   })
 }
 
@@ -769,6 +770,11 @@ class FluentVariable {
 
   // takes ownership of `initial`
   constructor(initial: np.Array) {
+    const backed = bufferBackedScalar(initial)
+    if (backed) {
+      if (initial.refCount > 0) { initial.dispose() }
+      initial = backed
+    }
     this.current = initial
     trainableVariables.add(this)
     registerDisposable(() => {
@@ -782,6 +788,11 @@ class FluentVariable {
 
   // takes ownership of `next`
   assign(next: np.Array): void {
+    const backed = bufferBackedScalar(next)
+    if (backed) {
+      if (next.refCount > 0) { next.dispose() }
+      next = backed
+    }
     const previous = this.current
     this.current = next
     if (previous.refCount > 0) { previous.dispose() }
@@ -892,9 +903,8 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
         const unwrapped = argsValue.map(unwrapSignals)
 
         try {
-          return arena(() => {
-            return fnValue.apply(env, unwrapped)
-          })
+          // computedOwned already provides the arena for this recompute
+          return fnValue.apply(env, unwrapped)
         } catch (e) {
           return e
         }
@@ -951,10 +961,17 @@ const FunctionCascade = (candidates: Function[]) => (a: Value, b: Value) => {
 
 // Synchronous, non-consuming read of a tensor's data as nested JS values.
 // jax-js `.js()` consumes the array, so read through a borrowed reference.
+// Every read crosses the device boundary (on WebGPU: a canvas readback), and
+// arrays are immutable – cache the JS value per array. Number literals are
+// pre-seeded at creation, so `x^2` or `sum(x, 2)` never read the device.
+const syncReadCache = new WeakMap<object, unknown>()
 function getAsSyncList(value: unknown) {
   if (value instanceof FluentVariable) { value = value.current }
   if (value instanceof np.Array) {
-    return value.ref.js()
+    if (syncReadCache.has(value)) { return syncReadCache.get(value) }
+    const data = value.ref.js()
+    syncReadCache.set(value, data)
+    return data
   }
 }
 
@@ -1021,10 +1038,36 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
   return null
 }
 
+// jax-js backs every 1-element array with an inline constant (np.array
+// special-cases size === 1 into full()), so kernels consuming it embed the
+// value and recompile whenever it changes. Payloads of signals and variables
+// change on every update – re-back known scalars with a real device buffer
+// (a 2-element upload sliced to a 0-d view) so downstream kernels stay
+// stable and the shader cache hits. Returns an owned array, or null when the
+// value isn't a scalar with a known JS value.
+const alreadyBufferBacked = new WeakSet<object>()
+const bufferBackedScalar = (v: unknown): np.Array | null => {
+  if (!(v instanceof np.Array) || v.ndim !== 0 || alreadyBufferBacked.has(v)) { return null }
+  if (!syncReadCache.has(v)) { return null }
+  const value = syncReadCache.get(v)
+  if (typeof value !== "number") { return null }
+  return TensorScalarLive(value)
+}
+
+// Fresh scalar for time-varying sources (Time, sliders, scrubbers): buffer-
+// backed so downstream kernels cache, pre-seeded so display reads are free.
+// Owned by the caller, not arena-tracked.
+const TensorScalarLive = (value: number): np.Array => {
+  const backed = np.array(new Float32Array([value, 0])).slice(0)
+  syncReadCache.set(backed, value)
+  alreadyBufferBacked.add(backed)
+  return backed
+}
+
 // Signals own one reference of their tensor payload: created with a borrowed
 // reference, released on every update. Reads hand out the payload unowned –
 // wrappers borrow at their call sites.
-const SignalCreate = (<T,>(initial: T) => signal(borrow(initial))) as typeof signal
+const SignalCreate = (<T,>(initial: T) => signal(bufferBackedScalar(initial) ?? borrow(initial))) as typeof signal
 
 const SignalRead = <T,>(s: Signal<T>) => {
   if (!(s instanceof Signal)) {
@@ -1036,7 +1079,7 @@ const SignalRead = <T,>(s: Signal<T>) => {
 const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
   if (s instanceof Signal) {
     const previous = s.peek() as unknown
-    s.value = borrow(v)
+    s.value = (bufferBackedScalar(v) ?? borrow(v)) as T
     if (previous instanceof np.Array && previous.refCount > 0) {
       previous.dispose()
     }
@@ -1203,7 +1246,11 @@ const Tensor = (values: unknown, shape?: Value) => {
   const source: any = isTensor(values) || values instanceof FluentVariable ? borrow(values) : values
   return track(np.array(source, shape === undefined ? undefined : { shape: asNumberList(shape) }))
 }
-const TensorScalar = (value: number) => track(np.array(value))
+const TensorScalar = (value: number) => {
+  const scalar = track(np.array(value))
+  syncReadCache.set(scalar, value)
+  return scalar
+}
 
 // Wrapper factories: borrow the tensor arguments, track the result.
 const unaryOp = (op: (x: any) => np.Array) => (a: Value) => track(op(borrow(a)))
@@ -1997,6 +2044,7 @@ export {
   track,
   arena,
   TensorScalar,
+  TensorScalarLive,
   // parse
   CodeParse,
   getParseErrors,

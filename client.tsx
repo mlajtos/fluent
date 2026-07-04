@@ -194,7 +194,7 @@ import {
   getAsSyncList, getMeta, setMeta, setOrigin, getOrigin,
   SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalOnce,
   identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
-  np, FluentVariable, isTensor,
+  np, FluentVariable, isTensor, TensorScalarLive,
   type Value, type CurrentScope, type SyntaxTreeNode, type Origin,
 } from "./language"
 import { useSignals, useSignal, useComputed } from '@preact/signals-react/runtime';
@@ -452,7 +452,7 @@ const Slider = (editedValue: Signal<np.Array>) => {
           max={1}
           step={0.01}
           value={valueAsList}
-          onChange={(e) => updateWithFresh(editedValue, np.array(parseFloat(e.target.value)))}
+          onChange={(e) => updateWithFresh(editedValue, TensorScalarLive(parseFloat(e.target.value)))}
           className="bg-neutral-900 focus:bg-neutral-800 rounded-xl border border-neutral-800 hover:border-neutral-700 focus:border-neutral-600 outline-none p-2 w-full h-2 cursor-pointer dark:bg-gray-700 place-self-center"
         />
       </div>
@@ -476,7 +476,7 @@ const Scrubber = (editedValue: Signal<np.Array>, sensitivity?: np.Array) => {
 
       const onMove = (me: PointerEvent) => {
         const raw = startValue + (me.clientX - startX) * step * 0.1
-        updateWithFresh(editedValue, np.array(Math.round(raw * factor) / factor))
+        updateWithFresh(editedValue, TensorScalarLive(Math.round(raw * factor) / factor))
       }
       const onUp = () => {
         window.removeEventListener('pointermove', onMove)
@@ -505,7 +505,7 @@ const Checkbox = (editedValue: Signal<np.Array>) => {
       <input
         type="checkbox"
         checked={checked}
-        onChange={(e) => updateWithFresh(editedValue, np.array(e.target.checked ? 1 : 0))}
+        onChange={(e) => updateWithFresh(editedValue, TensorScalarLive(e.target.checked ? 1 : 0))}
         className="w-5 h-5 accent-white cursor-pointer place-self-start"
       />
     )
@@ -1020,7 +1020,7 @@ function MicrophoneSpectrum(bufferSize?: np.Array): Signal<np.Array> {
 
 function Time(): Signal<np.Array> {
   const startTime = performance.now()
-  return FrameSignal(np.array(0), () => np.array((performance.now() - startTime) / 1000))
+  return FrameSignal(TensorScalarLive(0), () => TensorScalarLive((performance.now() - startTime) / 1000))
 }
 
 
