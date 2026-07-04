@@ -734,6 +734,7 @@ const Grid = (cols: np.Array, rows: np.Array) => {
   const applyChildren = (...args: any[]) => {
     const buildCells = () => flattenCells(args.map(a => isListSignal(a) ? (a as Signal<unknown>).value : a))
       .map(WrapWithPrintIfNotReactElement)
+      .map((cell, i) => <div key={i} className="contents">{cell}</div>)
     return (
       <div className={`grid gap-2 overflow-scroll h-full`} style={{ gridTemplateColumns, gridTemplateRows }}>
         {/* @ts-ignore */}
