@@ -2202,7 +2202,7 @@ f: { t | Δ(t × w) },
 
 ; Training
 (++): TensorConcat,
-(++=): { a, b | a(a() ++ b) },
+(++=): FunctionNoAutoLift({ a, b | a(a() ++ b) }),
 
 𝓛: { mean((f(τ) - ŷ)^2) },
 opt: adam(0.001),
