@@ -2363,11 +2363,12 @@ potential: sum(q×k / r, 2),
 ; Mandelbrot set – z ← z² + c until |z| escapes
 ; complex numbers as (re, im) pairs, ⍣ iterates the whole plane at once
 
-n: 500,       ; resolution
+w: 560,       ; resolution, 7:5 like the view
+h: 400,
 depth: 60,    ; iterations
 
-re: linspace([-2.5, 1], n) ⍴ [1, n] tile [n, 1],
-im: linspace([-1.25, 1.25], n) ⍴ [n, 1] tile [1, n],
+re: linspace([-2.5, 1], w) ⍴ [1, w] tile [h, 1],
+im: linspace([-1.25, 1.25], h) ⍴ [h, 1] tile [1, w],
 
 ; one step for every pixel: state is (zx, zy, escape count)
 step: { s |
