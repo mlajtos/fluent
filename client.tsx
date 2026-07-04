@@ -2359,7 +2359,38 @@ potential: sum(q×k / r, 2),
   abs(sin(potential × 25)) ^ 0.25,
 )
 `,
-"recursion": `
+"mandelbrot": `
+; Mandelbrot set – z ← z² + c until |z| escapes
+; complex numbers as (re, im) pairs, ⍣ iterates the whole plane at once
+
+n: 500,       ; resolution
+depth: 60,    ; iterations
+
+re: linspace([-2.5, 1], n) ⍴ [1, n] tile [n, 1],
+im: linspace([-1.25, 1.25], n) ⍴ [n, 1] tile [1, n],
+
+; one step for every pixel: state is (zx, zy, escape count)
+step: { s |
+  zx: ListGet(s, 0),
+  zy: ListGet(s, 1),
+  k:  ListGet(s, 2),
+  alive: ((zx^2 + zy^2) ≤ 4),
+  (
+    where(alive, zx^2 - zy^2 + re, zx),
+    where(alive, 2×zx×zy + im, zy),
+    k + alive,
+  )
+},
+
+zero: re × 0,
+counts: ListGet((step ⍣ depth)((zero, zero, zero)), 2),
+
+(
+  Text("# 🌀 Mandelbrot"),
+  √(counts ÷ depth),
+)
+`,
+  "recursion": `
 ; Recursive functions: factorial and Fibonacci
 fact: { n | 
   f: self,
