@@ -1547,7 +1547,13 @@ const TensorRoot = (a: Value, b?: Value) => {
   }
   return TensorPower(b, TensorReciprocal(a))
 }
-const TensorRemainder = binaryOp(np.remainder)
+// WGSL permits 2.5 ULP of division error, so on WebGPU floor(x/x) can miss
+// and remainder(x, x) comes back as x. A remainder of exactly ±y is
+// mathematically impossible – fold it to 0.
+const TensorRemainder = (a: Value, b: Value) => {
+  const r = np.remainder(borrow(a), borrow(b))
+  return track(np.where(np.equal(np.absolute(r.ref), np.absolute(borrow(b))), np.zerosLike(r.ref), r))
+}
 const TensorMaximum = binaryOp(np.maximum)
 const TensorMinimum = binaryOp(np.minimum)
 

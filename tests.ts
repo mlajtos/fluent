@@ -96,6 +96,12 @@ describe("tensors", () => {
 })
 
 describe("math functions", () => {
+  test("remainder of equal values is zero, negatives take the divisor's sign", () => {
+    // on WebGPU, floor(x/x) can miss by an ULP – x % x must still be 0
+    expect(value("107 % 107")).toBe(0)
+    expect(value("108 % 107")).toBe(1)
+    expect(value("(0 - 7) % 3")).toBe(2)
+  })
   test("clamp, sigmoid, relu", () => {
     expect(value("clamp(7, 2, 5)")).toBe(5)
     expect(value("sigmoid(0)")).toBe(0.5)
