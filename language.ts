@@ -1557,12 +1557,19 @@ const TensorRemainder = (a: Value, b: Value) => {
 const TensorMaximum = binaryOp(np.maximum)
 const TensorMinimum = binaryOp(np.minimum)
 
-const TensorLess = binaryOp(np.less)
-const TensorGreater = binaryOp(np.greater)
-const TensorLessEqual = binaryOp(np.lessEqual)
-const TensorGreaterEqual = binaryOp(np.greaterEqual)
-const TensorEqual = binaryOp(np.equal)
-const TensorNotEqual = binaryOp(np.notEqual)
+// Comparisons yield float32 0/1, APL-style. jax-js bools ride a
+// bool → uint32 lattice where a weak scalar promotes UNSIGNED – and a
+// negated weak constant clamps at zero, so `(x = 1) - y` silently
+// subtracted nothing. Fluent is a float32 language; 0/1 composes.
+const comparisonOp = (op: (x: any, y: any) => np.Array) =>
+  (a: Value, b: Value) => track(np.astype(op(borrow(a), borrow(b)), np.float32))
+
+const TensorLess = comparisonOp(np.less)
+const TensorGreater = comparisonOp(np.greater)
+const TensorLessEqual = comparisonOp(np.lessEqual)
+const TensorGreaterEqual = comparisonOp(np.greaterEqual)
+const TensorEqual = comparisonOp(np.equal)
+const TensorNotEqual = comparisonOp(np.notEqual)
 
 const TensorSine = unaryOp(np.sin)
 const TensorCosine = unaryOp(np.cos)
@@ -1700,6 +1707,12 @@ const TensorReshape = (a: Value, b?: Value) => {
   return track(np.array(shapeOf(a)))
 }
 
+// Toroidal shift – APL's rotate. roll(x, 1) shifts flat; roll(x, s, axis)
+// shifts along an axis, wrapping around.
+const TensorRoll = (a: Value, shift: Value, axis?: Value) =>
+  track(np.roll(borrow(a), getAsSyncList(shift) as number | number[],
+    axis === undefined ? undefined : getAsSyncList(axis) as number | number[]))
+
 const TensorReverse = (a: Value, axis?: Value) =>
   track(np.flip(borrow(a), axis === undefined ? undefined : getAsSyncList(axis) as number | number[]))
 
@@ -1735,7 +1748,7 @@ const TensorGather = (a: Value, b: Value) => {
 
 const TensorWhere = (a: Value, b: Value, c: Value) =>
   track(np.where(np.astype(borrow(a), np.bool), borrow(b), borrow(c)))
-const TensorIsNaN = unaryOp(np.isnan)
+const TensorIsNaN = (a: Value) => track(np.astype(np.isnan(borrow(a)), np.float32))
 
 const TensorVariable = (a: Value) => {
   if (!isTensor(a) && !(a instanceof FluentVariable)) {
@@ -2012,6 +2025,7 @@ const DefaultEnvironment: Record<string, Value> = {
   TensorSlice,
   TensorFill,
   TensorReverse,
+  TensorRoll,
 
   TensorVariable,
   TensorAssign,
@@ -2264,6 +2278,7 @@ watch: TensorWatch,
 
 ; Tensor ops
 sort: TensorSort,
+roll: TensorRoll,
 mask: TensorMask,
 where: TensorWhere,
 isNaN: TensorIsNaN,

@@ -78,6 +78,17 @@ describe("tensors", () => {
     expect(value("stack(([1, 2], [3, 4]), 1)")).toEqual([[1, 3], [2, 4]])
     expect(value("stack(0 :: 3, 9)")).toEqual([[0, 1, 2], [9, 9, 9]])
   })
+  test("comparisons are float 0/1 and compose with arithmetic", () => {
+    // jax-js bools promote through uint32, where weak negatives clamp to
+    // zero and subtraction silently no-ops – Fluent comparisons are APL 0/1
+    expect(value("([1, 2, 3] = 1) + 10")).toEqual([11, 10, 10])
+    expect(value("f: { x | (x = 1) ⌈ (x × 0) }, b: [1, 2, 3], sum(abs(f(b) - [1, 0, 0]))")).toBe(0)
+  })
+  test("roll wraps around the torus", () => {
+    expect(value("roll([1, 2, 3, 4], 1)")).toEqual([4, 1, 2, 3])
+    expect(value("roll([1, 2, 3, 4], -1)")).toEqual([2, 3, 4, 1])
+    expect(value("roll([[1, 2], [3, 4]], 1, 0)")).toEqual([[3, 4], [1, 2]])
+  })
   test("concat with axis", () => {
     expect(value("concat(([1, 2], [3, 4]), 0)")).toEqual([1, 2, 3, 4])
   })
