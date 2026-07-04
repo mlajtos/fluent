@@ -678,7 +678,9 @@ let traceTouchedState = false
 // arguments flow through and the op's validation error becomes an Error value.
 const borrow = (v: any): any => {
   if (v instanceof FluentVariable) {
-    if (tracingActive) { traceTouchedState = true }
+    // a variable holding a tracer is a swapped-in parameter of the ongoing
+    // trace (optimizer step) – only reading a CONCRETE value freezes state
+    if (tracingActive && v.current instanceof np.Array) { traceTouchedState = true }
     return v.current.ref
   }
   if (isTensor(v)) { return v.ref }
@@ -1763,6 +1765,15 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     }
   })
 
+  let compiledStep: ((params: np.Array[], state: optax.OptState) => [np.Array, np.Array[], optax.OptState]) & { dispose: () => void } | null = null
+  let stepMode: "probe" | "jit" | "eager" = "probe"
+  const demoteStep = () => {
+    compiledStep?.dispose()
+    compiledStep = null
+    stepMode = "eager"
+  }
+  registerDisposable(demoteStep)
+
   return (lossThunk: Value) => {
     if (typeof lossThunk !== "function") {
       return new Error("optimizer expects a loss thunk { ... }")
@@ -1774,13 +1785,17 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     if (state !== null && (stateVars.length !== vars.length || stateVars.some((v, i) => v !== vars[i]))) {
       tree.dispose(state)
       state = null
+      demoteStep()
+      stepMode = "probe"
     }
     if (state === null) {
       state = transform.init(vars.map(v => v.current.ref))
       stateVars = vars
     }
 
-    const [loss, grads] = valueAndGrad((params: np.Array[]) => {
+    // gradient of the loss thunk: each variable temporarily carries its
+    // parameter, so reads inside the thunk differentiate
+    const lossFromParams = (params: np.Array[]) => {
       const saved = vars.map(v => v.current)
       vars.forEach((v, i) => { v.current = params[i]! })
       try {
@@ -1792,13 +1807,55 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
       } finally {
         vars.forEach((v, i) => { v.current = saved[i]! })
       }
-    })(vars.map(v => v.current.ref))
+    }
 
-    const [updates, nextState] = transform.update(grads as np.Array[], state, vars.map(v => v.current.ref))
-    state = nextState
-    const fresh = optax.applyUpdates(vars.map(v => v.current.ref), updates as np.Array[]) as np.Array[]
-    vars.forEach((v, i) => { v.assign(fresh[i]!) })
-    return track(loss)
+    const eagerStep = (): Value => {
+      const [loss, grads] = valueAndGrad(lossFromParams)(vars.map(v => v.current.ref))
+      const [updates, nextState] = transform.update(grads as np.Array[], state!, vars.map(v => v.current.ref))
+      state = nextState
+      const fresh = optax.applyUpdates(vars.map(v => v.current.ref), updates as np.Array[]) as np.Array[]
+      vars.forEach((v, i) => { v.assign(fresh[i]!) })
+      return track(loss)
+    }
+
+    if (stepMode === "eager") { return eagerStep() }
+
+    // compile the whole step – gradient, transform, apply – as one program,
+    // retraced automatically when parameter shapes change
+    compiledStep ??= jaxJit((params: np.Array[], optState: optax.OptState) => {
+      const [loss, grads] = valueAndGrad(lossFromParams)(tree.ref(params) as np.Array[])
+      const [updates, nextState] = transform.update(grads as np.Array[], optState, tree.ref(params) as np.Array[])
+      const fresh = optax.applyUpdates(params, updates as np.Array[]) as np.Array[]
+      return [loss, fresh, nextState] as [np.Array, np.Array[], optax.OptState]
+    }) as any
+
+    const rngBefore = rngCounter
+    const outerTracing = tracingActive
+    const outerTouched = traceTouchedState
+    tracingActive = true
+    traceTouchedState = false
+    try {
+      // pass a referenced copy of the state tree: on a failed trace our own
+      // references stay valid and the eager fallback still has its state
+      const [loss, fresh, nextState] = compiledStep!(vars.map(v => v.current.ref), tree.ref(state!) as optax.OptState)
+      tree.dispose(state!)
+      state = nextState
+      vars.forEach((v, i) => { v.assign(fresh[i]!) })
+      if (traceTouchedState || rngCounter !== rngBefore) {
+        // the loss froze outside state or a random draw – this step is
+        // valid, but a replay would not be
+        demoteStep()
+      } else {
+        stepMode = "jit"
+      }
+      return track(loss)
+    } catch (e) {
+      demoteStep()
+      return eagerStep()
+    } finally {
+      tracingActive = outerTracing
+      traceTouchedState = outerTouched || traceTouchedState
+    }
   }
 }
 
