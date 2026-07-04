@@ -112,6 +112,33 @@ describe("math functions", () => {
   })
 })
 
+// Contracts any future compilation of reactive recomputes must preserve
+// (a per-application jit was tried and reverted: materializing every
+// computed boundary defeats jax-js's cross-expression lazy fusion)
+describe("reactive recomputes stay dynamic", () => {
+  test("repeated updates keep recomputing", () => {
+    expect(value("x: $(2), y: (x × 3) + 1, x(4), x(5), y")).toBe(16)
+  })
+  test("payload shapes may change between updates", () => {
+    expect(value("x: $([1, 2]), y: sum(x × 2), x([1, 2, 3]), y")).toBe(12)
+  })
+  test("value-dependent bodies (mask) recompute correctly", () => {
+    expect(value("x: $([3, 1, 2]), y: mask(x, x > 1), x([5, 0, 6]), y")).toEqual([5, 6])
+  })
+  test("randomness stays fresh per recompute", () => {
+    const scope = createScope()
+    const out = evaluateGeneration(() =>
+      evaluateSyntaxTreeNode(CodeParse("x: $(0), y: x + randn([4]), y"), scope)) as any
+    const first = JSON.stringify(out.value.ref.js())
+    ;(scope["x"] as any).value = np.array(new Float32Array([1, NaN])).slice(0)
+    const second = JSON.stringify(out.value.ref.js())
+    expect(first).not.toBe(second)
+  })
+  test("variable reads in lambda bodies see fresh assignments", () => {
+    expect(value("θ: ~([5]), f: { v | v + θ_0 }, x: $(1), y: f(x), θ := [9], x(2), y")).toBe(11)
+  })
+})
+
 describe("reactivity", () => {
   test("signal create, read, write", () => {
     expect(value("x: $(2), x()")).toBe(2)

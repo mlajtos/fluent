@@ -852,6 +852,13 @@ const disposeScopeTensors = (scope: CurrentScope) => {
   }
 }
 
+// Signals may hide inside lists, so e.g. `concat((a, b), axis)` stays
+// reactive when a/b are computed
+const containsSignal = (a: Value): boolean =>
+  a instanceof Signal || (Array.isArray(a) && a.some(containsSignal))
+const unwrapSignals = (a: any): any =>
+  a instanceof Signal ? a.value : Array.isArray(a) ? a.map(unwrapSignals) : a
+
 function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
   let errorArgs: Error[] = []
 
@@ -889,13 +896,7 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       throw new Error("What are you trying to do with this poor signal?")
     }
 
-    // Auto-lift: wrap in computed() when args contain Signals – also inside
-    // lists, so e.g. `concat((a, b), axis)` stays reactive when a/b are computed
-    const containsSignal = (a: Value): boolean =>
-      a instanceof Signal || (Array.isArray(a) && a.some(containsSignal))
-    const unwrapSignals = (a: any): any =>
-      a instanceof Signal ? a.value : Array.isArray(a) ? a.map(unwrapSignals) : a
-
+    // Auto-lift: wrap in computed() when args contain Signals
     const hasSignalArgs = argsValue.some(containsSignal)
 
     if (hasSignalArgs && !noAutoLift) {
@@ -1391,10 +1392,17 @@ const TensorSineHyperbolicInverse = unaryOp(np.arcsinh)
 const TensorCosineHyperbolicInverse = unaryOp(np.arccosh)
 const TensorTangentHyperbolicInverse = unaryOp(np.arctanh)
 
+// jax-js reduces bool arrays in bool arithmetic (add is `or`, so a bool sum
+// can only be 0 or 1) – promote to float like NumPy, so sum(x > 1) counts
+const promoteBool = (v: any): any => {
+  const tensor = v instanceof FluentVariable ? v.current : v
+  return isTensor(tensor) && tensor.dtype === np.bool ? np.astype(borrow(v), np.float32) : borrow(v)
+}
+
 // Reductions take an optional axis (scalar or vector tensor) as second argument
 const withOptionalAxis = (op: (a: any, axis?: number | number[]) => np.Array) =>
   (a: Value, b?: Value) =>
-    track(b === undefined ? op(borrow(a)) : op(borrow(a), getAsSyncList(b) as (number | number[])))
+    track(b === undefined ? op(promoteBool(a)) : op(promoteBool(a), getAsSyncList(b) as (number | number[])))
 
 const TensorSum = withOptionalAxis(np.sum)      // TensorReduce(a, 0, +)
 const TensorProduct = withOptionalAxis(np.prod) // TensorReduce(a, 1, *)
