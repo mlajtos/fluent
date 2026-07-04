@@ -211,8 +211,10 @@ import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/com
 import dedent from "ts-dedent";
 import { Base64 } from 'js-base64'
 import { type Annotations } from "plotly.js"
+import { getWebGPUDevice } from "@jax-js/jax"
 import { interpolateViridis } from 'd3-scale-chromatic'
 import { rgb } from 'd3-color'
+
 
 
 // Web Worker setup for monaco-editor
@@ -274,6 +276,133 @@ const toPixels = async (data: np.Array, canvas: HTMLCanvasElement) => {
 const updateWithFresh = (target: Signal<any>, fresh: np.Array) => {
   SignalUpdate(target, fresh)
   fresh.dispose()
+}
+
+// MARK: GPU blit
+// Render tensors straight from their WebGPU buffers: a fullscreen triangle
+// samples the storage buffer per pixel – no readback, no ImageData loop.
+// Heatmaps normalize against a GPU-computed [min, max] pair and color
+// through the viridis LUT, all on-device. Off-WebGPU falls back to toPixels.
+
+let blitDevice: GPUDevice | null | undefined
+const getBlitDevice = (): GPUDevice | null => {
+  if (blitDevice === undefined) {
+    try { blitDevice = getWebGPUDevice() } catch { blitDevice = null }
+  }
+  return blitDevice
+}
+
+const WGSL_SCALAR: Record<string, string | undefined> = {
+  float32: "f32", int32: "i32", uint32: "u32",
+}
+
+const blitShader = (scalar: string, mode: "image" | "heat") => /* wgsl */ `
+struct BlitInfo { width: u32, height: u32, channels: u32, scale: f32 }
+@group(0) @binding(0) var<uniform> info: BlitInfo;
+@group(0) @binding(1) var<storage, read> data: array<${scalar}>;
+${mode === "heat" ? `
+@group(0) @binding(2) var<storage, read> bounds: array<f32>;
+@group(0) @binding(3) var<storage, read> lut: array<f32>;
+` : ""}
+
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  var pos = array<vec2f, 3>(vec2f(-1.0, -3.0), vec2f(-1.0, 1.0), vec2f(3.0, 1.0));
+  return vec4f(pos[i], 0.0, 1.0);
+}
+
+@fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f {
+  let base = (u32(p.y) * info.width + u32(p.x)) * info.channels;
+${mode === "heat" ? `
+  let v = f32(data[base]);
+  let t = clamp((v - bounds[0]) / max(bounds[1] - bounds[0], 1e-6), 0.0, 1.0);
+  let i = u32(round(t * 255.0)) * 3u;
+  return vec4f(lut[i], lut[i + 1u], lut[i + 2u], 1.0);
+` : `
+  if (info.channels == 1u) {
+    let v = f32(data[base]) * info.scale;
+    return vec4f(v, v, v, 1.0);
+  }
+  return vec4f(
+    f32(data[base]) * info.scale,
+    f32(data[base + 1u]) * info.scale,
+    f32(data[base + 2u]) * info.scale,
+    1.0);
+`}
+}
+`
+
+const blitPipelines = new Map<string, GPURenderPipeline>()
+const getBlitPipeline = (device: GPUDevice, scalar: string, mode: "image" | "heat"): GPURenderPipeline => {
+  const key = `${mode}:${scalar}`
+  let pipeline = blitPipelines.get(key)
+  if (!pipeline) {
+    const module = device.createShaderModule({ code: blitShader(scalar, mode) })
+    pipeline = device.createRenderPipeline({
+      layout: "auto",
+      vertex: { module, entryPoint: "vs" },
+      fragment: { module, entryPoint: "fs", targets: [{ format: navigator.gpu.getPreferredCanvasFormat() }] },
+    })
+    blitPipelines.set(key, pipeline)
+  }
+  return pipeline
+}
+
+let viridisGpu: GPUBuffer | null = null
+const getViridisGpu = (device: GPUDevice): GPUBuffer => {
+  if (!viridisGpu) {
+    viridisGpu = device.createBuffer({ size: VIRIDIS_DATA.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
+    device.queue.writeBuffer(viridisGpu, 0, VIRIDIS_DATA)
+  }
+  return viridisGpu
+}
+
+type CanvasBlitState = { context: GPUCanvasContext, meta: GPUBuffer }
+const canvasBlitStates = new WeakMap<HTMLCanvasElement, CanvasBlitState | null>()
+const getCanvasBlitState = (device: GPUDevice, canvas: HTMLCanvasElement): CanvasBlitState | null => {
+  let state = canvasBlitStates.get(canvas)
+  if (state === undefined) {
+    const context = canvas.getContext("webgpu")
+    state = context === null ? null : {
+      context,
+      meta: device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+    }
+    if (state) {
+      state.context.configure({ device, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: "opaque" })
+    }
+    canvasBlitStates.set(canvas, state)
+  }
+  return state
+}
+
+const blitToCanvas = (
+  device: GPUDevice, canvas: HTMLCanvasElement, scalar: string, mode: "image" | "heat",
+  meta: { width: number, height: number, channels: number, scale: number },
+  buffers: GPUBuffer[],
+): boolean => {
+  const state = getCanvasBlitState(device, canvas)
+  if (!state) { return false }
+  const metaData = new ArrayBuffer(16)
+  new Uint32Array(metaData, 0, 3).set([meta.width, meta.height, meta.channels])
+  new Float32Array(metaData, 12, 1)[0] = meta.scale
+  device.queue.writeBuffer(state.meta, 0, metaData)
+  const pipeline = getBlitPipeline(device, scalar, mode)
+  const bindGroup = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: state.meta } },
+      ...buffers.map((buffer, i) => ({ binding: i + 1, resource: { buffer } })),
+    ],
+  })
+  const encoder = device.createCommandEncoder()
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{ view: state.context.getCurrentTexture().createView(), loadOp: "clear", storeOp: "store" }],
+  })
+  pass.setPipeline(pipeline)
+  pass.setBindGroup(0, bindGroup)
+  pass.draw(3)
+  pass.end()
+  device.queue.submit([encoder.finish()])
+  return true
 }
 
 // react-plotly is weirdly packaged - need to access default twice
@@ -1660,6 +1789,18 @@ const TensorCanvas = ({ data }: { data: np.Array }) => {
       canvas.height = height
     }
 
+    const device = getBlitDevice()
+    const scalar = WGSL_SCALAR[data.dtype]
+    if (device && scalar && getCanvasBlitState(device, canvas)) {
+      const channels = data.shape[2] ?? 1
+      const scale = data.dtype === np.int32 || data.dtype === np.uint32 ? 1 / 255 : 1
+      data.ref.gpuBuffer().then((buffer) => {
+        if (canvasRef.current !== canvas) { return }
+        blitToCanvas(device, canvas, scalar, "image", { width, height, channels, scale }, [buffer])
+      }).catch((e) => console.warn("blit failed:", e))
+      return
+    }
+
     toPixels(data, canvas)
   }, [data])
 
@@ -1677,12 +1818,13 @@ const TensorCanvas = ({ data }: { data: np.Array }) => {
 }
 
 // Generate viridis colormap LUT from d3-scale-chromatic (256 entries, RGB 0-1)
-const VIRIDIS_LUT = np.array(
+const VIRIDIS_DATA = Float32Array.from(
   Array.from({ length: 256 }, (_, i) => {
     const color = rgb(interpolateViridis(i / 255))
     return [color.r / 255, color.g / 255, color.b / 255]
-  })
+  }).flat()
 )
+const VIRIDIS_LUT = np.array(VIRIDIS_DATA, { shape: [256, 3] })
 
 // Fast canvas-based heatmap with viridis colormap (GPU-accelerated via LUT)
 const HeatCanvas = ({ data }: { data: np.Array }) => {
@@ -1700,6 +1842,19 @@ const HeatCanvas = ({ data }: { data: np.Array }) => {
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width
       canvas.height = height
+    }
+
+    const device = getBlitDevice()
+    const scalar = WGSL_SCALAR[data.dtype]
+    if (device && scalar && getCanvasBlitState(device, canvas)) {
+      // [min, max] computed on-device; the shader normalizes and colors
+      // through the LUT per pixel – nothing is ever read back
+      const bounds = np.astype(np.stack([np.min(data.ref), np.max(data.ref)]), np.float32)
+      Promise.all([data.ref.gpuBuffer(), bounds.gpuBuffer()]).then(([dataBuffer, boundsBuffer]) => {
+        if (canvasRef.current !== canvas) { return }
+        blitToCanvas(device, canvas, scalar, "heat", { width, height, channels: 1, scale: 1 }, [dataBuffer, boundsBuffer, getViridisGpu(device)])
+      }).catch((e) => console.warn("blit failed:", e))
+      return
     }
 
     // Apply viridis colormap via lookup table: normalize to [0, 1], scale to
