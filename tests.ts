@@ -80,6 +80,18 @@ describe("tensors", () => {
     expect(value("[[1, 2], [3, 4]] ⍴ [4]")).toEqual([1, 2, 3, 4])
     expect(value("0 :: 4")).toEqual([0, 1, 2, 3])
   })
+  test("new jax-js builtins: fft, meshgrid, einsum, topk, pad, repeat, flip, sinc", () => {
+    // fft returns [real; imag] stacked; a period-4 wave peaks at bin 2
+    expect(value("f: fft([0, 1, 0, -1, 0, 1, 0, -1]), √(f_0^2 + f_1^2)")).toEqual([0, 0, 4, 0, 0])
+    // meshgrid and topk return lists of tensors – pull one out with ListGet
+    expect(value("ListGet(meshgrid(0 :: 3, 0 :: 2), 0)")).toEqual([[0, 1, 2], [0, 1, 2]])
+    expect(value("einsum(\"ij,jk->ik\", [[1, 2], [3, 4]], [[5, 6], [7, 8]])")).toEqual([[19, 22], [43, 50]])
+    expect(value("ListGet(topk([3, 1, 4, 1, 5, 9, 2], 3), 0)")).toEqual([9, 5, 4])
+    expect(value("pad([1, 2, 3], 2)")).toEqual([0, 0, 1, 2, 3, 0, 0])
+    expect(value("repeat([1, 2], 3)")).toEqual([1, 1, 1, 2, 2, 2])
+    expect(value("flip([1, 2, 3])")).toEqual([3, 2, 1])
+    expect(value("sinc(0)")).toBe(1)   // sinc(0) = 1 by definition
+  })
   test("stack with axis and broadcasting", () => {
     expect(value("stack(([1, 2], [3, 4]), 1)")).toEqual([[1, 3], [2, 4]])
     expect(value("stack(0 :: 3, 9)")).toEqual([[0, 1, 2], [9, 9, 9]])

@@ -1775,6 +1775,33 @@ const TensorConvolution = (kernel: Value, arr: Value) => {
   return track(np.reshape(out, spatial))
 }
 
+// Real FFT: a real signal in, the positive-frequency half out. Fluent has no
+// complex dtype, so return the two components stacked as [2, bins] – f_0 is the
+// real part, f_1 the imaginary, magnitude is √(f_0^2 + f_1^2).
+const TensorFFT = (a: Value) => {
+  const { real, imag } = np.fft.rfft(borrow(a))
+  return track(np.stack([real, imag]))
+}
+
+// Coordinate grids: meshgrid(0::w, 0::h) → [X, Y], each broadcast to the full grid
+const TensorMeshgrid = (...args: Value[]) => track(np.meshgrid(args.map(borrow)))
+
+const TensorPad = (a: Value, width: Value) => track(np.pad(borrow(a), asNumber(width)))
+
+const TensorRepeat = (a: Value, count: Value) => track(np.repeat(borrow(a), asNumber(count)))
+
+const TensorSinc = unaryOp(np.sinc)
+
+// The k largest values and their indices, as [values, indices]
+const TensorTopK = (a: Value, k: Value) => {
+  const [values, indices] = lax.topK(borrow(a), asNumber(k))
+  return track([values, indices])
+}
+
+// Einstein summation: einsum("ij,jk->ik", a, b) is a matrix multiply
+const TensorEinsum = (subscripts: Value, ...args: Value[]) =>
+  track(np.einsum(String(subscripts), ...args.map(borrow)))
+
 const TensorReshape = (a: Value, b?: Value) => {
   if (b !== undefined) {
     return track(np.reshape(borrow(a), asNumberList(b)))
@@ -2125,6 +2152,13 @@ const DefaultEnvironment: Record<string, Value> = {
   TensorRange,
   TensorLinearSpace,
   TensorConvolution,
+  TensorFFT,
+  TensorMeshgrid,
+  TensorPad,
+  TensorRepeat,
+  TensorSinc,
+  TensorTopK,
+  TensorEinsum,
   TensorReshape,
   TensorLength,
   TensorShape,
@@ -2421,12 +2455,20 @@ watch: TensorWatch,
 ; Tensor ops
 sort: TensorSort,
 roll: TensorRoll,
+flip: TensorReverse,
 mask: TensorMask,
 where: TensorWhere,
 isNaN: TensorIsNaN,
 eye: TensorIdentity,
 dot: TensorDotProduct,
 matmul: TensorMatrixMultiply,
+fft: TensorFFT,
+meshgrid: TensorMeshgrid,
+pad: TensorPad,
+repeat: TensorRepeat,
+sinc: TensorSinc,
+topk: TensorTopK,
+einsum: TensorEinsum,
 
 ; Creation
 rand: TensorRandomUniform,
