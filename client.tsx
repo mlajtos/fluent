@@ -1795,10 +1795,16 @@ const TensorCanvas = ({ data }: { data: np.Array }) => {
     if (device && scalar && getCanvasBlitState(device, canvas)) {
       const channels = data.shape[2] ?? 1
       const scale = data.dtype === np.int32 || data.dtype === np.uint32 ? 1 / 255 : 1
+      // gpuBuffer() consumes a reference; an animated source (⟳) disposes
+      // this frame's tensor before the async read resolves, recycling its
+      // buffer mid-render. Hold a reference until submit, then release it.
+      const keep = data.ref
       data.ref.gpuBuffer().then((buffer) => {
-        if (canvasRef.current !== canvas) { return }
-        blitToCanvas(device, canvas, scalar, "image", { width, height, channels, scale }, [buffer])
+        if (canvasRef.current === canvas) {
+          blitToCanvas(device, canvas, scalar, "image", { width, height, channels, scale }, [buffer])
+        }
       }).catch((e) => console.warn("blit failed:", e))
+        .finally(() => { if (keep.refCount > 0) { keep.dispose() } })
       return
     }
 
@@ -1849,12 +1855,21 @@ const HeatCanvas = ({ data }: { data: np.Array }) => {
     const scalar = WGSL_SCALAR[data.dtype]
     if (device && scalar && getCanvasBlitState(device, canvas)) {
       // [min, max] computed on-device; the shader normalizes and colors
-      // through the LUT per pixel – nothing is ever read back
+      // through the LUT per pixel – nothing is ever read back. Both data and
+      // bounds buffers are held across the async read (gpuBuffer consumes a
+      // reference) so an animated source can't recycle them mid-render.
       const bounds = np.astype(np.stack([np.min(data.ref), np.max(data.ref)]), np.float32)
+      const keepData = data.ref
+      const keepBounds = bounds.ref
       Promise.all([data.ref.gpuBuffer(), bounds.gpuBuffer()]).then(([dataBuffer, boundsBuffer]) => {
-        if (canvasRef.current !== canvas) { return }
-        blitToCanvas(device, canvas, scalar, "heat", { width, height, channels: 1, scale: 1 }, [dataBuffer, boundsBuffer, getViridisGpu(device)])
+        if (canvasRef.current === canvas) {
+          blitToCanvas(device, canvas, scalar, "heat", { width, height, channels: 1, scale: 1 }, [dataBuffer, boundsBuffer, getViridisGpu(device)])
+        }
       }).catch((e) => console.warn("blit failed:", e))
+        .finally(() => {
+          if (keepData.refCount > 0) { keepData.dispose() }
+          if (keepBounds.refCount > 0) { keepBounds.dispose() }
+        })
       return
     }
 
@@ -2395,6 +2410,31 @@ render: { d |
   Text("# 🌀 Mandelbrot"),
   Grid([1, 9])(Text("**depth:**"), Scrubber(depth)),
   render(depth),
+)
+`,
+"game-of-life": `
+; Conway's Game of Life – the whole board steps at once
+; a cell lives with 2 neighbours, is born with 3 (⌈ is max)
+
+n: 120,
+shift: { g, d | roll(roll(g, d_0, 0), d_1, 1) },
+neighbours: { g |
+  shift(g, [1, 0]) + shift(g, [-1, 0]) + shift(g, [0, 1]) + shift(g, [0, -1])
+    + shift(g, [1, 1]) + shift(g, [1, -1]) + shift(g, [-1, 1]) + shift(g, [-1, -1])
+},
+
+board: $(1 × (rand([n, n]) < 0.3)),   ; random soup
+
+step: {
+  c: once(board),
+  a: neighbours(c),
+  board ← ((a = 3) ⌈ ((a = 2) × c)),   ; born on 3, survives on 2
+},
+step ⟳ 100000,   ; run between frames
+
+(
+  Text("# 🦠 Game of Life"),
+  board,
 )
 `,
   "recursion": `
