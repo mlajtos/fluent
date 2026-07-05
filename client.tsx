@@ -2448,23 +2448,23 @@ step ⟳ 100000,
 
 n: 200,
 edges: { x, ax | roll(x, 1, ax) + roll(x, -1, ax) },   ; both neighbours along an axis
-Δ: { x | edges(x, 0) + edges(x, 1) - (4 × x) },         ; the Laplacian
+Δ: { x | edges(x, 0) + edges(x, 1) - 4×x },             ; the Laplacian
 
 ; sprinkle v into a sea of u, then let it self-organise
 u: $(1),
 v: $(0),
-reseed: { s: ((rand([n, n]) < 0.08) × 0.5), u ← (1 - s), v ← s },
+reseed: { s: rand([n, n]) < 0.08 × 0.5, u← 1 - s, v← s },
 
 ; drag feed and kill – the whole zoo of patterns hides in a tiny window
 F: $(0.055),
 K: $(0.062),
 
+; spacing is the grouping: 0.16×Δ(a) binds tight, the + and - terms stay loose
 tick: {
-  a: once(u), b: once(v),
-  f: once(F), k: once(K),
+  a: once(u), b: once(v), f: once(F), k: once(K),
   r: a × b^2,
-  u ← (a + ((0.16 × Δ(a)) - r + (f × (1 - a)))),
-  v ← (b + ((0.08 × Δ(b)) + r - ((f + k) × b))),
+  u← a + 0.16×Δ(a) - r + f - f×a,
+  v← b + 0.08×Δ(b) + r - f×b - k×b,
 },
 
 reseed(),
