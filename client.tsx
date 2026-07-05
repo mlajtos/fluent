@@ -1156,6 +1156,14 @@ function Time(): Signal<np.Array> {
   return FrameSignal(TensorScalarLive(0), () => TensorScalarLive((performance.now() - startTime) / 1000))
 }
 
+// The audio hardware's sample rate (Hz) – needed to turn FFT bins into pitches.
+// Created lazily on first use so a non-audio program never spins up an AudioContext.
+let sampleRateContext: AudioContext | null = null
+function SampleRate(): np.Array {
+  if (!sampleRateContext) { sampleRateContext = new AudioContext() }
+  return TensorScalarLive(sampleRateContext.sampleRate)
+}
+
 
 const LoadSafeTensorFromURL = (url?: string) => {
   if (!url) {
@@ -1932,6 +1940,7 @@ extendEnvironment({
   Camera,
   Microphone,
   MicrophoneSpectrum,
+  SampleRate,
   Time,
 
   Print,
@@ -2516,31 +2525,32 @@ tick ⟳ 100000,
 )
 `,
   "attention": `
-; Scaled dot-product attention – the core of a transformer, built by hand.
-; scores = Q·Kᵀ / √d,  weights = softmax(scores),  out = weights·V.
+; Scaled dot-product attention, built by hand – the core of a transformer.
+; scores = Q·Kᵀ / √d,  weights = softmax(scores).  Drag the temperature knob
+; and watch every token's attention go from uniform to one-hot, live.
 
-n: 24,   ; tokens
-d: 8,    ; embedding dimension
+n: 48,   ; tokens
+d: 16,   ; embedding dimension
 
-; random token embeddings (self-attention, so K = Q)
-Q: randn([n, d]),
-V: randn([n, d]),
+; sinusoidal positional embeddings, so nearby tokens are similar (K = Q)
+pos: 0 :: n,
+k: 0 :: (d ÷ 2),
+freqs: 1 ÷ (10000 ^ (k ÷ (d ÷ 2))),
+angles: pos (⊗ ×) freqs,
+Q: concat((sin(angles), cos(angles)), 1),
 
-; every query dotted with every key, scaled so the softmax stays sharp
+; every query dotted with every key, scaled
 scores: matmul(Q, transpose(Q)) ÷ √(d),
 
-; softmax over the keys – each row of weights sums to 1
-weights: softmax(scores),
-
-; mix the values by how much each token attends to each other
-out: matmul(weights, V),
+; temperature sharpens (or flattens) the softmax – recomputes as you drag
+temp: $(4),
+weights: $({ softmax(scores × temp()) }),
 
 (
   Text("# 🧠 Attention"),
-  Text("**weights** — every token's attention over every token:"),
+  Grid([1, 6])(Text("**temperature**"), Scrubber(temp, 0.5)),
+  Text("who attends to whom:"),
   weights,
-  Text("row sums (all 1):"),
-  Σ(weights, 1),
 )
 `,
   "spectrum": `
@@ -2556,6 +2566,39 @@ spectrum: $({ f: fft(mic()), √((f_0)^2 + (f_1)^2) }),
 (
   Text("# 🎵 Live Spectrum"),
   spectrum,
+)
+`,
+  "pitch-detector": `
+; Pitch detector – FFT the mic, find the loudest note. Allow mic access,
+; then whistle or hum a steady tone and watch the note lock on.
+
+size: 8192,
+sr: SampleRate(),
+mic: Microphone(size),
+names: ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"),
+
+detect: $({
+  f: fft(mic()),
+  mag: √(f_0^2 + f_1^2),
+  bins: 0 :: #(mag),
+  freqs: bins × sr ÷ size,
+  ; only the musical range, so mic rumble and hiss don't win
+  band: mag × (freqs > 55) × (freqs < 2000),
+  ; the loudest bin – kept as a float (argmax would be int)
+  peak: Σ(bins × (band = max(band))),
+  freq: peak × sr ÷ size,
+  midi: round(69 + 12×log2(freq ÷ 440)),
+  (
+    ListGet(names, midi % 12),
+    floor(midi ÷ 12) - 1,
+    round(freq),
+  )
+}),
+
+(
+  Text("# 🎸 Pitch Detector"),
+  Text("**note · octave · Hz**"),
+  detect,
 )
 `,
   "recursion": `
