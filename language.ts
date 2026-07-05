@@ -1932,6 +1932,27 @@ const StringLength = (a: string) => track(np.array(a.length))
 const Null = null
 
 
+// MARK: Built-in docs
+// Authored on the canonical functions themselves, so every prelude alias that
+// resolves to one (⌈ → TensorMaximum, once → SignalOnce, …) inherits the same
+// card: the doc lives on the value, not the name. Editor hover and completion
+// read it back with getMeta. Signatures use the ergonomic notation people type.
+doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $(4), once(x) + 1  →  5")
+doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2")
+doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / sgd / adagrad.", "θ: ~([0, 0])")
+doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w  →  [8]")
+doc(TensorGradient, "∇(f)", "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", "∇({ x | x^2 })(3)  →  6")
+doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3])  →  6")
+doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2]  →  [4, 5]")
+doc(TensorRange, "start :: stop", "Integer range from start (inclusive) to stop (exclusive).", "0 :: 5  →  [0, 1, 2, 3, 4]")
+doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2]  →  [[1, 2], [3, 4]]")
+doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 :: 3) (⊗ ×) (0 :: 3)  →  [[0,0,0],[0,1,2],[0,2,4]]")
+doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1)  →  [4, 1, 2, 3]")
+doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2])  →  [1, 2, 3]")
+doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1)  →  [5, 6]")
+doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0)  →  [1, 0, 3]")
+
+
 // MARK: Environment
 
 const DefaultEnvironment: Record<string, Value> = {
@@ -2073,7 +2094,19 @@ const DefaultEnvironment: Record<string, Value> = {
 
 // The IDE (or tests) extends the environment with UI components, live
 // sources and printers before creating scopes.
+//
+// These come from client.tsx's top-level call, which Bun's HMR does NOT re-run
+// when only language.ts is hot-swapped. Without a durable home the fresh module
+// instance would have no Text/Slider/etc, so identifiers like `Text` resolve to
+// an unbound Symbol.for("Text") ('Symbol(Text) is not a function'). Stashing the
+// extensions on globalThis lets a re-evaluated module re-apply them, while the
+// built-ins above stay fresh each eval so editing them still hot-reloads.
+const persistedExtensions: Record<string, Value> =
+  ((globalThis as Record<string, unknown>).__fluentEnvExtensions ??= {}) as Record<string, Value>
+Object.assign(DefaultEnvironment, persistedExtensions)
+
 const extendEnvironment = (extra: Record<string, Value>) => {
+  Object.assign(persistedExtensions, extra)
   Object.assign(DefaultEnvironment, extra)
 }
 
@@ -2107,15 +2140,15 @@ length: TensorLength,
 len: TensorLength,
 (_): TensorGather,
 gather: TensorGather,
-(⍴): doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2]  →  [[1, 2], [3, 4]]"),
+(⍴): TensorReshape,
 reshape: TensorReshape,
-(::): doc(TensorRange, "start :: stop", "Integer range from start (inclusive) to stop (exclusive).", "0 :: 5  →  [0, 1, 2, 3, 4]"),
+(::): TensorRange,
 range: TensorRange,
 shape: TensorShape,
 slice: TensorSlice,
 transpose: TensorTranspose,
 reverse: TensorReverse,
-(⊗): doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 :: 3) (⊗ ×) (0 :: 3)  →  [[0,0,0],[0,1,2],[0,2,4]]"),
+(⊗): TensorOuter,
 outer: TensorOuter,
 
 ; Shape manipulation
@@ -2270,9 +2303,9 @@ equal: TensorEqual,
 notEqual: TensorNotEqual,
 
 ; Reductions
-(∇): doc(TensorGradient, "∇(f)", "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", "∇({ x | x^2 })(3)  →  6"),
+(∇): TensorGradient,
 gradient: TensorGradient,
-(Σ): doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3])  →  6"),
+(Σ): TensorSum,
 sum: TensorSum,
 (Π): TensorProduct,
 prod: TensorProduct,
@@ -2280,21 +2313,21 @@ prod: TensorProduct,
 mean: TensorMean,
 
 ; Min/max
-(⌈): doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2]  →  [4, 5]"),
+(⌈): TensorMaximum,
 (⌊): TensorMinimum,
 max: FunctionCascade((TensorMaximum, TensorMax)),
 min: FunctionCascade((TensorMinimum, TensorMin)),
 
 ; Variables
-(~): doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / sgd / adagrad.", "θ: ~([0, 0])"),
+(~): TensorVariable,
 var: TensorVariable,
-watch: doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w  →  [8]"),
+watch: TensorWatch,
 
 ; Tensor ops
-sort: doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2])  →  [1, 2, 3]"),
-roll: doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1)  →  [4, 1, 2, 3]"),
-mask: doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1)  →  [5, 6]"),
-where: doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0)  →  [1, 0, 3]"),
+sort: TensorSort,
+roll: TensorRoll,
+mask: TensorMask,
+where: TensorWhere,
 isNaN: TensorIsNaN,
 eye: TensorIdentity,
 dot: TensorDotProduct,
@@ -2316,9 +2349,10 @@ sgd: TensorOptimizationSgd,
 adagrad: TensorOptimizationAdaGrad,
 
 ; Misc
-($): doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2"),
+($): Reactive,
+; ← is defined here in the prelude, so its doc lives here too
 (←): doc(FunctionNoAutoLift({ s, v | s(v) }), "signal ← value", "Write a value into a signal – same as signal(value), but reads left-to-right.", "x: $(1), x ← 9, x()  →  9"),
-once: doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $(4), once(x) + 1  →  5"),
+once: SignalOnce,
 `
 
 // Parse the prelude once – createScope runs on every evaluation (each keystroke)
