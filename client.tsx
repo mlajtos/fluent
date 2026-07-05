@@ -2445,29 +2445,36 @@ step ⟳ 100000,
   "reaction-diffusion": `
 ; Gray–Scott reaction–diffusion – two chemicals paint Turing patterns.
 ; v eats u and reproduces (u × v²); both diffuse; explicit Euler.
-; Whitespace is precedence: each 0.16 × (…) and F × (…) is parenthesised –
-; unparenthesised it would fold left-to-right into nonsense.
 
 n: 200,
-lap: { x | roll(x, 1, 0) + roll(x, -1, 0) + roll(x, 1, 1) + roll(x, -1, 1) - (4 × x) },
+edges: { x, ax | roll(x, 1, ax) + roll(x, -1, ax) },   ; both neighbours along an axis
+Δ: { x | edges(x, 0) + edges(x, 1) - (4 × x) },         ; the Laplacian
 
 ; sprinkle v into a sea of u, then let it self-organise
-seed: ((rand([n, n]) < 0.08) × 0.5),
-u: $(1 - seed),
-v: $(seed),
-F: 0.0545, K: 0.062,   ; feed / kill – coral; try 0.037 / 0.06 for mitosis
+u: $(1),
+v: $(0),
+reseed: { s: ((rand([n, n]) < 0.08) × 0.5), u ← (1 - s), v ← s },
+
+; drag feed and kill – the whole zoo of patterns hides in a tiny window
+F: $(0.055),
+K: $(0.062),
 
 tick: {
   a: once(u), b: once(v),
+  f: once(F), k: once(K),
   r: a × b^2,
-  u ← (a + ((0.16 × lap(a)) - r + (F × (1 - a)))),
-  v ← (b + ((0.08 × lap(b)) + r - ((F + K) × b))),
+  u ← (a + ((0.16 × Δ(a)) - r + (f × (1 - a)))),
+  v ← (b + ((0.08 × Δ(b)) + r - ((f + k) × b))),
 },
 
+reseed(),
 tick ⟳ 100000,
 
 (
   Text("# 🌸 Reaction–Diffusion"),
+  Grid([1, 6])(Text("**feed**"), Scrubber(F, 0.002)),
+  Grid([1, 6])(Text("**kill**"), Scrubber(K, 0.002)),
+  Button("reseed", reseed),
   v,
 )
 `,
