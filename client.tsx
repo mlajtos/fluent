@@ -2442,6 +2442,42 @@ step ⟳ 100000,
   board,
 )
 `,
+  "reaction-diffusion": `
+; Gray–Scott reaction–diffusion – two chemicals paint Turing patterns
+; v feeds on u and reproduces (u × v²); both diffuse; explicit Euler.
+; Whitespace is precedence, so every Du × (…) and F × (…) is parenthesised –
+; unparenthesised, 'Du × lap + F × feed' would fold left-to-right into nonsense.
+
+n: 200,
+
+; 5-point Laplacian: the four neighbours, minus 4× the cell
+lap: { x | (roll(x, 1, 0) + roll(x, -1, 0) + roll(x, 1, 1) + roll(x, -1, 1) - (4 × x)) },
+
+; a square of half-and-half dropped into a sea of pure u seeds the bloom
+gx: (0 :: n) ⍴ [n, 1] tile [1, n],
+gy: (0 :: n) ⍴ [1, n] tile [n, 1],
+seed: ((abs(gx - (n ÷ 2)) < 10) × (abs(gy - (n ÷ 2)) < 10)),
+
+u: $(1 - (seed × 0.5)),
+v: $(seed × 0.25),
+
+Du: 0.16, Dv: 0.08, dt: 1,
+F: 0.0545, K: 0.062,   ; feed / kill – coral; try 0.037 / 0.06 for mitosis
+
+tick: {
+  uu: once(u), vv: once(v),
+  react: uu × vv^2,
+  u ← (uu + (dt × ((Du × lap(uu)) - react + (F × (1 - uu))))),
+  v ← (vv + (dt × ((Dv × lap(vv)) + react - ((F + K) × vv)))),
+},
+
+tick ⟳ 100000,
+
+(
+  Text("# 🌸 Reaction–Diffusion"),
+  v,
+)
+`,
   "recursion": `
 ; Recursive functions: factorial and Fibonacci
 fact: { n | 
