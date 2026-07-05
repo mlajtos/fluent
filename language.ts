@@ -1373,6 +1373,17 @@ const Describe = (target: Value, doc?: string): Value => {
 }
 setMeta(Describe, { noAutoLift: true })
 
+// Attach editor docs to a built-in and return it – authored inline at the
+// binding in the prelude, so a name's docs live next to its definition.
+// Aliases share the function object, so documenting one covers them all.
+const doc = (target: Value, signature: Value, description: Value, example: Value): Value => {
+  if (typeof target === 'function') {
+    setMeta(target as Function, { signature: String(signature), doc: String(description), example: String(example) })
+  }
+  return target
+}
+setMeta(doc, { noAutoLift: true })
+
 const List = (...args: unknown[]) => {
   return args
 }
@@ -1939,6 +1950,7 @@ const DefaultEnvironment: Record<string, Value> = {
   FunctionNoAutoLift,
   FunctionGuard,
   Describe,
+  doc,
 
   // Signals
   Reactive,
@@ -2095,15 +2107,15 @@ length: TensorLength,
 len: TensorLength,
 (_): TensorGather,
 gather: TensorGather,
-(⍴): TensorReshape,
+(⍴): doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2]  →  [[1, 2], [3, 4]]"),
 reshape: TensorReshape,
-(::): TensorRange,
+(::): doc(TensorRange, "start :: stop", "Integer range from start (inclusive) to stop (exclusive).", "0 :: 5  →  [0, 1, 2, 3, 4]"),
 range: TensorRange,
 shape: TensorShape,
 slice: TensorSlice,
 transpose: TensorTranspose,
 reverse: TensorReverse,
-(⊗): TensorOuter,
+(⊗): doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 :: 3) (⊗ ×) (0 :: 3)  →  [[0,0,0],[0,1,2],[0,2,4]]"),
 outer: TensorOuter,
 
 ; Shape manipulation
@@ -2258,9 +2270,9 @@ equal: TensorEqual,
 notEqual: TensorNotEqual,
 
 ; Reductions
-(∇): TensorGradient,
+(∇): doc(TensorGradient, "∇(f)", "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", "∇({ x | x^2 })(3)  →  6"),
 gradient: TensorGradient,
-(Σ): TensorSum,
+(Σ): doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3])  →  6"),
 sum: TensorSum,
 (Π): TensorProduct,
 prod: TensorProduct,
@@ -2268,21 +2280,21 @@ prod: TensorProduct,
 mean: TensorMean,
 
 ; Min/max
-(⌈): TensorMaximum,
+(⌈): doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2]  →  [4, 5]"),
 (⌊): TensorMinimum,
 max: FunctionCascade((TensorMaximum, TensorMax)),
 min: FunctionCascade((TensorMinimum, TensorMin)),
 
 ; Variables
-(~): TensorVariable,
+(~): doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / sgd / adagrad.", "θ: ~([0, 0])"),
 var: TensorVariable,
-watch: TensorWatch,
+watch: doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w  →  [8]"),
 
 ; Tensor ops
-sort: TensorSort,
-roll: TensorRoll,
-mask: TensorMask,
-where: TensorWhere,
+sort: doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2])  →  [1, 2, 3]"),
+roll: doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1)  →  [4, 1, 2, 3]"),
+mask: doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1)  →  [5, 6]"),
+where: doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0)  →  [1, 0, 3]"),
 isNaN: TensorIsNaN,
 eye: TensorIdentity,
 dot: TensorDotProduct,
@@ -2304,43 +2316,10 @@ sgd: TensorOptimizationSgd,
 adagrad: TensorOptimizationAdaGrad,
 
 ; Misc
-($): Reactive,
-(←): FunctionNoAutoLift({ s, v | s(v) }),
-once: SignalOnce,
+($): doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2"),
+(←): doc(FunctionNoAutoLift({ s, v | s(v) }), "signal ← value", "Write a value into a signal – same as signal(value), but reads left-to-right.", "x: $(1), x ← 9, x()  →  9"),
+once: doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $(4), once(x) + 1  →  5"),
 `
-
-// MARK: Built-in docs
-// Documentation for the prelude, authored here so it ships with the language:
-// createScope attaches each entry as function metadata (so Describe(once)
-// answers at runtime), and the IDE reads the same table for hover + completion.
-// One concept may be reachable by several tokens (glyph and word); every token
-// gets its own card. Aliases across concepts (⌈ vs max) stay separate.
-type BuiltinDoc = { signature: string, doc: string, example: string }
-
-const BUILTIN_DOC_ENTRIES: (BuiltinDoc & { names: string[] })[] = [
-  { names: ["$"], signature: "$(value)", doc: "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", example: "x: $(0.5), x ^ 2" },
-  { names: ["once"], signature: "once(signal)", doc: "Read a signal's current value without subscribing to it.", example: "x: $(4), once(x) + 1  →  5" },
-  { names: ["←"], signature: "signal ← value", doc: "Write a value into a signal – same as signal(value), but reads left-to-right.", example: "x: $(1), x ← 9, x()  →  9" },
-  { names: ["watch"], signature: "watch(variable)", doc: "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", example: "θ: ~([2]), w: watch(θ), θ := [8], w  →  [8]" },
-  { names: ["~", "var"], signature: "~(init)", doc: "Make a trainable variable. Assign with :=; optimise with adam / sgd / adagrad.", example: "θ: ~([0, 0])" },
-  { names: ["∇", "gradient"], signature: "∇(f)", doc: "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", example: "∇({ x | x^2 })(3)  →  6" },
-  { names: ["::", "range"], signature: "start :: stop", doc: "Integer range from start (inclusive) to stop (exclusive).", example: "0 :: 5  →  [0, 1, 2, 3, 4]" },
-  { names: ["⍴", "reshape"], signature: "x ⍴ shape", doc: "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", example: "[1, 2, 3, 4] ⍴ [2, 2]  →  [[1, 2], [3, 4]]" },
-  { names: ["roll"], signature: "roll(x, shift, axis?)", doc: "Shift elements along an axis, wrapping around the edge (a torus).", example: "roll([1, 2, 3, 4], 1)  →  [4, 1, 2, 3]" },
-  { names: ["Σ", "sum"], signature: "Σ(x, axis?)", doc: "Sum of the elements, over one axis or the whole tensor.", example: "Σ([1, 2, 3])  →  6" },
-  { names: ["⊗", "outer"], signature: "a (⊗ f) b", doc: "Table: apply f between every cell of a and every cell of b.", example: "(0 :: 3) (⊗ ×) (0 :: 3)  →  [[0,0,0],[0,1,2],[0,2,4]]" },
-  { names: ["⌈"], signature: "x ⌈ y", doc: "Element-wise maximum of two tensors.", example: "[1, 5] ⌈ [4, 2]  →  [4, 5]" },
-  { names: ["sort"], signature: "sort(x)", doc: "Sort a vector into ascending order.", example: "sort([3, 1, 2])  →  [1, 2, 3]" },
-  { names: ["mask"], signature: "mask(x, keep)", doc: "Keep the elements of x where the boolean mask is true, dropping the rest.", example: "mask([5, 0, 6], [5, 0, 6] > 1)  →  [5, 6]" },
-  { names: ["where"], signature: "where(cond, a, b)", doc: "Element-wise choice: take a where cond is true, otherwise b.", example: "where([1, 0, 1], [1, 2, 3], 0)  →  [1, 0, 3]" },
-]
-
-const BUILTIN_DOCS: Record<string, BuiltinDoc> = {}
-for (const entry of BUILTIN_DOC_ENTRIES) {
-  for (const name of entry.names) {
-    BUILTIN_DOCS[name] = { signature: entry.signature, doc: entry.doc, example: entry.example }
-  }
-}
 
 // Parse the prelude once – createScope runs on every evaluation (each keystroke)
 const PRELUDE_TREE = CodeParse(PRELUDE)
@@ -2348,14 +2327,6 @@ const PRELUDE_TREE = CodeParse(PRELUDE)
 const createScope = () => {
   const scope = Object.create(DefaultEnvironment)
   evaluateSyntaxTreeNode(PRELUDE_TREE, scope)
-  // attach docs as metadata so Describe(⌈) answers at runtime (idempotent)
-  for (const name in BUILTIN_DOCS) {
-    const value = scope[name]
-    if (typeof value === "function") {
-      const { doc, signature, example } = BUILTIN_DOCS[name]!
-      setMeta(value, { doc, signature, example })
-    }
-  }
   return scope
 }
 
@@ -2372,8 +2343,6 @@ export {
   arena,
   TensorScalar,
   TensorScalarLive,
-  // docs
-  BUILTIN_DOCS,
   // parse
   CodeParse,
   getParseErrors,
@@ -2416,4 +2385,4 @@ export {
   SignalOnce,
 }
 
-export type { Value, CurrentScope, SyntaxTreeNode, Origin, ParseError, FunctionMeta, BuiltinDoc }
+export type { Value, CurrentScope, SyntaxTreeNode, Origin, ParseError, FunctionMeta }

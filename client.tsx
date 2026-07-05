@@ -194,8 +194,8 @@ import {
   getAsSyncList, getMeta, setMeta, setOrigin, getOrigin,
   SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalOnce,
   identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
-  np, FluentVariable, isTensor, TensorScalarLive, BUILTIN_DOCS,
-  type Value, type CurrentScope, type SyntaxTreeNode, type Origin,
+  np, FluentVariable, isTensor, TensorScalarLive,
+  type Value, type CurrentScope, type SyntaxTreeNode, type Origin, type FunctionMeta,
 } from "./language"
 import { useSignals, useSignal, useComputed } from '@preact/signals-react/runtime';
 import { ErrorBoundary } from 'react-error-boundary';
@@ -2779,9 +2779,19 @@ function fluentTokenAt(model: editor.ITextModel, position: monaco.Position): str
   return line.slice(start, end + 1)
 }
 
+// Docs live on the built-ins' metadata (attached inline in the prelude via
+// doc()); resolve a token through a scope and read them back.
+const docScope = createScope()
+const metaFor = (token: string | null): FunctionMeta | null => {
+  const value = token ? docScope[token] : undefined
+  const meta = typeof value === "function" ? getMeta(value) : {}
+  return meta.doc ? meta : null
+}
+
 // A hover / completion card: signature, one-liner, worked example.
-const docCard = (d: { signature: string, doc: string, example: string }): string =>
-  [`\`${d.signature}\``, d.doc, "```fluent\n" + d.example + "\n```"].join("\n\n")
+const docCard = (m: FunctionMeta): string =>
+  [m.signature && `\`${m.signature}\``, m.doc, m.example && "```fluent\n" + m.example + "\n```"]
+    .filter(Boolean).join("\n\n")
 
 const editorBeforeMount: BeforeMount = (monaco) => {
   EditorInstance = monaco.editor
@@ -2790,9 +2800,8 @@ const editorBeforeMount: BeforeMount = (monaco) => {
 
   monaco.languages.registerHoverProvider("fluent", {
     provideHover(model, position) {
-      const token = fluentTokenAt(model, position)
-      const d = token ? BUILTIN_DOCS[token] : undefined
-      return d ? { contents: [{ value: docCard(d) }] } : null
+      const meta = metaFor(fluentTokenAt(model, position))
+      return meta ? { contents: [{ value: docCard(meta) }] } : null
     },
   });
 
@@ -3046,24 +3055,24 @@ const editorBeforeMount: BeforeMount = (monaco) => {
         filterText: item.filterText,
       }));
 
-      // Collect all keys from scope including parent scopes (prototype chain)
+      // Every name in scope – the canonical binding (SignalOnce) and its
+      // prelude alias (once) both list. The doc lives on the value, so aliases
+      // share it: both cards read the same because they resolve to one object.
       const allKeys: string[] = [];
-      for (const key in completionScope) {
-        allKeys.push(key);
-      }
+      for (const key in completionScope) { allKeys.push(key); }
 
       return ({
         suggestions: [
           ...symbolSuggestionItems,
           ...allKeys.map((key) => {
           const value = completionScope[key];
-          const doc = BUILTIN_DOCS[key];
+          const meta = typeof value === 'function' ? getMeta(value) : {};
           return ({
             label: key,
             kind: monaco.languages.CompletionItemKind.Function,
             insertText: key,
-            documentation: doc ? { value: docCard(doc) } : `Function: ${key}`,
-            detail: doc ? doc.signature : typeof value === 'function' ? 'function' : String(value).slice(0, 50),
+            documentation: meta.doc ? { value: docCard(meta) } : `Function: ${key}`,
+            detail: meta.signature ?? (typeof value === 'function' ? 'function' : String(value).slice(0, 50)),
             range,
             filterText: key,
           })
