@@ -1721,7 +1721,9 @@ const TensorRange = (a: Value, b?: Value) => {
 
 const TensorLinearSpace = (range: Value, steps: Value) => {
   const [start, stop] = getAsSyncList(range) as [number, number]
-  return track(np.linspace(start, stop, asNumber(steps)))
+  // a count has to be a whole number; a live slider naturally drives it
+  // through fractional values (resolution × 90 + 10), so round rather than reject
+  return track(np.linspace(start, stop, Math.max(0, Math.round(asNumber(steps)))))
 }
 
 const TensorReshape = (a: Value, b?: Value) => {

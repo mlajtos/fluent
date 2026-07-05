@@ -70,6 +70,12 @@ describe("tensors", () => {
     expect(value("a: [10, 20, 30], a_(-1)")).toBe(30)
     expect(value("#([1, 2, 3])")).toBe(3)
   })
+  test("linspace rounds a fractional point count", () => {
+    // a live slider drives the count through fractional values – round, don't reject
+    expect(value("#(linspace([0, 1], 5))")).toBe(5)
+    expect(value("#(linspace([0, 1], 4.6))")).toBe(5)
+    expect(value("linspace([0, 10], 3)")).toEqual([0, 5, 10])
+  })
   test("reshape and range", () => {
     expect(value("[[1, 2], [3, 4]] ⍴ [4]")).toEqual([1, 2, 3, 4])
     expect(value("0 :: 4")).toEqual([0, 1, 2, 3])
