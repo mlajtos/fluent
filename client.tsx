@@ -2515,6 +2515,49 @@ tick ⟳ 100000,
   world,
 )
 `,
+  "attention": `
+; Scaled dot-product attention – the core of a transformer, built by hand.
+; scores = Q·Kᵀ / √d,  weights = softmax(scores),  out = weights·V.
+
+n: 24,   ; tokens
+d: 8,    ; embedding dimension
+
+; random token embeddings (self-attention, so K = Q)
+Q: randn([n, d]),
+V: randn([n, d]),
+
+; every query dotted with every key, scaled so the softmax stays sharp
+scores: matmul(Q, transpose(Q)) ÷ √(d),
+
+; softmax over the keys – each row of weights sums to 1
+weights: softmax(scores),
+
+; mix the values by how much each token attends to each other
+out: matmul(weights, V),
+
+(
+  Text("# 🧠 Attention"),
+  Text("**weights** — every token's attention over every token:"),
+  weights,
+  Text("row sums (all 1):"),
+  Σ(weights, 1),
+)
+`,
+  "spectrum": `
+; Live spectrum analyser – FFT the microphone waveform, plot the magnitude.
+; Allow mic access, then whistle or play a tone and watch the peak move.
+
+mic: Microphone(512),
+
+; every frame: take the FFT of the waveform, then its magnitude √(re² + im²).
+; fft returns [real; imag] stacked, so f_0 is real and f_1 is imaginary.
+spectrum: $({ f: fft(mic()), √((f_0)^2 + (f_1)^2) }),
+
+(
+  Text("# 🎵 Live Spectrum"),
+  spectrum,
+)
+`,
   "recursion": `
 ; Recursive functions: factorial and Fibonacci
 fact: { n | 
