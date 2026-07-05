@@ -2413,24 +2413,29 @@ render: { d |
 )
 `,
 "game-of-life": `
-; Conway's Game of Life – the whole board steps at once
-; a cell lives with 2 neighbours, is born with 3 (⌈ is max)
+; Conway's Game of Life
 
-n: 120,
-shift: { g, d | roll(roll(g, d_0, 0), d_1, 1) },
-neighbours: { g |
-  shift(g, [1, 0]) + shift(g, [-1, 0]) + shift(g, [0, 1]) + shift(g, [0, -1])
-    + shift(g, [1, 1]) + shift(g, [1, -1]) + shift(g, [-1, 1]) + shift(g, [-1, -1])
-},
+; grid size
+n: 256,
 
-board: $(1 × (rand([n, n]) < 0.3)),   ; random soup
+; a cell plus its two neighbours along one axis
+box: { g, ax | roll(g, 1, ax) + g + roll(g, -1, ax) },
+
+; the 3×3 sum, minus the cell = its 8 neighbours
+neighbours: { g | box(box(g, 0), 1) - g },
+
+; random soup
+board: $(rand([n, n]) < 0.3),
 
 step: {
   c: once(board),
   a: neighbours(c),
-  board ← ((a = 3) ⌈ ((a = 2) × c)),   ; born on 3, survives on 2
+
+  ; alive next if 3 neighbours, or 2 and already alive
+  board ← ((a = 3) ⌈ ((a = 2) × c)),
 },
-step ⟳ 100000,   ; run between frames
+
+step ⟳ 100000,
 
 (
   Text("# 🦠 Game of Life"),
