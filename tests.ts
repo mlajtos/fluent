@@ -107,8 +107,11 @@ describe("tensors", () => {
       [[13, 24], [33, 44]],
     ])
   })
-  test("prelude conv via windows and ⊗", () => {
-    expect(value("conv([1, 2, 1], 0 :: 6)")).toEqual([4, 8, 12, 16])
+  test("conv is rank-polymorphic and keeps input size (SAME)", () => {
+    // the kernel's rank sets the conv's rank
+    expect(value("conv([1, 2, 1], 0 :: 6)")).toEqual([1, 4, 8, 12, 16, 14])
+    expect(value("conv([[0, 1, 0], [1, -4, 1], [0, 1, 0]], [[0, 0, 0], [0, 1, 0], [0, 0, 0]])"))
+      .toEqual([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
   })
 })
 

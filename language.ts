@@ -1757,6 +1757,24 @@ const TensorLinearSpace = (range: Value, steps: Value) => {
   return track(np.linspace(start, stop, Math.max(0, Math.round(asNumber(steps)))))
 }
 
+// Rank-polymorphic convolution: the kernel's rank sets the conv's rank, so the
+// same conv slides a 1-D kernel over a vector or a 2-D kernel over an image.
+// Backed by lax.conv – a singleton batch/channel wraps the field (NCHW), zero
+// padded (SAME) so the output keeps the input's shape.
+const TensorConvolution = (kernel: Value, arr: Value) => {
+  const k = borrow(kernel) as np.Array
+  const a = borrow(arr) as np.Array
+  const ks = k.shape
+  const spatial = a.shape
+  const out = lax.conv(
+    np.reshape(a, [1, 1, ...spatial]),
+    np.reshape(k, [1, 1, ...ks]),
+    spatial.map(() => 1),
+    "SAME",
+  )
+  return track(np.reshape(out, spatial))
+}
+
 const TensorReshape = (a: Value, b?: Value) => {
   if (b !== undefined) {
     return track(np.reshape(borrow(a), asNumberList(b)))
@@ -2106,6 +2124,7 @@ const DefaultEnvironment: Record<string, Value> = {
   TensorTranspose,
   TensorRange,
   TensorLinearSpace,
+  TensorConvolution,
   TensorReshape,
   TensorLength,
   TensorShape,
@@ -2237,7 +2256,7 @@ chunks: { w, arr |
 },
 
 stencil: { w, f, arr | unstack(windows(w, arr)) ListMap f . stack },
-conv: { kernel, arr | stencil(#(kernel), { w | Σ(w × kernel) }, arr) },
+conv: TensorConvolution,   ; nD convolution – a 1D kernel over a vector, a 2D kernel over an image
 
 ; List operations
 ListGather: { a, b |
