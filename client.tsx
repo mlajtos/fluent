@@ -194,7 +194,7 @@ import {
   getAsSyncList, getMeta, setMeta, setOrigin, getOrigin,
   SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalOnce,
   identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
-  np, FluentVariable, isTensor, TensorScalarLive,
+  np, FluentVariable, isTensor, TensorScalarLive, BUILTIN_DOCS,
   type Value, type CurrentScope, type SyntaxTreeNode, type Origin,
 } from "./language"
 import { useSignals, useSignal, useComputed } from '@preact/signals-react/runtime';
@@ -2756,10 +2756,45 @@ async function getEditor() {
   return EditorInstance;
 }
 
+// The token under the cursor: a letter-identifier (Greek included) via Monaco's
+// word detection, or an operator run (::, ⌈, ⊗, ∇, ←) expanded by hand – the
+// language's word pattern only covers letters, so glyphs need this.
+const RESERVED_HOVER = new Set(["|", ",", "{", "}", "(", ")", "[", "]", ";", '"', "`"])
+const isOperatorChar = (ch: string | undefined): ch is string =>
+  !!ch && !/\s/.test(ch) && !/[\p{L}\p{N}]/u.test(ch) && !RESERVED_HOVER.has(ch)
+
+const isIdentChar = (ch: string | undefined): ch is string => !!ch && /[\p{L}\p{N}\-]/u.test(ch)
+
+function fluentTokenAt(model: editor.ITextModel, position: monaco.Position): string | null {
+  const line = model.getLineContent(position.lineNumber)
+  const classify = (ch: string | undefined) =>
+    isIdentChar(ch) ? isIdentChar : isOperatorChar(ch) ? isOperatorChar : null
+  let i = position.column - 1                        // char at/after the cursor (0-indexed)
+  let same = classify(line[i])
+  if (!same) { i -= 1; same = classify(line[i]) }    // cursor may sit just past the token
+  if (!same) { return null }
+  let start = i, end = i
+  while (start > 0 && same(line[start - 1])) { start-- }
+  while (end < line.length - 1 && same(line[end + 1])) { end++ }
+  return line.slice(start, end + 1)
+}
+
+// A hover / completion card: signature, one-liner, worked example.
+const docCard = (d: { signature: string, doc: string, example: string }): string =>
+  [`\`${d.signature}\``, d.doc, "```fluent\n" + d.example + "\n```"].join("\n\n")
+
 const editorBeforeMount: BeforeMount = (monaco) => {
   EditorInstance = monaco.editor
 
   monaco.languages.register({ id: "fluent" });
+
+  monaco.languages.registerHoverProvider("fluent", {
+    provideHover(model, position) {
+      const token = fluentTokenAt(model, position)
+      const d = token ? BUILTIN_DOCS[token] : undefined
+      return d ? { contents: [{ value: docCard(d) }] } : null
+    },
+  });
 
   monaco.languages.setMonarchTokensProvider("fluent", {
     defaultToken: "",
@@ -3022,12 +3057,13 @@ const editorBeforeMount: BeforeMount = (monaco) => {
           ...symbolSuggestionItems,
           ...allKeys.map((key) => {
           const value = completionScope[key];
+          const doc = BUILTIN_DOCS[key];
           return ({
             label: key,
             kind: monaco.languages.CompletionItemKind.Function,
             insertText: key,
-            documentation: `Function: ${key}`,
-            detail: typeof value === 'function' ? 'function' : String(value).slice(0, 50),
+            documentation: doc ? { value: docCard(doc) } : `Function: ${key}`,
+            detail: doc ? doc.signature : typeof value === 'function' ? 'function' : String(value).slice(0, 50),
             range,
             filterText: key,
           })

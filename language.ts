@@ -441,6 +441,8 @@ type CurrentScope = Record<string, Value>
 // Unified metadata map on function objects
 interface FunctionMeta {
   doc?: string
+  signature?: string
+  example?: string
   noAutoLift?: boolean
   quotedArgs?: number[]
 }
@@ -2307,12 +2309,53 @@ adagrad: TensorOptimizationAdaGrad,
 once: SignalOnce,
 `
 
+// MARK: Built-in docs
+// Documentation for the prelude, authored here so it ships with the language:
+// createScope attaches each entry as function metadata (so Describe(once)
+// answers at runtime), and the IDE reads the same table for hover + completion.
+// One concept may be reachable by several tokens (glyph and word); every token
+// gets its own card. Aliases across concepts (⌈ vs max) stay separate.
+type BuiltinDoc = { signature: string, doc: string, example: string }
+
+const BUILTIN_DOC_ENTRIES: (BuiltinDoc & { names: string[] })[] = [
+  { names: ["$"], signature: "$(value)", doc: "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", example: "x: $(0.5), x ^ 2" },
+  { names: ["once"], signature: "once(signal)", doc: "Read a signal's current value without subscribing to it.", example: "x: $(4), once(x) + 1  →  5" },
+  { names: ["←"], signature: "signal ← value", doc: "Write a value into a signal – same as signal(value), but reads left-to-right.", example: "x: $(1), x ← 9, x()  →  9" },
+  { names: ["watch"], signature: "watch(variable)", doc: "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", example: "θ: ~([2]), w: watch(θ), θ := [8], w  →  [8]" },
+  { names: ["~", "var"], signature: "~(init)", doc: "Make a trainable variable. Assign with :=; optimise with adam / sgd / adagrad.", example: "θ: ~([0, 0])" },
+  { names: ["∇", "gradient"], signature: "∇(f)", doc: "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", example: "∇({ x | x^2 })(3)  →  6" },
+  { names: ["::", "range"], signature: "start :: stop", doc: "Integer range from start (inclusive) to stop (exclusive).", example: "0 :: 5  →  [0, 1, 2, 3, 4]" },
+  { names: ["⍴", "reshape"], signature: "x ⍴ shape", doc: "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", example: "[1, 2, 3, 4] ⍴ [2, 2]  →  [[1, 2], [3, 4]]" },
+  { names: ["roll"], signature: "roll(x, shift, axis?)", doc: "Shift elements along an axis, wrapping around the edge (a torus).", example: "roll([1, 2, 3, 4], 1)  →  [4, 1, 2, 3]" },
+  { names: ["Σ", "sum"], signature: "Σ(x, axis?)", doc: "Sum of the elements, over one axis or the whole tensor.", example: "Σ([1, 2, 3])  →  6" },
+  { names: ["⊗", "outer"], signature: "a (⊗ f) b", doc: "Table: apply f between every cell of a and every cell of b.", example: "(0 :: 3) (⊗ ×) (0 :: 3)  →  [[0,0,0],[0,1,2],[0,2,4]]" },
+  { names: ["⌈"], signature: "x ⌈ y", doc: "Element-wise maximum of two tensors.", example: "[1, 5] ⌈ [4, 2]  →  [4, 5]" },
+  { names: ["sort"], signature: "sort(x)", doc: "Sort a vector into ascending order.", example: "sort([3, 1, 2])  →  [1, 2, 3]" },
+  { names: ["mask"], signature: "mask(x, keep)", doc: "Keep the elements of x where the boolean mask is true, dropping the rest.", example: "mask([5, 0, 6], [5, 0, 6] > 1)  →  [5, 6]" },
+  { names: ["where"], signature: "where(cond, a, b)", doc: "Element-wise choice: take a where cond is true, otherwise b.", example: "where([1, 0, 1], [1, 2, 3], 0)  →  [1, 0, 3]" },
+]
+
+const BUILTIN_DOCS: Record<string, BuiltinDoc> = {}
+for (const entry of BUILTIN_DOC_ENTRIES) {
+  for (const name of entry.names) {
+    BUILTIN_DOCS[name] = { signature: entry.signature, doc: entry.doc, example: entry.example }
+  }
+}
+
 // Parse the prelude once – createScope runs on every evaluation (each keystroke)
 const PRELUDE_TREE = CodeParse(PRELUDE)
 
 const createScope = () => {
   const scope = Object.create(DefaultEnvironment)
   evaluateSyntaxTreeNode(PRELUDE_TREE, scope)
+  // attach docs as metadata so Describe(⌈) answers at runtime (idempotent)
+  for (const name in BUILTIN_DOCS) {
+    const value = scope[name]
+    if (typeof value === "function") {
+      const { doc, signature, example } = BUILTIN_DOCS[name]!
+      setMeta(value, { doc, signature, example })
+    }
+  }
   return scope
 }
 
@@ -2329,6 +2372,8 @@ export {
   arena,
   TensorScalar,
   TensorScalarLive,
+  // docs
+  BUILTIN_DOCS,
   // parse
   CodeParse,
   getParseErrors,
@@ -2371,4 +2416,4 @@ export {
   SignalOnce,
 }
 
-export type { Value, CurrentScope, SyntaxTreeNode, Origin, ParseError, FunctionMeta }
+export type { Value, CurrentScope, SyntaxTreeNode, Origin, ParseError, FunctionMeta, BuiltinDoc }
