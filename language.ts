@@ -1200,18 +1200,49 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
   const generation = currentGeneration
   let i = 0
 
-  const step = () => {
+  // Pace with requestAnimationFrame: steps align to the display, the loop pauses
+  // with a hidden tab, and a batch of steps per frame amortizes the ~4ms one
+  // setTimeout(0) would cost on a light step. The batch adapts to the measured
+  // inter-frame time – the display realizes the loop's output each frame, so a
+  // heavy step (or an expensive plot) self-limits to a small batch while a cheap
+  // one runs many. Falls back to setTimeout headless (bun), where there is no rAF.
+  const raf: (cb: (t: number) => void) => void =
+    typeof (globalThis as any).requestAnimationFrame === "function"
+      ? (cb) => (globalThis as any).requestAnimationFrame(cb)
+      : (cb) => { setTimeout(() => cb((globalThis as any).performance?.now?.() ?? 0), 0) }
+
+  let batch = 1
+  let prev = 0
+
+  const frame = (t: number) => {
     if (generation !== currentGeneration || i >= maxIterations) { return }
-    // each step gets its own arena: per-iteration garbage dies immediately,
-    // values that persist do so through signal/variable assignments
-    arena(() => {
-      const index = track(np.array(i))
-      fn(index)
-      return null
-    })
+
+    // steer the batch by the inter-frame time. rAF is vsync-locked (~16.7ms), so
+    // a frame that hits vsync means there was headroom – grow; a frame that slips
+    // to the next vsync (~33ms+) overran – shrink. The cap keeps the per-frame
+    // GPU work well under one refresh so the device never backlogs.
+    if (prev) {
+      const dt = t - prev
+      if (dt > 25) { batch = Math.max(1, Math.floor(batch * 0.5)) }
+      else { batch = Math.min(64, batch + Math.max(1, batch >> 2)) }
+    }
+    prev = t
+
+    const end = Math.min(i + batch, maxIterations)
+    while (i < end) {
+      // each step gets its own arena: per-iteration garbage dies immediately,
+      // values that persist do so through signal/variable assignments
+      arena(() => {
+        const index = track(np.array(i))
+        fn(index)
+        return null
+      })
+      i++
+    }
+
     // drain the lazy queue: jax-js never dispatches on its own, so a training
     // loop whose variables nobody displays would grow an unbounded pending
-    // graph – realize what each step retained
+    // graph – realize what the batch retained
     for (const variable of trainableVariables) {
       const held = variable.current.ref
       held.blockUntilReady().then(
@@ -1219,10 +1250,10 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
         () => { /* generation retired mid-flight */ },
       )
     }
-    i++
-    setTimeout(step, 0)
+
+    raf(frame)
   }
-  setTimeout(step, 0)
+  raf(frame)
 
   return null
 }
