@@ -2459,7 +2459,6 @@ reseed: { s: rand([n, n]) < 0.08 × 0.5, u← 1 - s, v← s },
 F: $(0.055),
 K: $(0.062),
 
-; spacing is the grouping: 0.16×Δ(a) binds tight, the + and - terms stay loose
 tick: {
   a: once(u), b: once(v), f: once(F), k: once(K),
   r: a × b^2,
@@ -2476,6 +2475,44 @@ tick ⟳ 100000,
   Grid([1, 6])(Text("**kill**"), Scrubber(K, 0.002)),
   Button("reseed", reseed),
   v,
+)
+`,
+  "lenia": `
+; Lenia – continuous cellular automata (Bert Chan). A ring kernel convolves the
+; world; a bell-curve growth rule nudges each cell. Smooth, life-like blobs emerge.
+
+n: 128,
+R: 13,
+
+; a Gaussian ring kernel, normalised to sum 1
+ks: 2×R + 1,
+gx: (0 :: ks) ⍴ [ks, 1] tile [1, ks],
+gy: (0 :: ks) ⍴ [1, ks] tile [ks, 1],
+dist: √((gx - R)^2 + (gy - R)^2) ÷ R,
+ring: exp(0 - (dist - 0.5)^2 ÷ (2 × 0.15^2)) × (dist < 1),
+K: ring ÷ Σ(ring),
+
+; growth: a bell centred at μ, width σ, mapped to [-1, 1]
+μ: 0.15,
+σ: 0.017,
+growth: { u | 2 × exp(0 - (u - μ)^2 ÷ (2 × σ^2)) - 1 },
+
+world: $(0),
+reseed: { world ← rand([n, n]) },
+
+; convolve, grow, and keep the world in [0, 1]
+tick: {
+  w: once(world),
+  world ← clamp(w + 0.1×growth(conv(K, w)), 0, 1),
+},
+
+reseed(),
+tick ⟳ 100000,
+
+(
+  Text("# 🔬 Lenia"),
+  Button("reseed", reseed),
+  world,
 )
 `,
   "recursion": `
