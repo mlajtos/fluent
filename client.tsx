@@ -2553,6 +2553,54 @@ weights: $({ softmax(scores × temp()) }),
   weights,
 )
 `,
+  "b-type": `
+; Turing's B-type unorganised machine (1948), educated by gradient descent.
+; A network of soft NAND-ish gates learns XOR – which isn't in its toolbox,
+; so it must compose it (XOR = OR ∧ ¬AND). "Education" is just backprop.
+
+(++): TensorConcat,
+
+a: [0, 0, 1, 1],
+b: [0, 1, 0, 1],
+target: [0, 1, 1, 0],
+
+; 12 two-input boolean functions – AND, OR, NAND, NOT, … but no XOR
+basis: { p, q | stack((
+  p×q, p + q - p×q, 1 - p×q, 1 - (p + q - p×q),
+  p×(1 - q), (1 - p)×q, p, q, 1 - p, 1 - q, p×0, p×0 + 1
+)) },
+
+; each gate's connection-switch: a learnable softmax over the 12 functions
+t1: ~(randn([12]) × 0.3),
+t2: ~(randn([12]) × 0.3),
+to: ~(randn([12]) × 0.3),
+
+; two hidden gates read the inputs; the output gate reads the hidden gates
+fwd: {
+  h1: matmul(softmax(t1), basis(a, b)),
+  h2: matmul(softmax(t2), basis(a, b)),
+  matmul(softmax(to), basis(h1, h2))
+},
+loss: { mean((fwd() - target)^2) },
+
+opt: adam(0.15),
+losses: $([]),
+{ losses(losses() ++ [opt(loss)]) } ⟳ 400,
+
+; recompute each training step (subscribe to losses) so the display stays live
+output: $({ losses(), fwd() }),
+gates: $({ losses(), stack((softmax(t1), softmax(t2), softmax(to))) }),
+
+(
+  Text("# 🎓 B-type learns XOR"),
+  Text("**loss** – education in progress:"),
+  losses,
+  Text("**output** vs target (0, 1, 1, 0):"),
+  output,
+  Text("the three gates' switches, converging on OR · AND · (p ∧ ¬q):"),
+  gates,
+)
+`,
   "spectrum": `
 ; Live spectrum analyser – FFT the microphone waveform, plot the magnitude.
 ; Allow mic access, then whistle or play a tone and watch the peak move.
