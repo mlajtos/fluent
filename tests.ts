@@ -127,6 +127,24 @@ describe("math functions", () => {
   test("crossEntropy", () => {
     expect(value("crossEntropy([0, 1, 0], [1, 2, 0.5])")).toBeCloseTo(0.4644, 3)
   })
+  test("roots, powers, logs", () => {
+    expect(value("sqrt(9)")).toBe(3)
+    expect(value("square(4)")).toBe(16)
+    expect(value("cbrt(27)")).toBeCloseTo(3, 4)
+    expect(value("log2(8)")).toBe(3)
+    expect(value("log10(1000)")).toBe(3)
+    expect(value("expm1(0)")).toBe(0)
+    expect(value("log1p(0)")).toBe(0)
+    expect(value("trunc(0 - 2.7)")).toBe(-2)  // toward zero, unlike floor
+  })
+  test("inverse trig, both arc* and short spellings", () => {
+    expect(value("arcsin(1)")).toBeCloseTo(1.5708, 3)
+    expect(value("asin(1)")).toBeCloseTo(1.5708, 3)   // short alias, same value
+    expect(value("arccos(1)")).toBe(0)
+    expect(value("arctan2(1, 1)")).toBeCloseTo(0.7854, 3)
+    expect(value("hypot(3, 4)")).toBe(5)
+    expect(value("deg2rad(180)")).toBeCloseTo(3.14159, 3)
+  })
 })
 
 // Contracts any future compilation of reactive recomputes must preserve

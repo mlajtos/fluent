@@ -1596,6 +1596,10 @@ const TensorTangentInverse = unaryOp(np.atan)
 const TensorSineHyperbolicInverse = unaryOp(np.arcsinh)
 const TensorCosineHyperbolicInverse = unaryOp(np.arccosh)
 const TensorTangentHyperbolicInverse = unaryOp(np.arctanh)
+const TensorArcTangent2 = binaryOp(np.arctan2)  // arctan2(y, x): angle of (x, y)
+const TensorHypotenuse = binaryOp(np.hypot)
+const TensorDegToRad = unaryOp(np.deg2rad)
+const TensorRadToDeg = unaryOp(np.rad2deg)
 
 // jax-js reduces bool arrays in bool arithmetic (add is `or`, so a bool sum
 // can only be 0 or 1) – promote to float like NumPy, so sum(x > 1) counts
@@ -1624,9 +1628,17 @@ const TensorNegate = unaryOp(np.negative)
 const TensorAbsolute = unaryOp(np.absolute)
 const TensorSign = unaryOp(np.sign)
 const TensorLogarithm = unaryOp(np.log)
+const TensorLog2 = unaryOp(np.log2)
+const TensorLog10 = unaryOp(np.log10)
+const TensorLog1Plus = unaryOp(np.log1p)      // log(1 + x), accurate near 0
 const TensorExponential = unaryOp(np.exp)
+const TensorExpMinus1 = unaryOp(np.expm1)     // exp(x) - 1, accurate near 0
 const TensorReciprocal = unaryOp(np.reciprocal)
+const TensorSquareRoot = unaryOp(np.sqrt)
+const TensorSquare = unaryOp(np.square)
+const TensorCubeRoot = unaryOp(np.cbrt)
 const TensorRound = unaryOp(np.round)
+const TensorTruncate = unaryOp(np.trunc)      // toward zero, unlike floor
 const TensorCeil = unaryOp(np.ceil)
 const TensorFloor = unaryOp(np.floor)
 const TensorErrorFunction = unaryOp(lax.erf)
@@ -2018,6 +2030,10 @@ const DefaultEnvironment: Record<string, Value> = {
   TensorSineHyperbolicInverse,
   TensorCosineHyperbolicInverse,
   TensorTangentHyperbolicInverse,
+  TensorArcTangent2,
+  TensorHypotenuse,
+  TensorDegToRad,
+  TensorRadToDeg,
 
   TensorSum,
   TensorProduct,
@@ -2030,9 +2046,17 @@ const DefaultEnvironment: Record<string, Value> = {
   TensorAbsolute,
   TensorSign,
   TensorLogarithm,
+  TensorLog2,
+  TensorLog10,
+  TensorLog1Plus,
   TensorExponential,
+  TensorExpMinus1,
   TensorReciprocal,
+  TensorSquareRoot,
+  TensorSquare,
+  TensorCubeRoot,
   TensorRound,
+  TensorTruncate,
   TensorCeil,
   TensorFloor,
   TensorErrorFunction,
@@ -2255,11 +2279,20 @@ neg: TensorNegate,
 abs: TensorAbsolute,
 sign: TensorSign,
 round: TensorRound,
+trunc: TensorTruncate,
 floor: TensorFloor,
 ceil: TensorCeil,
 reciprocal: TensorReciprocal,
+sqrt: TensorSquareRoot,
+square: TensorSquare,
+cbrt: TensorCubeRoot,
+hypot: TensorHypotenuse,
 log: TensorLogarithm,
+log2: TensorLog2,
+log10: TensorLog10,
+log1p: TensorLog1Plus,
 exp: TensorExponential,
+expm1: TensorExpMinus1,
 clamp: TensorClamp,
 sigmoid: TensorSigmoid,
 relu: TensorRelu,
@@ -2274,12 +2307,22 @@ tan: TensorTangent,
 asin: TensorSineInverse,
 acos: TensorCosineInverse,
 atan: TensorTangentInverse,
+arcsin: TensorSineInverse,
+arccos: TensorCosineInverse,
+arctan: TensorTangentInverse,
+atan2: TensorArcTangent2,
+arctan2: TensorArcTangent2,
 sinh: TensorSineHyperbolic,
 cosh: TensorCosineHyperbolic,
 tanh: TensorTangentHyperbolic,
 asinh: TensorSineHyperbolicInverse,
 acosh: TensorCosineHyperbolicInverse,
 atanh: TensorTangentHyperbolicInverse,
+arcsinh: TensorSineHyperbolicInverse,
+arccosh: TensorCosineHyperbolicInverse,
+arctanh: TensorTangentHyperbolicInverse,
+deg2rad: TensorDegToRad,
+rad2deg: TensorRadToDeg,
 
 ; Comparison
 (<): TensorLess,
