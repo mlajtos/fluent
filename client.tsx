@@ -186,7 +186,7 @@ Button("Reset", { x(0) }),
 
 // MARK: Imports
 
-import { Signal, computed } from "@preact/signals-core"
+import { Signal, computed, signal } from "@preact/signals-core"
 import {
   CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate,
   createScope, PRELUDE, DefaultEnvironment, extendEnvironment, setCodeNodePrinter,
@@ -1111,6 +1111,10 @@ type GridNode = {
 }
 type GridEdge = { parentRow: number, parentCol: number, childRow: number, childCol: number }
 
+// The `row,col` keys of the subtree under the hovered AST node – its nodes get
+// brighter frames and its edges brighter strokes. Null when nothing is hovered.
+const hoverSubtree = signal<Set<string> | null>(null)
+
 // Reference to main editor for hover highlighting
 let mainEditorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null
 let hoverDecorationsCollection: editor.IEditorDecorationsCollection | null = null
@@ -1171,45 +1175,65 @@ function Tree(tree: SyntaxTreeNode & { type: "Program" }): JSX.Element {
 
   // Build node lookup by position
   const nodeAt = new Map(nodes.map(n => [`${n.row},${n.col}`, n]))
+  const keyOf = (n: GridNode) => `${n.row},${n.col}`
+  const subtreeKeys = (n: GridNode): Set<string> => {
+    const s = new Set<string>()
+    const walk = (m: GridNode) => { s.add(keyOf(m)); for (const c of m.children) walk(c) }
+    walk(n)
+    return s
+  }
 
   return (
     <svg style={{ width: totalWidth, height: totalHeight, shapeRendering: "optimizeSpeed" }} viewBox={`0 0 ${totalWidth} ${totalHeight}`}>
-      {edges.map(e => {
-        const parent = nodeAt.get(`${e.parentRow},${e.parentCol}`)!
-        const child = nodeAt.get(`${e.childRow},${e.childCol}`)!
+      {/* one reactive region: re-renders on hover to re-tint frames/edges, but the
+          layout above is computed only once per program */}
+      {computed(() => {
+        const active = hoverSubtree.value
         return (
-          <TreeEdge
-            key={`${e.parentRow},${e.parentCol}-${e.childRow},${e.childCol}`}
-            x1={colX[e.parentCol]! - parent.width / 2}
-            y1={rowY(e.parentRow)}
-            x2={colX[e.childCol]! + child.width / 2}
-            y2={rowY(e.childRow)}
-            trunkX={gapX[e.parentCol]!}
-          />
+          <>
+            {edges.map(e => {
+              const parent = nodeAt.get(`${e.parentRow},${e.parentCol}`)!
+              const child = nodeAt.get(`${e.childRow},${e.childCol}`)!
+              return (
+                <TreeEdge
+                  key={`${e.parentRow},${e.parentCol}-${e.childRow},${e.childCol}`}
+                  x1={colX[e.parentCol]! - parent.width / 2}
+                  y1={rowY(e.parentRow)}
+                  x2={colX[e.childCol]! + child.width / 2}
+                  y2={rowY(e.childRow)}
+                  trunkX={gapX[e.parentCol]!}
+                  active={active?.has(`${e.parentRow},${e.parentCol}`) ?? false}
+                />
+              )
+            })}
+            {nodes.map(n => (
+              <TreeNode
+                key={keyOf(n)}
+                x={colX[n.col]!}
+                y={rowY(n.row)}
+                label={n.label}
+                width={n.width}
+                origin={n.origin}
+                active={active?.has(keyOf(n)) ?? false}
+                onEnter={() => { hoverSubtree.value = subtreeKeys(n) }}
+              />
+            ))}
+          </>
         )
-      })}
-      {nodes.map(n => (
-        <TreeNode
-          key={`${n.row},${n.col}`}
-          x={colX[n.col]!}
-          y={rowY(n.row)}
-          label={n.label}
-          width={n.width}
-          origin={n.origin}
-        />
-      ))}
+      }) as unknown as JSX.Element}
     </svg>
   )
 }
 
-function TreeEdge({ x1, y1, x2, y2, trunkX }: { x1: number, y1: number, x2: number, y2: number, trunkX: number }): JSX.Element {
+function TreeEdge({ x1, y1, x2, y2, trunkX, active }: { x1: number, y1: number, x2: number, y2: number, trunkX: number, active: boolean }): JSX.Element {
   const r = TREE.cornerRadius
   const dy = y2 - y1
   const ady = Math.abs(dy)
+  const stroke = active ? "stroke-neutral-300" : "stroke-neutral-600"
 
   // Straight horizontal line
   if (ady < 1) {
-    return <path d={`M${x1} ${y1} L${x2} ${y2}`} fill="none" strokeWidth={1} className="stroke-neutral-600" />
+    return <path d={`M${x1} ${y1} L${x2} ${y2}`} fill="none" strokeWidth={1} className={stroke} />
   }
 
   // Small vertical distance - smooth S-curve
@@ -1219,7 +1243,7 @@ function TreeEdge({ x1, y1, x2, y2, trunkX }: { x1: number, y1: number, x2: numb
     return (
       <path
         d={`M${x1} ${y1} L${trunkX + sr} ${y1} Q${trunkX} ${y1}, ${trunkX} ${y1 + sdy} Q${trunkX} ${y2}, ${trunkX - sr} ${y2} L${x2} ${y2}`}
-        fill="none" strokeWidth={1} className="stroke-neutral-600"
+        fill="none" strokeWidth={1} className={stroke}
       />
     )
   }
@@ -1229,22 +1253,23 @@ function TreeEdge({ x1, y1, x2, y2, trunkX }: { x1: number, y1: number, x2: numb
   return (
     <path
       d={`M${x1} ${y1} L${trunkX + r} ${y1} Q${trunkX} ${y1}, ${trunkX} ${y1 + sdy} L${trunkX} ${y2 - sdy} Q${trunkX} ${y2}, ${trunkX - r} ${y2} L${x2} ${y2}`}
-      fill="none" strokeWidth={1} className="stroke-neutral-600"
+      fill="none" strokeWidth={1} className={stroke}
     />
   )
 }
 
-function TreeNode({ x, y, label, width, origin }: { x: number, y: number, label: string, width: number, origin: Origin }): JSX.Element {
+function TreeNode({ x, y, label, width, origin, active, onEnter }: { x: number, y: number, label: string, width: number, origin: Origin, active: boolean, onEnter: () => void }): JSX.Element {
   return (
     <g transform={`translate(${x - width / 2}, ${y - NODE_HEIGHT / 2})`}>
       <rect
-        className="cursor-pointer fill-transparent hover:fill-[#101010] stroke-[0.5] hover:stroke-1"
+        className="cursor-pointer fill-transparent hover:fill-[#101010]"
         width={width}
         height={NODE_HEIGHT}
         rx={NODE_HEIGHT / 4}
-        stroke="rgba(255,255,255, 0.1)"
-        onPointerOver={(e) => { e.stopPropagation(); setHoverHighlight(origin) }}
-        onPointerOut={(e) => { e.stopPropagation(); setHoverHighlight(null) }}
+        stroke={active ? "rgba(255,255,255, 0.55)" : "rgba(255,255,255, 0.1)"}
+        strokeWidth={active ? 1 : 0.5}
+        onPointerOver={(e) => { e.stopPropagation(); setHoverHighlight(origin); onEnter() }}
+        onPointerOut={(e) => { e.stopPropagation(); setHoverHighlight(null); hoverSubtree.value = null }}
       />
       <text
         transform={`translate(${width / 2}, ${NODE_HEIGHT / 2})`}
