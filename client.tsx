@@ -1472,7 +1472,7 @@ const frameStyle = "rounded-xl border border-neutral-800 hover:border-neutral-70
 
 function Print(obj: Signal<unknown>) {
   return computed(() =>
-    <Panel className="overflow-scroll">
+    <Panel className="overflow-scroll" testId="print-panel">
       <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[obj]}>
         {PrettyPrint(obj)}
       </ErrorBoundary>
@@ -1680,9 +1680,9 @@ function PrettyPrintInner(obj: any): JSX.Element {
   return <div className="text-violet-500">{String(obj)}</div>;
 }
 
-function Panel({ children, className }: { children: JSX.Element, className?: string }) {
+function Panel({ children, className, testId }: { children: JSX.Element, className?: string, testId?: string }) {
   return (
-    <div className={`${frameStyle} ${className ?? ""}`}>
+    <div className={`${frameStyle} ${className ?? ""}`} data-testid={testId}>
       {children}
     </div>
   )
