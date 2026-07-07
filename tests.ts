@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test"
 import { Signal } from "@preact/signals-core"
-import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, np, FluentVariable } from "./language"
+import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, np, FluentVariable, setCodeNodePrinter, type SyntaxTreeNode, type Value } from "./language"
 
 const run = (source: string) =>
   evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope()))
@@ -254,6 +254,36 @@ describe("differentiation and optimization", () => {
     `
     expect(value(program)).toBeCloseTo(3, 1)
   })
+  // one shared shape for the remaining optimizers: fit a scalar to 3 with a
+  // persistent optimizer (state carries across steps)
+  const fits = (optimizer: string, steps = 80) => value(`
+    θ: ~([0]),
+    𝓛: { mean((θ_0 - 3)^2) },
+    opt: ${optimizer},
+    step: { v | opt(𝓛) },
+    (step ⍣ ${steps})(◌),
+    θ_0
+  `)
+  test("adagrad fits a scalar", () => {
+    // regression: the accumulator update leaked one reference per step
+    // (tree.map hands leaf ownership to the callback; sqrt borrowed instead)
+    expect(fits("adagrad(1)")).toBeCloseTo(3, 1)
+  })
+  test("adamw fits a scalar", () => {
+    expect(fits("adamw(0.2, 0.0001)")).toBeCloseTo(3, 1)
+  })
+  test("sgd with momentum fits a scalar", () => {
+    expect(fits("sgd(0.02, 0.9)")).toBeCloseTo(3, 1)
+  })
+})
+
+describe("function power validation", () => {
+  test("⍣ rejects a non-scalar count instead of silently doing nothing", () => {
+    expect(run("({ x | x × 2 } ⍣ [2, 2])(1)")).toBeInstanceOf(Error)
+  })
+  test("⍣ rounds a fractional (slider-driven) count, like linspace", () => {
+    expect(value("({ x | x × 2 } ⍣ 2.6)(1)")).toBe(8)
+  })
 })
 
 describe("lists and strings", () => {
@@ -266,6 +296,32 @@ describe("lists and strings", () => {
   test("strings are values", () => {
     expect(String(value('"hello"'))).toBe("hello")
     expect(value('StringLength("abc")')).toBe(3)
+  })
+})
+
+describe("prelude list helpers", () => {
+  test("ListZip pairs elements up to the shorter length", () => {
+    // regression: the pair count used TensorMin (a reduction, so the second
+    // argument was an axis) – the Error degraded to NaN and every zip was ()
+    expect(value("ListLength(ListZip((1, 2, 3), (4, 5)))")).toBe(2)
+    expect(value("ListGet(ListGet(ListZip((1, 2), (30, 40)), 0), 1)")).toBe(30)
+    expect(value("ListGet(ListGet(ListZip((1, 2), (30, 40)), 1), 1)")).toBe(40)
+  })
+  test("ListTake and ListDrop", () => {
+    expect(value("ListLength(ListTake((7, 8, 9), 2))")).toBe(2)
+    expect(value("ListGet(ListTake((7, 8, 9), 2), 1)")).toBe(8)
+    expect(value("ListLength(ListDrop((7, 8, 9), 1))")).toBe(2)
+    expect(value("ListGet(ListDrop((7, 8, 9), 1), 0)")).toBe(8)
+  })
+  test("ListReverse and ListEnumerate", () => {
+    expect(value("ListGet(ListReverse((1, 2, 3)), 0)")).toBe(3)
+    expect(value("ListGet(ListGet(ListEnumerate((7, 8)), 1), 0)")).toBe(1)
+    expect(value("ListGet(ListGet(ListEnumerate((7, 8)), 1), 1)")).toBe(8)
+  })
+  test("ListGather and ListScan", () => {
+    expect(value("ListGet(ListGather((10, 20, 30), (2, 0)), 0)")).toBe(30)
+    expect(value("ListLength(ListScan((1, 2, 3), { a, b | a + b }, 0))")).toBe(4)
+    expect(value("ListGet(ListScan((1, 2, 3), { a, b | a + b }, 0), 3)")).toBe(6)
   })
 })
 
@@ -302,6 +358,39 @@ describe("backtick code literals", () => {
     expect(s[0].content.value.type).toBe("Program")
     expect(s[1].content.value.type).toBe("Program")
   })
+  test("unparseable inner code yields an Error node, not a crash", () => {
+    // the IDE's printer must receive this shape and render the message
+    const s = stmts("`}`")
+    expect(s[0].type).toBe("Code")
+    expect(s[0].content.value.type).toBe("Error")
+    expect(typeof s[0].content.value.content).toBe("string")
+  })
+  test("a throwing code printer degrades to an Error value", () => {
+    // regression: a printer bug (e.g. the AST viz choking on an Error node)
+    // used to abort the whole evaluation and take the output panel down
+    setCodeNodePrinter(() => { throw new Error("printer exploded") })
+    try {
+      const out = run("`1 + 1`")
+      expect(out).toBeInstanceOf(Error)
+      expect((out as Error).message).toBe("printer exploded")
+    } finally {
+      setCodeNodePrinter((node: SyntaxTreeNode) => node as unknown as Value)
+    }
+  })
+})
+
+describe("resource lifetimes", () => {
+  test("watch(θ) releases its held reference when the generation retires", async () => {
+    const scope = createScope()
+    const out = evaluateGeneration(() =>
+      evaluateSyntaxTreeNode(CodeParse("θ: ~([2]), w: watch(θ), w"), scope)) as Signal<np.Array>
+    out.value // materialize the watch's internal reference
+    const payload = (scope["θ"] as FluentVariable).current
+    expect(payload.refCount).toBeGreaterThan(1)
+    evaluateGeneration(() => null) // retire the generation above
+    await Bun.sleep(80)            // its teardown runs on a 50ms timer
+    expect(payload.refCount).toBe(0)
+  })
 })
 
 describe("errors", () => {
@@ -313,5 +402,52 @@ describe("errors", () => {
   })
   test("calling a non-function is an Error value", () => {
     expect(run("3(4)")).toBeInstanceOf(Error)
+  })
+})
+
+describe("metadata arguments are strict", () => {
+  // regression: getAsSyncList returned undefined for non-tensors, so a typo'd
+  // axis/index/count coerced to undefined/NaN and silently changed the op's
+  // meaning – the `1 + a` bug class, but for every metadata position
+  test("a typo'd axis is an Error, not a full reduction", () => {
+    expect(run("sum([[1, 2], [3, 4]], axs)")).toBeInstanceOf(Error)
+    expect(run("mean([[1, 2], [3, 4]], nope)")).toBeInstanceOf(Error)
+  })
+  test("a typo'd index is an Error, not the first element", () => {
+    expect(run("ListGet((10, 20, 30), oops)")).toBeInstanceOf(Error)
+  })
+  test("a typo'd shape or count is an Error", () => {
+    expect(run("[1, 2, 3, 4] ⍴ shp")).toBeInstanceOf(Error)
+    expect(run("0 :: nope")).toBeInstanceOf(Error)
+    expect(run("linspace(5, 3)")).toBeInstanceOf(Error)   // range must be [start, stop]
+  })
+  test("a guard on a typo'd condition is not silently truthy", () => {
+    // the broken guard errors; cascade moves on to the next candidate
+    expect(value("cascade((guard(typo, { 1 }), { 2 }))()")).toBe(2)
+  })
+  test("valid scalar and vector axes still work", () => {
+    expect(value("sum([[1, 2], [3, 4]], 0)")).toEqual([4, 6])
+    expect(value("sum([[1, 2], [3, 4]], [0, 1])")).toBe(10)
+    expect(value("roll([1, 2, 3, 4], 1)")).toEqual([4, 1, 2, 3])
+  })
+})
+
+describe("null is a value", () => {
+  // regression: Symbol.resolve used `??`, so a name bound to ◌ (or to the
+  // null result of :=) came back as an unbound symbol instead of null
+  test("◌ round-trips through a binding", () => {
+    expect(run("x: ◌, x")).toBe(null)
+  })
+  test("the null identifier resolves to null", () => {
+    expect(run("null")).toBe(null)
+  })
+  test(":= evaluates to ◌ and binds as ◌", () => {
+    expect(run("θ: ~([1]), r: (θ := [2]), r")).toBe(null)
+  })
+  test("missing lambda arguments are ◌, not unbound names", () => {
+    expect(run("{ x, y | y }(1)")).toBe(null)
+  })
+  test("using ◌ as a tensor is an Error, not a silent value", () => {
+    expect(run("x: ◌, x + 1")).toBeInstanceOf(Error)
   })
 })

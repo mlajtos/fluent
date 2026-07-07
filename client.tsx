@@ -108,7 +108,7 @@ Button("Reset", { x(0) }),
   - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
   - UI: \`Slider\`, \`Scrubber\`, \`Checkbox\`, \`Button\`, \`Text\`, \`Grid\`, \`Layers\`, \`Point2D\`, \`Trail\`, \`ImageUpload\`
   - live inputs: \`Camera\`, \`Microphone\`, \`MicrophoneSpectrum\`, \`Time\`, \`MousePosition\`
-  - optimizers: \`adam\`, \`sgd\`, \`adagrad\`
+  - optimizers: \`adam\`, \`adamw\`, \`sgd\` (optional momentum), \`adagrad\`
   - metadata: \`Describe(fn, "doc")\` attaches a doc string, \`Describe(fn)\` queries it
 - Ad-hoc operators
   - define custom operators: \`(++): ListConcat, (1, 2) ++ (3, 4)\`
@@ -650,9 +650,11 @@ setMeta(Checkbox, { noAutoLift: true })
 // tensor. Drag & drop works even where native file dialogs are unavailable
 // (embedded webviews like VS Code's Simple Browser).
 const ImageUpload = (target: Signal<np.Array>) => {
+  const retired = generationRetired()
   const load = async (file: File | null | undefined) => {
     if (!file || !file.type.startsWith("image")) { return }
     const bitmap = await createImageBitmap(file)
+    if (retired()) { bitmap.close(); return }
     updateWithFresh(target, fromPixels(bitmap))
   }
 
@@ -919,8 +921,19 @@ const Fetch = (url: string) => {
 // CORS fallback: retry blocked cross-origin loads through the dev server
 const proxied = (url: string) => `/proxy?url=${encodeURIComponent(url)}`
 
+// Async sources resolve after an arbitrary delay; if the evaluation that
+// created them has been retired by then (every keystroke re-evaluates), the
+// result must be dropped – tensors written into a dead signal are never
+// disposed, and a camera stream nobody stops stays on.
+const generationRetired = (): (() => boolean) => {
+  let retired = false
+  registerDisposable(() => { retired = true })
+  return () => retired
+}
+
 function LoadTensorFromImageUrl(url: string): Signal<np.Array | null> {
   const s = SignalCreate<np.Array | null>(null);
+  const retired = generationRetired()
 
   const imgElement = document.createElement('img');
   imgElement.crossOrigin = "anonymous";
@@ -932,6 +945,7 @@ function LoadTensorFromImageUrl(url: string): Signal<np.Array | null> {
     }
   }
   imgElement.onload = () => {
+    if (retired()) { return }
     updateWithFresh(s, fromPixels(imgElement))
   }
 
@@ -976,8 +990,13 @@ function Camera(width?: np.Array, height?: np.Array, fps?: np.Array): Signal<np.
   video.autoplay = true
   video.playsInline = true
 
+  const retired = generationRetired()
   let stream: MediaStream | null = null
   navigator.mediaDevices.getUserMedia({ video: { width: w, height: h } }).then(s => {
+    // permission granted after the evaluation was retired – the cleanup
+    // already ran with stream = null, so stop the tracks here or the camera
+    // light stays on until the tab closes
+    if (retired()) { s.getTracks().forEach(track => track.stop()); return }
     stream = s
     video.srcObject = s
     video.onloadedmetadata = () => video.play()
@@ -997,11 +1016,15 @@ function Camera(width?: np.Array, height?: np.Array, fps?: np.Array): Signal<np.
 
 // Shared getUserMedia/AnalyserNode setup for Microphone and MicrophoneSpectrum
 function AudioAnalyser(fftSize: number, smoothing?: number): { get: () => AnalyserNode | null, cleanup: () => void } {
+  const retired = generationRetired()
   let stream: MediaStream | null = null
   let audioContext: AudioContext | null = null
   let analyser: AnalyserNode | null = null
 
   navigator.mediaDevices.getUserMedia({ audio: true }).then(s => {
+    // permission granted after the evaluation was retired – cleanup already
+    // ran with stream = null, so release the microphone here
+    if (retired()) { s.getTracks().forEach(track => track.stop()); return }
     stream = s
     audioContext = new AudioContext()
     analyser = audioContext.createAnalyser()
@@ -1071,12 +1094,14 @@ const LoadSafeTensorFromURL = (rawUrl?: unknown) => {
   // without ListGet/indexing throwing on the loading placeholder (a throw
   // re-mounts the component → re-evaluates the program → re-fetches in a loop).
   const s = SignalCreate([] as unknown[]);
+  const retired = generationRetired()
 
   // @jax-js/loaders: cachedFetch persists the download in OPFS (so reloads /
   // HMR don't re-fetch big weight files), safetensors.parse reads every dtype.
   cachedFetch(url)
     .catch(() => cachedFetch(proxied(url)))
     .then(bytes => {
+      if (retired()) { return }
       const { tensors } = safetensors.parse(bytes)
       // every tensor → a float32 np.array (BigInt64/Uint8/… all coerce via Number)
       s.value = Object.entries(tensors).map(([key, t]) => {
@@ -1304,6 +1329,7 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
       case 'List': return '()'
       case 'String': return `"${node.content.value}"`
       case 'Code': return '``'
+      case 'Error': return '⚠'
       default: throw new Error(`Unknown type ${node.type}`)
     }
   }
@@ -1327,8 +1353,9 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
       case 'Symbol':
       case 'Number':
       case 'String':
-      case 'Code': return []
-      default: throw new Error(`Unknown type ${node.type}`)
+      case 'Code':
+      case 'Error': return []
+      default: throw new Error(`Unknown type ${(node as SyntaxTreeNode).type}`)
     }
   }
 
@@ -1466,7 +1493,14 @@ function PrintFunction(fn: Function) {
   return Code(sourceCode)
 }
 
-function PrettyPrintSyntaxTree(node: SyntaxTreeNode & { type: "Program" }): JSX.Element {
+function PrettyPrintSyntaxTree(node: SyntaxTreeNode): JSX.Element {
+  // a backtick literal whose inner program failed to parse yields an Error
+  // node (its content is the message string) – render that message; feeding it
+  // to the tree layout used to throw and take the whole output panel down
+  if (node.type !== "Program") {
+    const message = node.type === "Error" ? node.content : `CodePrint: expected a program, got ${(node as { type?: string })?.type ?? String(node)}`
+    return PrettyPrint(new Error(message))
+  }
   return Tree(node)
 }
 
@@ -1521,8 +1555,17 @@ function PrettyPrintInner(obj: any): JSX.Element {
     if (obj instanceof Signal) {
       // Reactive island: read `.value` inside a fresh computed so outer printers
       // don't subscribe – a signal update re-renders only this subtree instead of
-      // the whole output panel.
-      return <div className="contents">{computed(() => PrettyPrint(obj.value)) as unknown as JSX.Element}</div>;
+      // the whole output panel. The read can throw (an evaluation error surfacing
+      // lazily); catch it into an Error box so the panel keeps rendering and
+      // recovers on the next evaluation instead of tripping the error boundary,
+      // which has no changing resetKeys to ever come back from.
+      return <div className="contents">{computed(() => {
+        try {
+          return PrettyPrint(obj.value)
+        } catch (e) {
+          return PrettyPrint(e instanceof Error ? e : new Error(String(e)))
+        }
+      }) as unknown as JSX.Element}</div>;
     }
 
     if (isValidElement(obj)) {
@@ -1533,6 +1576,12 @@ function PrettyPrintInner(obj: any): JSX.Element {
     if (obj instanceof FluentVariable) {
       const variable = obj
       let previous: np.Array | null = null
+      // the island holds one reference between renders – release it with the
+      // generation, or every displayed variable pins its final value forever
+      registerDisposable(() => {
+        if (previous && previous.refCount > 0) { previous.dispose() }
+        previous = null
+      })
       const reactiveValue = computed(() => {
         variable.version.value  // subscribe to changes
         if (previous && previous.refCount > 0) { previous.dispose() }
@@ -3434,7 +3483,10 @@ export function Playground() {
   useSignals()
 
   useEffect(() => {
-    // register URL search params change listener
+    // back/forward navigation restores the code from the URL. (popstate is the
+    // only history event the browser fires – programmatic pushState/replaceState,
+    // like Ctrl+S, emit nothing, which is what we want: the editor already
+    // holds that code.)
     const handleUrlChange = () => {
       const codeFromUrl = StringDeserialize(new URLSearchParams(window.location.search).get("code") ?? "");
       if (codeFromUrl !== "") {
@@ -3442,12 +3494,8 @@ export function Playground() {
       }
     };
     window.addEventListener("popstate", handleUrlChange);
-    window.addEventListener("pushstate", handleUrlChange);
-    window.addEventListener("replacestate", handleUrlChange);
     return () => {
       window.removeEventListener("popstate", handleUrlChange);
-      window.removeEventListener("pushstate", handleUrlChange);
-      window.removeEventListener("replacestate", handleUrlChange);
     };
   }, [])
 

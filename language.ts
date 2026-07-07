@@ -403,13 +403,25 @@ const indexToLineAndColumn = (str: string, index: number): { line: number; colum
   };
 }
 
-// One parse per source: CodeParse and getParseErrors share the match result
-let matchCache: { input: string, match: ReturnType<typeof CodeGrammarCompiled.match> } | null = null
+// One parse per source: CodeParse and getParseErrors share match results. A
+// small LRU rather than a single slot – the nested CodeParse a backtick
+// literal runs mid-toAST would otherwise evict the outer program between
+// evaluation and editor validation, doubling the parse work per keystroke.
+const MATCH_CACHE_LIMIT = 8
+const matchCache = new Map<string, ReturnType<typeof CodeGrammarCompiled.match>>()
 const matchProgram = (program: string) => {
   const input = String(program)
-  if (matchCache?.input === input) { return matchCache.match }
+  const cached = matchCache.get(input)
+  if (cached) {
+    matchCache.delete(input)
+    matchCache.set(input, cached) // refresh recency
+    return cached
+  }
   const match = CodeGrammarCompiled.match(input)
-  matchCache = { input, match }
+  matchCache.set(input, match)
+  if (matchCache.size > MATCH_CACHE_LIMIT) {
+    matchCache.delete(matchCache.keys().next().value!)
+  }
   return match
 }
 
@@ -570,8 +582,9 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
       const localEnv = node.content.args
         .filter(n => n.type === "Symbol")
         .reduce<CurrentScope>((acc, arg, i) => {
+          // a missing argument is ◌ (no value), not an unbound name
           // @ts-ignore
-          acc[arg.content.value] = args[i]
+          acc[arg.content.value] = args[i] ?? null
           return acc
         }, Object.create(env) as CurrentScope)
 
@@ -610,7 +623,14 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "Code") {
-    const value: any = codeNodePrinter(node.content.value)
+    // the printer is IDE code (the AST viz) – a rendering bug must degrade to
+    // an Error value, not abort the whole evaluation
+    let value: any
+    try {
+      value = codeNodePrinter(node.content.value)
+    } catch (e) {
+      value = e instanceof Error ? e : new Error(String(e))
+    }
     setOrigin(value, node.origin)
     return value
   }
@@ -646,7 +666,10 @@ Symbol.prototype.resolve = function (this: Symbol, env: CurrentScope): Value {
   const k = Symbol.keyFor(s) ?? ""
 
   try {
-    return env?.[k] ?? s
+    // `in` (which walks the scope chain), not `??`: a name bound to ◌ must
+    // resolve to null – null is a value, absence is not. With `??` the binding
+    // masqueraded as an unbound symbol, so `x: ◌, x` gave back the symbol x.
+    return k in env ? (env[k] ?? null) : s
   } catch (e) {
     return null
   }
@@ -1216,7 +1239,15 @@ const FunctionPower = (fn: Function, n: Value) => {
     return new Error("`FunctionPower(fn, n)`: `fn` must be a function and `n` must be a scalar Tensor")
   }
 
-  const times = getAsSyncList(n) as number
+  const count = getAsSyncList(n)
+  if (typeof count !== "number" || !Number.isFinite(count)) {
+    // a non-scalar (or NaN) count would silently skip the loop and return the
+    // identity function – surface it instead
+    return new Error("`FunctionPower(fn, n)`: `n` must be a finite scalar, got " +
+      (Array.isArray(count) ? `a tensor of shape [${(n as np.Array).shape.join(" ")}]` : String(count)))
+  }
+  // a live slider drives counts through fractional values – round, like linspace
+  const times = Math.max(0, Math.round(count))
 
   return (...args: unknown[]) => {
     let value: unknown = args[0] ?? null
@@ -1235,7 +1266,12 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
     throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` must be a scalar Tensor");
   }
 
-  const maxIterations = iterations === undefined ? 1 : getAsSyncList(iterations) as number
+  const maxIterations = iterations === undefined ? 1 : getAsSyncList(iterations)
+  if (typeof maxIterations !== "number" || Number.isNaN(maxIterations)) {
+    // a non-scalar count would make `i >= maxIterations` always false – an
+    // accidental infinite loop instead of an error
+    throw new Error("`FunctionIterate(fn, iterations)`: `iterations` must be a scalar Tensor");
+  }
   const generation = currentGeneration
   let i = 0
 
@@ -1405,8 +1441,10 @@ const FunctionNoAutoLift = (fn: Function) => {
 setMeta(FunctionNoAutoLift, { noAutoLift: true })
 
 const FunctionGuard = function (this: CurrentScope, cond: Value, thunk: Function) {
-  // Capture condition value and thunk
-  const condValue = getAsSyncList(cond)
+  // Capture condition value and thunk. Strict read: a typo'd symbol used to
+  // coerce to undefined, which passed every falsy check – the guard silently
+  // held. In a cascade the Error just moves on to the next candidate.
+  const condValue = requireData(cond)
   const scope = this
 
   // Return a function that cascade can call as a candidate
@@ -1478,7 +1516,7 @@ const ListGet = (a: any[], b: Value) => {
     return new Error("'ListGet': 'a' must be an array")
   }
 
-  const index = getAsSyncList(b) as number
+  const index = asNumber(b)
   if (index < -a.length || index >= a.length) {
     return new Error(`'ListGet': Index '${index}' out of bounds for list of length ${a.length}`)
   }
@@ -1513,9 +1551,41 @@ const ListReduce = (a: any[], fn: (acc: any, value: any) => any, initialValue?: 
   return a.reduce(fn, initialValue)
 }
 
-// Read scalar/vector metadata (axis, sizes) out of a tensor argument
-const asNumber = (v: Value): number => Number(getAsSyncList(v))
-const asNumberList = (v: Value): number[] => ([] as number[]).concat(getAsSyncList(v) as any)
+// Read scalar/vector metadata (axis, sizes, indices, counts) out of a tensor
+// argument. STRICT: a typo'd symbol or an Error flowing in must surface as an
+// Error, not coerce to undefined/NaN and silently change the op's meaning –
+// `sum(x, axs)` used to sum everything, `ListGet(xs, oops)` returned the first
+// element. Same design decision FunctionArity makes for + - × ·. (getAsSyncList
+// itself stays lenient: UI components read through it best-effort.)
+const describeArg = (v: Value): string =>
+  typeof v === "symbol" ? `unbound symbol '${Symbol.keyFor(v as symbol) ?? String(v)}'`
+    : v === null ? "◌"
+    : v instanceof Error ? "an Error"
+    : v instanceof Signal ? "a signal"
+    : Array.isArray(v) ? "a list"
+    : typeof v === "string" || v instanceof String ? "a string"
+    : typeof v === "function" ? "a function"
+    : `a ${typeof v}`
+
+const requireData = (v: Value): number | unknown[] => {
+  const data = getAsSyncList(v)
+  if (typeof data !== "number" && !Array.isArray(data)) {
+    throw new Error(`expected a tensor, got ${describeArg(v)}`)
+  }
+  return data as number | unknown[]
+}
+
+const asNumber = (v: Value): number => {
+  const data = requireData(v)
+  const n = Number(data) // 1-element vectors keep coercing, as they always did
+  if (Number.isNaN(n)) {
+    throw new Error(typeof data === "number"
+      ? "expected a number, got NaN"
+      : `expected a scalar, got a tensor of shape [${shapeOf(v).join(" ")}]`)
+  }
+  return n
+}
+const asNumberList = (v: Value): number[] => ([] as number[]).concat(requireData(v) as any)
 
 const Tensor = (values: unknown, shape?: Value) => {
   const source: any = isTensor(values) || values instanceof FluentVariable ? borrow(values) : values
@@ -1576,7 +1646,7 @@ const TensorTile = (a: Value, reps: Value) => {
 // `dx ⊗((+), 1) dy` crosses the frames while zipping the shared trailing axis.
 // rank can be a scalar or a [rankA, rankB] pair.
 const TensorOuter = function (this: CurrentScope, f: Value, rank?: Value) {
-  const r = rank === undefined ? 0 : getAsSyncList(rank) as (number | number[])
+  const r = rank === undefined ? 0 : requireData(rank) as (number | number[])
   const [rankA, rankB] = Array.isArray(r) ? r : [r, r]
   const scope = this
 
@@ -1681,7 +1751,7 @@ const promoteBool = (v: any): any => {
 // Reductions take an optional axis (scalar or vector tensor) as second argument
 const withOptionalAxis = (op: (a: any, axis?: number | number[]) => np.Array) =>
   (a: Value, b?: Value) =>
-    track(b === undefined ? op(promoteBool(a)) : op(promoteBool(a), getAsSyncList(b) as (number | number[])))
+    track(b === undefined ? op(promoteBool(a)) : op(promoteBool(a), requireData(b) as (number | number[])))
 
 const TensorSum = withOptionalAxis(np.sum)      // TensorReduce(a, 0, +)
 const TensorProduct = withOptionalAxis(np.prod) // TensorReduce(a, 1, *)
@@ -1797,7 +1867,11 @@ const TensorRange = (a: Value, b?: Value) => {
 }
 
 const TensorLinearSpace = (range: Value, steps: Value) => {
-  const [start, stop] = getAsSyncList(range) as [number, number]
+  const bounds = requireData(range)
+  if (!Array.isArray(bounds) || bounds.length < 2) {
+    throw new Error("`linspace([start, stop], count)`: range must be a 2-element tensor")
+  }
+  const [start, stop] = bounds as [number, number]
   // a count has to be a whole number; a live slider naturally drives it
   // through fractional values (resolution × 90 + 10), so round rather than reject
   return track(np.linspace(start, stop, Math.max(0, Math.round(asNumber(steps)))))
@@ -1859,11 +1933,11 @@ const TensorReshape = (a: Value, b?: Value) => {
 // Toroidal shift – APL's rotate. roll(x, 1) shifts flat; roll(x, s, axis)
 // shifts along an axis, wrapping around.
 const TensorRoll = (a: Value, shift: Value, axis?: Value) =>
-  track(np.roll(borrow(a), getAsSyncList(shift) as number | number[],
-    axis === undefined ? undefined : getAsSyncList(axis) as number | number[]))
+  track(np.roll(borrow(a), requireData(shift) as number | number[],
+    axis === undefined ? undefined : requireData(axis) as number | number[]))
 
 const TensorReverse = (a: Value, axis?: Value) =>
-  track(np.flip(borrow(a), axis === undefined ? undefined : getAsSyncList(axis) as number | number[]))
+  track(np.flip(borrow(a), axis === undefined ? undefined : requireData(axis) as number | number[]))
 
 const TensorMatrixMultiply = binaryOp(np.matmul)
 const TensorDotProduct = binaryOp(np.dot)
@@ -1920,6 +1994,13 @@ const TensorAssign = (a: Value, b: Value) => {
 const TensorWatch = (a: Value): Value => {
   if (!(a instanceof FluentVariable)) { return a }
   let previous: np.Array | null = null
+  // the reference held between recomputes outlives the last one – release it
+  // with the generation, or watch(θ) used inline (never bound into the scope,
+  // so the teardown walk can't see it) pins θ's final value forever
+  registerDisposable(() => {
+    if (previous && previous.refCount > 0) { previous.dispose() }
+    previous = null
+  })
   return computed(() => {
     a.version.value
     if (previous && previous.refCount > 0) { previous.dispose() }
@@ -2041,19 +2122,44 @@ const adagradTransform = (learningRate: number, eps = 1e-7): optax.GradientTrans
   update: (updates, state, params) => {
     if (params) { tree.dispose(params) }
     const accum = tree.map((g: np.Array, s: np.Array) => np.add(np.square(g.ref), s), updates as any, state as any)
+    // tree.map hands leaf OWNERSHIP to the callback – the second map must
+    // consume its tree.ref(accum) copy (sqrt(s), not sqrt(s.ref)), or every
+    // step leaks one reference per accumulator and the state never frees
     const scaled = tree.map(
-      (g: np.Array, s: np.Array) => np.multiply(np.trueDivide(g, np.add(np.sqrt(s.ref), eps)), -learningRate),
+      (g: np.Array, s: np.Array) => np.multiply(np.trueDivide(g, np.add(np.sqrt(s), eps)), -learningRate),
       updates as any, tree.ref(accum) as any)
     return [scaled as any, accum]
   },
 })
 
-const TensorOptimizationAdam = (a: Value, b?: Value) =>
-  makeOptimizer(optax.adam(asNumber(a)), Array.isArray(b) ? b as FluentVariable[] : undefined)
+// Arguments after the learning rate: scalars fill the hyperparameters in
+// order, a list picks the variables to train (default: every variable alive)
+const optimizerRest = (rest: Value[]): { nums: number[], vars: FluentVariable[] | undefined } => ({
+  nums: rest.filter((r) => r !== undefined && !Array.isArray(r)).map(asNumber),
+  vars: rest.find((r): r is FluentVariable[] => Array.isArray(r)),
+})
 
-const TensorOptimizationSgd = (a: Value) => makeOptimizer(optax.sgd(asNumber(a)))
+const TensorOptimizationAdam = (a: Value, ...rest: Value[]) => {
+  const { vars } = optimizerRest(rest)
+  return makeOptimizer(optax.adam(asNumber(a)), vars)
+}
 
-const TensorOptimizationAdaGrad = (a: Value) => makeOptimizer(adagradTransform(asNumber(a)))
+// adamw(lr, weightDecay?, vars?) – Adam with decoupled weight decay
+const TensorOptimizationAdamW = (a: Value, ...rest: Value[]) => {
+  const { nums: [weightDecay], vars } = optimizerRest(rest)
+  return makeOptimizer(optax.adamw(asNumber(a), weightDecay === undefined ? undefined : { weightDecay }), vars)
+}
+
+// sgd(lr, momentum?, vars?)
+const TensorOptimizationSgd = (a: Value, ...rest: Value[]) => {
+  const { nums: [momentum], vars } = optimizerRest(rest)
+  return makeOptimizer(optax.sgd(asNumber(a), momentum === undefined ? undefined : { momentum }), vars)
+}
+
+const TensorOptimizationAdaGrad = (a: Value, ...rest: Value[]) => {
+  const { vars } = optimizerRest(rest)
+  return makeOptimizer(adagradTransform(asNumber(a)), vars)
+}
 
 // Stateful convenience RNG: a fresh Threefry key per call, mirroring the feel
 // of TFJS's tf.random* – deterministic per page load, not across reloads.
@@ -2075,7 +2181,9 @@ const Null = null
 // read it back with getMeta. Signatures use the ergonomic notation people type.
 doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $(4), once(x) + 1  →  5")
 doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2")
-doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / sgd / adagrad.", "θ: ~([0, 0])")
+doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad.", "θ: ~([0, 0])")
+doc(TensorOptimizationAdamW, "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)")
+doc(TensorOptimizationSgd, "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)")
 doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w  →  [8]")
 doc(TensorGradient, "∇(f)", "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", "∇({ x | x^2 })(3)  →  6")
 doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3])  →  6")
@@ -2225,6 +2333,7 @@ const DefaultEnvironment: Record<string, Value> = {
   TensorAssign,
   TensorWatch,
   TensorOptimizationAdam,
+  TensorOptimizationAdamW,
   TensorOptimizationSgd,
   TensorOptimizationAdaGrad,
   TensorRandomNormal,
@@ -2346,7 +2455,7 @@ ListGather: { a, b |
   ListMap(b, { i | ListGet(a, i) })
 },
 ListZip: { a, b |
-  n: TensorMin(ListLength(a), ListLength(b)),
+  n: TensorMinimum(ListLength(a), ListLength(b)),
   ListMap(
     TensorUnstack(TensorRange(0, n)),
     { i | List(ListGet(a, i), ListGet(b, i)) }
@@ -2533,6 +2642,7 @@ tile: TensorTile,
 
 ; Optimization
 adam: TensorOptimizationAdam,
+adamw: TensorOptimizationAdamW,
 sgd: TensorOptimizationSgd,
 adagrad: TensorOptimizationAdaGrad,
 
