@@ -42,6 +42,10 @@ if (!workerBuild.success) {
   process.exit(1);
 }
 
+// Copy static datasets the examples fetch at runtime (the deployed site is
+// static – no /mnist.safetensors route like the dev server has)
+await Bun.write(`${outdir}/mnist.safetensors`, Bun.file("./mnist.safetensors"));
+
 console.log("Build complete!");
 console.log(`Output: ${outdir}`);
 for (const output of [...appBuild.outputs, ...workerBuild.outputs]) {

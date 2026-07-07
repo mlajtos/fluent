@@ -126,7 +126,7 @@ Fluent {
   digitGroup
     = digit ("_"? digit)*
   String          = #("\"" (~"\"" any)* "\"")
-  Code            = "${"`"}" Program "${"`"}" | "${"`"}" Code "${"`"}"
+  Code            = #("${"`"}" (~"${"`"}" any)* "${"`"}")
   reserved        = "|" | "," | "{" | "}" | "(" | ")" | "[" | "]" | ";" | "\"" | "${"`"}"
   operator        = (#(~(reserved | alnum) specialChar))+
   specialChar     = ${getSymbolsRange(OPERATOR_RANGES)}
@@ -348,10 +348,14 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
     }
   },
   Code(_, value, __) {
+    // Parse the raw backtick content as its own Program. Matching raw chars in
+    // the grammar (like String) instead of an inline Program keeps PEG greed
+    // from swallowing an adjacent literal's opening backtick as a nested one –
+    // `a`, `b` used to conflate into a single Code node.
     return {
       type: "Code",
       content: {
-        value: value.toAST(this.args.mapping) as SyntaxTreeNode,
+        value: CodeParse(value.sourceString),
       },
       origin: getLocationOrigin(this),
     }
@@ -1650,6 +1654,13 @@ const TensorMean = withOptionalAxis(np.mean)
 const TensorMin = withOptionalAxis(np.min)
 const TensorMax = withOptionalAxis(np.max)
 
+// argmax/argmin take a single axis (or none, over the flattened array) and
+// return int32 indices of the extreme element
+const TensorArgMax = (a: Value, axis?: Value) =>
+  track(axis === undefined ? np.argmax(promoteBool(a)) : np.argmax(promoteBool(a), asNumber(axis)))
+const TensorArgMin = (a: Value, axis?: Value) =>
+  track(axis === undefined ? np.argmin(promoteBool(a)) : np.argmin(promoteBool(a), asNumber(axis)))
+
 const TensorNormalize = (a: Value, p?: Value) => {
   const ord = p !== undefined ? asNumber(p) : 2
   return track(np.trueDivide(borrow(a), np.linalg.vectorNorm(borrow(a), { ord })))
@@ -2118,6 +2129,8 @@ const DefaultEnvironment: Record<string, Value> = {
   TensorMean,
   TensorMin,
   TensorMax,
+  TensorArgMax,
+  TensorArgMin,
   TensorNormalize,
 
   TensorNegate,
@@ -2446,6 +2459,8 @@ mean: TensorMean,
 (⌊): TensorMinimum,
 max: FunctionCascade((TensorMaximum, TensorMax)),
 min: FunctionCascade((TensorMinimum, TensorMin)),
+argmax: TensorArgMax,
+argmin: TensorArgMin,
 
 ; Variables
 (~): TensorVariable,

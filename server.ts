@@ -15,6 +15,8 @@ const server = serve({
     "/monaco.worker.js": new Response(monacoWorker, {
       headers: { "Content-Type": "application/javascript" },
     }),
+    // dataset for the MNIST example (build.ts copies it into dist/ for prod)
+    "/mnist.safetensors": () => new Response(Bun.file("./mnist.safetensors")),
     // CORS proxy for LoadTensorFromImageUrl / LoadSafeTensorFromURL
     "/proxy": async (req: Request) => {
       const target = new URL(req.url).searchParams.get("url");

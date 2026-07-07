@@ -17,8 +17,12 @@
     "clean": "rm -rf dist",
     "test": "bun test ./tests.ts"
   },
+  "overrides": {
+    "@jax-js/jax": "^0.1.18"
+  },
   "dependencies": {
-    "@jax-js/jax": "^0.1.16",
+    "@jax-js/jax": "^0.1.18",
+    "@jax-js/loaders": "^0.1.2",
     "@jax-js/optax": "^0.1.2",
     "@monaco-editor/react": "^4.7.0",
     "@preact/signals-core": "^1.12.1",

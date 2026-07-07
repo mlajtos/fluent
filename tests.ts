@@ -82,7 +82,8 @@ describe("tensors", () => {
   })
   test("new jax-js builtins: fft, meshgrid, einsum, topk, pad, repeat, flip, sinc", () => {
     // fft returns [real; imag] stacked; a period-4 wave peaks at bin 2
-    expect(value("f: fft([0, 1, 0, -1, 0, 1, 0, -1]), √(f_0^2 + f_1^2)")).toEqual([0, 0, 4, 0, 0])
+    // (round: jax-js ≥0.1.18 leaves ~1e-16 residuals in the near-zero bins)
+    expect((value("f: fft([0, 1, 0, -1, 0, 1, 0, -1]), √(f_0^2 + f_1^2)") as number[]).map(x => Math.round(x))).toEqual([0, 0, 4, 0, 0])
     // meshgrid and topk return lists of tensors – pull one out with ListGet
     expect(value("ListGet(meshgrid(0 :: 3, 0 :: 2), 0)")).toEqual([[0, 1, 2], [0, 1, 2]])
     expect(value("einsum(\"ij,jk->ik\", [[1, 2], [3, 4]], [[5, 6], [7, 8]])")).toEqual([[19, 22], [43, 50]])
@@ -106,6 +107,10 @@ describe("tensors", () => {
     expect(value("roll([1, 2, 3, 4], 1)")).toEqual([4, 1, 2, 3])
     expect(value("roll([1, 2, 3, 4], -1)")).toEqual([2, 3, 4, 1])
     expect(value("roll([[1, 2], [3, 4]], 1, 0)")).toEqual([[3, 4], [1, 2]])
+    // regression: two rolls on different axes over a lazy nested-stack base
+    // (jax-js #146 – symbolic-division unsoundness, fixed in 0.1.18)
+    expect(value("roll(roll([[1, 2, 3], [4, 5, 6], [7, 8, 9]], 1, 0), 1, 1)"))
+      .toEqual([[9, 7, 8], [3, 1, 2], [6, 4, 5]])
   })
   test("concat with axis", () => {
     expect(value("concat(([1, 2], [3, 4]), 0)")).toEqual([1, 2, 3, 4])
@@ -261,6 +266,23 @@ describe("lists and strings", () => {
   test("strings are values", () => {
     expect(String(value('"hello"'))).toBe("hello")
     expect(value('StringLength("abc")')).toBe(3)
+  })
+})
+
+describe("backtick code literals", () => {
+  // regression: two adjacent `...` literals used to conflate into one Code node
+  // (the inner Program greedily ate the second literal's opening backtick)
+  const stmts = (src: string) => (CodeParse(src) as any).content as any[]
+  test("adjacent backtick literals stay separate", () => {
+    const s = stmts("`1 + 2 * 3 - 4 / 5`,\n\n; precedence\n`1 + 2*3 - 4/5`,")
+    expect(s.length).toBe(2)
+    expect(s.map(n => n.type)).toEqual(["Code", "Code"])
+  })
+  test("each literal's content parses as its own program", () => {
+    const s = stmts("`a + b`, `c*d`")
+    expect(s.map(n => n.type)).toEqual(["Code", "Code"])
+    expect(s[0].content.value.type).toBe("Program")
+    expect(s[1].content.value.type).toBe("Program")
   })
 })
 

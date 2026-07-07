@@ -212,6 +212,7 @@ import dedent from "ts-dedent";
 import { Base64 } from 'js-base64'
 import { type Annotations } from "plotly.js"
 import { getWebGPUDevice } from "@jax-js/jax"
+import { cachedFetch, safetensors } from "@jax-js/loaders"
 import { interpolateViridis } from 'd3-scale-chromatic'
 import { rgb } from 'd3-color'
 
@@ -914,111 +915,6 @@ const Fetch = (url: string) => {
   return s
 }
 
-// A simple JavaScript implementation for reading SafeTensors files.
-// This function takes an ArrayBuffer (e.g., from fs.readFileSync().buffer in Node.js or fetch().arrayBuffer() in browser)
-// and returns an object with tensor names as keys and objects containing dtype, shape, and data (as TypedArray) as values.
-// Note: For 'F16' and 'BF16', the data is returned as Uint16Array (raw bits); you may need additional conversion to floats if required.
-// Throws errors on unsupported dtypes or invalid formats.
-
-
-function LoadSafeTensors(arrayBuffer: ArrayBuffer) {
-  if (!(arrayBuffer instanceof ArrayBuffer)) {
-    throw new Error('Input must be an ArrayBuffer');
-  }
-
-  const dataView = new DataView(arrayBuffer);
-  let offset = 0;
-
-  // Read header length: 8-byte little-endian uint64
-  const headerLen = Number(dataView.getBigUint64(offset, true));
-  offset += 8;
-
-  if (headerLen === 0 || offset + headerLen > arrayBuffer.byteLength) {
-    throw new Error('Invalid header length');
-  }
-
-  // Extract header bytes and decode as JSON
-  const headerArray = new Uint8Array(arrayBuffer, offset, headerLen);
-  const decoder = new TextDecoder('utf-8');
-  const headerString = decoder.decode(headerArray);
-  const header = JSON.parse(headerString);
-
-  offset += headerLen;
-
-  const tensors: Record<string, { dtype: string; shape: number[]; data: ArrayBufferView }> = {};
-
-  for (const key in header) {
-    if (key === '__metadata__') { continue } // Skip optional metadata
-
-    const info = header[key];
-    if (!info.dtype || !info.shape || !info.data_offsets) {
-      throw new Error(`Invalid tensor info for key: ${key}`);
-    }
-
-    const { dtype, shape }: { dtype: string; shape: number[] } = info;
-    const [start, end] = info.data_offsets;
-
-    if (start < 0 || end <= start || offset + end > arrayBuffer.byteLength) {
-      throw new Error(`Invalid data offsets for tensor: ${key}`);
-    }
-
-    const tensorBuffer = arrayBuffer.slice(offset + start, offset + end);
-
-    let data;
-    switch (dtype) {
-      case 'BOOL':
-        data = new Uint8Array(tensorBuffer);
-        break;
-      case 'I8':
-        data = new Int8Array(tensorBuffer);
-        break;
-      case 'U8':
-        data = new Uint8Array(tensorBuffer);
-        break;
-      case 'I16':
-        data = new Int16Array(tensorBuffer);
-        break;
-      case 'U16':
-        data = new Uint16Array(tensorBuffer);
-        break;
-      case 'I32':
-        data = new Int32Array(tensorBuffer);
-        break;
-      case 'U32':
-        data = new Uint32Array(tensorBuffer);
-        break;
-      case 'I64':
-        data = new BigInt64Array(tensorBuffer);
-        break;
-      case 'U64':
-        data = new BigUint64Array(tensorBuffer);
-        break;
-      case 'F16':
-      case 'BF16':
-        data = new Uint16Array(tensorBuffer); // Raw bits; convert to float if needed
-        break;
-      case 'F32':
-        data = new Float32Array(tensorBuffer);
-        break;
-      case 'F64':
-        data = new Float64Array(tensorBuffer);
-        break;
-      default:
-        throw new Error(`Unsupported dtype: ${dtype}`);
-    }
-
-    // Verify the data length matches shape and dtype size
-    const expectedSize = shape.reduce((a, b) => a * b, 1);
-    const byteSize = data.byteLength / data.BYTES_PER_ELEMENT;
-    if (byteSize !== expectedSize) {
-      throw new Error(`Data size mismatch for tensor: ${key}`);
-    }
-
-    tensors[key] = { dtype, shape, data };
-  }
-
-  return tensors;
-}
 
 // CORS fallback: retry blocked cross-origin loads through the dev server
 const proxied = (url: string) => `/proxy?url=${encodeURIComponent(url)}`
@@ -1165,35 +1061,36 @@ function SampleRate(): np.Array {
 }
 
 
-const LoadSafeTensorFromURL = (url?: string) => {
-  if (!url) {
+const LoadSafeTensorFromURL = (rawUrl?: unknown) => {
+  if (rawUrl == null) {
     return new Error("loadSafeTensorFromURL: url is required")
   }
-  if (typeof url !== "string") {
-    return new Error("loadSafeTensorFromURL: url must be a string")
-  }
-  const s = SignalCreate("Loading tensors...");
+  // Fluent strings are String objects, not primitives – coerce before use
+  const url = String(rawUrl)
+  // Start as an empty list, not a string: readers can gate on `#(data()) > 0`
+  // without ListGet/indexing throwing on the loading placeholder (a throw
+  // re-mounts the component → re-evaluates the program → re-fetches in a loop).
+  const s = SignalCreate([] as unknown[]);
 
-  fetch(url)
-    .catch(() => fetch(proxied(url)))
-    .then(res => res.arrayBuffer())
-    .then(buffer => {
-      const tensors = LoadSafeTensors(buffer);
-
-      const mu = Object.entries(tensors).map(([key, value]) => {
-        const data = Float32Array.from(value.data as unknown as ArrayLike<number>, Number)
-        return [key, np.array(data, { shape: value.shape })]
+  // @jax-js/loaders: cachedFetch persists the download in OPFS (so reloads /
+  // HMR don't re-fetch big weight files), safetensors.parse reads every dtype.
+  cachedFetch(url)
+    .catch(() => cachedFetch(proxied(url)))
+    .then(bytes => {
+      const { tensors } = safetensors.parse(bytes)
+      // every tensor → a float32 np.array (BigInt64/Uint8/… all coerce via Number)
+      s.value = Object.entries(tensors).map(([key, t]) => {
+        const data = Float32Array.from(t.data as unknown as ArrayLike<number>, Number)
+        return [key, np.array(data, { shape: t.shape })]
       })
-
-      return mu
-    })
-    .then((a) => {
-      // @ts-ignore
-      s.value = a
     })
 
   return s
 }
+// returns a signal that resolves async – lifting would re-invoke it (re-fetch)
+// on every render, so keep it out of the reactive graph
+setMeta(LoadSafeTensorFromURL, { noAutoLift: true })
+setMeta(LoadTensorFromImageUrl, { noAutoLift: true })
 
 
 // Layout constants
@@ -2599,6 +2496,81 @@ gates: $({ losses(), stack((softmax(t1), softmax(t2), softmax(to))) }),
   output,
   Text("the three gates' switches, converging on OR · AND · (p ∧ ¬q):"),
   gates,
+)
+`,
+  "mnist": `
+; 🔢 A differentiable logic-gate network learns MNIST – the B-type machine,
+; scaled up. 512 → 200 soft boolean gates wired at random over 196 pixels;
+; each gate's identity (which of the 16 two-input truth tables it computes) is
+; a learnable softmax, educated by gradient descent. No neurons, just logic.
+
+(++): TensorConcat,
+
+; --- data: 14×14 binarised MNIST (6000 train, 1000 test) as safetensors ---
+; the signal is an empty list until the fetch resolves to [Xtrain,Ytrain,Xtest,Ytest]
+data: LoadSafeTensorFromURL("mnist.safetensors"),
+loaded: { ListLength(data()) > 0 },
+; train on 3000 of the 6000, score on 500 of the 1000 – keeps each frame light
+; so the whole thing trains live and smoothly in the browser (pixels × examples)
+Xtr: { transpose(slice(ListGet(ListGet(data(), 0), 1), 0, 3000)) },   ; [196, 3000]
+Ytr: { transpose(slice(ListGet(ListGet(data(), 1), 1), 0, 3000)) },   ; [10, 3000]
+Xte: { transpose(slice(ListGet(ListGet(data(), 2), 1), 0, 500)) },    ; [196, 500]
+Yte: { transpose(slice(ListGet(ListGet(data(), 3), 1), 0, 500)) },    ; [10, 500]
+
+; --- fixed random wiring: two source signals per gate ---
+G1: 512, G2: 200,
+IA1: floor(rand([G1]) × 196),  IB1: floor(rand([G1]) × 196),   ; layer 1 reads pixels
+IA2: floor(rand([G2]) × G1),   IB2: floor(rand([G2]) × G1),    ; layer 2 reads layer 1
+
+; the 16 two-input truth tables (row i = binary of i = [f00, f01, f10, f11])
+TT: [
+  [0,0,0,0], [0,0,0,1], [0,0,1,0], [0,0,1,1],
+  [0,1,0,0], [0,1,0,1], [0,1,1,0], [0,1,1,1],
+  [1,0,0,0], [1,0,0,1], [1,0,1,0], [1,0,1,1],
+  [1,1,0,0], [1,1,0,1], [1,1,1,0], [1,1,1,1]
+],
+; pool 20 gates per class: GROUP[c, g] = 1 where gate g belongs to class c
+GROUP: (0 :: 10) ⊗(=) floor((0 :: G2) ÷ (G2 ÷ 10)),
+
+; a soft gate: expected truth table softmax(θ)·TT, blended over the 4 input corners
+gate: { A, B, W | Wt: transpose(W),
+  reshape(Wt_0, [#A, 1])×((1 - A)×(1 - B)) + reshape(Wt_1, [#A, 1])×((1 - A)×B)
+  + reshape(Wt_2, [#A, 1])×(A×(1 - B)) + reshape(Wt_3, [#A, 1])×(A×B)
+},
+sm: { th | matmul(softmax(th), TT) },
+
+; the learnable parameters: each gate's softmax logits over the 16 functions
+t1: ~(randn([G1, 16]) × 0.1),
+t2: ~(randn([G2, 16]) × 0.1),
+
+model: { X |
+  h1: gate(gather(X, IA1), gather(X, IB1), sm(t1)),
+  h2: gate(gather(h1, IA2), gather(h1, IB2), sm(t2)),
+  matmul(GROUP, h2)                                   ; [10, examples] logits
+},
+
+; cross-entropy over the 10 classes (numerically-stable log-softmax on axis 0)
+logp: { L | L - log(Σ(exp(L), 0)) },
+loss: { -mean(Σ(Ytr() × logp(model(Xtr())), 0)) },
+
+; train – each tick is gated on the data being loaded (a no-op 0 until then)
+opt: adam(0.05),
+losses: $([]),
+{ losses(losses() ++ [cascade((guard(loaded(), { opt(loss) }), { 0 }))()]) } ⟳ 1500,
+
+; live accuracy on the held-out test set, recomputed every training step
+accuracy: $({ losses(), cascade((guard(loaded(), {
+  hits: argmax(model(Xte()), 0) = argmax(Yte(), 0),
+  round(mean(hits) × 1000) ÷ 10
+}), { 0 }))() }),
+
+(
+  Text("# 🔢 Logic gates learn MNIST"),
+  Text("A network of soft boolean gates – no neurons – reads handwritten digits."),
+  Text("**test accuracy** (%), on digits it never trained on:"),
+  accuracy,
+  Text("**training loss**:"),
+  losses,
 )
 `,
   "spectrum": `

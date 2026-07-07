@@ -5,7 +5,8 @@
     "": {
       "name": "fluent",
       "dependencies": {
-        "@jax-js/jax": "^0.1.16",
+        "@jax-js/jax": "^0.1.18",
+        "@jax-js/loaders": "^0.1.2",
         "@jax-js/optax": "^0.1.2",
         "@monaco-editor/react": "^4.7.0",
         "@preact/signals-core": "^1.12.1",
@@ -40,12 +41,19 @@
       },
     },
   },
+  "overrides": {
+    "@jax-js/jax": "^0.1.18",
+  },
   "packages": {
     "@babel/runtime": ["@babel/runtime@7.28.4", "", {}, "sha512-Q/N6JNWvIvPnLDvjlE1OUBLPQHH6l3CltCEsHIujp45zQUSSh8K+gHnaEX45yAT1nyngnINhvWtzN+Nb9D8RAQ=="],
 
+    "@bufbuild/protobuf": ["@bufbuild/protobuf@2.12.1", "", {}, "sha512-BvAMfS6LrgZiryOAZ4pBYucu4wG/Ei/9o9DZ9akbREnMLbPJiom2i8b9C8IsKErQoiKqVhrerzt3kOT/RrzLHg=="],
+
     "@choojs/findup": ["@choojs/findup@0.2.1", "", { "dependencies": { "commander": "^2.15.1" }, "bin": { "findup": "bin/findup.js" } }, "sha512-YstAqNb0MCN8PjdLCDfRsBcGVRN41f3vgLvaI0IrIcBp4AqILRSS0DeWNGkicC+f/zRIPJLc+9RURVSepwvfBw=="],
 
-    "@jax-js/jax": ["@jax-js/jax@0.1.16", "", {}, "sha512-gIawtoz9hS5lh0IxxttDZrmA6IBTB2P6yR8J+fN3KPfHnWe2lnoTb/wo7XM+uVD0nggVVSy3e6hBzzbpLoXRfw=="],
+    "@jax-js/jax": ["@jax-js/jax@0.1.18", "", {}, "sha512-7QTC3TqLkRftNLfCTS/1/GpwBVnY+o/qYjGusByT8BHC4bK3R76J2iSK+GHwj/TubVFYBgf8gjd4KhdmbfS9hQ=="],
+
+    "@jax-js/loaders": ["@jax-js/loaders@0.1.2", "", { "dependencies": { "@bufbuild/protobuf": "^2.10.2", "sentencepiece-buf": "^0.2.1-0" } }, "sha512-aBvw3jW4tLmooft2rMs8lu6fOUuMokHCIBKnrMRGq1hyCgFMHTQt3Ev4rcncUKLkAWgXBofXoLcyJwViVrmFKw=="],
 
     "@jax-js/optax": ["@jax-js/optax@0.1.2", "", { "dependencies": { "@jax-js/jax": "^0.1.4" } }, "sha512-pJ/N0FIlrZTRALTc2rlAFSDEn/wBXbpaiqpaw2a+vwH+Br/fCX5dZ1ZckZFTG+iTPOm+oZ/xA+cjaocu47+0HA=="],
 
@@ -548,6 +556,8 @@
     "sax": ["sax@1.4.1", "", {}, "sha512-+aWOz7yVScEGoKNd4PA10LZ8sk0A/z5+nXQG5giUO5rprX9jgYsTdov9qCchZiPIZezbZH+jRut8nPodFAX4Jg=="],
 
     "scheduler": ["scheduler@0.27.0", "", {}, "sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q=="],
+
+    "sentencepiece-buf": ["sentencepiece-buf@0.2.1-0", "", { "dependencies": { "@bufbuild/protobuf": "^2.10.2" } }, "sha512-EUNi6hvPjHr2Jcmy3gFdV+elNNsrDTnkVyJJEMGVFSbXAWacW8gNP0cQEIAG5eGk5Kz46Vc23XZ7udOQeX126Q=="],
 
     "shallow-copy": ["shallow-copy@0.0.1", "", {}, "sha512-b6i4ZpVuUxB9h5gfCxPiusKYkqTMOjEbBs4wMaFbkfia4yFv92UKZ6Df8WXcKbn08JNL/abvg3FnMAOfakDvUw=="],
 
