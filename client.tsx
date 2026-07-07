@@ -1105,7 +1105,10 @@ const NODE_HEIGHT = GLYPH.height + 2 * TREE.nodePadding.y
 const ROW_HEIGHT = NODE_HEIGHT + TREE.gap.row
 
 // Simple types for layout
-type GridNode = { label: string, row: number, col: number, width: number, origin: Origin }
+type GridNode = {
+  label: string, row: number, col: number, width: number, origin: Origin,
+  children: GridNode[], parent: GridNode | null,
+}
 type GridEdge = { parentRow: number, parentCol: number, childRow: number, childCol: number }
 
 // Reference to main editor for hover highlighting
@@ -1311,13 +1314,29 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
     return children.length === 0 ? 1 : 1 + spineLength(children[0]!)
   }
 
-  // Snug packing: anchor each subtree at the first row where its whole spine
-  // fits, then pack the remaining children greedily below.
-  function layout(node: SyntaxTreeNode, minRow: number, col: number): { row: number, maxRow: number } {
+  // Anchor each subtree at the first row where its spine fits, then pack the
+  // remaining children snugly below (childMin = previous child's row + 1). A node
+  // shares a row with its first child, so the leftmost spine is horizontal.
+  //
+  // `used` reserves both node cells AND each parent's trunk – the vertical run in
+  // the column gap, from the parent's row down to its last child's row. A node
+  // may pack into any free row except one where another same-column parent's
+  // trunk already passes; that reservation is what keeps unrelated trunks from
+  // overlapping, while still letting non-conflicting subtrees interleave tightly.
+  function layout(node: SyntaxTreeNode, minRow: number, col: number, parent: GridNode | null): { node: GridNode, maxRow: number } {
     const spine = spineLength(node)
+    // the spine follows first children, so every spine node but the last leaf
+    // owns a trunk – track which spine positions to test against reserved trunks
+    const spineHasTrunk: boolean[] = []
+    for (let s: SyntaxTreeNode = node, i = 0; i < spine; i++) {
+      const kids = getChildren(s)
+      spineHasTrunk.push(kids.length > 0)
+      s = kids[0]!
+    }
     const fitsAt = (r: number) => {
       for (let i = 0; i < spine; i++) {
         if (used.has(`${r},${col + i}`)) { return false }
+        if (spineHasTrunk[i] && used.has(`g:${r},${col + i}`)) { return false }
       }
       return true
     }
@@ -1325,24 +1344,69 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
     while (!fitsAt(row)) row++
 
     const label = getLabel(node)
-    nodes.push({ label, row, col, width: nodeWidth(label), origin: node.origin })
+    const self: GridNode = { label, row, col, width: nodeWidth(label), origin: node.origin, children: [], parent }
+    nodes.push(self)
     used.add(`${row},${col}`)
 
+    const children = getChildren(node)
     let maxRow = row
     let childMin = row
-    for (const child of getChildren(node)) {
-      const placed = layout(child, childMin, col + 1)
-      edges.push({ parentRow: row, parentCol: col, childRow: placed.row, childCol: col + 1 })
+    let lastChildRow = row
+    for (const child of children) {
+      const placed = layout(child, childMin, col + 1, self)
+      self.children.push(placed.node)
       maxRow = Math.max(maxRow, placed.maxRow)
-      childMin = placed.row + 1
+      lastChildRow = Math.max(lastChildRow, placed.node.row)
+      childMin = placed.node.row + 1
     }
-    return { row, maxRow }
+    // reserve this parent's trunk (its row → its last child's row) in the gap
+    if (children.length > 0) {
+      for (let r = row; r <= lastChildRow; r++) used.add(`g:${r},${col}`)
+    }
+    return { node: self, maxRow }
   }
 
-  // Top-level statements keep disjoint row bands
   let row = 1
   for (const stmt of tree.content) {
-    row = layout(stmt, row, 1).maxRow + 1
+    row = layout(stmt, row, 1, null).maxRow + 1
+  }
+
+  // Pull floating spines down toward their subtree. A node whose first child is
+  // small but whose other children were pushed far below (by an unrelated
+  // subtree's reserved trunk) dangles high above the bulk of its own subtree –
+  // e.g. `⊢ : { … }` leaves `⊢ :` stranded rows above its lambda. Slide each such
+  // spine down into the free rows just above its nearest branch child. Only ever
+  // moves nodes down into empty cells, so it can't create overlaps or crossings.
+  const spineRoots = nodes.filter(n => n.parent === null || n.parent.children[0] !== n)
+  spineRoots.sort((a, b) => a.row - b.row)
+  for (const root of spineRoots) {
+    const spine: GridNode[] = []
+    for (let s: GridNode | undefined = root; s; s = s.children[0]) spine.push(s)
+    let nearestBranch = Infinity
+    for (const s of spine) {
+      for (let j = 1; j < s.children.length; j++) nearestBranch = Math.min(nearestBranch, s.children[j]!.row)
+    }
+    if (!isFinite(nearestBranch)) continue      // no branch child to hug
+    const target = nearestBranch - 1
+    if (target <= root.row) continue
+    let newRow = root.row
+    for (let r = target; r > root.row; r--) {
+      if (spine.every(s => !used.has(`${r},${s.col}`))) { newRow = r; break }
+    }
+    if (newRow > root.row) {
+      for (const s of spine) {
+        used.delete(`${s.row},${s.col}`)
+        s.row = newRow
+        used.add(`${newRow},${s.col}`)
+      }
+    }
+  }
+
+  // Build edges from the final node positions (rows may have shifted above)
+  for (const n of nodes) {
+    for (const c of n.children) {
+      edges.push({ parentRow: n.row, parentCol: n.col, childRow: c.row, childCol: c.col })
+    }
   }
 
   return { nodes, edges }
