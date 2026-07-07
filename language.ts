@@ -171,6 +171,29 @@ function getLocationOrigin(node: any): Origin {
   }
 }
 
+// A backtick literal's inner Program is parsed on its own (see the Code action),
+// so its nodes' origins are relative to the inner text. Shift them into the
+// outer document – (startLine, startColumn) is where the inner text begins – so
+// editor hover-highlighting maps each viz node back to the right source range.
+// Only the first inner line needs the column offset; later lines start at col 1
+// in both.
+const shiftOrigins = (node: any, startLine: number, startColumn: number): void => {
+  if (!node || typeof node !== "object") return
+  if (node.origin?.start && node.origin?.end) {
+    const map = (p: { line: number; column: number }) => ({
+      line: startLine + p.line - 1,
+      column: p.line === 1 ? startColumn + p.column - 1 : p.column,
+    })
+    node.origin = { ...node.origin, start: map(node.origin.start), end: map(node.origin.end) }
+  }
+  for (const key in node) {
+    if (key === "origin") continue
+    const child = node[key]
+    if (Array.isArray(child)) { for (const c of child) shiftOrigins(c, startLine, startColumn) }
+    else if (child && typeof child === "object") shiftOrigins(child, startLine, startColumn)
+  }
+}
+
 // Lexical operator (from Tight/Long operations) -> Symbol node
 const operatorSymbolNode = (op: { sourceString: string }): SyntaxTreeNode => ({
   type: "Symbol",
@@ -351,12 +374,14 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
     // Parse the raw backtick content as its own Program. Matching raw chars in
     // the grammar (like String) instead of an inline Program keeps PEG greed
     // from swallowing an adjacent literal's opening backtick as a nested one –
-    // `a`, `b` used to conflate into a single Code node.
+    // `a`, `b` used to conflate into a single Code node. The sub-parse's origins
+    // are relative to the inner text, so shift them back to the outer document.
+    const inner = CodeParse(value.sourceString)
+    const contentStart = getLocationOrigin(value).start
+    shiftOrigins(inner, contentStart.line, contentStart.column)
     return {
       type: "Code",
-      content: {
-        value: CodeParse(value.sourceString),
-      },
+      content: { value: inner },
       origin: getLocationOrigin(this),
     }
   },
