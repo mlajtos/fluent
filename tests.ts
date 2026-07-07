@@ -269,6 +269,24 @@ describe("lists and strings", () => {
   })
 })
 
+describe("operator arity", () => {
+  // +, -, ×, · overload unary/binary by arity. Regression: a binary op with an
+  // unknown operand used to silently fall back to the unary op on the first
+  // operand (`1 + a` → abs(1) = 1) instead of erroring.
+  test("binary op with an unknown operand is an Error, not a silent unary", () => {
+    expect(run("1 + a")).toBeInstanceOf(Error)
+    expect(run("a + 1")).toBeInstanceOf(Error)
+    expect(run("2 * b")).toBeInstanceOf(Error)
+  })
+  test("binary and unary forms both still work", () => {
+    expect(value("1 + 2")).toBe(3)
+    expect(value("5 - 3")).toBe(2)
+    expect(value("+([-3, 4])")).toEqual([3, 4])   // unary abs
+    expect(value("-([1, 2])")).toEqual([-1, -2])  // unary negate
+    expect(value("×(-7)")).toBe(-1)               // unary sign
+  })
+})
+
 describe("backtick code literals", () => {
   // regression: two adjacent `...` literals used to conflate into one Code node
   // (the inner Program greedily ate the second literal's opening backtick)

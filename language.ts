@@ -1137,6 +1137,16 @@ const FunctionCascade = (candidates: Function[]) => (a: Value, b: Value) => {
   return result
 }
 
+// Overloaded by arity: two operands run the binary op, one runs the unary op –
+// used for +, -, ×, · (add/abs, subtract/negate, multiply/sign). Unlike
+// FunctionCascade, a binary op that *fails* (e.g. an unbound-symbol operand) is
+// NOT silently retried as the unary op, so `1 + a` with unknown `a` is an Error
+// rather than a quietly-wrong abs(1).
+const FunctionArity = (candidates: Function[]) => {
+  const [binary, unary] = candidates
+  return (a: Value, b: Value) => (b === undefined ? unary?.(a) : binary?.(a, b))
+}
+
 // Synchronous, non-consuming read of a tensor's data as nested JS values.
 // jax-js `.js()` consumes the array, so read through a borrowed reference.
 // Every read crosses the device boundary (on WebGPU: a canvas readback), and
@@ -2067,6 +2077,7 @@ const DefaultEnvironment: Record<string, Value> = {
   FunctionIterate,
   FunctionPower,
   FunctionCascade,
+  FunctionArity,
   FunctionEvaluate,
   FunctionApply,
   FunctionNoAutoLift,
@@ -2367,11 +2378,11 @@ root: TensorRoot,
 add: TensorAdd,
 sub: TensorSubtract,
 mul: TensorMultiply,
-(+): FunctionCascade((TensorAdd, TensorAbsolute)),
-(-): FunctionCascade((TensorSubtract, TensorNegate)),
-(*): FunctionCascade((TensorMultiply, TensorSign)),
-(×): FunctionCascade((TensorMultiply, TensorSign)),
-(·): FunctionCascade((TensorMultiply, TensorSign)),
+(+): FunctionArity((TensorAdd, TensorAbsolute)),
+(-): FunctionArity((TensorSubtract, TensorNegate)),
+(*): FunctionArity((TensorMultiply, TensorSign)),
+(×): FunctionArity((TensorMultiply, TensorSign)),
+(·): FunctionArity((TensorMultiply, TensorSign)),
 
 ; Math
 neg: TensorNegate,
