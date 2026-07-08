@@ -119,10 +119,10 @@ Button("Reset", { x(0) }),
 - Automatic visualization of values (tensors, lists, functions)
 - GPU-accelerated tensor operations (via jax-js on WebGPU, with Wasm/WebGL fallback)
 - LLM-backed code generation (BYO Anthropic API key)
-- Command palette (Ctrl+P)
+- Command palette (Ctrl+P or Ctrl+Shift+P)
 - Auto-completion (Ctrl+Space)
 - Shareable URL links (Ctrl+S)
-- examples gallery (Ctrl+O)
+- examples gallery (Ctrl+O; in Safari use Ctrl+Shift+O — plain ⌘O is reserved by the browser)
 `
 
 /*
@@ -3500,10 +3500,13 @@ const editorOnMount: OnMount = (editor, monaco) => {
 // ⌘S = save page, ⌘P = print). Monaco's own keybindings only hear keys while
 // the editor is focused – claim these at the window level, capture phase,
 // so they work from anywhere on the page and beat the browser dialog.
-const GLOBAL_SHORTCUTS: Record<string, string> = {
-  KeyO: "fluent-load-example",
-  KeyS: "fluent-save-example",
-  KeyP: "editor.action.quickCommand",
+// Safari handles ⌘O in its menu BEFORE the page ever sees a keydown, so it
+// cannot be intercepted at all there – the ⇧ variants are the escape hatch
+// (⌘⇧O opens the gallery everywhere; ⌘⇧P matches VS Code's palette anyway).
+const GLOBAL_SHORTCUTS: Record<string, { action: string, withShift?: boolean }> = {
+  KeyO: { action: "fluent-load-example", withShift: true },
+  KeyS: { action: "fluent-save-example" },
+  KeyP: { action: "editor.action.quickCommand", withShift: true },
 }
 
 export function Playground() {
@@ -3512,12 +3515,12 @@ export function Playground() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const action = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey ? GLOBAL_SHORTCUTS[e.code] : undefined
-      if (!action || !mainEditorRef) { return }
+      const shortcut = (e.metaKey || e.ctrlKey) && !e.altKey ? GLOBAL_SHORTCUTS[e.code] : undefined
+      if (!shortcut || !mainEditorRef || (e.shiftKey && !shortcut.withShift)) { return }
       e.preventDefault()
       e.stopPropagation() // Monaco would fire the same action again
       mainEditorRef.editor.focus()
-      mainEditorRef.editor.getAction(action)?.run()
+      mainEditorRef.editor.getAction(shortcut.action)?.run()
     }
     window.addEventListener("keydown", onKeyDown, true)
     return () => window.removeEventListener("keydown", onKeyDown, true)

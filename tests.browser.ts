@@ -65,6 +65,12 @@ test("Ctrl/Cmd+O opens the example gallery without editor focus", async ({ page 
     await page.keyboard.press("ControlOrMeta+KeyO")
     await expect(page.getByPlaceholder("Select an example to load")).toBeVisible({ timeout: 2_000 })
   }).toPass({ timeout: 20_000 })
+  // the ⇧ variant must work too – Safari reserves plain ⌘O in its menu,
+  // so ⌘⇧O is the only chord Safari users have
+  await page.keyboard.press("Escape")
+  await expect(page.getByPlaceholder("Select an example to load")).not.toBeVisible()
+  await page.keyboard.press("ControlOrMeta+Shift+KeyO")
+  await expect(page.getByPlaceholder("Select an example to load")).toBeVisible()
 })
 
 test("camera edge-detection demo produces non-flat output", async ({ page }) => {

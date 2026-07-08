@@ -6,12 +6,16 @@ Fluent is a tiny language + IDE for people who like to tinker with math — plot
 
 **[▶ Open the playground](https://mlajtos.github.io/fluent/)** — nothing to install, and it's fast: your GPU does the work, right in the browser.
 
-```fluent
+```clojure
 square: { x | x^2 },
 ∇(square)([1, 2, 3])   ; [2, 4, 6]
 ```
 
 [**▶ run this**](https://mlajtos.github.io/fluent/?code=c3F1YXJlOiB7IHggfCB4XjIgfSwK4oiHKHNxdWFyZSkoWzEsIDIsIDNdKSAgIDsgWzIsIDQsIDZd) — every snippet in this README is a link that opens live in the playground.
+
+<!-- code fences say "clojure" because GitHub already has a language named
+     Fluent (Mozilla's FTL) and paints ours as errors; clojure is the nearest
+     look-alike (; comments, brackets, numbers) -->
 
 ## Why it feels different
 
@@ -45,7 +49,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 
 **Spacing is grouping** — hug what belongs together:
 
-```fluent
+```clojure
 1 + 2 * 3,   ; 9 — spaced operators run left-to-right
 1 + 2*3      ; 7 — glued operators bind tighter
 ```
@@ -54,7 +58,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 
 **Tensors are the only numbers** — a scalar is just a small one, arithmetic broadcasts, and a glued `_` indexes:
 
-```fluent
+```clojure
 v: [10, 20, 30],
 v + 1,         ; [11, 21, 31]
 v_0,           ; 10 — a glued _ indexes
@@ -67,7 +71,7 @@ v_[2, 0],      ; [30, 10] — with a tensor of indices
 
 **Functions and operators are the same thing** — anything can be called, anything can sit between its arguments:
 
-```fluent
+```clojure
 1 + 2,                ; 3
 +(1, 2),              ; 3 — an operator, called
 1 add 2,              ; 3 — a function, infix
@@ -80,7 +84,7 @@ Defining your own operator is just a binding: `(++): ListConcat`.
 
 **Everything has three names** — long for discovery, a word for habit, a glyph for fluency:
 
-```fluent
+```clojure
 TensorSum(0 :: 10),   ; 45
 sum(0 :: 10),         ; 45 — same function
 Σ(0 :: 10)            ; 45 — same hover card
@@ -128,7 +132,7 @@ Some cells are still empty — the language is young, and names are earned.
 
 **Signals make it live** — `$(…)` makes a signal; whatever touches it recomputes when it changes:
 
-```fluent
+```clojure
 x: $(0.5),
 (Slider(x), x ^ 2)
 ```
@@ -137,7 +141,7 @@ x: $(0.5),
 
 **Training is three lines** — `~` makes a trainable variable, optimizers (`adam`, `adamw`, `sgd`, `adagrad`) minimize a loss thunk, `⟳` runs between frames so the UI stays live:
 
-```fluent
+```clojure
 θ: ~([0, 0]),
 𝓛: { Σ((θ - [0.23, 0.47])^2) },
 { adam(0.1)(𝓛) } ⟳ 100,
@@ -152,7 +156,7 @@ The full tour lives in the playground — [**open the built-in Documentation**](
 
 Live evaluation on every keystroke, hover docs, unicode completion (type `alpha`, get `α`), syntax trees for quoted code, camera and microphone as tensor sources, and LLM code generation — write `;;a bouncing ball;;` and it appears (bring your own Anthropic API key, set via the command palette).
 
-<kbd>Ctrl</kbd>+<kbd>O</kbd> examples · <kbd>Ctrl</kbd>+<kbd>S</kbd> share as URL · <kbd>Ctrl</kbd>+<kbd>P</kbd> commands · <kbd>Ctrl</kbd>+<kbd>Space</kbd> complete
+<kbd>Ctrl</kbd>+<kbd>O</kbd> examples · <kbd>Ctrl</kbd>+<kbd>S</kbd> share as URL · <kbd>Ctrl</kbd>+<kbd>P</kbd> commands · <kbd>Ctrl</kbd>+<kbd>Space</kbd> complete — Safari reserves ⌘O, use <kbd>⇧</kbd><kbd>⌘</kbd><kbd>O</kbd> there
 
 ## Run locally
 
