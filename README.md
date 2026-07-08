@@ -6,10 +6,7 @@ Fluent is a tiny language + IDE for people who like to tinker with math — plot
 
 **[▶ Open the playground](https://mlajtos.github.io/fluent/)** — nothing to install, and it's fast: your GPU does the work, right in the browser.
 
-```clojure
-square: { x | x^2 },
-∇(square)([1, 2, 3])   ; [2, 4, 6]
-```
+[![square: { x | x^2 }, ∇(square)([1, 2, 3]) — evaluated live in the playground](hero.png)](https://mlajtos.github.io/fluent/?code=c3F1YXJlOiB7IHggfCB4XjIgfSwK4oiHKHNxdWFyZSkoWzEsIDIsIDNdKSAgIDsgWzIsIDQsIDZd)
 
 [**▶ run this**](https://mlajtos.github.io/fluent/?code=c3F1YXJlOiB7IHggfCB4XjIgfSwK4oiHKHNxdWFyZSkoWzEsIDIsIDNdKSAgIDsgWzIsIDQsIDZd) — every snippet in this README is a link that opens live in the playground.
 
