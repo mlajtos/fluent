@@ -136,19 +136,17 @@ x: $(0.5),
 
 [▶&nbsp;run](https://mlajtos.github.io/fluent/?code=eDogJCgwLjUpLAooU2xpZGVyKHgpLCB4IF4gMik)
 
-**Training is a few lines** — `~` makes a trainable variable, an optimizer (`adam`, `adamw`, `sgd`, `adagrad`) minimizes a loss thunk, `⟳` runs it between frames so the UI stays live. This one fits a line to data:
+**Training is a few lines** — `~` makes a trainable variable, an optimizer (`sgd`, `adam`, `adamw`, `adagrad`) minimizes a loss thunk, `⟳` runs it between frames so the UI stays live:
 
 ```clojure
-x: 0 :: 10,
-y: x×0.23 + 0.47,
 θ: ~([0, 0]),
-𝓛: { mean((x × θ_0 + θ_1 - y)^2) },
-opt: adam(0.1),
+𝓛: { Σ((θ - [0.23, 0.47])^2) },
+opt: sgd(0.1),
 { opt(𝓛) } ⟳ 100,
 θ
 ```
 
-[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=eDogMCA6OiAxMCwKeTogeMOXMC4yMyArIDAuNDcsCs64OiB-KFswLCAwXSksCvCdk5s6IHsgbWVhbigoeCDDlyDOuF8wICsgzrhfMSAtIHkpXjIpIH0sCm9wdDogYWRhbSgwLjEpLAp7IG9wdCjwnZObKSB9IOKfsyAxMDAsCs64)
+[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=zrg6IH4oWzAsIDBdKSwK8J2TmzogeyDOoygozrggLSBbMC4yMywgMC40N10pXjIpIH0sCm9wdDogc2dkKDAuMSksCnsgb3B0KPCdk5spIH0g4p-zIDEwMCwKzrg)
 
 The full tour lives in the playground — [**open the built-in Documentation**](https://mlajtos.github.io/fluent/?code=RG9jdW1lbnRhdGlvbg), or hover any built-in for its card.
 

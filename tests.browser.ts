@@ -73,6 +73,21 @@ test("Ctrl/Cmd+O opens the example gallery without editor focus", async ({ page 
   await expect(page.getByPlaceholder("Select an example to load")).toBeVisible()
 })
 
+test("README training snippet converges and stays responsive", async ({ page }) => {
+  // the adam twin of this snippet froze the tab for ~52s (exponential
+  // deferred compilation – see jaxjs notes); sgd jits and must stay fluid,
+  // with converged values rendered well within the timeout
+  await open(page, `
+θ: ~([0, 0]),
+𝓛: { Σ((θ - [0.23, 0.47])^2) },
+opt: sgd(0.1),
+{ opt(𝓛) } ⟳ 100,
+θ
+`.trim())
+  await expect(panel(page)).toContainText("0.23", { timeout: 30_000 })
+  await expect(panel(page)).toContainText("0.47")
+})
+
 test("camera edge-detection demo produces non-flat output", async ({ page }) => {
   // regression: camera pixels were int32, and jax-js integer arithmetic
   // truncates (int ÷ 255 = 0, mean stays int) – the whole edge response
