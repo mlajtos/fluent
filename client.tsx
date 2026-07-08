@@ -229,12 +229,15 @@ loader.config({ monaco })
 // jax-js backends are initialized by language.ts on import (WebGPU → Wasm → WebGL)
 
 // MARK: Pixel I/O
-// jax-js has no tf.browser – bridge ImageData ↔ arrays by hand. Convention
-// follows TFJS: int32 arrays hold 0–255, float32 arrays hold 0–1.
+// jax-js has no tf.browser – bridge ImageData ↔ arrays by hand. Pixels enter
+// the language as float32 in 0–1: Fluent is a float32 language, and jax-js
+// int32 arithmetic truncates (int ÷ 255 is 0, even mean() stays int) – the
+// same trap TensorRange casts arange around. toPixels still accepts int
+// arrays (0–255) for display.
 
 const pixelReader = new OffscreenCanvas(1, 1)
 
-// ImageBitmap / <video> / <img> → [h, w, 3] int32 tensor (0–255), untracked –
+// ImageBitmap / <video> / <img> → [h, w, 3] float32 tensor (0–1), untracked –
 // the caller owns the result
 const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): np.Array => {
   const width = (source as HTMLVideoElement).videoWidth || (source as { width: number }).width
@@ -246,11 +249,11 @@ const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): 
   const context = pixelReader.getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D
   context.drawImage(source, 0, 0)
   const { data } = context.getImageData(0, 0, width, height)
-  const rgbFlat = new Int32Array(width * height * 3)
+  const rgbFlat = new Float32Array(width * height * 3)
   for (let i = 0, j = 0; i < data.length; i += 4, j += 3) {
-    rgbFlat[j] = data[i]!
-    rgbFlat[j + 1] = data[i + 1]!
-    rgbFlat[j + 2] = data[i + 2]!
+    rgbFlat[j] = data[i]! / 255
+    rgbFlat[j + 1] = data[i + 1]! / 255
+    rgbFlat[j + 2] = data[i + 2]! / 255
   }
   return np.array(rgbFlat, { shape: [height, width, 3] })
 }
@@ -1004,7 +1007,7 @@ function Camera(width?: np.Array, height?: np.Array, fps?: np.Array): Signal<np.
 
   let lastTime = 0
   // Initialize with black frame so operations don't fail before camera starts
-  return FrameSignal(np.zeros([h, w, 3], { dtype: np.int32 }), (time) => {
+  return FrameSignal(np.zeros([h, w, 3]), (time) => {
     if (time - lastTime < frameInterval || video.readyState !== video.HAVE_ENOUGH_DATA) { return null }
     lastTime = time
     return fromPixels(video)
@@ -2718,8 +2721,8 @@ accuracy: $({ losses(), cascade((guard(loaded(), {
 cam: Camera(320, 240),
 k: [[0, 1, 0], [1, -4, 1], [0, 1, 0]],
 
-; every frame: grayscale the image, convolve, show the response
-edges: $({ abs(conv(k, mean(cam() ÷ 255, 2))) }),
+; every frame: grayscale the image (mean over the color axis), convolve
+edges: $({ abs(conv(k, mean(cam(), 2))) }),
 
 (
   Text("# 📷 Live Edges"),

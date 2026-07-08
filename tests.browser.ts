@@ -53,3 +53,32 @@ test("camera (fake device) streams into a canvas", async ({ page }) => {
   await open(page, "Camera(64, 48)")
   await expect(panel(page).locator("canvas").first()).toBeVisible({ timeout: 20_000 })
 })
+
+test("camera edge-detection demo produces non-flat output", async ({ page }) => {
+  // regression: camera pixels were int32, and jax-js integer arithmetic
+  // truncates (int ÷ 255 = 0, mean stays int) – the whole edge response
+  // silently collapsed to zeros and rendered as a flat heatmap
+  await open(page, `
+cam: Camera(320, 240),
+k: [[0, 1, 0], [1, -4, 1], [0, 1, 0]],
+edges: $({ abs(conv(k, mean(cam(), 2))) }),
+edges
+`.trim())
+  const canvas = panel(page).locator("canvas").first()
+  await expect(canvas).toBeVisible({ timeout: 20_000 })
+  // the fake feed has structure, so the heatmap must span the colormap
+  await expect(async () => {
+    const spread = await canvas.evaluate((el: HTMLCanvasElement) => {
+      const ctx = el.getContext("2d")
+      if (!ctx) { return -1 }
+      const { data } = ctx.getImageData(0, 0, el.width, el.height)
+      let min = 255, max = 0
+      for (let i = 0; i < data.length; i += 4) {
+        min = Math.min(min, data[i]!)
+        max = Math.max(max, data[i]!)
+      }
+      return max - min
+    })
+    expect(spread).toBeGreaterThan(10)
+  }).toPass({ timeout: 15_000 })
+})
