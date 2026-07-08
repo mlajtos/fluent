@@ -54,6 +54,15 @@ test("camera (fake device) streams into a canvas", async ({ page }) => {
   await expect(panel(page).locator("canvas").first()).toBeVisible({ timeout: 20_000 })
 })
 
+test("Ctrl/Cmd+O opens the example gallery without editor focus", async ({ page }) => {
+  // regression: the binding lived only inside Monaco, so with focus anywhere
+  // else the browser dialog won (Safari's file picker) instead of the gallery
+  await open(page, "1 + 1")
+  await expect(panel(page)).toContainText("2")
+  await page.keyboard.press("ControlOrMeta+KeyO")
+  await expect(page.getByPlaceholder("Select an example to load")).toBeVisible()
+})
+
 test("camera edge-detection demo produces non-flat output", async ({ page }) => {
   // regression: camera pixels were int32, and jax-js integer arithmetic
   // truncates (int ÷ 255 = 0, mean stays int) – the whole edge response

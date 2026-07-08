@@ -3496,9 +3496,32 @@ const editorOnMount: OnMount = (editor, monaco) => {
 
 // MARK: Playground
 
+// Shortcuts the browser also wants (Safari especially: ⌘O = open file,
+// ⌘S = save page, ⌘P = print). Monaco's own keybindings only hear keys while
+// the editor is focused – claim these at the window level, capture phase,
+// so they work from anywhere on the page and beat the browser dialog.
+const GLOBAL_SHORTCUTS: Record<string, string> = {
+  KeyO: "fluent-load-example",
+  KeyS: "fluent-save-example",
+  KeyP: "editor.action.quickCommand",
+}
+
 export function Playground() {
 
   useSignals()
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const action = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey ? GLOBAL_SHORTCUTS[e.code] : undefined
+      if (!action || !mainEditorRef) { return }
+      e.preventDefault()
+      e.stopPropagation() // Monaco would fire the same action again
+      mainEditorRef.editor.focus()
+      mainEditorRef.editor.getAction(action)?.run()
+    }
+    window.addEventListener("keydown", onKeyDown, true)
+    return () => window.removeEventListener("keydown", onKeyDown, true)
+  }, [])
 
   useEffect(() => {
     // back/forward navigation restores the code from the URL. (popstate is the
