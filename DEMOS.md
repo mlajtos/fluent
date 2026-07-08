@@ -49,7 +49,7 @@ step: { sgd(once(lr) × 0.05)(𝓛) },
 
 **Shipped**: `Layers` + `Point2D` (draggable point bound to a tensor variable, with trail) landed, and the gallery version is the full experience — grab θ, drop it on a ridge, watch it roll, with the optimizer's trail drawn on the surface. The final form is 22 lines: one `𝓛` lambda drives both the surface (evaluated over the view via `⊗`) and the descent.
 
-Variants once it works: side-by-side `sgd` vs `adam` racing on the same surface; a "momentum" slider; saddle points; a loss with a local minimum trap.
+**Shipped variant**: `optimizer-race` — `adam` vs `sgd` racing on the same surface, two trails, two live losses. Still open: a momentum slider, saddle points, a local-minimum trap.
 
 ---
 
@@ -68,7 +68,10 @@ bins: linspace([0, 1], 256),
 fit: { h_0 × exp(-((bins - μ_0)^2 / 0.003)) + (h_1 × exp(-((bins - μ_1)^2 / 0.003)) ) },
 𝓛: { mean((fit() - once(spec))^2) },
 
-SignalEffect({ spec(), sgd(0.3)(𝓛), ◌ }),   ; one descent step per frame
+; the optimizer lives OUTSIDE the loop – rebuilding it per step resets its
+; state and recompiles its program
+opt: sgd(0.3),
+SignalEffect({ spec(), opt(𝓛), ◌ }),   ; one descent step per frame
 
 (spec, fit()) ; overlay would be nicer – see wishlist
 ```
@@ -85,14 +88,17 @@ target: $([0.5, 1.2]),          ; drag me (Point2D wishlist) – slider-per-axis
 
 tip: { [cos(θ_0) + cos(θ_0 + θ_1), sin(θ_0) + sin(θ_0 + θ_1)] },
 𝓛: { Σ((tip() - once(target))^2) },
-SignalEffect({ target(), sgd(0.5)(𝓛), ◌ }),
+opt: sgd(0.5),
+SignalEffect({ target(), opt(𝓛), ◌ }),
 ```
 
 Scales beautifully: 3 joints, 10 joints — the code barely changes, which *is* the point.
 
-## 4. Kernel Lab — Live Camera Convolution
+## 4. Kernel Lab — Live Camera Convolution — **MVP SHIPPED** (`camera-edges` in the gallery)
 
-`Camera()` is a reactive tensor. Put a 3×3 kernel next to it made of nine `Scrubber`s — drag the numbers, and your face becomes an edge map / emboss / blur *while you drag*. The APL-style `conv`/`stencil` from the prelude carries the story: convolution is not a black box, it's nine numbers you can touch. (2D conv needs a `conv2d` binding — 1D `conv` on `Microphone()` works today.)
+`Camera()` is a reactive tensor. Put a 3×3 kernel next to it made of nine `Scrubber`s — drag the numbers, and your face becomes an edge map / emboss / blur *while you drag*. The APL-style `conv`/`stencil` from the prelude carries the story: convolution is not a black box, it's nine numbers you can touch.
+
+**Shipped**: `conv` is rank-polymorphic (a 2D kernel over an image just works), and `camera-edges` ships the fixed-Laplacian version. Still open: the nine-scrubber editable kernel, which is the actual "lab".
 
 ## 5. Petri Dish — Neural Cellular Automata
 
@@ -112,7 +118,7 @@ An animation easing curve defined by a tiny spline; a ball bouncing according to
 
 ## 9. Epicycles — Draw with Fourier
 
-Draw a squiggle, FFT it, replay it as rotating circles stacked tip-to-tail. The eternal crowd-pleaser, and legitimately *at home* here: the whole thing is one `rfft` call plus a `Time()`-driven complex sum. Needs an `fft` binding (tf.js has `tf.spectral.rfft`) and draw-input (`Canvas`).
+Draw a squiggle, FFT it, replay it as rotating circles stacked tip-to-tail. The eternal crowd-pleaser, and legitimately *at home* here: the whole thing is one `fft` call plus a `Time()`-driven complex sum. `fft` shipped (it powers `spectrum` and `pitch-detector`) — only draw-input (`Canvas`) is missing.
 
 ## 10. The APL Wall
 
@@ -124,17 +130,18 @@ Not one demo — a gallery page of **tweet-sized Fluent programs**, each with it
 
 | Primitive | Unlocks | Notes |
 |---|---|---|
-| `Point2D` / draggable marker (or `MousePosition`) | #1 drag-the-ball, #3 target, #8 control points | already on the TODO list as MousePosition |
-| Plot overlays (scatter/path layered on heatmap/line) | #1 optimizer trail, #2 fit-over-spectrum | biggest bang for plotting effort |
-| `ImageUpload` | #7, #5 targets | on the TODO list |
-| `conv2d` binding | #4, #5 | one line: expose `tf.conv2d` |
-| `fft` binding | #9, spectrograms | one line: expose `tf.spectral.rfft` |
+| ~~`Point2D` / draggable marker~~ | #1 drag-the-ball, #3 target, #8 control points | **shipped**, with `MousePosition` and `Trail` |
+| ~~Plot overlays~~ | #1 optimizer trail, #2 fit-over-spectrum | **shipped** as `Layers` |
+| ~~`ImageUpload`~~ | #7, #5 targets | **shipped** (image still lost on re-eval — TODO) |
+| ~~`conv` (nD)~~ | #4, #5 | **shipped**, rank-polymorphic via `lax.conv` |
+| ~~`fft`~~ | #9, spectrograms | **shipped** (`[real; imag]` stacked — no complex dtype yet) |
 | `Speaker` (tensor → audio out) | #2 resynthesis, additive synths | `AudioContext` mirror of Microphone |
-| `Canvas` (draw-to-tensor) | #5 eraser, #9 input | on the TODO list |
+| `Canvas` (draw-to-tensor) | #5 eraser, #9 input | on the TODO list; unlocks the two biggest remaining demos |
 
 ## Suggested order
 
-1. **Loss landscape MVP** — runnable today, ship it as the front-page `?code=` URL.
-2. **Point2D + overlays** — small components, they upgrade the MVP into the killer.
-3. **Fit My Whistle** — the live-demo/conference closer.
-4. **Petri Dish** — the ML-twitter moment, once `conv2d` and `Canvas` exist.
+1. ~~**Loss landscape**~~ — **shipped**, plus the `optimizer-race` variant.
+2. ~~**Point2D + overlays**~~ — **shipped** (`Point2D`, `Trail`, `Layers`).
+3. **Fit My Whistle** — the live-demo/conference closer; everything it needs exists now.
+4. **Kernel Lab** — upgrade `camera-edges` with a nine-scrubber editable kernel.
+5. **Petri Dish** — the ML-twitter moment; only `Canvas` is missing now.

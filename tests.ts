@@ -246,12 +246,15 @@ describe("differentiation and optimization", () => {
     expect(value("∇({ x | x^2 })([1, 2, 3])")).toEqual([2, 4, 6])
   })
   test("sgd fits y = 3x end-to-end", () => {
+    // the optimizer is created ONCE, outside the loop – recreating a stateful
+    // optimizer per step resets its moments (and recompiles its jit program)
     const program = `
       x: 0 :: 8,
       y: x × 3,
       θ: ~([0]),
       𝓛: { mean((x × θ_0 - y)^2) },
-      step: { v | sgd(0.01)(𝓛) },
+      opt: sgd(0.01),
+      step: { v | opt(𝓛) },
       (step ⍣ 60)(◌),
       θ_0
     `
@@ -267,6 +270,9 @@ describe("differentiation and optimization", () => {
     (step ⍣ ${steps})(◌),
     θ_0
   `)
+  test("adam fits a scalar (the README training snippet's shape)", () => {
+    expect(fits("adam(0.1)", 100)).toBeCloseTo(3, 1)
+  })
   test("adagrad fits a scalar", () => {
     // regression: the accumulator update leaked one reference per step
     // (tree.map hands leaf ownership to the callback; sqrt borrowed instead)
