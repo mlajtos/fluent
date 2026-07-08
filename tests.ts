@@ -234,6 +234,9 @@ describe("reactivity", () => {
 describe("differentiation and optimization", () => {
   test("gradient", () => {
     expect(value("∇({ x | x^2 })(3)")).toBe(6)
+    // the three-tier naming: long for discovery, word for habit, glyph for fluency
+    expect(value("TensorGradient({ x | x^2 })(3)")).toBe(6)
+    expect(value("grad({ x | x^2 })(3)")).toBe(6)
   })
   test("higher-order gradient", () => {
     expect(value("∇(∇({ x | x^3 }))(2)")).toBe(12)

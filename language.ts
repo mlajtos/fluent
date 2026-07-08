@@ -1827,7 +1827,7 @@ const TensorBoolean = (a: Value) => track(np.astype(borrow(a), np.bool))
 
 const TensorGradient = (f: Value) => {
   if (typeof f !== "function") {
-    return new Error("`gradient(f)`: `f` must be a function")
+    return new Error("`grad(f)`: `f` must be a function")
   }
   return (x: Value) => {
     // vjp with a ones cotangent: scalar outputs give the classic gradient,
@@ -1837,7 +1837,7 @@ const TensorGradient = (f: Value) => {
       const result = (f as Function)(primal)
       const value = result instanceof Signal ? result.peek() : result
       if (value instanceof Error) { throw value }
-      if (!isTensor(value)) { throw new Error("`gradient(f)`: `f` must return a tensor") }
+      if (!isTensor(value)) { throw new Error("`grad(f)`: `f` must return a tensor") }
       return value as np.Array
     }, [borrow(x) as np.Array])
     try {
@@ -2591,7 +2591,7 @@ notEqual: TensorNotEqual,
 
 ; Reductions
 (∇): TensorGradient,
-gradient: TensorGradient,
+grad: TensorGradient,
 (Σ): TensorSum,
 sum: TensorSum,
 (Π): TensorProduct,

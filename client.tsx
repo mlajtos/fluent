@@ -2711,6 +2711,21 @@ accuracy: $({ losses(), cascade((guard(loaded(), {
   losses,
 )
 `,
+  "camera-edges": `
+; 📷 Live edge detection – your camera through a Laplacian kernel.
+; Allow camera access, then wave: flat areas cancel out, edges glow.
+
+cam: Camera(320, 240),
+k: [[0, 1, 0], [1, -4, 1], [0, 1, 0]],
+
+; every frame: grayscale the image, convolve, show the response
+edges: $({ abs(conv(k, mean(cam() ÷ 255, 2))) }),
+
+(
+  Text("# 📷 Live Edges"),
+  edges,
+)
+`,
   "spectrum": `
 ; Live spectrum analyser – FFT the microphone waveform, plot the magnitude.
 ; Allow mic access, then whistle or play a tone and watch the peak move.
