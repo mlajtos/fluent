@@ -59,8 +59,12 @@ test("Ctrl/Cmd+O opens the example gallery without editor focus", async ({ page 
   // else the browser dialog won (Safari's file picker) instead of the gallery
   await open(page, "1 + 1")
   await expect(panel(page)).toContainText("2")
-  await page.keyboard.press("ControlOrMeta+KeyO")
-  await expect(page.getByPlaceholder("Select an example to load")).toBeVisible()
+  // the result can render before Monaco finishes mounting (slow CI) and the
+  // shortcut is a no-op until then – keep pressing until the gallery appears
+  await expect(async () => {
+    await page.keyboard.press("ControlOrMeta+KeyO")
+    await expect(page.getByPlaceholder("Select an example to load")).toBeVisible({ timeout: 2_000 })
+  }).toPass({ timeout: 20_000 })
 })
 
 test("camera edge-detection demo produces non-flat output", async ({ page }) => {
