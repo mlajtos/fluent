@@ -1425,8 +1425,10 @@ const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
 // First argument (target symbol) should not be reified
 setMeta(SymbolAssign, { quotedArgs: [0], noAutoLift: true })
 
-const FunctionEvaluate = function (this: CurrentScope, fn: Value, args: Value[]) {
-  return safeApply(fn, args, this)
+const FunctionEvaluate = function (this: CurrentScope, fn: Value, args: Value) {
+  // a bare argument applies directly – `f @ 5` is f(5); a list spreads
+  const list = args instanceof Array ? args : [args]
+  return safeApply(fn, list, this)
 }
 
 const FunctionApply = function (this: CurrentScope, a: Value, b: Value): Value {
@@ -2179,22 +2181,34 @@ const Null = null
 // resolves to one (⌈ → TensorMaximum, once → SignalOnce, …) inherits the same
 // card: the doc lives on the value, not the name. Editor hover and completion
 // read it back with getMeta. Signatures use the ergonomic notation people type.
-doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $(4), once(x) + 1  →  5")
+doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $(4), once(x) + 1 = 5")
 doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2")
 doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad.", "θ: ~([0, 0])")
 doc(TensorOptimizationAdamW, "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)")
 doc(TensorOptimizationSgd, "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)")
-doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w  →  [8]")
-doc(TensorGradient, "∇(f)", "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", "∇({ x | x^2 })(3)  →  6")
-doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3])  →  6")
-doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2]  →  [4, 5]")
-doc(TensorRange, "start :: stop", "Integer range from start (inclusive) to stop (exclusive).", "0 :: 5  →  [0, 1, 2, 3, 4]")
-doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2]  →  [[1, 2], [3, 4]]")
-doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 :: 3) (⊗ ×) (0 :: 3)  →  [[0,0,0],[0,1,2],[0,2,4]]")
-doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1)  →  [4, 1, 2, 3]")
-doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2])  →  [1, 2, 3]")
-doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1)  →  [5, 6]")
-doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0)  →  [1, 0, 3]")
+doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w = [8]")
+doc(TensorGradient, "∇(f)", "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", "∇({ x | x^2 })(3) = 6")
+doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6")
+doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]")
+doc(TensorRange, "start :: stop", "Integer range from start (inclusive) to stop (exclusive).", "0 :: 5 = [0, 1, 2, 3, 4]")
+doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]")
+doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 :: 3) (⊗ ×) (0 :: 3) = [[0,0,0],[0,1,2],[0,2,4]]")
+doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]")
+doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]")
+doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]")
+doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0) = [1, 0, 3]")
+
+// Control & function machinery – these cards teach the language, not just a
+// function: scoping, the three assignments, application, iteration, and the
+// errors-are-values control flow have no NumPy analogue to lean on.
+doc(SymbolAssign, "name: value", "Bind a name in the current scope. Glued to its left operand, `:` takes everything to its right – `a: 1 + 2` binds 3.", "a: 1 + 2, a × 10 = 30")
+doc(TensorAssign, "θ := value", "Assign a new value to a trainable variable (made with ~); optimizers do this every step, watch(θ) sees it. Mid-expression, parenthesize the value: θ := (a + b).", "θ: ~([0, 0]), θ := [1, 2]")
+doc(FunctionApply, "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]")
+doc(FunctionEvaluate, "f @ x", "Apply the function on the left to the argument on the right – reads as “f at x”. A list spreads as multiple arguments.", "∇({ x | x^2 }) @ 3 = 6")
+doc(FunctionIterate, "step ⟳ n", "Run a thunk n times, paced between display frames so the UI stays live – the loop for training and simulation. Async: a re-evaluation cancels it.", "opt: sgd(0.1), { opt(𝓛) } ⟳ 100")
+doc(FunctionPower, "(f ⍣ n)(x)", "Function power: f composed with itself n times – f(f(…f(x))). Synchronous; for a frame-paced loop use ⟳.", "double: { x | x × 2 }, (double ⍣ 5)(1) = 32")
+doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order; the first result that isn’t an Error wins. Errors are values in Fluent – falling through is intended, not exceptional.", "cascade((guard(n = 0, { 1 }), { n × f(n - 1) }))()")
+doc(FunctionGuard, "guard(cond, { value })", "A cascade candidate: yields the value while cond is truthy, an Error otherwise.", "guard(n = 0, { 1 })")
 
 
 // MARK: Environment
@@ -2649,7 +2663,7 @@ adagrad: TensorOptimizationAdaGrad,
 ; Misc
 ($): Reactive,
 ; ← is defined here in the prelude, so its doc lives here too
-(←): doc(FunctionNoAutoLift({ s, v | s(v) }), "signal ← value", "Write a value into a signal – same as signal(value), but reads left-to-right.", "x: $(1), x ← 9, x()  →  9"),
+(←): doc(FunctionNoAutoLift({ s, v | s(v) }), "signal ← value", "Write a value into a signal – same as signal(value), but reads left-to-right. Chains like any spaced operator: parenthesize compound values, s ← (a + b).", "x: $(1), x ← 9, x() = 9"),
 once: SignalOnce,
 `
 

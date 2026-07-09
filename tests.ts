@@ -402,6 +402,18 @@ describe("resource lifetimes", () => {
   })
 })
 
+describe("apply and evaluate", () => {
+  test("@ applies to a bare argument and spreads a list", () => {
+    expect(value("double: { x | x × 2 }, double @ 5")).toBe(10)
+    expect(value("∇({ x | x^2 }) @ 3")).toBe(6)
+    expect(value("add @ (1, 2)")).toBe(3)
+  })
+  test(". pipes and spreads a list, mirrored", () => {
+    expect(value("5 . { x | x × 2 }")).toBe(10)
+    expect(value("(1, 2) . add")).toBe(3)
+  })
+})
+
 describe("errors", () => {
   test("parse errors evaluate to Error values", () => {
     expect(run("} {")).toBeInstanceOf(Error)
