@@ -6,9 +6,9 @@ Fluent is a tiny language + IDE for people who like to tinker with math — plot
 
 **[▶ Open the playground](https://mlajtos.github.io/fluent/)** — nothing to install, and it's fast: your GPU does the work, right in the browser.
 
-[![square: { x | x^2 }, ∇(square)([1, 2, 3]) — evaluated live in the playground](hero.png)](https://mlajtos.github.io/fluent/?code=c3F1YXJlOiB7IHggfCB4XjIgfSwK4oiHKHNxdWFyZSkoWzEsIDIsIDNdKSAgIDsgWzIsIDQsIDZd)
+[![gradient descent on the Himmelblau landscape, spelled θ:= θ - ∇(𝓛)(θ)×lr — running live in the playground](hero.png)](https://mlajtos.github.io/fluent/?code=OyDiiIcgZG9lcyB0aGUgY2FsY3VsdXMg4oCTIGRyYWcgdGhlIGJhbGwsIGRyYWcgdGhlIHJhdGUK8J2TmzogeyBwIHwgKHBfMF4yICsgcF8xIC0gMTEpXjIgKyAocF8wICsgcF8xXjIgLSA3KV4yIH0sCs64OiB-KFstMC4yLCAtMC43XSksCmxyOiAkKDAuMTUpLAp7IM64Oj0gzrggLSDiiIco8J2Tmykozrgpw5dvbmNlKGxyKcOXMC4wMDUgfSDin7MgMzAwMCwKeHM6IGxpbnNwYWNlKFstNSwgNV0sIDU2MCksCnN1cmZhY2U6IGxvZyh4cyAo4oqXIHsgeSwgeCB8IPCdk5soW3gsIHldKSB9KSB4cyArIDEpLApyOiBbWy01LCA1XSwgWy01LCA1XV0sCmc6IOKIhyjwnZObKSh3YXRjaCjOuCkpLAooU2xpZGVyKGxyKSwgTGF5ZXJzKHN1cmZhY2UsIFRyYWlsKM64LCByKSwgUG9pbnQyRCjOuCwgcikpLCBnKQ)
 
-[**▶ run this**](https://mlajtos.github.io/fluent/?code=c3F1YXJlOiB7IHggfCB4XjIgfSwK4oiHKHNxdWFyZSkoWzEsIDIsIDNdKSAgIDsgWzIsIDQsIDZd) — every snippet in this README is a link that opens live in the playground.
+[**▶ run this**](https://mlajtos.github.io/fluent/?code=OyDiiIcgZG9lcyB0aGUgY2FsY3VsdXMg4oCTIGRyYWcgdGhlIGJhbGwsIGRyYWcgdGhlIHJhdGUK8J2TmzogeyBwIHwgKHBfMF4yICsgcF8xIC0gMTEpXjIgKyAocF8wICsgcF8xXjIgLSA3KV4yIH0sCs64OiB-KFstMC4yLCAtMC43XSksCmxyOiAkKDAuMTUpLAp7IM64Oj0gzrggLSDiiIco8J2Tmykozrgpw5dvbmNlKGxyKcOXMC4wMDUgfSDin7MgMzAwMCwKeHM6IGxpbnNwYWNlKFstNSwgNV0sIDU2MCksCnN1cmZhY2U6IGxvZyh4cyAo4oqXIHsgeSwgeCB8IPCdk5soW3gsIHldKSB9KSB4cyArIDEpLApyOiBbWy01LCA1XSwgWy01LCA1XV0sCmc6IOKIhyjwnZObKSh3YXRjaCjOuCkpLAooU2xpZGVyKGxyKSwgTGF5ZXJzKHN1cmZhY2UsIFRyYWlsKM64LCByKSwgUG9pbnQyRCjOuCwgcikpLCBnKQ) — every snippet in this README is a link that opens live in the playground.
 
 <!-- code fences say "clojure" because GitHub already has a language named
      Fluent (Mozilla's FTL) and paints ours as errors; clojure is the nearest
