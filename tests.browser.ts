@@ -73,6 +73,18 @@ test("Ctrl/Cmd+O opens the example gallery without editor focus", async ({ page 
   await expect(page.getByPlaceholder("Select an example to load")).toBeVisible()
 })
 
+test("printing a documented built-in shows its doc card, never JS internals", async ({ page }) => {
+  await open(page, "sum")
+  await expect(panel(page)).toContainText("Sum of the elements")
+  await expect(panel(page)).toContainText("Σ(x, axis?)")
+  await expect(panel(page)).not.toContainText("=>")   // no minified JS source
+})
+
+test("printing a Fluent lambda still shows its source", async ({ page }) => {
+  await open(page, "double: { x | x × 2 },\ndouble")
+  await expect(panel(page)).toContainText("x × 2")
+})
+
 test("README training snippet converges and stays responsive", async ({ page }) => {
   // the adam twin of this snippet froze the tab for ~52s (exponential
   // deferred compilation – see jaxjs notes); sgd jits and must stay fluid,

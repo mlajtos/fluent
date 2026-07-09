@@ -1488,12 +1488,17 @@ function PrintFunction(fn: Function) {
   // Subscribe to meta version for reactive updates
   if ((fn as any).__meta_v__) (fn as any).__meta_v__.value
 
-  const { doc } = getMeta(fn)
-  const sourceCode = computed(() => fn.toString())
-  if (doc) {
-    return <>{Text(doc)}{Code(sourceCode)}</>
+  const meta = getMeta(fn)
+  // Fluent lambdas override toString with their source; built-ins would show
+  // minified JS internals, which help nobody – never display those
+  const hasFluentSource = Object.prototype.hasOwnProperty.call(fn, "toString")
+  const source = hasFluentSource ? Code(computed(() => fn.toString())) : null
+  if (meta.doc) {
+    // same card as hover/completion: signature, one-liner, worked example
+    return <>{Text(docCard(meta))}{source}</>
   }
-  return Code(sourceCode)
+  if (source) { return source }
+  return Text(`\`${fn.name || "function"}\` — a built-in without a doc card yet`)
 }
 
 function PrettyPrintSyntaxTree(node: SyntaxTreeNode): JSX.Element {
