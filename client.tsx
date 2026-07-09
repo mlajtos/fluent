@@ -3133,6 +3133,12 @@ const docCard = (m: FunctionMeta): string =>
   [m.signature && `\`${m.signature}\``, m.doc, m.example && "```fluent\n" + m.example + "\n```"]
     .filter(Boolean).join("\n\n")
 
+// completion's details pane already shows the signature as its header (the
+// item's `detail`) – repeating it in the body reads as a glitch
+const docCardBody = (m: FunctionMeta): string =>
+  [m.doc, m.example && "```fluent\n" + m.example + "\n```"]
+    .filter(Boolean).join("\n\n")
+
 const editorBeforeMount: BeforeMount = (monaco) => {
   EditorInstance = monaco.editor
 
@@ -3202,7 +3208,9 @@ const editorBeforeMount: BeforeMount = (monaco) => {
     inherit: true,
     rules: COLORS,
     colors: {
-      "editor.foreground": COLORS.find(rule => rule.token === "string")?.foreground ?? "FFFFFF",
+      "editor.foreground": "#" + (COLORS.find(rule => rule.token === "string")?.foreground ?? "FFFFFF"),
+      "editorSuggestWidget.foreground": "#D8D8D8",
+      "editorSuggestWidget.background": "#1C1C1C",
       "editor.background": "#1C1C1C",
       "focusBorder": "#FF000000",
     },
@@ -3213,7 +3221,9 @@ const editorBeforeMount: BeforeMount = (monaco) => {
     inherit: true,
     rules: COLORS,
     colors: {
-      "editor.foreground": COLORS.find(rule => rule.token === "string")?.foreground ?? "FFFFFF",
+      "editor.foreground": "#" + (COLORS.find(rule => rule.token === "string")?.foreground ?? "FFFFFF"),
+      "editorSuggestWidget.foreground": "#D8D8D8",
+      "editorSuggestWidget.background": "#1C1C1C",
       "editor.background": "#1C1C1C00",
       "focusBorder": "#FF000000",
     },
@@ -3411,7 +3421,7 @@ const editorBeforeMount: BeforeMount = (monaco) => {
             label: key,
             kind: monaco.languages.CompletionItemKind.Function,
             insertText: key,
-            documentation: meta.doc ? { value: docCard(meta) } : `Function: ${key}`,
+            documentation: meta.doc ? { value: docCardBody(meta) } : `Function: ${key}`,
             detail: meta.signature ?? (typeof value === 'function' ? 'function' : String(value).slice(0, 50)),
             range,
             filterText: key,
