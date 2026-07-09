@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "test": "bun test ./tests.ts",
-    "test:browser": "npx playwright test"
+    "test:browser": "npx playwright test",
+    "hero": "node screenshot.ts"
   },
   "overrides": {
     "@jax-js/jax": "^0.1.18"
