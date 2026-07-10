@@ -32,6 +32,7 @@ const OPERATOR_RANGES: Record<string, [string, string]> = {
   SUPPLEMENTAL_ARROWS_B: ["\u2900", "\u297F"], // Supplemental Arrows B
   MULTIPLICATION_SIGN: ["\u00D7", "\u00D7"], // Multiplication Sign
   DIVISION_SIGN: ["\u00F7", "\u00F7"], // Division Sign
+  NOT_SIGN: ["\u00AC", "\u00AC"], // Logical Not
   MISCELLANEOUS_MATH_SYMBOLS_B: ["\u2980", "\u29FF"],  // Miscellaneous Mathematical Symbols-B
   MIDDLE_DOT: ["\u00B7", "\u00B7"], // Middle Dot (multiplication)
   DOUBLE_VERTICAL_LINE: ["\u2016", "\u2016"], // Norm
@@ -550,6 +551,24 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
       setOrigin(value, node.origin)
       return value
     }
+
+    // Literal fast path: when every element's JS value is already known
+    // (number literals, scalar bindings, nested literals – all pre-seeded),
+    // build the array straight from data and seed the composite too. The
+    // composite then stays readable inside a jit trace – slice bounds and
+    // reshape shapes like [0, 1] or [1, T] must not demote the compiled
+    // optimizer step – and display reads skip the device round-trip.
+    // (Elements are still lazy symbols here – resolve them first.)
+    try {
+      const resolved = values.map((v) => reify(v, env))
+      if (resolved.every((v) => typeof v === "object" && v !== null && syncReadCache.has(v))) {
+        const data = resolved.map((v) => syncReadCache.get(v as object))
+        const value = track(np.array(data as number[]))
+        syncReadCache.set(value, data)
+        setOrigin(value, node.origin)
+        return value
+      }
+    } catch { /* unbound symbol, ragged or non-numeric – stack instead */ }
 
     const value = safeApply(TensorStack, values, env)
     setOrigin(value, node.origin)
@@ -1211,8 +1230,14 @@ const FunctionArity = (candidates: Function[]) => {
 const syncReadCache = new WeakMap<object, unknown>()
 function getAsSyncList(value: unknown) {
   if (value instanceof FluentVariable) { value = value.current }
+  // the cache check must come before the tracer check: inside a jit trace
+  // even literal-built arrays are staged into tracers, but a SEEDED tracer
+  // (number literals, literal tensors, shapes) has a statically known value –
+  // reading it must not abort the trace
+  if (typeof value === "object" && value !== null && syncReadCache.has(value)) {
+    return syncReadCache.get(value)
+  }
   if (value instanceof np.Array) {
-    if (syncReadCache.has(value)) { return syncReadCache.get(value) }
     const data = value.ref.js()
     syncReadCache.set(value, data)
     return data
@@ -1311,6 +1336,12 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
     }
     prev = t
 
+    // The batch count is a plan, not a promise: bail out mid-batch the moment
+    // the frame budget is spent. Cheap ticks (a paused, checkbox-gated loop)
+    // grow the batch toward the cap – without this, the first frame after
+    // resuming would run the whole grown batch of now-expensive steps and
+    // freeze the tab for seconds.
+    const frameStart = (globalThis as any).performance?.now?.() ?? 0
     const end = Math.min(i + batch, maxIterations)
     while (i < end) {
       // each step gets its own arena: per-iteration garbage dies immediately,
@@ -1321,12 +1352,15 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
         return null
       })
       i++
+      if ((((globalThis as any).performance?.now?.() ?? 0) - frameStart) > 25) { break }
     }
 
     // drain the lazy queue: jax-js never dispatches on its own, so a training
     // loop whose variables nobody displays would grow an unbounded pending
-    // graph – realize what the batch retained
+    // graph – realize what the batch retained. Defensive: a corrupted
+    // variable must never kill the loop itself.
     for (const variable of [...trainableVariables, ...dataVariables]) {
+      if (!(variable.current instanceof np.Array)) { continue }
       const held = variable.current.ref
       held.blockUntilReady().then(
         () => { if (held.refCount > 0) { held.dispose() } },
@@ -1758,6 +1792,15 @@ const TensorGreaterEqual = comparisonOp(np.greaterEqual)
 const TensorEqual = comparisonOp(np.equal)
 const TensorNotEqual = comparisonOp(np.notEqual)
 
+// Logical ops share the comparison contract: any nonzero operand counts as
+// true, the result is float32 0/1.
+const TensorOr = comparisonOp(np.logicalOr)
+const TensorAnd = comparisonOp(np.logicalAnd)
+const TensorXor = comparisonOp(np.logicalXor)
+const TensorNot = (a: Value) => track(np.astype(np.logicalNot(borrow(a)), np.float32))
+const TensorNand = (a: Value, b: Value) => TensorNot(TensorAnd(a, b))
+const TensorNor = (a: Value, b: Value) => TensorNot(TensorOr(a, b))
+
 const TensorSine = unaryOp(np.sin)
 const TensorCosine = unaryOp(np.cos)
 const TensorTangent = unaryOp(np.tan)
@@ -1782,10 +1825,14 @@ const promoteBool = (v: any): any => {
   return isTensor(tensor) && tensor.dtype === np.bool ? np.astype(borrow(v), np.float32) : borrow(v)
 }
 
-// Reductions take an optional axis (scalar or vector tensor) as second argument
-const withOptionalAxis = (op: (a: any, axis?: number | number[]) => np.Array) =>
-  (a: Value, b?: Value) =>
-    track(b === undefined ? op(promoteBool(a)) : op(promoteBool(a), requireData(b) as (number | number[])))
+// Reductions take an optional axis (scalar or vector tensor) as second
+// argument, and a truthy third argument keeps the reduced axis as size 1 –
+// mean(x, -1, 1) is the trace-safe unsqueeze(mean(x, -1), …)
+const withOptionalAxis = (op: (a: any, axis?: number | number[] | null, opts?: { keepdims?: boolean }) => np.Array) =>
+  (a: Value, b?: Value, keep?: Value) =>
+    track(op(promoteBool(a),
+      b === undefined ? null : requireData(b) as (number | number[]),
+      keep === undefined ? undefined : { keepdims: asNumber(keep) !== 0 }))
 
 const TensorSum = withOptionalAxis(np.sum)      // TensorReduce(a, 0, +)
 const TensorProduct = withOptionalAxis(np.prod) // TensorReduce(a, 1, *)
@@ -1984,7 +2031,14 @@ const TensorLength = (a: Value, b?: Value) => {
   return track(np.array(shapeOf(a)[0] ?? NaN))
 }
 
-const TensorShape = (a: Value) => track(np.array(shapeOf(a)))
+const TensorShape = (a: Value) => {
+  // shapes are static even for tracers – seed the result so shape arithmetic
+  // stays readable during jit traces and never round-trips the device
+  const shape = shapeOf(a)
+  const value = track(np.array(shape))
+  syncReadCache.set(value, shape)
+  return value
+}
 
 const TensorGather = (a: Value, b: Value) => {
   const size = shapeOf(a)[0] ?? 0
@@ -2024,6 +2078,11 @@ const TensorData = (a: Value) => {
 const TensorAssign = (a: Value, b: Value) => {
   if (!(a instanceof FluentVariable)) {
     return new Error("`:=`: left side must be a variable created with ~ or ~~")
+  }
+  if (!isTensor(b) && !(b instanceof FluentVariable)) {
+    // assigning an Error (an emptied corpus, a failed expression) must not
+    // corrupt the variable: it keeps its last good value, the Error surfaces
+    return new Error("`:=`: value must be a tensor", b instanceof Error ? { cause: b } : undefined)
   }
   if (tracingActive) { throw new TraceBailout("variable write during trace") }
   a.assign(borrow(b) as np.Array)
@@ -2176,6 +2235,41 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
   }
 }
 
+// optax's adam does its bias correction with count.item() – a data read that
+// throws inside a jit trace, silently demoting every adam/adamw step to the
+// eager path. This transform keeps the correction in-graph (count stays a
+// tensor through np.power), so the compiled step survives tracing.
+const adamTransform = (learningRate: number, weightDecay = 0, b1 = 0.9, b2 = 0.999, eps = 1e-8): optax.GradientTransformation => ({
+  init: (params) => ({
+    count: np.array(0),
+    mu: tree.map((p: np.Array) => np.zerosLike(p), tree.ref(params) as any),
+    nu: tree.map((p: np.Array) => np.zerosLike(p), params as any),
+  }) as unknown as optax.OptState,
+  update: (updates, state, params) => {
+    const { count, mu, nu } = state as unknown as { count: np.Array, mu: np.Array[], nu: np.Array[] }
+    const nextCount = np.add(count, 1)
+    // tree.map hands leaf ownership to the callback – borrow with .ref only
+    // what a later map still needs (the adagrad lesson)
+    const newMu = tree.map((g: np.Array, m: np.Array) => np.add(np.multiply(g.ref, 1 - b1), np.multiply(m, b1)), tree.ref(updates) as any, mu as any)
+    const newNu = tree.map((g: np.Array, n: np.Array) => np.add(np.multiply(np.square(g), 1 - b2), np.multiply(n, b2)), updates as any, nu as any)
+    const c1 = np.subtract(1, np.power(b1, nextCount.ref))
+    const c2 = np.subtract(1, np.power(b2, nextCount.ref))
+    const scaled = weightDecay === 0
+      ? tree.map((m: np.Array, n: np.Array) =>
+          np.multiply(np.trueDivide(np.trueDivide(m, c1.ref), np.add(np.sqrt(np.trueDivide(n, c2.ref)), eps)), -learningRate),
+          tree.ref(newMu) as any, tree.ref(newNu) as any)
+      : tree.map((m: np.Array, n: np.Array, p: np.Array) =>
+          np.add(
+            np.multiply(np.trueDivide(np.trueDivide(m, c1.ref), np.add(np.sqrt(np.trueDivide(n, c2.ref)), eps)), -learningRate),
+            np.multiply(p, -learningRate * weightDecay)),
+          tree.ref(newMu) as any, tree.ref(newNu) as any, params as any)
+    if (weightDecay === 0 && params) { tree.dispose(params) }
+    c1.dispose()
+    c2.dispose()
+    return [scaled as any, { count: nextCount, mu: newMu, nu: newNu } as unknown as optax.OptState]
+  },
+})
+
 // optax has no adagrad – accumulate squared gradients ourselves
 const adagradTransform = (learningRate: number, eps = 1e-7): optax.GradientTransformation => ({
   init: (params) => tree.map((p: np.Array) => np.zerosLike(p), params as any),
@@ -2201,13 +2295,13 @@ const optimizerRest = (rest: Value[]): { nums: number[], vars: FluentVariable[] 
 
 const TensorOptimizationAdam = (a: Value, ...rest: Value[]) => {
   const { vars } = optimizerRest(rest)
-  return makeOptimizer(optax.adam(asNumber(a)), vars)
+  return makeOptimizer(adamTransform(asNumber(a)), vars)
 }
 
 // adamw(lr, weightDecay?, vars?) – Adam with decoupled weight decay
 const TensorOptimizationAdamW = (a: Value, ...rest: Value[]) => {
   const { nums: [weightDecay], vars } = optimizerRest(rest)
-  return makeOptimizer(optax.adamw(asNumber(a), weightDecay === undefined ? undefined : { weightDecay }), vars)
+  return makeOptimizer(adamTransform(asNumber(a), weightDecay ?? 1e-4), vars)
 }
 
 // sgd(lr, momentum?, vars?)
@@ -2282,6 +2376,12 @@ doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping
 doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]")
 doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]")
 doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0) = [1, 0, 3]")
+doc(TensorOr, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]")
+doc(TensorAnd, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]")
+doc(TensorNot, "¬(x)", "Logical not: 1 where x is zero, else 0.", "¬([0, 2]) = [1, 0]")
+doc(TensorXor, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]")
+doc(TensorNand, "x ⍲ y", "Element-wise nand: 0 where both operands are nonzero, else 1. Functionally complete – every gate builds from it.", "[0, 1, 1] ⍲ [1, 1, 0] = [1, 0, 1]")
+doc(TensorNor, "x ⍱ y", "Element-wise nor: 1 where both operands are zero, else 0. Functionally complete, like ⍲.", "[0, 1, 0] ⍱ [0, 1, 1] = [1, 0, 0]")
 
 // Control & function machinery – these cards teach the language, not just a
 // function: scoping, the three assignments, application, iteration, and the
@@ -2352,6 +2452,12 @@ const DefaultEnvironment: Record<string, Value> = {
   TensorGreaterEqual,
   TensorEqual,
   TensorNotEqual,
+  TensorOr,
+  TensorAnd,
+  TensorNot,
+  TensorXor,
+  TensorNand,
+  TensorNor,
   TensorSine,
   TensorCosine,
   TensorTangent,
@@ -2693,6 +2799,20 @@ equal: TensorEqual,
 (≠): TensorNotEqual,
 (!=): TensorNotEqual,
 notEqual: TensorNotEqual,
+
+; Logical
+(∨): TensorOr,
+or: TensorOr,
+(∧): TensorAnd,
+and: TensorAnd,
+(¬): TensorNot,
+not: TensorNot,
+(⊻): TensorXor,
+xor: TensorXor,
+(⍲): TensorNand,
+nand: TensorNand,
+(⍱): TensorNor,
+nor: TensorNor,
 
 ; Reductions
 (∇): TensorGradient,

@@ -103,6 +103,16 @@ describe("tensors", () => {
     expect(value("([1, 2, 3] = 1) + 10")).toEqual([11, 10, 10])
     expect(value("f: { x | (x = 1) ⌈ (x × 0) }, b: [1, 2, 3], sum(abs(f(b) - [1, 0, 0]))")).toBe(0)
   })
+  test("logical ops are float 0/1, nonzero counts as true", () => {
+    expect(value("[0, 1, 0] ∨ [0, 1, 1]")).toEqual([0, 1, 1])
+    expect(value("[0, 1, 1] ∧ [1, 1, 0]")).toEqual([0, 1, 0])
+    expect(value("[0, 1, 1] ⊻ [1, 1, 0]")).toEqual([1, 0, 1])
+    expect(value("¬([0, 2, -3])")).toEqual([1, 0, 0])
+    expect(value("[0, 1, 1] ⍲ [1, 1, 0]")).toEqual([1, 0, 1])
+    expect(value("[0, 1, 0] ⍱ [0, 1, 1]")).toEqual([1, 0, 0])
+    // like comparisons, results are float 0/1 and compose with arithmetic
+    expect(value("([0.5, 0] ∨ [0, 0]) + 10")).toEqual([11, 10])
+  })
   test("roll wraps around the torus", () => {
     expect(value("roll([1, 2, 3, 4], 1)")).toEqual([4, 1, 2, 3])
     expect(value("roll([1, 2, 3, 4], -1)")).toEqual([2, 3, 4, 1])
@@ -146,6 +156,12 @@ describe("math functions", () => {
   })
   test("softmax sums to one", () => {
     expect(value("sum(softmax([1, 2, 3]))")).toBeCloseTo(1, 5)
+  })
+  test("reductions keep the reduced axis with a truthy third argument", () => {
+    // mean(x, -1, 1) is the trace-safe unsqueeze(mean(x, -1), …): unsqueeze
+    // reads shapes, which a jit trace can't – keepdims never leaves the graph
+    expect(value("mean([[1, 2], [3, 4]], -1, 1)")).toEqual([[1.5], [3.5]])
+    expect(value("shape(sum([[1, 2], [3, 4]], 0, 1))")).toEqual([1, 2])
   })
   test("oneHot", () => {
     expect(value("oneHot([2], 3) ⍴ [3]")).toEqual([0, 0, 1])
@@ -350,6 +366,12 @@ describe("data slots (~~)", () => {
       sum(D)
     `
     expect(value(program)).toBe(24)
+  })
+  test(":= with a non-tensor keeps the variable's last good value", () => {
+    // deleting the demo's corpus made load() an Error; := stored it and the
+    // ⟳ drain died on Error.ref – the write must refuse instead
+    expect(run("x: ~~([1, 2]), x := unbound(3)")).toBeInstanceOf(Error)
+    expect(value("x: ~~([1, 2]), r: x := unbound(3), sum(x)")).toBe(3)
   })
   test("passing ~~ in an explicit var list is a loud error, never silent filtering", () => {
     const program = `

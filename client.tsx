@@ -2761,7 +2761,7 @@ Wv: ~(randn([C, C]) × 0.2),  Wo: ~(randn([C, C]) × 0.2),
 W1: ~(randn([C, F]) × 0.2),  W2: ~(randn([F, C]) × 0.1),
 Wu: ~(randn([C, V]) × 0.1),
 
-rms: { x | x ÷ √(unsqueeze(mean(x × x, -1), 2) + 0.001) },
+rms: { x | x ÷ √(mean(x × x, -1, 1) + 0.001) },   ; the 1 keeps the reduced axis
 gelu: { x | x × sigmoid(x × 1.702) },
 nmask: where((0 :: T) ⊗(≥) (0 :: T), fill([T, T], 0), fill([T, T], -9999)),
 att: { x | q: matmul(x, Wq), k: matmul(x, Wk), v: matmul(x, Wv),
