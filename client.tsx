@@ -3417,7 +3417,9 @@ const editorBeforeMount: BeforeMount = (monaco) => {
   // a CSS @font-face because Bun's bundler fails hot-swapping CSS that
   // carries a binary asset; /BQN386.ttf is served as a plain static file.
   // The unicode-range keeps ASCII and letters on the system mono.
-  const symbolFont = new FontFace("BQN386", 'url("/BQN386.ttf")', {
+  // relative URL, like mnist.safetensors: GitHub Pages serves the app from
+  // /fluent/, so an absolute /BQN386.ttf would 404 and silently drop the font
+  const symbolFont = new FontFace("BQN386", 'url("BQN386.ttf")', {
     unicodeRange: "U+2016, U+2190-23FF, U+27C0-27FF, U+2980-29FF, U+2A00-2AFF",
   })
   document.fonts.add(symbolFont)
