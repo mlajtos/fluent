@@ -17,6 +17,8 @@ const server = serve({
     }),
     // dataset for the MNIST example (build.ts copies it into dist/ for prod)
     "/mnist.safetensors": () => new Response(Bun.file("./mnist.safetensors")),
+    // symbol font for the editor and AST viz (build.ts copies it for prod)
+    "/BQN386.ttf": () => new Response(Bun.file("./BQN386.ttf")),
     // CORS proxy for LoadTensorFromImageUrl / LoadSafeTensorFromURL
     "/proxy": async (req: Request) => {
       const target = new URL(req.url).searchParams.get("url");

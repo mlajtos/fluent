@@ -33,6 +33,7 @@ const OPERATOR_RANGES: Record<string, [string, string]> = {
   MULTIPLICATION_SIGN: ["\u00D7", "\u00D7"], // Multiplication Sign
   DIVISION_SIGN: ["\u00F7", "\u00F7"], // Division Sign
   NOT_SIGN: ["\u00AC", "\u00AC"], // Logical Not
+  MISCELLANEOUS_MATH_SYMBOLS_A: ["\u27C0", "\u27EF"],  // Miscellaneous Mathematical Symbols-A (\u27DC)
   MISCELLANEOUS_MATH_SYMBOLS_B: ["\u2980", "\u29FF"],  // Miscellaneous Mathematical Symbols-B
   MIDDLE_DOT: ["\u00B7", "\u00B7"], // Middle Dot (multiplication)
   DOUBLE_VERTICAL_LINE: ["\u2016", "\u2016"], // Norm
@@ -509,14 +510,16 @@ function setMeta(fn: Function, updates: Partial<FunctionMeta>): void {
 // WeakMap to store origin information for any object (including frozen ones like JSX)
 const originMap = new WeakMap<object, Origin>()
 
+// functions are values too – a composed closure ((f ∘ g), a partial
+// application) reads its printable source back from its origin
 function setOrigin(value: any, origin: Origin): void {
-  if (value !== null && typeof value === 'object') {
+  if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
     originMap.set(value, origin)
   }
 }
 
 function getOrigin(value: any): Origin | undefined {
-  if (value !== null && typeof value === 'object') {
+  if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
     return originMap.get(value)
   }
   return undefined
@@ -1178,7 +1181,7 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
   }
 }
 
-const FunctionCascade = (candidates: Function[]) => (a: Value, b: Value) => {
+const FunctionCascade = (candidates: Function[]) => tacitToString((a: Value, b: Value) => {
   const noResultSymbol = Symbol('noResult')
 
   let result: (Value | typeof noResultSymbol) = noResultSymbol
@@ -1210,7 +1213,7 @@ const FunctionCascade = (candidates: Function[]) => (a: Value, b: Value) => {
   }
 
   return result
-}
+})
 
 // Overloaded by arity: two operands run the binary op, one runs the unary op –
 // used for +, -, ×, · (add/abs, subtract/negate, multiply/sign). Unlike
@@ -1219,7 +1222,22 @@ const FunctionCascade = (candidates: Function[]) => (a: Value, b: Value) => {
 // rather than a quietly-wrong abs(1).
 const FunctionArity = (candidates: Function[]) => {
   const [binary, unary] = candidates
-  return (a: Value, b: Value) => (b === undefined ? unary?.(a) : binary?.(a, b))
+  // tacitToString: a userland-built operator prints as the source that made
+  // it (compose2(+, √)), not as this dispatcher's JS internals
+  const dispatch = tacitToString((a: Value, b: Value) => (b === undefined ? unary?.(a) : binary?.(a, b)))
+  // The dispatcher has no story of its own – its meaning IS its candidates.
+  // Synthesize the doc card from theirs, so `+` shows add and abs in one
+  // hover. A doc() authored on the dispatcher afterwards still wins.
+  const b: FunctionMeta = typeof binary === "function" ? getMeta(binary) : {}
+  const u: FunctionMeta = typeof unary === "function" ? getMeta(unary) : {}
+  if (b.signature || u.signature) {
+    setMeta(dispatch as Function, {
+      signature: [b.signature, u.signature].filter(Boolean).join("  ·  "),
+      doc: [b.doc, u.doc && `With one argument: ${u.doc}`].filter(Boolean).join(" "),
+      example: b.example ?? u.example,
+    })
+  }
+  return dispatch
 }
 
 // Synchronous, non-consuming read of a tensor's data as nested JS values.
@@ -1290,6 +1308,96 @@ const FunctionPower = (fn: Function, n: Value) => {
     return value
   }
 }
+
+// MARK: Combinators
+// The tacit aviary, after Conor Hoekstra's taxonomy (combinatorylogic.com).
+// Each combinator is a plain higher-order value, so a composed function drops
+// into operator position like any function: a (f ∘ g) b. Valence pairs
+// (B+B₁, C+W, Σ+Δ, S+D, Φ+Φ₁) share one binding – the closure routes on
+// argument count, the same dispatch FunctionArity gives + and -.
+
+const isFn = (v: Value): v is Function => typeof v === "function"
+
+// Hooks and fork tines K-lift a non-function operand to a constant function –
+// BQN's bind: (1 ⊸ +) increments, (÷ ⟜ 2) halves.
+const constantly = (v: Value): Function => isFn(v) ? v : () => v
+
+// A composed closure prints as the source that built it ((= ⍥ abs), not JS
+// internals) – the Operation that created it stamps its origin after return.
+const tacitToString = (h: Function): Function => {
+  h.toString = () => getOrigin(h)?.source ?? "(tacit function)"
+  return h
+}
+
+// Q (Queer bird) – then: apply f, then g to the result. Reading order is
+// evaluation order – (f ∘ g)(…x) = g(f(…x)) – so this is APL's atop (B/B₁)
+// with the tines swapped to read left-to-right, like the . pipe.
+const FunctionCompose = (f: Value, g: Value) => {
+  if (!isFn(f) || !isFn(g)) { return new Error("`(f ∘ g)`: both operands must be functions") }
+  return tacitToString(function (this: CurrentScope, ...args: Value[]) {
+    return safeApply(g, [safeApply(f, args, this)], this)
+  })
+}
+
+// C/W (Cardinal/Warbler) – commute: flip a binary's arguments; duplicate a unary's
+const FunctionCommute = (f: Value) => {
+  if (!isFn(f)) { return new Error("`(⍨ f)`: the operand must be a function") }
+  return tacitToString(function (this: CurrentScope, a: Value, b: Value) {
+    return b === undefined ? safeApply(f, [a, a], this) : safeApply(f, [b, a], this)
+  })
+}
+
+// Ψ (Psi) – over: preprocess every argument with g, then combine with f.
+// The preprocessor is read first because it runs first: (g ⍥ f)(x, y) =
+// f(g(x), g(y)) – APL spells this f⍥g, but Fluent reads left-to-right.
+const FunctionOver = (g: Value, f: Value) => {
+  if (!isFn(f) || !isFn(g)) { return new Error("`(g ⍥ f)`: both operands must be functions") }
+  return tacitToString(function (this: CurrentScope, ...args: Value[]) {
+    return safeApply(f, args.map((a) => safeApply(g, [a], this)), this)
+  })
+}
+
+// Φ/Φ₁ (Phoenix/Pheasant) – fork: outer tines f and h see the arguments,
+// the middle tine g combines their results – the train reading order
+const FunctionFork = (f: Value, g: Value, h: Value) => {
+  if (!isFn(g)) { return new Error("`Φ(f, g, h)`: the middle tine `g` must be a function") }
+  if (f === undefined || h === undefined) { return new Error("`Φ(f, g, h)`: takes three tines") }
+  const [fc, hc] = [constantly(f), constantly(h)]
+  return tacitToString(function (this: CurrentScope, ...args: Value[]) {
+    return safeApply(g, [safeApply(fc, args, this), safeApply(hc, args, this)], this)
+  })
+}
+
+// Σ/Δ (Violet Starling/Zebra Dove) – before: preprocess the left (or only)
+// argument with f, then combine with g
+const FunctionBefore = (f: Value, g: Value) => {
+  if (!isFn(g)) { return new Error("`(f ⊸ g)`: `g` must be a function") }
+  const fc = constantly(f)
+  return tacitToString(function (this: CurrentScope, a: Value, b: Value) {
+    return safeApply(g, [safeApply(fc, [a], this), b === undefined ? a : b], this)
+  })
+}
+
+// S/D (Starling/Dove) – after: preprocess the right (or only) argument with g,
+// then combine with f; the monadic case is the J hook
+const FunctionAfter = (f: Value, g: Value) => {
+  if (!isFn(f)) { return new Error("`(f ⟜ g)`: `f` must be a function") }
+  const gc = constantly(g)
+  return tacitToString(function (this: CurrentScope, a: Value, b: Value) {
+    return safeApply(f, [a, safeApply(gc, [b === undefined ? a : b], this)], this)
+  })
+}
+
+// I/K/KI – the tacks: ⊢ yields its rightmost argument, ⊣ its leftmost
+const FunctionRight = (...args: Value[]) =>
+  args.length === 0 ? new Error("`⊢`: takes at least one argument") : args[args.length - 1]
+const FunctionLeft = (...args: Value[]) =>
+  args.length === 0 ? new Error("`⊣`: takes at least one argument") : args[0]
+
+// The K-lift question, exposed: userland combinators need to ask "is this
+// operand a function?" to bind constants the way the native hooks do.
+// Float32 0/1, like a comparison, so it composes with guard and where.
+const FunctionIs = (v: Value) => track(np.array(isFn(v) ? 1 : 0))
 
 // Async repeat (⟳): runs fn between frames so the UI stays live. The loop
 // belongs to the evaluation that started it – a re-evaluation cancels it.
@@ -2369,6 +2477,14 @@ doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable i
 doc(TensorGradient, "∇(f)", "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", "∇({ x | x^2 })(3) = 6")
 doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6")
 doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]")
+// Leaf docs for the arity-overloaded operators – FunctionArity synthesizes
+// the +, -, ×, · cards from these
+doc(TensorAdd, "x + y", "Element-wise addition; shapes broadcast.", "[1, 2] + 10 = [11, 12]")
+doc(TensorAbsolute, "abs(x)", "Absolute value of each element.", "abs([-2, 3]) = [2, 3]")
+doc(TensorSubtract, "x - y", "Element-wise subtraction; shapes broadcast.", "[3, 4] - 1 = [2, 3]")
+doc(TensorNegate, "neg(x)", "Negate each element.", "neg([1, -2]) = [-1, 2]")
+doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcast.", "[1, 2] × 3 = [3, 6]")
+doc(TensorSign, "sign(x)", "The sign of each element: -1, 0, or 1.", "sign([-5, 0, 3]) = [-1, 0, 1]")
 doc(TensorRange, "start :: stop", "Integer range from start (inclusive) to stop (exclusive).", "0 :: 5 = [0, 1, 2, 3, 4]")
 doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]")
 doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 :: 3) (⊗ ×) (0 :: 3) = [[0,0,0],[0,1,2],[0,2,4]]")
@@ -2392,6 +2508,17 @@ doc(FunctionApply, "args . f", "Pipe: apply the function on the right to the val
 doc(FunctionEvaluate, "f @ x", "Apply the function on the left to the argument on the right – reads as “f at x”. A list spreads as multiple arguments.", "∇({ x | x^2 }) @ 3 = 6")
 doc(FunctionIterate, "step ⟳ n", "Run a thunk n times, paced between display frames so the UI stays live – the loop for training and simulation. Async: a re-evaluation cancels it.", "opt: sgd(0.1), { opt(𝓛) } ⟳ 100")
 doc(FunctionPower, "(f ⍣ n)(x)", "Function power: f composed with itself n times – f(f(…f(x))). Synchronous; for a frame-paced loop use ⟳.", "double: { x | x × 2 }, (double ⍣ 5)(1) = 32")
+
+// Combinators – the cards name the birds so the taxonomy stays discoverable
+doc(FunctionCompose, "(f ∘ g)", "Then: apply f to the arguments, then g to the result – (f ∘ g)(x, y) = g(f(x, y)). Reading order is evaluation order. The Queer bird – APL's atop, swapped to read left-to-right.", "(+ ∘ √)(9, 16) = 5")
+doc(FunctionCommute, "(⍨ f)", "Commute: flip a binary function's arguments – x (⍨ f) y = f(y, x). With one argument, duplicate it: (⍨ f)(x) = f(x, x). The Cardinal and the Warbler.", "3 (⍨ -) 10 = 7")
+doc(FunctionOver, "(g ⍥ f)", "Over: preprocess each argument with g, then combine with f – x (g ⍥ f) y = f(g(x), g(y)). The preprocessor is read first because it runs first. The Psi bird.", "-3 (abs ⍥ =) 3 = 1")
+doc(FunctionFork, "Φ(f, g, h)", "Fork: apply the outer tines f and h to the arguments, combine the results with the middle tine g – x Φ(f, g, h) y = g(f(x, y), h(x, y)). A non-function tine is held constant. The Phoenix; dyadically the Pheasant.", "Φ(Σ, ÷, #)([1, 2, 3, 4]) = 2.5")
+doc(FunctionBefore, "(f ⊸ g)", "Before: preprocess the left (or only) argument with f, then combine with g – (f ⊸ g)(x, y) = g(f(x), y); (f ⊸ g)(x) = g(f(x), x). A constant binds the left argument. The Violet Starling; dyadically the Zebra Dove.", "(1 ⊸ +)(41) = 42")
+doc(FunctionAfter, "(f ⟜ g)", "After: preprocess the right (or only) argument with g, then combine with f – (f ⟜ g)(x, y) = f(x, g(y)); (f ⟜ g)(x) = f(x, g(x)) – the J hook. A constant binds the right argument. The Starling; dyadically the Dove.", "(÷ ⟜ √)(16) = 4")
+doc(FunctionRight, "x ⊢ y", "Right: yield the rightmost argument; with one argument, the identity.", "3 ⊢ 5 = 5")
+doc(FunctionLeft, "x ⊣ y", "Left: yield the leftmost argument; with one argument, the identity.", "3 ⊣ 5 = 3")
+doc(FunctionIs, "isFunction(v)", "1 if v is a function, else 0 – the question a combinator asks before treating an operand as a constant. Composes like a comparison.", "isFunction(√) = 1, isFunction(5) = 0")
 doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order; the first result that isn’t an Error wins. Errors are values in Fluent – falling through is intended, not exceptional.", "cascade((guard(n = 0, { 1 }), { n × f(n - 1) }))()")
 doc(FunctionGuard, "guard(cond, { value })", "A cascade candidate: yields the value while cond is truthy, an Error otherwise.", "guard(n = 0, { 1 })")
 doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Errors from the thunk stay loud – only the condition gates.", "when(training(), { opt(𝓛) })")
@@ -2409,6 +2536,15 @@ const DefaultEnvironment: Record<string, Value> = {
 
   FunctionIterate,
   FunctionPower,
+  FunctionCompose,
+  FunctionCommute,
+  FunctionOver,
+  FunctionFork,
+  FunctionBefore,
+  FunctionAfter,
+  FunctionRight,
+  FunctionLeft,
+  FunctionIs,
   FunctionCascade,
   FunctionArity,
   FunctionEvaluate,
@@ -2607,6 +2743,30 @@ apply: FunctionApply,
 (⟳): FunctionIterate,
 iter: FunctionIterate,
 (⍣): FunctionPower,
+
+; Combinators – glyph, array-language name, mainstream name
+(∘): FunctionCompose,
+then: FunctionCompose,
+compose: FunctionCompose,
+(⍨): FunctionCommute,
+commute: FunctionCommute,
+swap: FunctionCommute,
+(⍥): FunctionOver,
+over: FunctionOver,
+Φ: FunctionFork,
+fork: FunctionFork,
+phi: FunctionFork,
+(⊸): FunctionBefore,
+before: FunctionBefore,
+(⟜): FunctionAfter,
+after: FunctionAfter,
+hook: FunctionAfter,
+(⊢): FunctionRight,
+right: FunctionRight,
+(⊣): FunctionLeft,
+left: FunctionLeft,
+isFunction: FunctionIs,
+
 (@): FunctionEvaluate,
 eval: FunctionEvaluate,
 cascade: FunctionCascade,

@@ -34,6 +34,46 @@ test("backtick literals render as an AST tree", async ({ page }) => {
   await expect(panel(page).locator("svg").first()).toBeVisible()
 })
 
+test("hovering a grid cell's empty space highlights the cell's source, not the whole grid", async ({ page }) => {
+  await open(page, `Grid(3)(\n    ("a", \`9 - 5\`, 1 + 1),\n    ("b", \`8 ÷ 2\`, 20 + 22),\n)`)
+  await expect(panel(page)).toContainText("42")
+  const expectHighlightOnLineWith = async (lineText: string) => {
+    // the decoration renders as one empty overlay div per affected line – the
+    // whole-grid bug painted every line, a cell's own source paints only its
+    // row's line, vertically level with it
+    const highlighted = page.locator(".ast-hover-highlight")
+    await expect(highlighted).toHaveCount(1)
+    const hl = (await highlighted.first().boundingBox())!
+    const line = (await page.locator(".view-line", { hasText: lineText }).first().boundingBox())!
+    expect(Math.abs(hl.y - line.y)).toBeLessThan(3)
+  }
+  // a value cell: hover its bottom edge, away from the value text, where only
+  // the origin wrapper can catch it (16px in from the right: rounded-xl clips
+  // hit-testing inside the 12px corner arc)
+  const cell = page.getByTestId("print-panel").filter({ hasText: "42" }).last()
+  const box = (await cell.boundingBox())!
+  await page.mouse.move(box.x + box.width - 16, box.y + box.height - 4)
+  await expectHighlightOnLineWith("20 + 22")
+  // an AST-viz cell: hover the framed panel's padding, OUTSIDE the svg – the
+  // quoted cell's backtick source should highlight from the whole cell extent
+  const treePanel = panel(page).locator("svg.ast-tree").last().locator("..")
+  const tbox = (await treePanel.boundingBox())!
+  await page.mouse.move(tbox.x + tbox.width - 16, tbox.y + tbox.height - 4)
+  await expectHighlightOnLineWith("8 ÷ 2")
+})
+
+test("hovering one AST graph doesn't tint the others", async ({ page }) => {
+  // regression: hoverSubtree keys were bare grid coordinates, shared across
+  // every tree on the page – hovering one graph lit the same cells everywhere
+  await open(page, "(`1 + 2`, `3 + 4`)")
+  const svgs = panel(page).locator("svg")
+  await expect(svgs).toHaveCount(2)
+  await svgs.first().locator("rect").first().hover()
+  const lit = 'rect[stroke="rgba(255,255,255, 0.55)"]'
+  await expect(svgs.first().locator(lit).first()).toBeVisible()
+  await expect(svgs.nth(1).locator(lit)).toHaveCount(0)
+})
+
 test("slider drives a reactive recompute", async ({ page }) => {
   await open(page, "x: $(0.5), (Slider(x), x ^ 2)")
   await expect(panel(page)).toContainText("0.25")
@@ -71,6 +111,24 @@ test("Ctrl/Cmd+O opens the example gallery without editor focus", async ({ page 
   await expect(page.getByPlaceholder("Select an example to load")).not.toBeVisible()
   await page.keyboard.press("ControlOrMeta+Shift+KeyO")
   await expect(page.getByPlaceholder("Select an example to load")).toBeVisible()
+})
+
+test("?example= loads a gallery example by name; ⌘S switches to a ?code= URL", async ({ page }) => {
+  await page.goto("/?example=combinators")
+  await expect(panel(page)).toContainText("Queer bird")
+  // saving replaces the example reference with a self-contained code URL
+  await expect(async () => {
+    await page.keyboard.press("ControlOrMeta+KeyS")
+    expect(page.url()).toContain("code=")
+  }).toPass({ timeout: 20_000 })
+  expect(page.url()).not.toContain("example=")
+})
+
+test("?example= with an unknown name spells 404 in a binary tensor", async ({ page }) => {
+  await page.goto("/?example=no-such-bird")
+  await expect(page.getByText('example "no-such-bird" not found')).toBeVisible()
+  // the 5×11 bit matrix renders as a heatmap in the output panel
+  await expect(panel(page).locator(".js-plotly-plot, canvas").first()).toBeVisible()
 })
 
 test("printing a documented built-in shows its doc card, never JS internals", async ({ page }) => {

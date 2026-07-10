@@ -61,6 +61,56 @@ describe("functions", () => {
   })
 })
 
+describe("combinators", () => {
+  test("∘ then: composition reads left-to-right (Q, the reversed Bluebird)", () => {
+    expect(value("(+ ∘ √)(9, 16)")).toBe(5)   // add, then root
+    expect(value("(÷ ∘ -)(1, 4)")).toBe(-0.25) // divide, then negate
+  })
+  test("⍨ commutes a binary, duplicates for a unary (C, W)", () => {
+    expect(value("3 (⍨ -) 10")).toBe(7)
+    expect(value("(⍨ ×)(9)")).toBe(81)
+  })
+  test("⍥ over: preprocessor first, combiner second (Ψ)", () => {
+    expect(value("-3 (abs ⍥ =) 3")).toBe(1)
+  })
+  test("Φ fork: middle tine combines the outer tines (Φ, Φ₁)", () => {
+    expect(value("Φ(Σ, ÷, #)([1, 2, 3, 4])")).toBe(2.5)
+    expect(value("5 Φ(=, ∨, >) 3")).toBe(1)
+    expect(value("5 Φ(=, ∨, >) 9")).toBe(0)
+    // the fork inside a table – ≥ rebuilt from its parts
+    expect(value("(0 :: 3) (⊗ Φ(=, ∨, >)) (0 :: 3)")).toEqual([[1, 0, 0], [1, 1, 0], [1, 1, 1]])
+  })
+  test("⊸ before and ⟜ after: hooks; a constant operand binds", () => {
+    expect(value("(÷ ⟜ √)(16)")).toBe(4)      // S: x ÷ √x
+    expect(value("16 (÷ ⟜ √) 4")).toBe(8)     // D: x ÷ √y
+    expect(value("(1 ⊸ +)(41)")).toBe(42)     // bind left
+    expect(value("(÷ ⟜ 2)(84)")).toBe(42)     // bind right
+  })
+  test("⊢ ⊣ tacks", () => {
+    expect(value("3 ⊢ 5")).toBe(5)
+    expect(value("3 ⊣ 5")).toBe(3)
+    expect(value("⊢(7)")).toBe(7)
+  })
+  test("word aliases: array-language and mainstream names", () => {
+    expect(value("then(+, √)(9, 16)")).toBe(5)
+    expect(value("compose(+, √)(9, 16)")).toBe(5)
+    expect(value("3 (swap(-)) 10")).toBe(7)
+    expect(value("fork(Σ, ÷, #)([1, 2, 3, 4])")).toBe(2.5)
+    expect(value("before(1, +)(41)")).toBe(42)
+  })
+  test("composed functions iterate under ⍣", () => {
+    expect(value("((1 ⊸ +) ⍣ 5)(0)")).toBe(5)
+  })
+  test("isFunction answers the K-lift question, enabling userland bind", () => {
+    expect(value("isFunction(√)")).toBe(1)
+    expect(value("isFunction(5)")).toBe(0)
+    // a userland Kestrel-lift: constants become constant functions
+    const lift = "lift: { v | cascade((guard(isFunction(v), { v }), { { x, y | v } }))() }"
+    expect(value(`${lift}, lift(7)(1, 2)`)).toBe(7)
+    expect(value(`${lift}, lift(√)(16)`)).toBe(4)
+  })
+})
+
 describe("tensors", () => {
   test("broadcasting", () => {
     expect(value("[1, 2, 3] + 1")).toEqual([2, 3, 4])

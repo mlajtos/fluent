@@ -1,6 +1,13 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+/* BQN386 supplies the tacit/APL glyph blocks as one matched set – registered
+   at runtime via the FontFace API in client.tsx, NOT as a CSS @font-face:
+   Bun's bundler fails hot-swapping CSS that carries a binary asset. */
+@theme {
+  --font-mono: "BQN386", ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
+}
+
 /* Remove backticks from inline code in prose */
 .prose code::before,
 .prose code::after {
@@ -12,3 +19,4 @@
   background-color: rgba(255, 255, 255, 0.1);
   border-radius: 3px;
 }
+

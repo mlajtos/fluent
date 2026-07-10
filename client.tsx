@@ -744,12 +744,15 @@ const Grid = (cols: np.Array, rows: np.Array) => {
   // dynamically: Grid(3)(tasks) works when tasks is $((...)).
   const flattenCells = (xs: any[]): any[] => xs.flatMap(x => Array.isArray(x) ? flattenCells(x) : [x])
   const isListSignal = (a: any) => a instanceof Signal && Array.isArray((a as Signal<unknown>).peek())
+  // Without an explicit row template, rows hug their content (content-start) –
+  // the default align-content: stretch would distribute the panel's spare
+  // height across auto rows, inflating a small table to fill the whole panel.
   const applyChildren = (...args: any[]) => {
     const buildCells = () => flattenCells(args.map(a => isListSignal(a) ? (a as Signal<unknown>).value : a))
       .map(WrapWithPrintIfNotReactElement)
       .map((cell, i) => <div key={i} className="contents">{cell}</div>)
     return (
-      <div className={`grid gap-2 overflow-scroll h-full`} style={{ gridTemplateColumns, gridTemplateRows }}>
+      <div className={`grid gap-2 overflow-scroll h-full ${gridTemplateRows ? "" : "content-start"}`} style={{ gridTemplateColumns, gridTemplateRows }}>
         {/* @ts-ignore */}
         {args.some(isListSignal) ? computed(() => <>{buildCells()}</>) : buildCells()}
       </div>
@@ -759,6 +762,18 @@ const Grid = (cols: np.Array, rows: np.Array) => {
   return applyChildren
 }
 
+// A quoted-AST cell gets the same framed panel as any printed value: the
+// frame marks the cell, and the panel's full extent carries the origin hover
+// (the bare svg's box is smaller than the cell). Interactive elements
+// (Slider, Button, plots) stay unboxed.
+// no overflow-scroll here: a scroll container contributes no minimum height
+// to grid track sizing, so the row would size to the text cells and clip the
+// tree – the frame must grow with its drawing instead
+const frameIfAstTree = (el: any) =>
+  el?.props?.className?.includes?.("ast-tree")
+    ? <Panel>{el}</Panel>
+    : el
+
 function WrapWithPrintIfNotReactElement(child: any): any {
   if (child instanceof Signal) {
     // Reactive island: render EAGERLY inside the same computed that reads the
@@ -767,18 +782,23 @@ function WrapWithPrintIfNotReactElement(child: any): any {
     return computed(() => {
       const value = (child as Signal<unknown>).value
       if (value instanceof Signal) { return WrapWithPrintIfNotReactElement(value) }
-      if (isValidElement(value)) { return value }
+      if (isValidElement(value)) { return <WithOriginHighlight obj={value}>{frameIfAstTree(value)}</WithOriginHighlight> }
+      // the origin wrapper sits OUTSIDE the panel: hovering the box's empty
+      // padding highlights this value's source, instead of bubbling up to
+      // the whole surrounding expression (e.g. an entire Grid)
       return (
-        <Panel className="overflow-scroll">
-          <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[value]}>
-            {PrettyPrint(value)}
-          </ErrorBoundary>
-        </Panel>
+        <WithOriginHighlight obj={value}>
+          <Panel className="overflow-scroll">
+            <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[value]}>
+              {PrettyPrint(value)}
+            </ErrorBoundary>
+          </Panel>
+        </WithOriginHighlight>
       )
     });
   }
   if (isValidElement(child)) {
-    return child;
+    return <WithOriginHighlight obj={child}>{frameIfAstTree(child)}</WithOriginHighlight>;
   } else {
     return Print(child);
   }
@@ -1180,6 +1200,8 @@ function nodeWidth(label: string): number {
   return label.length * GLYPH.width + 2 * TREE.nodePadding.x
 }
 
+let treeInstance = 0
+
 function Tree(tree: SyntaxTreeNode & { type: "Program" }): JSX.Element {
   const { nodes, edges } = layoutGrid(tree)
   if (nodes.length === 0) return <svg />
@@ -1210,7 +1232,11 @@ function Tree(tree: SyntaxTreeNode & { type: "Program" }): JSX.Element {
 
   // Build node lookup by position
   const nodeAt = new Map(nodes.map(n => [`${n.row},${n.col}`, n]))
-  const keyOf = (n: GridNode) => `${n.row},${n.col}`
+  // hoverSubtree is one global signal and grid coordinates repeat across
+  // trees – prefix keys with this tree's identity, or hovering one graph
+  // tints the same coordinates in every other graph on the page
+  const treeId = ++treeInstance
+  const keyOf = (n: GridNode) => `${treeId}:${n.row},${n.col}`
   const subtreeKeys = (n: GridNode): Set<string> => {
     const s = new Set<string>()
     const walk = (m: GridNode) => { s.add(keyOf(m)); for (const c of m.children) walk(c) }
@@ -1219,7 +1245,7 @@ function Tree(tree: SyntaxTreeNode & { type: "Program" }): JSX.Element {
   }
 
   return (
-    <svg style={{ width: totalWidth, height: totalHeight, shapeRendering: "optimizeSpeed" }} viewBox={`0 0 ${totalWidth} ${totalHeight}`}>
+    <svg className="ast-tree" style={{ width: totalWidth, height: totalHeight, shapeRendering: "optimizeSpeed" }} viewBox={`0 0 ${totalWidth} ${totalHeight}`}>
       {/* one reactive region: re-renders on hover to re-tint frames/edges, but the
           layout above is computed only once per program */}
       {computed(() => {
@@ -1237,7 +1263,7 @@ function Tree(tree: SyntaxTreeNode & { type: "Program" }): JSX.Element {
                   x2={colX[e.childCol]! + child.width / 2}
                   y2={rowY(e.childRow)}
                   trunkX={gapX[e.parentCol]!}
-                  active={active?.has(`${e.parentRow},${e.parentCol}`) ?? false}
+                  active={active?.has(`${treeId}:${e.parentRow},${e.parentCol}`) ?? false}
                 />
               )
             })}
@@ -1481,12 +1507,16 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
 const frameStyle = "rounded-xl border border-neutral-800 hover:border-neutral-700 p-2"
 
 function Print(obj: Signal<unknown>) {
+  // origin wrapper outside the panel – hovering the box's empty padding
+  // highlights this value's source (see WrapWithPrintIfNotReactElement)
   return computed(() =>
-    <Panel className="overflow-scroll" testId="print-panel">
-      <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[obj]}>
-        {PrettyPrint(obj)}
-      </ErrorBoundary>
-    </Panel>
+    <WithOriginHighlight obj={obj instanceof Signal ? obj.value : obj}>
+      <Panel className="overflow-scroll" testId="print-panel">
+        <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[obj]}>
+          {PrettyPrint(obj)}
+        </ErrorBoundary>
+      </Panel>
+    </WithOriginHighlight>
   )
 }
 setMeta(Print, { noAutoLift: true })
@@ -1551,7 +1581,13 @@ function PrettyPrintInner(obj: any): JSX.Element {
   if (Array.isArray(obj)) {
     return (
       <div className="grid gap-1 rounded-xl">
-        {obj.map((item, key) => <div key={key} className={`${frameStyle} !border-0 grid hover:bg-neutral-900 mix-blend-screen`}>{PrettyPrint(item)}</div>)}
+        {obj.map((item, key) => (
+          // origin wrapper outside the row box – hovering a row's empty
+          // space highlights that item's source, not the whole list
+          <WithOriginHighlight key={key} obj={item}>
+            <div className={`${frameStyle} !border-0 grid hover:bg-neutral-900 mix-blend-screen`}>{PrettyPrint(item)}</div>
+          </WithOriginHighlight>
+        ))}
       </div>
     );
   }
@@ -2069,20 +2105,24 @@ x : (1 :: 10),
 (++): ListConcat,
 (1, 2) ++ (3, 4)
 `,
-  "flip-operator": `
-; Commute/flip operator arguments
-↔︎ : {⊙ | {x,y| y ⊙ x}},
-1 - 2,
-1 ↔︎(-) 2
-`,
-  "partial-application": `
-; Partial application with custom operators
-(
-    ↔ : { ⊙ | { a, b | b ⊙ a } },
-    ⊢ : { ⊙, a | { b | a ⊙ b } },
-    ⊣ : ↔(⊢),
-    (+ ⊢ -1)(3),
-    (-1 ⊣ +)(3),
+  "combinators": `
+; Combinators – the songbirds of tacit programming.
+; Smullyan named them after birds ("To Mock a Mockingbird")
+; honoring Haskell Curry, logician and avid birdwatcher.
+
+Grid(3)(
+    ("Queer bird",      \`g(f(x))\`,           (+ ∘ √)(9, 16)          ),
+    ("Cardinal",        \`f(y, x)\`,           3 (⍨ -) 10              ),
+    ("Warbler",         \`f(x, x)\`,           (⍨ ×)(9)                ),
+    ("Psi",             \`f(g(x), g(y))\`,     -3 (abs ⍥ =) 3          ),
+    ("Starling",        \`f(x, g(x))\`,        (÷ ⟜ √)(16)             ),
+    ("Dove",            \`f(x, g(y))\`,        16 (÷ ⟜ √) 4            ),
+    ("Violet Starling", \`g(f(x), x)\`,        (√ ⊸ ÷)(16)             ),
+    ("Zebra Dove",      \`g(f(x), y)\`,        9 (√ ⊸ ÷) 3             ),
+    ("Phoenix",         \`g(f(x), h(x))\`,     Φ(Σ, ÷, #)([1, 2, 3, 4])),
+    ("Pheasant",        \`g(f(x,y), h(x,y))\`, 5 Φ(=, ∨, >) 3          ),
+    ("Kestrel",         \`x\`,                 3 ⊣ 5                   ),
+    ("Kite",            \`y\`,                 3 ⊢ 5                   ),
 )
 `,
   "lerp": `
@@ -2934,6 +2974,21 @@ fib: { n |
 
 const getExample = (k: keyof typeof EXAMPLES) => EXAMPLES[k].trim()
 
+// ?example=nope – a binary tensor that spells 404 (2-D tensors print as a
+// heatmap, so the bits render as the actual digits)
+const example404 = (name: string) => dedent`
+  ; example "${name.replace(/\s+/g, " ").slice(0, 60)}" not found
+  [[1,0,1, 0, 1,1,1, 0, 1,0,1],
+   [1,0,1, 0, 1,0,1, 0, 1,0,1],
+   [1,1,1, 0, 1,0,1, 0, 1,1,1],
+   [0,0,1, 0, 1,0,1, 0, 0,0,1],
+   [0,0,1, 0, 1,1,1, 0, 0,0,1]]
+`
+
+// what a ?example= URL resolves to – a gallery example by name, or the 404
+const exampleSource = (name: string) =>
+  name in EXAMPLES ? getExample(name as keyof typeof EXAMPLES) : example404(name)
+
 // MARK: Generated Code
 
 const FLUENT_GENERATION_SYSTEM_PROMPT = `
@@ -3069,6 +3124,9 @@ const getEditorOptions: (type: "editable" | "readonly") => editor.IStandaloneEdi
   minimap: { enabled: false },
   wordWrap: "on",
   fontSize: 14,
+  // BQN386 serves only the symbol blocks (unicode-range in index.css) – both
+  // hook glyphs ⊸/⟜ come from one face instead of two mismatched fallbacks
+  fontFamily: '"BQN386", Menlo, Monaco, "Courier New", monospace',
   fixedOverflowWidgets: true,
   scrollBeyondLastLine: false,
   bracketPairColorization: {
@@ -3352,6 +3410,25 @@ const editorBeforeMount: BeforeMount = (monaco) => {
     },
   });
 
+  // BQN386 (dzaima/BQN386, APL385-derived, free for any use) supplies the
+  // tacit/APL glyph blocks as one matched set – system monospace fonts miss
+  // ⟜ (U+27DC) and pull its mirror ⊸ (U+22B8) from a different fallback, so
+  // the pair renders at two sizes. Registered via the FontFace API instead of
+  // a CSS @font-face because Bun's bundler fails hot-swapping CSS that
+  // carries a binary asset; /BQN386.ttf is served as a plain static file.
+  // The unicode-range keeps ASCII and letters on the system mono.
+  const symbolFont = new FontFace("BQN386", 'url("/BQN386.ttf")', {
+    unicodeRange: "U+2016, U+2190-23FF, U+27C0-27FF, U+2980-29FF, U+2A00-2AFF",
+  })
+  document.fonts.add(symbolFont)
+  // Monaco measures glyph widths at mount – remeasure once the font arrives
+  // or cursor/selection x-positions drift on lines with ⊸ ⟜ ⍨ ⍥. A failed
+  // load (e.g. a dev server started before the /BQN386.ttf route existed)
+  // must degrade to the system fallback fonts, not an error overlay.
+  symbolFont.load()
+    .then(() => monaco.editor.remeasureFonts())
+    .catch(() => console.warn("BQN386 failed to load – symbol glyphs fall back to system fonts"))
+
   monaco.editor.addKeybindingRule({
     keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF,
     command: "editor.action.formatDocument",
@@ -3590,6 +3667,12 @@ const editorOnMount: OnMount = (editor, monaco) => {
         }).then((selected: any) => {
           if (selected) {
             editor.getModel()?.setValue(getExample(selected.label))
+            // a pristine example is referable by name – the URL says so;
+            // ⌘S after editing switches back to a ?code= URL
+            const url = new URL(window.location.href)
+            url.searchParams.delete("code")
+            url.searchParams.set("example", selected.label)
+            window.history.pushState({}, "", url.toString())
           }
         })
       })
@@ -3606,6 +3689,8 @@ const editorOnMount: OnMount = (editor, monaco) => {
       const encodedCode = StringSerialize(code);
       const url = new URL(window.location.href);
       url.searchParams.set("code", encodedCode);
+      // saved code is its own document – it no longer speaks for the example
+      url.searchParams.delete("example");
       window.history.pushState({}, "", url.toString());
     },
   });
@@ -3679,9 +3764,13 @@ export function Playground() {
     // like Ctrl+S, emit nothing, which is what we want: the editor already
     // holds that code.)
     const handleUrlChange = () => {
-      const codeFromUrl = StringDeserialize(new URLSearchParams(window.location.search).get("code") ?? "");
+      const params = new URLSearchParams(window.location.search);
+      const codeFromUrl = StringDeserialize(params.get("code") ?? "");
+      const exampleName = params.get("example");
       if (codeFromUrl !== "") {
         SignalUpdate(code, codeFromUrl);
+      } else if (exampleName !== null) {
+        SignalUpdate(code, exampleSource(exampleName));
       }
     };
     window.addEventListener("popstate", handleUrlChange);
@@ -3690,9 +3779,14 @@ export function Playground() {
     };
   }, [])
 
-  const codeFromUrl = StringDeserialize(new URLSearchParams(window.location.search).get("code") ?? "");
-  const code = useSignal<string>(codeFromUrl !== "" ? codeFromUrl : "1 + 1")
-  //const code = useSignal<string>(codeFromUrl !== "" ? codeFromUrl : getExample("REPL"))
+  const urlParams = new URLSearchParams(window.location.search);
+  const codeFromUrl = StringDeserialize(urlParams.get("code") ?? "");
+  const exampleFromUrl = urlParams.get("example");
+  const code = useSignal<string>(
+    codeFromUrl !== "" ? codeFromUrl
+      : exampleFromUrl !== null ? exampleSource(exampleFromUrl)
+        : "1 + 1"
+  )
   const result = useComputed<Value>(() => {
     return evaluateGeneration(() => {
       const scope = createScope()

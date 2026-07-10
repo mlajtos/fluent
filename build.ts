@@ -45,6 +45,7 @@ if (!workerBuild.success) {
 // Copy static datasets the examples fetch at runtime (the deployed site is
 // static – no /mnist.safetensors route like the dev server has)
 await Bun.write(`${outdir}/mnist.safetensors`, Bun.file("./mnist.safetensors"));
+await Bun.write(`${outdir}/BQN386.ttf`, Bun.file("./BQN386.ttf"));
 
 console.log("Build complete!");
 console.log(`Output: ${outdir}`);
