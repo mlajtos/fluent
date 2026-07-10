@@ -560,19 +560,26 @@ const Text = (value: string | String) => {
   return <div className="prose prose-neutral prose-invert"><NativeDOMElement fn={fn} /></div>
 }
 
-const TextEditor = (editedValue: Signal<string>) => {
-  return SignalComputed(() =>
-    <div className="grid">
+// TextEditor(text) – editable always; TextEditor(text, enabled) – read-only
+// while `enabled` is falsy (readOnly, not disabled: text stays selectable and
+// the same <textarea> reconciles in place, so cursor and scroll survive).
+const TextEditor = (editedValue: Signal<string>, enabled?: Signal<np.Array> | np.Array) => {
+  return SignalComputed(() => {
+    const on = enabled === undefined ||
+      (getAsSyncList(enabled instanceof Signal ? enabled.value : enabled) as number) >= 0.5
+    return <div className="grid">
       <textarea
         value={editedValue.value}
-        onChange={(e) => SignalUpdate(editedValue, e.target.value)}
-        className="block bg-neutral-800 focus:bg-neutral-900 rounded-xl border border-neutral-600 hover:border-neutral-500 focus:border-neutral-300 outline-none p-2 field-sizing-content"
+        readOnly={!on}
+        title={on ? undefined : "read-only while training"}
+        onChange={(e) => { if (on) { SignalUpdate(editedValue, e.target.value) } }}
+        className={`block bg-neutral-800 focus:bg-neutral-900 rounded-xl border border-neutral-600 hover:border-neutral-500 focus:border-neutral-300 outline-none p-2 field-sizing-content ${on ? "" : "opacity-50 cursor-not-allowed"}`}
         // @ts-ignore
         style={{ fieldSizing: "content" }}
         rows={1}
       />
     </div>
-  )
+  })
 }
 setMeta(TextEditor, { noAutoLift: true })
 
@@ -1817,7 +1824,10 @@ const HeatPlot = ({ data }: { data: np.Array }) => {
         autosizable: true,
         responsive: true,
       }}
-      style={{ width: '100%', height: '100%' }}
+      // height: 100% of an auto-sized parent is circular and sometimes resolves
+      // to 0 – Plotly's absolutely-positioned svg then paints at its default
+      // size over the panels below. The min-height floor breaks the cycle.
+      style={{ width: '100%', height: '100%', minHeight: '16em' }}
     />
   );
 }
@@ -1937,12 +1947,17 @@ const HeatCanvas = ({ data }: { data: np.Array }) => {
     image.dispose()
   }, [data])
 
+  // small tensors (a 27×32 embedding matrix) capped at their natural width
+  // render as postage stamps – upscale by an integer factor to ~256px so the
+  // cells stay crisp under image-rendering: pixelated; large grids unchanged
+  const displayWidth = width < 256 ? width * Math.ceil(256 / width) : width
+
   return (
     <canvas
       ref={canvasRef}
       style={{
         width: '100%',
-        maxWidth: `${width}px`,
+        maxWidth: `${displayWidth}px`,
         aspectRatio: `${aspect}`,
         imageRendering: 'pixelated'
       }}
@@ -2717,6 +2732,114 @@ accuracy: $({ losses(), cascade((guard(loaded(), {
   accuracy,
   Text("**training loss**:"),
   losses,
+)
+`,
+  "dreamer": `
+; 🔮 The Name Dreamer – a 12k-parameter transformer invents names, live.
+; The corpus lives in a data slot (~~): the compiled training step receives it
+; as an argument each step – so the step stays jit-hot, and pausing, editing
+; the text and resuming re-trains on YOUR data without resetting the weights.
+; Gradients flow into ~, never into ~~.
+
+(++): TensorConcat,
+
+; --- vocabulary: ' ' → 0, a…z → 1…26 (anything else collapses to space) ---
+V: 27, T: 8, C: 32, F: 96,
+enc: { s | clamp(StringToCodes(s) - 96, 0, 26) },
+dec: { t | CodesToString(where(t = 0, 32, t + 96)) },
+
+; --- the entire dataset is this editable string ---
+corpus: $("emma olivia ava isabella sophia charlotte mia amelia harper evelyn abigail emily elizabeth mila ella avery sofia camila aria scarlett victoria madison luna grace chloe penelope layla riley zoey nora lily eleanor hannah lillian addison aubrey ellie stella natalie zoe leah hazel violet aurora savannah audrey brooklyn bella claire skylar lucy paisley everly anna caroline nova genesis emilia kennedy samantha maya willow kinsley naomi aaliyah elena sarah ariana allison gabriella alice madelyn cora ruby eva serenity autumn adeline hailey gianna valentina isla eliana quinn ivy sadie piper lydia alexa josephine emery julia delilah arianna vivian kaylee sophie brielle madeline"),
+load: { c | windows(T + 1, enc(c)) },       ; every 9-char window is an example
+D: ~~(load(once(corpus))),
+SignalEffect({ D := load(corpus()) }),      ; corpus edits reload the slot – the weights stay
+
+; --- the transformer: one pre-norm block, one head ---
+E:  ~(randn([V, C]) × 0.1),  P:  ~(randn([T, C]) × 0.1),
+Wq: ~(randn([C, C]) × 0.2),  Wk: ~(randn([C, C]) × 0.2),
+Wv: ~(randn([C, C]) × 0.2),  Wo: ~(randn([C, C]) × 0.2),
+W1: ~(randn([C, F]) × 0.2),  W2: ~(randn([F, C]) × 0.1),
+Wu: ~(randn([C, V]) × 0.1),
+
+rms: { x | x ÷ √(unsqueeze(mean(x × x, -1), 2) + 0.001) },
+gelu: { x | x × sigmoid(x × 1.702) },
+nmask: where((0 :: T) ⊗(≥) (0 :: T), fill([T, T], 0), fill([T, T], -9999)),
+att: { x | q: matmul(x, Wq), k: matmul(x, Wk), v: matmul(x, Wv),
+  a: softmax((einsum("btc,bsc->bts", q, k) ÷ √(C)) + nmask),
+  matmul(matmul(a, v), Wo) },
+model: { ids | x0: matmul(oneHot(ids, V), E) + P,
+  x1: x0 + att(rms(x0)),
+  x2: x1 + matmul(gelu(matmul(rms(x1), W1)), W2),
+  matmul(rms(x2), Wu) },   ; [batch, T, V] logits
+
+loss: { crossEntropy(oneHot(slice(D, [0, 1], [-1, T]), V), model(slice(D, [0, 0], [-1, T]))) },
+
+; --- sampling: gumbel-max, with a temperature you can drag ---
+codesF: linspace([0, V - 1], V),   ; float 0…26 – argmax is int, gather keeps it float
+τ: $(0.5),
+pick: { l | codesF _ argmax((l ÷ ((once(τ) × 1.5) ⌈ 0.05)) - log(-log(rand([V]))), -1) },
+grow: { s | ctx: s _ ((0 :: T) + (#(s) - T)),
+  l: (model(ctx ⍴ [1, T]) ⍴ [T, V]) _ (T - 1),
+  s ++ (pick(l) ⍴ [1]) },
+gen: { seed, n | (grow ⍣ n)(seed) },
+dream: $("### …one moment, it is waking up…"),
+dreamNow: { dream(StringConcat("### ", dec(slice(gen(fill([T], 0), 48), T)))) },
+
+; --- training: ⟳-paced, gated by the checkbox ---
+training: $(1),
+opt: adamw(0.03, 0.001),   ; a little weight decay – memorize less, invent more
+losses: $([]),
+stride: $(4),
+{ i |
+  when(once(training), {
+    l: opt(loss),
+    when((i % once(stride)) = 0, {
+      losses(losses() ++ (l ⍴ [1])),
+      ; the plot keeps the WHOLE story, bounded: when it fills up,
+      ; thin the history to every other point and log half as often
+      when((#(losses())) ≥ 480, {
+        losses(losses() _ ((0 :: 240) × 2)),
+        stride ← (once(stride) × 2)
+      })
+    }),
+    when((i % 200) = 0, dreamNow)
+  })
+} ⟳ 1000000,
+
+; type a beginning – the model finishes it (works even while paused)
+prompt: $("kri"),
+finish: $({ dream(), p: prompt(), s: fill([T], 0) ++ enc(p),
+  StringConcat("## ", p, "·", dec(slice(gen(s, 10), #(s)))) }),
+
+; what the head attends to while reading a name, live
+probeS: fill([T], 0) ++ enc("sophia"),
+probe: probeS _ ((0 :: T) + (#(probeS) - T)),
+attn: $({ losses(),
+  x: rms(matmul(oneHot(probe ⍴ [1, T], V), E) + P),
+  softmax((einsum("btc,bsc->bts", matmul(x, Wq), matmul(x, Wk)) ÷ √(C)) + nmask) ⍴ [T, T] }),
+
+editable: $({ 1 - training() }),
+(
+  Text("# 🔮 The Name Dreamer"),
+  Text("A 12k-parameter transformer learns to invent names – live, in your tab."),
+  Checkbox(training),
+  Text("**training** – uncheck to pause; pause to edit the corpus below"),
+  Text("**loss** – the whole run, from first step to now:"),
+  losses,
+  Text("**it dreams** – regenerated every 200 steps:"),
+  Text(dream),
+  Button("dream again", dreamNow),
+  Text("**finish my name:**"),
+  TextEditor(prompt),
+  Text(finish),
+  Text("**temperature:**"),
+  Slider(τ),
+  Text("**attention** while it reads “sophia” (row attends to column):"),
+  attn,
+  Text("**the letter embeddings**, learning:"),
+  E,
+  Text("**the training data** – uncheck training to edit; resuming keeps the weights:"),
+  TextEditor(corpus, editable),
 )
 `,
   "camera-edges": `
@@ -3523,6 +3646,15 @@ const GLOBAL_SHORTCUTS: Record<string, { action: string, withShift?: boolean }> 
   KeyS: { action: "fluent-save-example" },
   KeyP: { action: "editor.action.quickCommand", withShift: true },
 }
+
+// jax-js's WebGPU backend pops error scopes fire-and-forget; when a device or
+// instance is dropped mid-flight (re-evaluation teardown, HMR, GPU reset) the
+// pending pops reject with nothing to catch them, and the dev overlay buries
+// the app under "Instance dropped in popErrorScope". Swallow exactly that
+// teardown noise – everything else stays loud. (Upstream: jax-js.)
+window.addEventListener("unhandledrejection", (e) => {
+  if (String(e.reason).includes("popErrorScope")) { e.preventDefault() }
+})
 
 export function Playground() {
 

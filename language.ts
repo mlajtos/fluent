@@ -843,9 +843,10 @@ class FluentVariable {
       initial = backed
     }
     this.current = initial
-    trainableVariables.add(this)
+    const registry = this instanceof FluentData ? dataVariables : trainableVariables
+    registry.add(this)
     registerDisposable(() => {
-      trainableVariables.delete(this)
+      registry.delete(this)
       if (this.current.refCount > 0) { this.current.dispose() }
     })
   }
@@ -872,6 +873,13 @@ class FluentVariable {
 // Optimizers with no explicit variable list train everything alive – the
 // same contract as TFJS's global variable registry.
 const trainableVariables = new Set<FluentVariable>()
+
+// Data slot (~~): a mutable tensor the compiled optimizer step receives as a
+// jit ARGUMENT on every call – read fresh, never differentiated, no optimizer
+// state. Gradients flow into ~, never into ~~. Reassigning to a new shape
+// costs one clean retrace; same shape replays the compiled step untouched.
+class FluentData extends FluentVariable {}
+const dataVariables = new Set<FluentData>()
 
 // MARK: Evaluation generations
 // Each top-level evaluation owns the resources it creates: live sources
@@ -1318,7 +1326,7 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
     // drain the lazy queue: jax-js never dispatches on its own, so a training
     // loop whose variables nobody displays would grow an unbounded pending
     // graph – realize what the batch retained
-    for (const variable of trainableVariables) {
+    for (const variable of [...trainableVariables, ...dataVariables]) {
       const held = variable.current.ref
       held.blockUntilReady().then(
         () => { if (held.refCount > 0) { held.dispose() } },
@@ -1391,7 +1399,13 @@ const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
 // user-facing computeds own their cached tensors, like auto-lifted ones
 const SignalComputed = (<T,>(fn: () => T) => computedOwned(fn)) as typeof computed
 
-const SignalEffect = effect
+// effects belong to the evaluation that created them – a re-evaluation must
+// stop them, or stale effects keep firing into disposed variables
+const SignalEffect = ((fn: () => void) => {
+  const dispose = effect(fn)
+  registerDisposable(dispose)
+  return dispose
+}) as typeof effect
 setMeta(SignalEffect, { noAutoLift: true })
 
 // Read signal value once without creating reactive dependency
@@ -1470,6 +1484,24 @@ const FunctionGuard = function (this: CurrentScope, cond: Value, thunk: Function
   }
 }
 setMeta(FunctionGuard, { noAutoLift: true })
+
+// when(cond, { … }) – a conditional effect: run the thunk while cond is
+// truthy, yield ◌ otherwise. Unlike a guard inside a cascade, a thunk that
+// ERRORS stays loud – only the condition gates. (Swallowing thunk errors
+// would silently turn a broken training step into a no-op.)
+const FunctionWhen = function (this: CurrentScope, cond: Value, thunk: Value) {
+  const condValue = requireData(cond)
+  const falsy = (v: unknown) => v === 0 || v === false
+  const isFalsy = falsy(condValue) ||
+    (Array.isArray(condValue) && (condValue.flat(Infinity) as unknown[]).every(falsy)) ||
+    Number.isNaN(condValue)
+  if (isFalsy) { return null }
+  if (typeof thunk !== "function") {
+    return new Error("`when(cond, { … })`: second argument must be a thunk")
+  }
+  return (thunk as Function).apply(this)
+}
+setMeta(FunctionWhen, { noAutoLift: true })
 
 const Describe = (target: Value, doc?: string): Value => {
   if (doc === undefined) {
@@ -1982,9 +2014,16 @@ const TensorVariable = (a: Value) => {
   return new FluentVariable(borrow(a) as np.Array)
 }
 
+const TensorData = (a: Value) => {
+  if (!isTensor(a) && !(a instanceof FluentVariable)) {
+    return new Error("`~~(init)`: initial value must be a tensor – make one slot per tensor")
+  }
+  return new FluentData(borrow(a) as np.Array)
+}
+
 const TensorAssign = (a: Value, b: Value) => {
   if (!(a instanceof FluentVariable)) {
-    return new Error("`:=`: left side must be a variable created with ~")
+    return new Error("`:=`: left side must be a variable created with ~ or ~~")
   }
   if (tracingActive) { throw new TraceBailout("variable write during trace") }
   a.assign(borrow(b) as np.Array)
@@ -2017,6 +2056,7 @@ const TensorWatch = (a: Value): Value => {
 const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: FluentVariable[]) => {
   let state: optax.OptState | null = null
   let stateVars: FluentVariable[] = []
+  let stepSlots: FluentData[] = []
   registerDisposable(() => {
     if (state !== null) {
       tree.dispose(state)
@@ -2024,7 +2064,7 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     }
   })
 
-  let compiledStep: ((params: np.Array[], state: optax.OptState) => [np.Array, np.Array[], optax.OptState]) & { dispose: () => void } | null = null
+  let compiledStep: ((params: np.Array[], data: np.Array[], state: optax.OptState) => [np.Array, np.Array[], optax.OptState]) & { dispose: () => void } | null = null
   let stepMode: "probe" | "jit" | "eager" = "probe"
   const demoteStep = () => {
     compiledStep?.dispose()
@@ -2041,9 +2081,21 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     if (vars.length === 0) {
       return new Error("no trainable variables – create one with ~(init)")
     }
+    if (vars.some((v) => v instanceof FluentData)) {
+      // silent filtering would train nothing and report nothing – refuse loudly
+      return new Error("~~ holds data and can't be trained – pass variables made with ~")
+    }
+    // data slots ride into the compiled step as jit arguments: read fresh
+    // every call, never differentiated. A changed slot set invalidates the
+    // captured closure, but not the per-parameter optimizer state.
+    const slots = [...dataVariables]
     if (state !== null && (stateVars.length !== vars.length || stateVars.some((v, i) => v !== vars[i]))) {
       tree.dispose(state)
       state = null
+      demoteStep()
+      stepMode = "probe"
+    }
+    if (compiledStep !== null && (stepSlots.length !== slots.length || stepSlots.some((s, i) => s !== slots[i]))) {
       demoteStep()
       stepMode = "probe"
     }
@@ -2053,10 +2105,14 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     }
 
     // gradient of the loss thunk: each variable temporarily carries its
-    // parameter, so reads inside the thunk differentiate
-    const lossFromParams = (params: np.Array[]) => {
+    // parameter and each data slot its argument, so reads inside the thunk
+    // trace. Only the params leaf differentiates – jax's default argnums is 0,
+    // and jax-js stop-gradients the remaining arguments itself.
+    const lossFromParams = (params: np.Array[], data: np.Array[]) => {
       const saved = vars.map(v => v.current)
+      const savedData = slots.map(s => s.current)
       vars.forEach((v, i) => { v.current = params[i]! })
+      slots.forEach((s, i) => { s.current = data[i]! })
       try {
         const out = (lossThunk as Function)()
         const value = out instanceof Signal ? out.peek() : out
@@ -2065,11 +2121,12 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
         return value as np.Array
       } finally {
         vars.forEach((v, i) => { v.current = saved[i]! })
+        slots.forEach((s, i) => { s.current = savedData[i]! })
       }
     }
 
     const eagerStep = (): Value => {
-      const [loss, grads] = valueAndGrad(lossFromParams)(vars.map(v => v.current.ref))
+      const [loss, grads] = valueAndGrad(lossFromParams)(vars.map(v => v.current.ref), slots.map(s => s.current.ref))
       const [updates, nextState] = transform.update(grads as np.Array[], state!, vars.map(v => v.current.ref))
       state = nextState
       const fresh = optax.applyUpdates(vars.map(v => v.current.ref), updates as np.Array[]) as np.Array[]
@@ -2080,9 +2137,10 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     if (stepMode === "eager") { return eagerStep() }
 
     // compile the whole step – gradient, transform, apply – as one program,
-    // retraced automatically when parameter shapes change
-    compiledStep ??= jaxJit((params: np.Array[], optState: optax.OptState) => {
-      const [loss, grads] = valueAndGrad(lossFromParams)(tree.ref(params) as np.Array[])
+    // retraced automatically when parameter or data shapes change
+    if (compiledStep === null) { stepSlots = slots }
+    compiledStep ??= jaxJit((params: np.Array[], data: np.Array[], optState: optax.OptState) => {
+      const [loss, grads] = valueAndGrad(lossFromParams)(tree.ref(params) as np.Array[], data)
       const [updates, nextState] = transform.update(grads as np.Array[], optState, tree.ref(params) as np.Array[])
       const fresh = optax.applyUpdates(params, updates as np.Array[]) as np.Array[]
       return [loss, fresh, nextState] as [np.Array, np.Array[], optax.OptState]
@@ -2096,7 +2154,7 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     try {
       // pass a referenced copy of the state tree: on a failed trace our own
       // references stay valid and the eager fallback still has its state
-      const [loss, fresh, nextState] = compiledStep!(vars.map(v => v.current.ref), tree.ref(state!) as optax.OptState)
+      const [loss, fresh, nextState] = compiledStep!(vars.map(v => v.current.ref), slots.map(s => s.current.ref), tree.ref(state!) as optax.OptState)
       tree.dispose(state!)
       state = nextState
       vars.forEach((v, i) => { v.assign(fresh[i]!) })
@@ -2173,6 +2231,30 @@ const TensorRandomUniform = (a: Value) => track(random.uniform(nextRngKey(), asN
 const StringConcat = (...args: any[]) => "".concat(...args)
 const StringLength = (a: string) => track(np.array(a.length))
 
+// Text ↔ tensor: the door between strings and token land. Codes are float32 –
+// small integers are exact in float, and float spares downstream math from
+// int-promotion surprises. Decode rounds, so model outputs convert directly.
+const StringToCodes = (a: Value) => {
+  // string literals evaluate to boxed Strings (they carry source origin)
+  if (typeof a !== "string" && !(a instanceof String)) {
+    return new Error("`StringToCodes(text)`: expected a string")
+  }
+  return track(np.array(Float32Array.from(String(a), (c) => c.codePointAt(0)!)))
+}
+
+const CodesToString = (a: Value) => {
+  const data = getAsSyncList(a) // TraceBailout on tracers, like any data read
+  const codes = Array.isArray(data) ? (data as unknown[]).flat(Infinity) : [data]
+  if (!codes.every((v): v is number => typeof v === "number" && Number.isFinite(v))) {
+    return new Error("`CodesToString(codes)`: expected a tensor of character codes")
+  }
+  let text = ""
+  for (const code of codes) {
+    text += String.fromCodePoint(Math.min(0x10FFFF, Math.max(0, Math.round(code))))
+  }
+  return text
+}
+
 const Null = null
 
 
@@ -2183,7 +2265,10 @@ const Null = null
 // read it back with getMeta. Signatures use the ergonomic notation people type.
 doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $(4), once(x) + 1 = 5")
 doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2")
-doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad.", "θ: ~([0, 0])")
+doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad. For data the loss reads but never trains, use ~~.", "θ: ~([0, 0])")
+doc(TensorData, "~~(init)", "Make a data slot – every optimizer step reads it fresh, but no gradient flows into it and nothing trains it. Assign with := any time, even to a new shape – training carries on.", "x: ~~([1, 2]), x := [3, 4, 5]")
+doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\"abc\") = [97, 98, 99]")
+doc(CodesToString, "CodesToString(codes)", "A tensor of character codes back to text. Rounds first, so model outputs decode directly.", "CodesToString([104, 105]) = \"hi\"")
 doc(TensorOptimizationAdamW, "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)")
 doc(TensorOptimizationSgd, "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)")
 doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w = [8]")
@@ -2202,13 +2287,14 @@ doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is
 // function: scoping, the three assignments, application, iteration, and the
 // errors-are-values control flow have no NumPy analogue to lean on.
 doc(SymbolAssign, "name: value", "Bind a name in the current scope. Glued to its left operand, `:` takes everything to its right – `a: 1 + 2` binds 3.", "a: 1 + 2, a × 10 = 30")
-doc(TensorAssign, "θ := value", "Assign a new value to a trainable variable (made with ~); optimizers do this every step, watch(θ) sees it. Mid-expression, parenthesize the value: θ := (a + b).", "θ: ~([0, 0]), θ := [1, 2]")
+doc(TensorAssign, "θ := value", "Assign a new value to a variable (made with ~ or ~~); optimizers do this every step, watch(θ) sees it. Mid-expression, parenthesize the value: θ := (a + b).", "θ: ~([0, 0]), θ := [1, 2]")
 doc(FunctionApply, "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]")
 doc(FunctionEvaluate, "f @ x", "Apply the function on the left to the argument on the right – reads as “f at x”. A list spreads as multiple arguments.", "∇({ x | x^2 }) @ 3 = 6")
 doc(FunctionIterate, "step ⟳ n", "Run a thunk n times, paced between display frames so the UI stays live – the loop for training and simulation. Async: a re-evaluation cancels it.", "opt: sgd(0.1), { opt(𝓛) } ⟳ 100")
 doc(FunctionPower, "(f ⍣ n)(x)", "Function power: f composed with itself n times – f(f(…f(x))). Synchronous; for a frame-paced loop use ⟳.", "double: { x | x × 2 }, (double ⍣ 5)(1) = 32")
 doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order; the first result that isn’t an Error wins. Errors are values in Fluent – falling through is intended, not exceptional.", "cascade((guard(n = 0, { 1 }), { n × f(n - 1) }))()")
 doc(FunctionGuard, "guard(cond, { value })", "A cascade candidate: yields the value while cond is truthy, an Error otherwise.", "guard(n = 0, { 1 })")
+doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Errors from the thunk stay loud – only the condition gates.", "when(training(), { opt(𝓛) })")
 
 
 // MARK: Environment
@@ -2229,6 +2315,7 @@ const DefaultEnvironment: Record<string, Value> = {
   FunctionApply,
   FunctionNoAutoLift,
   FunctionGuard,
+  FunctionWhen,
   Describe,
   doc,
 
@@ -2344,6 +2431,7 @@ const DefaultEnvironment: Record<string, Value> = {
   TensorRoll,
 
   TensorVariable,
+  TensorData,
   TensorAssign,
   TensorWatch,
   TensorOptimizationAdam,
@@ -2369,6 +2457,8 @@ const DefaultEnvironment: Record<string, Value> = {
   String,
   StringConcat,
   StringLength,
+  StringToCodes,
+  CodesToString,
 
   "◌": Null,
   "null": Null,
@@ -2415,6 +2505,7 @@ iter: FunctionIterate,
 eval: FunctionEvaluate,
 cascade: FunctionCascade,
 guard: FunctionGuard,
+when: FunctionWhen,
 
 ; Tensor shape/indexing
 (#): TensorLength,
@@ -2624,6 +2715,8 @@ argmin: TensorArgMin,
 ; Variables
 (~): TensorVariable,
 var: TensorVariable,
+(~~): TensorData,
+data: TensorData,
 watch: TensorWatch,
 
 ; Tensor ops
@@ -2683,6 +2776,7 @@ export {
   // tensors
   np,
   FluentVariable,
+  FluentData,
   isTensor,
   borrow,
   track,

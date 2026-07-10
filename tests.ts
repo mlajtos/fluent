@@ -286,6 +286,83 @@ describe("differentiation and optimization", () => {
   })
 })
 
+describe("data slots (~~)", () => {
+  test("a data slot reads like a variable and is never trained", () => {
+    const trained = (final: string) => value(`
+      x: ~~([5]),
+      θ: ~([0]),
+      𝓛: { mean((θ_0 - x_0)^2) },
+      opt: sgd(0.2),
+      step: { v | opt(𝓛) },
+      (step ⍣ 60)(◌),
+      ${final}
+    `)
+    expect(trained("θ_0")).toBeCloseTo(5, 1)
+    // the loss pulls θ toward x, so x has a nonzero cotangent path – the slot
+    // must come back untouched anyway (grads are w.r.t. params only)
+    expect(trained("x_0")).toBe(5)
+    // three-tier naming: the word alias makes the same slot
+    expect(value("x: data([4]), x_0")).toBe(4)
+  })
+  test(":= retargets a data slot mid-training and the fit follows", () => {
+    // the compiled step receives the slot as a jit argument – fresh payload
+    // flows in on the next step, optimizer moments intact
+    const program = `
+      x: ~~([3]),
+      θ: ~([0]),
+      𝓛: { mean((θ_0 - x_0)^2) },
+      opt: adam(0.2),
+      step: { v | opt(𝓛) },
+      (step ⍣ 60)(◌),
+      x := [7],
+      (step ⍣ 120)(◌),
+      θ_0
+    `
+    expect(value(program)).toBeCloseTo(7, 1)
+  })
+  test(":= to a NEW SHAPE retraces cleanly and training carries on", () => {
+    const program = `
+      x: ~~([1, 2]),
+      θ: ~([0]),
+      𝓛: { mean((θ_0 - mean(x))^2) },
+      opt: adam(0.3),
+      step: { v | opt(𝓛) },
+      (step ⍣ 50)(◌),
+      x := [10, 10, 10, 10],
+      (step ⍣ 120)(◌),
+      θ_0
+    `
+    expect(value(program)).toBeCloseTo(10, 1)
+  })
+  test("when – a conditional effect: the condition gates, thunk errors stay loud", () => {
+    expect(value("when(1, { 5 })")).toBe(5)
+    expect(value("when(0, { 5 })")).toBe(null)
+    // unlike a guard inside a cascade, a broken thunk surfaces as an Error –
+    // silently turning a dead training step into a no-op is the failure mode
+    expect(run("when(1, { nonsense(3) })")).toBeInstanceOf(Error)
+  })
+  test("SignalEffect writes a signal through into a data slot, and re-fires on updates", () => {
+    const program = `
+      corpus: $([1, 2]),
+      D: ~~(once(corpus)),
+      SignalEffect({ D := corpus() }),
+      corpus ← [7, 8, 9],
+      sum(D)
+    `
+    expect(value(program)).toBe(24)
+  })
+  test("passing ~~ in an explicit var list is a loud error, never silent filtering", () => {
+    const program = `
+      x: ~~([1]),
+      θ: ~([0]),
+      𝓛: { mean((θ_0 - 1)^2) },
+      opt: sgd(0.1, (θ, x)),
+      opt(𝓛)
+    `
+    expect(run(program)).toBeInstanceOf(Error)
+  })
+})
+
 describe("function power validation", () => {
   test("⍣ rejects a non-scalar count instead of silently doing nothing", () => {
     expect(run("({ x | x × 2 } ⍣ [2, 2])(1)")).toBeInstanceOf(Error)
@@ -305,6 +382,14 @@ describe("lists and strings", () => {
   test("strings are values", () => {
     expect(String(value('"hello"'))).toBe("hello")
     expect(value('StringLength("abc")')).toBe(3)
+  })
+  test("StringToCodes / CodesToString round-trip through tensor land", () => {
+    expect(value('StringToCodes("abc")')).toEqual([97, 98, 99])
+    expect(String(value('CodesToString(StringToCodes("hello"))'))).toBe("hello")
+    // codes are ordinary tensors – a Caesar cipher is one addition
+    expect(String(value('CodesToString(StringToCodes("abc") + 1)'))).toBe("bcd")
+    expect(run('CodesToString("nope")')).toBeInstanceOf(Error)
+    expect(run("StringToCodes([1, 2])")).toBeInstanceOf(Error)
   })
 })
 

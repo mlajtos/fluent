@@ -100,6 +100,12 @@ Scales beautifully: 3 joints, 10 joints — the code barely changes, which *is* 
 
 **Shipped**: `conv` is rank-polymorphic (a 2D kernel over an image just works), and `camera-edges` ships the fixed-Laplacian version. Still open: the nine-scrubber editable kernel, which is the actual "lab".
 
+## ⭐ 4½. The Name Dreamer — **SHIPPED** (`dreamer` in the gallery)
+
+*A 12k-parameter transformer invents names, live — and the training data is an editable text field.*
+
+Makemore-style next-char prediction (V=27, T=8, one pre-norm block, one head) on ~94 first names. Loss falls, dreams regenerate every 40 steps (babble → `miliana saviana naomilin` in seconds on WebGPU), a prompt field completes your name even while paused, temperature is a slider, attention and the embedding matrix render live. The structural star is `~~` (TensorData): the corpus rides into the compiled optimizer step as a jit *argument*, so the step stays jit-hot end-to-end — the first gallery demo whose step never demotes — and **pause → paste your own corpus → resume re-trains without resetting the weights** (shape change = one clean retrace, Adam moments intact). Uncheck the training checkbox and the corpus editor unlocks (`TextEditor(corpus, editable)`).
+
 ## 5. Petri Dish — Neural Cellular Automata
 
 Train a tiny update rule so a single pixel *grows into an emoji* and regenerates when you erase part of it (Mordvintsev's growing-CA, miniaturized). Fluent is the only place the whole loop — perception convolution, update rule, training, poking the dish — fits on one screen next to its own source. The flashiest possible answer to "why differentiable + reactive?". Needs `conv2d` + a `Canvas`/eraser interaction (both on the wishlist / TODO already).
