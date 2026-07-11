@@ -1234,7 +1234,7 @@ const FunctionArity = (candidates: Function[]) => {
     setMeta(dispatch as Function, {
       signature: [b.signature, u.signature].filter(Boolean).join("  ·  "),
       doc: [b.doc, u.doc && `With one argument: ${u.doc}`].filter(Boolean).join(" "),
-      example: b.example ?? u.example,
+      example: [b.example, u.example].filter(Boolean).join("\n") || undefined,
     })
   }
   return dispatch
@@ -2791,7 +2791,7 @@ reverse: TensorReverse,
 outer: TensorOuter,
 
 ; Shape manipulation
-flat: { x | x ⍴ [-1] },
+flat: (⍴ ⟜ [-1]),
 squeeze: { x |
   s: shape(x),
   newShape: mask(s, (s ≠ 1)),
@@ -2833,24 +2833,15 @@ ListZip: { a, b |
   )
 },
 ListTake: { list, n |
-  ListMap(
-    TensorUnstack(TensorRange(0, n)),
-    { i | ListGet(list, i) }
-  )
+  ListMap(TensorUnstack(TensorRange(0, n)), { i | ListGet(list, i) })
 },
 ListDrop: { list, n |
   len: ListLength(list),
-  ListMap(
-    TensorUnstack(TensorRange(n, len)),
-    { i | ListGet(list, i) }
-  )
+  ListMap(TensorUnstack(TensorRange(n, len)), { i | ListGet(list, i) })
 },
 ListReverse: { list |
   n: ListLength(list),
-  ListMap(
-    TensorUnstack(TensorReverse(TensorRange(0, n))),
-    { i | ListGet(list, i) }
-  )
+  ListMap(TensorUnstack(TensorReverse(TensorRange(0, n))), { i | ListGet(list, i) })
 },
 ListEnumerate: { list |
   n: ListLength(list),

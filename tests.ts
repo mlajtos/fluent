@@ -101,6 +101,14 @@ describe("combinators", () => {
   test("composed functions iterate under ⍣", () => {
     expect(value("((1 ⊸ +) ⍣ 5)(0)")).toBe(5)
   })
+  test("prelude functions built on hook-binds keep working", () => {
+    // flat is (⍴ ⟜ [-1]); the List helpers map with (list ⊸ ListGet)
+    expect(value("flat([[1, 2], [3, 4]])")).toEqual([1, 2, 3, 4])
+    expect(value("ListGet(ListReverse((10, 20, 30)), 0)")).toBe(30)
+    expect(value("ListLength(ListTake((1, 2, 3, 4), 2))")).toBe(2)
+    expect(value("ListGet(ListDrop((1, 2, 3), 1), 0)")).toBe(2)
+    expect(value("ListGet(ListGather((5, 6, 7), (2, 0)), 0)")).toBe(7)
+  })
   test("isFunction answers the K-lift question, enabling userland bind", () => {
     expect(value("isFunction(√)")).toBe(1)
     expect(value("isFunction(5)")).toBe(0)

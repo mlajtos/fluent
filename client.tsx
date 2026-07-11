@@ -2111,15 +2111,15 @@ x : (1 :: 10),
 ; honoring Haskell Curry, logician and avid birdwatcher.
 
 Grid(3)(
-    ("Queer bird",      \`g(f(x))\`,           (+ ∘ √)(9, 16)          ),
+    ("Queer bird",      \`g(f(x))\`,           9 (+ ∘ √) 16            ),
     ("Cardinal",        \`f(y, x)\`,           3 (⍨ -) 10              ),
-    ("Warbler",         \`f(x, x)\`,           (⍨ ×)(9)                ),
-    ("Psi",             \`f(g(x), g(y))\`,     -3 (abs ⍥ =) 3          ),
-    ("Starling",        \`f(x, g(x))\`,        (÷ ⟜ √)(16)             ),
+    ("Warbler",         \`f(x, x)\`,           (⍨ ×) 9                 ),
+    ("Psi",             \`f(g(x), g(y))\`,     -3 (+ ⍥ =) 3            ),
+    ("Starling",        \`f(x, g(x))\`,        (÷ ⟜ √) 16              ),
     ("Dove",            \`f(x, g(y))\`,        16 (÷ ⟜ √) 4            ),
-    ("Violet Starling", \`g(f(x), x)\`,        (√ ⊸ ÷)(16)             ),
+    ("Violet Starling", \`g(f(x), x)\`,        (√ ⊸ ÷) 16              ),
     ("Zebra Dove",      \`g(f(x), y)\`,        9 (√ ⊸ ÷) 3             ),
-    ("Phoenix",         \`g(f(x), h(x))\`,     Φ(Σ, ÷, #)([1, 2, 3, 4])),
+    ("Phoenix",         \`g(f(x), h(x))\`,     Φ(Σ, ÷, #) [1, 2, 3, 4] ),
     ("Pheasant",        \`g(f(x,y), h(x,y))\`, 5 Φ(=, ∨, >) 3          ),
     ("Kestrel",         \`x\`,                 3 ⊣ 5                   ),
     ("Kite",            \`y\`,                 3 ⊢ 5                   ),
@@ -3311,7 +3311,7 @@ const metaFor = (token: string | null): FunctionMeta | null => {
 
 // A hover / completion card: signature, one-liner, worked example.
 const docCard = (m: FunctionMeta): string =>
-  [m.signature && `\`${m.signature}\``, m.doc, m.example && "```fluent\n" + m.example + "\n```"]
+  [m.signature && "```fluent\n" + m.signature + "\n```", m.doc, m.example && "```fluent\n" + m.example + "\n```"]
     .filter(Boolean).join("\n\n")
 
 // completion's details pane already shows the signature as its header (the
