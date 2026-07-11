@@ -81,8 +81,13 @@ Fluent {
 
   // operator glued to its left operand, space after it:
   // everything to the right is the right operand – "a: 1 + 2" is "a: (1 + 2)"
+  // the glued operator is any Atom, so referential transparency holds: an
+  // identifier glued here behaves like the value it is bound to, glued here –
+  // "1add 2 * 3" and "1{x,y|x+y} 2 * 3" both mean f(1, 2*3), given add:{x,y|x+y}.
+  // (Number can't glue lexically, and a parenthesized value "1(f) 2" is claimed
+  // by application, not this rule – see the Application note below.)
   LongOperation
-    = TightOperation #(~space) operator #(space) Expr
+    = TightOperation #(~space) Atom #(space) Expr
 
   // spaced operators chain left-to-right – "1 + 2 * 3" is "(1 + 2) * 3"
   SpacedOperation
@@ -96,6 +101,16 @@ Fluent {
     | Application
 
   // application binds tightest – "f(x)", "∇(f)(x)"
+  // KNOWN LIMITATION (by design, do not "fix" without a plan): a "(...)" glued
+  // to the right of any expression is ALWAYS an argument list, because the
+  // parser has no types and must resolve "x(y)" the same way regardless of
+  // whether x is callable. So a parenthesized function used infix must be
+  // SPACED: "1 (add) 2" is add(1,2)=3, but the glued "1(add)2" reads as
+  // "call 1 with add" and errors, and symmetrically "(1)add(2)" reads as
+  // "1 applied to add(2)" and errors. The glued named-operator forms "1add 2"
+  // and "1+ 2" are the intended way to glue infix; parens are for grouping and
+  // for first-class function values, and only act as a value when not glued to
+  // a callee on their left. See LongOperation above.
   Application
     = Application #(~space) (List | NestedExpr) --apply
     | Atom
@@ -119,8 +134,13 @@ Fluent {
   Number          = number
   Tensor          = "[" ListOf<Expr, ","> ","? "]"
   Null            = "◌"
-  Symbol          = identifier | ${getSymbolsRange(IDENTIFIER_RANGES)} | operator
-  identifier      = &letter (alnum | "-")+
+  Symbol          = identifier | operator
+  // identifier owns the IDENTIFIER_RANGES symbols (math-alphanumeric, emoji) so
+  // they behave as names everywhere the rule is used – including the glued
+  // operator slot of LongOperation. They were previously a separate Symbol
+  // alternative, which made "1🔥 2 * 3" fail to glue like "1add 2 * 3".
+  identifier      = &(letter | idRanges) (alnum | "-" | idRanges)+
+  idRanges        = ${getSymbolsRange(IDENTIFIER_RANGES)}
   number
     = "-"? digitGroup ("." digitGroup?)? exponent?
   exponent
@@ -215,7 +235,10 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
     return {
       type: "Operation",
       content: {
-        operator: operatorSymbolNode(operator),
+        // toAST (not operatorSymbolNode) so the glued operator keeps its real
+        // value node – a Symbol stays a Symbol, a Lambda stays a Lambda, etc.
+        // (referential transparency, same handling as SpacedOperation_infix)
+        operator: operator.toAST(this.args.mapping),
         args: {
           type: "List",
           origin: getLocationOrigin(this),
