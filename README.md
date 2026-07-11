@@ -134,7 +134,7 @@ x: $(0.5),
 (Slider(x), x ^ 2)
 ```
 
-[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=KAogICAgeDogJCgwLjUpLAogICAgKFNsaWRlcih4KSwgeCBeIDIpCik)
+[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=KAogICAgeDogJCgwLjUpLAogICAgU2xpZGVyKHgpLAogICAgeCBeIDIKKQ)
 
 **Training is a few lines** — `~` makes a trainable variable, an optimizer (`sgd`, `adam`, `adamw`, `adagrad`) minimizes a loss thunk, `⟳` runs it between frames so the UI stays live:
 
@@ -146,7 +146,7 @@ opt: sgd(0.1),
 θ
 ```
 
-[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=KAogICAgzrg6IH4oWzAsIDBdKSwKICAgIPCdk5s6IHsgzqMoKM64IC0gWzAuMjMsIDAuNDddKV4yKSB9LAogICAgb3B0OiBzZ2QoMC4xKSwKICAgIHsgb3B0KPCdk5spIH0g4p-zIDEwMCwKICAgIM64Cik)
+[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=zrg6IH4oWzAsIDBdKSwK8J2TmzogeyDOoygozrggLSBbMC4yMywgMC40N10pXjIpIH0sCm9wdDogc2dkKDAuMSksCnsgb3B0KPCdk5spIH0g4p-zIDEwMCwKzrg)
 
 The full tour lives in the playground — [**open the built-in Documentation**](https://mlajtos.github.io/fluent/?code=RG9jdW1lbnRhdGlvbg), or hover any built-in for its card.
 
