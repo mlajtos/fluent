@@ -27,6 +27,8 @@ Fluent is a tiny language + IDE for people who like to tinker with math — plot
 |---|---|---|
 | 🌀 | **Mandelbrot** — the whole plane iterated at once with `⍣`; scrub the depth | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=mandelbrot) |
 | 🦠 | **Game of Life** on a 256² torus — three lines of rules | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=game-of-life) |
+| 🔮 | **The Name Dreamer** — a 12k-parameter transformer trains live in your tab and invents names; edit the corpus, drag the temperature | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=dreamer) |
+| 🐦 | **Combinators** — the songbirds of tacit programming; `∘ ⍨ ⍥ Φ ⊸ ⟜ ⊢ ⊣` as a field guide, each read left-to-right | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=combinators) |
 | 📷 | **Live edge detection** — your camera through a Laplacian kernel | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=camera-edges) |
 | 🎵 | **Live spectrum** of your microphone — whistle and watch the peak move | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=spectrum) |
 | 🎸 | **Pitch detector** — hum a note, it tells you which one | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=pitch-detector) |
@@ -36,9 +38,6 @@ Fluent is a tiny language + IDE for people who like to tinker with math — plot
 | 🌸 | **Reaction–diffusion** — Gray–Scott chemistry paints Turing patterns; drag *feed* and *kill* | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=reaction-diffusion) |
 | 🔬 | **Lenia** — continuous cellular automata; smooth, life-like blobs emerge | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=lenia) |
 | 🧲 | **Spinning magnets** — an animated field from outer products | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=magnets-minimal) |
-| 🔮 | **The Name Dreamer** — a 12k-parameter transformer trains live in your tab and invents names; edit the corpus, drag the temperature | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=dreamer) |
-| 🎓 | **Turing's B-type machine** (1948) learns XOR by backprop — it isn't in its toolbox, so it composes it | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=b-type) |
-| 🔢 | A differentiable **logic-gate network learns MNIST** in your tab — no neurons, just soft boolean gates | [▶&nbsp;run](https://mlajtos.github.io/fluent/?example=mnist) |
 
 More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 
