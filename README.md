@@ -51,7 +51,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 1 + 2*3      ; 7 — glued operators bind tighter
 ```
 
-[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=MSArIDIgKiAzLCAgIDsgOSDigJQgc3BhY2VkIG9wZXJhdG9ycyBydW4gbGVmdC10by1yaWdodAoxICsgMiozICAgICAgOyA3IOKAlCBnbHVlZCBvcGVyYXRvcnMgYmluZCB0aWdodGVy)
+[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=KAogICAgMSArIDIgKiAzLCAgIDsgOSDigJQgc3BhY2VkIG9wZXJhdG9ycyBydW4gbGVmdC10by1yaWdodAogICAgMSArIDIqMyAgICAgIDsgNyDigJQgZ2x1ZWQgb3BlcmF0b3JzIGJpbmQgdGlnaHRlcgop)
 
 **Tensors are the only numbers** — a scalar is just a small one, arithmetic broadcasts, and a glued `_` indexes:
 
@@ -64,7 +64,7 @@ v_[2, 0],      ; [30, 10] — with a tensor of indices
 Σ(v)           ; 60 — and Σ, μ, sort, fft, conv… are built in
 ```
 
-[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=djogWzEwLCAyMCwgMzBdLAp2ICsgMSwgICAgICAgICA7IFsxMSwgMjEsIDMxXQp2XzAsICAgICAgICAgICA7IDEwIOKAlCBhIGdsdWVkIF8gaW5kZXhlcwp2XygtMSksICAgICAgICA7IDMwIOKAlCBmcm9tIHRoZSBlbmQKdl9bMiwgMF0sICAgICAgOyBbMzAsIDEwXSDigJQgd2l0aCBhIHRlbnNvciBvZiBpbmRpY2VzCs6jKHYpICAgICAgICAgICA7IDYwIOKAlCBhbmQgzqMsIM68LCBzb3J0LCBmZnQsIGNvbnbigKYgYXJlIGJ1aWx0IGlu)
+[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=KAogICAgdjogWzEwLCAyMCwgMzBdLAogICAgdiArIDEsICAgICAgICAgOyBbMTEsIDIxLCAzMV0KICAgIHZfMCwgICAgICAgICAgIDsgMTAg4oCUIGEgZ2x1ZWQgXyBpbmRleGVzCiAgICB2XygtMSksICAgICAgICA7IDMwIOKAlCBmcm9tIHRoZSBlbmQKICAgIHZfWzIsIDBdLCAgICAgIDsgWzMwLCAxMF0g4oCUIHdpdGggYSB0ZW5zb3Igb2YgaW5kaWNlcwogICAgzqModikgICAgICAgICAgIDsgNjAg4oCUIGFuZCDOoywgzrwsIHNvcnQsIGZmdCwgY29uduKApiBhcmUgYnVpbHQgaW4KKQ)
 
 **Functions and operators are the same thing** — anything can be called, anything can sit between its arguments:
 
@@ -75,7 +75,7 @@ v_[2, 0],      ; [30, 10] — with a tensor of indices
 1 {x, y | x + y} 2    ; 3 — even a lambda
 ```
 
-[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=MSArIDIsICAgICAgICAgICAgICAgIDsgMworKDEsIDIpLCAgICAgICAgICAgICAgOyAzIOKAlCBhbiBvcGVyYXRvciwgY2FsbGVkCjEgYWRkIDIsICAgICAgICAgICAgICA7IDMg4oCUIGEgZnVuY3Rpb24sIGluZml4CjEge3gsIHkgfCB4ICsgeX0gMiAgICA7IDMg4oCUIGV2ZW4gYSBsYW1iZGE)
+[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=KAogICAgMSArIDIsICAgICAgICAgICAgICAgIDsgMwogICAgKygxLCAyKSwgICAgICAgICAgICAgIDsgMyDigJQgYW4gb3BlcmF0b3IsIGNhbGxlZAogICAgMSBhZGQgMiwgICAgICAgICAgICAgIDsgMyDigJQgYSBmdW5jdGlvbiwgaW5maXgKICAgIDEge3gsIHkgfCB4ICsgeX0gMiAgICA7IDMg4oCUIGV2ZW4gYSBsYW1iZGEKKQ)
 
 Defining your own operator is just a binding: `(++): ListConcat`.
 
@@ -87,7 +87,7 @@ sum(0 :: 10),         ; 45 — same function
 Σ(0 :: 10)            ; 45 — same hover card
 ```
 
-[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=VGVuc29yU3VtKDAgOjogMTApLCAgIDsgNDUKc3VtKDAgOjogMTApLCAgICAgICAgIDsgNDUg4oCUIHNhbWUgZnVuY3Rpb24KzqMoMCA6OiAxMCkgICAgICAgICAgICA7IDQ1IOKAlCBzYW1lIGhvdmVyIGNhcmQ)
+[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=KAogICAgVGVuc29yU3VtKDAgOjogMTApLCAgIDsgNDUKICAgIHN1bSgwIDo6IDEwKSwgICAgICAgICA7IDQ1IOKAlCBzYW1lIGZ1bmN0aW9uCiAgICDOoygwIDo6IDEwKSAgICAgICAgICAgIDsgNDUg4oCUIHNhbWUgaG92ZXIgY2FyZAop)
 
 Long names make things findable; the more you use one, the shorter you want it. `TensorGradient` is `grad` is `∇` — all in scope, all sharing one doc card, so your notation can tighten as you go. And names are unicode throughout: `θ`, `𝓛`, `ŷ` are fine.
 
@@ -134,7 +134,7 @@ x: $(0.5),
 (Slider(x), x ^ 2)
 ```
 
-[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=eDogJCgwLjUpLAooU2xpZGVyKHgpLCB4IF4gMik)
+[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=KAogICAgeDogJCgwLjUpLAogICAgKFNsaWRlcih4KSwgeCBeIDIpCik)
 
 **Training is a few lines** — `~` makes a trainable variable, an optimizer (`sgd`, `adam`, `adamw`, `adagrad`) minimizes a loss thunk, `⟳` runs it between frames so the UI stays live:
 
@@ -146,7 +146,7 @@ opt: sgd(0.1),
 θ
 ```
 
-[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=zrg6IH4oWzAsIDBdKSwK8J2TmzogeyDOoygozrggLSBbMC4yMywgMC40N10pXjIpIH0sCm9wdDogc2dkKDAuMSksCnsgb3B0KPCdk5spIH0g4p-zIDEwMCwKzrg)
+[▶&nbsp;run](https://mlajtos.github.io/fluent/?code=KAogICAgzrg6IH4oWzAsIDBdKSwKICAgIPCdk5s6IHsgzqMoKM64IC0gWzAuMjMsIDAuNDddKV4yKSB9LAogICAgb3B0OiBzZ2QoMC4xKSwKICAgIHsgb3B0KPCdk5spIH0g4p-zIDEwMCwKICAgIM64Cik)
 
 The full tour lives in the playground — [**open the built-in Documentation**](https://mlajtos.github.io/fluent/?code=RG9jdW1lbnRhdGlvbg), or hover any built-in for its card.
 
