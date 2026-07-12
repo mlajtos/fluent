@@ -1225,6 +1225,13 @@ const FunctionCascade = (candidates: Function[]) => tacitToString((a: Value, b: 
       const fn = candidates[candidateIndex]
       candidateResult = fn?.(a, b)
     } catch (e) {
+      // A candidate says "not me" by RETURNING an Error value (handled below).
+      // A *throw* is usually a real op/arg mismatch – jax-js throws when an op
+      // doesn't fit the args, which is a legitimate "try the next candidate"
+      // (max/min dispatch their arity this way). But a TraceBailout is control
+      // flow that must reach the tracer: swallowing it as a non-match would
+      // compile the wrong branch into a jit trace, so let it propagate.
+      if (e instanceof TraceBailout) { throw e }
       candidateIndex += 1
       continue
     }
@@ -1294,18 +1301,6 @@ function getAsSyncList(value: unknown) {
     // compiled replay wouldn't see – abort the trace, stay eager
     throw new TraceBailout("value read during trace")
   }
-}
-
-// A statically-known value (seeded literal, shape, or already-materialized
-// array), read WITHOUT a device round-trip or aborting a trace. Returns
-// undefined when the value isn't cheaply knowable – callers must treat that as
-// "can't tell", never as an error.
-function peekSyncValue(value: unknown): unknown {
-  if (value instanceof FluentVariable) { value = value.current }
-  if (typeof value === "object" && value !== null && syncReadCache.has(value)) {
-    return syncReadCache.get(value)
-  }
-  return undefined
 }
 
 // MARK: Environment
@@ -2191,16 +2186,18 @@ const TensorShape = (a: Value) => {
 
 const TensorGather = (a: Value, b: Value) => {
   const size = shapeOf(a)[0] ?? 0
-  // Bounds-check statically-known indices so a typo (`a_2` on a 2-vector)
-  // errors instead of silently clamping to a wrong element – jax-js `take` has
-  // no bounds mode. Only cheaply-known indices are checked: a seeded literal
-  // (the common typo) reads for free, while a traced/dynamic index (an
-  // embedding lookup) peeks as undefined and passes through untouched, so this
-  // never forces a device read or aborts a trace.
-  const idx = peekSyncValue(b)
+  // Bounds-check every index we can read without aborting a trace – jax-js
+  // `take` has no bounds mode, so an out-of-range index otherwise reads garbage
+  // (eager) or silently returns 0 (grad path). Seeded literals and concrete
+  // arrays – including a computed eager index like `t_(argmax(...))` – are read
+  // and validated; only a live tracer index (an embedding lookup mid-trace)
+  // bails here, and those come from trusted data, so it flows through unchecked.
+  let idx: unknown
+  try { idx = getAsSyncList(b) } catch (e) { if (!(e instanceof TraceBailout)) throw e }
   if (idx !== undefined) {
     const flat = (Array.isArray(idx) ? idx.flat(Infinity) : [idx]) as number[]
-    const bad = flat.find((i) => { const w = i < 0 ? i + size : i; return w < 0 || w >= size })
+    // `!(0 <= w < size)` also rejects a NaN index, which slips past `<`/`>=`
+    const bad = flat.find((i) => { const w = i < 0 ? i + size : i; return !(w >= 0 && w < size) })
     if (bad !== undefined) {
       return new Error(`index ${bad} is out of bounds for an axis of length ${size}`)
     }
@@ -2581,7 +2578,11 @@ doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk wh
 
 // MARK: Environment
 
-const DefaultEnvironment: Record<string, Value> = {
+// Null-prototype: an environment is a bare name→value mapping. A plain `{}`
+// would chain to Object.prototype, so unbound names like `constructor`,
+// `toString`, or `valueOf` would resolve to native JS members instead of
+// staying unbound symbols (and `constructor(5)` would silently run Object(5)).
+const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(null), {
   [Symbol.keyFor(Symbol.for("Null"))!]: Null,
 
   SymbolAssign,
@@ -2759,7 +2760,7 @@ const DefaultEnvironment: Record<string, Value> = {
 
   "◌": Null,
   "null": Null,
-}
+})
 
 // The IDE (or tests) extends the environment with UI components, live
 // sources and printers before creating scopes.

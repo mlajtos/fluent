@@ -138,6 +138,14 @@ describe("tensors", () => {
     // dynamic (traced) indices stay unchecked so embedding-style lookups work
     expect(value("t: [10, 20, 30], t_(argmax([0, 5, 2], 0))")).toBe(20)
   })
+  test("a computed (non-literal) index out of bounds is an Error too", () => {
+    // a computed index isn't a seeded literal, so a cache-only check missed it
+    // and jax-js `take` read out-of-bounds memory silently
+    expect(run("t: [10, 20, 30], t_(argmax([0, 0, 5], 0) + 3)")).toBeInstanceOf(Error)
+    expect(run("t: [10, 20, 30], t_(0 ÷ 0)")).toBeInstanceOf(Error) // NaN index
+    // an in-bounds computed index still returns the right element
+    expect(value("t: [10, 20, 30], t_(argmax([0, 5, 2], 0) + 1)")).toBe(30)
+  })
   test("linspace rounds a fractional point count", () => {
     // a live slider drives the count through fractional values – round, don't reject
     expect(value("#(linspace([0, 1], 5))")).toBe(5)
@@ -598,8 +606,29 @@ describe("errors", () => {
   test("unresolved symbols stay symbolic", () => {
     expect(typeof run("certainly-not-defined")).toBe("symbol")
   })
+  test("names colliding with Object.prototype don't resolve to JS builtins", () => {
+    // scopes used to chain up to Object.prototype, so `constructor`/`toString`
+    // resolved to native functions and `constructor(5)` silently ran Object(5)
+    expect(typeof run("constructor")).toBe("symbol")
+    expect(typeof run("toString")).toBe("symbol")
+    expect(typeof run("valueOf")).toBe("symbol")
+    expect(run("constructor(5)")).toBeInstanceOf(Error)
+  })
   test("calling a non-function is an Error value", () => {
     expect(run("3(4)")).toBeInstanceOf(Error)
+  })
+  test("cascade falls through on Error VALUES; a TraceBailout is never swallowed", () => {
+    // the protocol is return-an-Error-to-skip, not throw-to-skip
+    expect(value("cascade((guard(0, { 1 }), { 2 }))()")).toBe(2)   // guard false → skip
+    expect(value("cascade((guard(1, { 1 }), { 2 }))()")).toBe(1)   // guard true → win
+    // an unbound call is an Error value, so it legitimately falls through –
+    // this is correct behavior, not a swallowed crash
+    expect(value("cascade(({ self() }, { 42 }))()")).toBe(42)
+    // arity-overloaded builtins still dispatch by falling through a thrown
+    // arg-mismatch (the throw path cascade must keep catching)
+    expect(value("max([1, 2], [3, 1])")).toEqual([3, 2]) // binary elementwise
+    expect(value("max([[1, 2], [3, 4]])")).toBe(4)        // unary reduction
+    expect(value("min([5, 2, 8])")).toBe(2)
   })
 })
 
