@@ -783,6 +783,12 @@ const borrow = (v: any): any => {
     return v.current.ref
   }
   if (isTensor(v)) { return v.ref }
+  if (typeof v === "symbol") {
+    // an unbound name reached a numeric op (e.g. `1 * x`): fail with the name,
+    // not jax-js's opaque "Cannot convert a Symbol value to a string". The bare
+    // symbol still flows through as a value elsewhere – only coercion errors.
+    throw new Error(`unknown name: ${v.description ?? Symbol.keyFor(v) ?? String(v)}`)
+  }
   return v
 }
 
@@ -1288,6 +1294,18 @@ function getAsSyncList(value: unknown) {
     // compiled replay wouldn't see – abort the trace, stay eager
     throw new TraceBailout("value read during trace")
   }
+}
+
+// A statically-known value (seeded literal, shape, or already-materialized
+// array), read WITHOUT a device round-trip or aborting a trace. Returns
+// undefined when the value isn't cheaply knowable – callers must treat that as
+// "can't tell", never as an error.
+function peekSyncValue(value: unknown): unknown {
+  if (value instanceof FluentVariable) { value = value.current }
+  if (typeof value === "object" && value !== null && syncReadCache.has(value)) {
+    return syncReadCache.get(value)
+  }
+  return undefined
 }
 
 // MARK: Environment
@@ -2173,6 +2191,20 @@ const TensorShape = (a: Value) => {
 
 const TensorGather = (a: Value, b: Value) => {
   const size = shapeOf(a)[0] ?? 0
+  // Bounds-check statically-known indices so a typo (`a_2` on a 2-vector)
+  // errors instead of silently clamping to a wrong element – jax-js `take` has
+  // no bounds mode. Only cheaply-known indices are checked: a seeded literal
+  // (the common typo) reads for free, while a traced/dynamic index (an
+  // embedding lookup) peeks as undefined and passes through untouched, so this
+  // never forces a device read or aborts a trace.
+  const idx = peekSyncValue(b)
+  if (idx !== undefined) {
+    const flat = (Array.isArray(idx) ? idx.flat(Infinity) : [idx]) as number[]
+    const bad = flat.find((i) => { const w = i < 0 ? i + size : i; return w < 0 || w >= size })
+    if (bad !== undefined) {
+      return new Error(`index ${bad} is out of bounds for an axis of length ${size}`)
+    }
+  }
   const raw = np.astype(borrow(b), np.int32)
   // negative indices count from the end: a_(-1) is the last element. The
   // outer cast makes the dtype strongly int32 – astype keeps weak typing, and

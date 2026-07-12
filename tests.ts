@@ -128,6 +128,16 @@ describe("tensors", () => {
     expect(value("a: [10, 20, 30], a_(-1)")).toBe(30)
     expect(value("#([1, 2, 3])")).toBe(3)
   })
+  test("a literal index out of bounds is an Error, not a silent clamp", () => {
+    // jax-js `take` clamps out-of-range indices; a typo'd `a_2` on a 2-vector
+    // used to return a wrong element instead of erroring
+    expect(run("a: [1, 2], a_2")).toBeInstanceOf(Error)
+    expect(run("a: [1, 2], a_5")).toBeInstanceOf(Error)
+    expect(run("a: [10, 20, 30], a_(-4)")).toBeInstanceOf(Error)
+    expect(run("a: [1, 2], a_[2, 9]")).toBeInstanceOf(Error)
+    // dynamic (traced) indices stay unchecked so embedding-style lookups work
+    expect(value("t: [10, 20, 30], t_(argmax([0, 5, 2], 0))")).toBe(20)
+  })
   test("linspace rounds a fractional point count", () => {
     // a live slider drives the count through fractional values – round, don't reject
     expect(value("#(linspace([0, 1], 5))")).toBe(5)
@@ -507,6 +517,8 @@ describe("operator arity", () => {
     expect(run("1 + a")).toBeInstanceOf(Error)
     expect(run("a + 1")).toBeInstanceOf(Error)
     expect(run("2 * b")).toBeInstanceOf(Error)
+    // and the message names the culprit, not jax-js's Symbol-coercion throw
+    expect((run("1 * x") as Error).message).toContain("unknown name: x")
   })
   test("binary and unary forms both still work", () => {
     expect(value("1 + 2")).toBe(3)
