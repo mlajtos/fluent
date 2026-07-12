@@ -790,14 +790,6 @@ const borrow = (v: any): any => {
     // symbol still flows through as a value elsewhere – only coercion errors.
     throw new Error(`unknown name: ${v.description ?? Symbol.keyFor(v) ?? String(v)}`)
   }
-  if (typeof v === "string" || v instanceof String) {
-    // a string reached a numeric op (e.g. `"a" + "b"`): name the type instead of
-    // jax-js's opaque "Invalid type for full: a". StringConcat joins text.
-    throw new Error(`a string (${JSON.stringify(String(v))}) is not a tensor – numeric ops like + and × need tensors; use StringConcat to join text`)
-  }
-  if (typeof v === "function") {
-    throw new Error(`a function is not a tensor – numeric ops like + and × need tensors`)
-  }
   return v
 }
 
@@ -1901,9 +1893,22 @@ const TensorScalar = (value: number) => {
   return scalar
 }
 
+// Numeric-operand borrow: a string ("a" + "b") or a function is a user mistake
+// here, so name the type instead of letting jax-js surface its opaque "Invalid
+// type for full: a". borrow itself stays general – a signal may hold a string.
+const numericArg = (v: Value): any => {
+  if (typeof v === "string" || v instanceof String) {
+    throw new Error(`a string (${JSON.stringify(String(v))}) is not a tensor – numeric ops like + and × need tensors; use StringConcat to join text`)
+  }
+  if (typeof v === "function") {
+    throw new Error(`a function is not a tensor – numeric ops like + and × need tensors`)
+  }
+  return borrow(v)
+}
+
 // Wrapper factories: borrow the tensor arguments, track the result.
-const unaryOp = (op: (x: any) => np.Array) => (a: Value) => track(op(borrow(a)))
-const binaryOp = (op: (x: any, y: any) => np.Array) => (a: Value, b: Value) => track(op(borrow(a), borrow(b)))
+const unaryOp = (op: (x: any) => np.Array) => (a: Value) => track(op(numericArg(a)))
+const binaryOp = (op: (x: any, y: any) => np.Array) => (a: Value, b: Value) => track(op(numericArg(a), numericArg(b)))
 
 // stack broadcasts its inputs to a common shape, like arithmetic does:
 // stack(x - a, y - b) works even when the pieces only meet by broadcasting.
@@ -2019,7 +2024,7 @@ const TensorMinimum = binaryOp(np.minimum)
 // negated weak constant clamps at zero, so `(x = 1) - y` silently
 // subtracted nothing. Fluent is a float32 language; 0/1 composes.
 const comparisonOp = (op: (x: any, y: any) => np.Array) =>
-  (a: Value, b: Value) => track(np.astype(op(borrow(a), borrow(b)), np.float32))
+  (a: Value, b: Value) => track(np.astype(op(numericArg(a), numericArg(b)), np.float32))
 
 const TensorLess = comparisonOp(np.less)
 const TensorGreater = comparisonOp(np.greater)
