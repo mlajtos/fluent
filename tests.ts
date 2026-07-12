@@ -479,7 +479,7 @@ describe("data slots (~~)", () => {
       θ_0
     `
     expect(value(program)).toBeCloseTo(7, 1)
-  })
+  }, 20000) // jit-compiled training loop – slow under CI/load, don't flake on the 5s default
   test(":= to a NEW SHAPE retraces cleanly and training carries on", () => {
     const program = `
       x: ~~([1, 2]),
@@ -493,7 +493,7 @@ describe("data slots (~~)", () => {
       θ_0
     `
     expect(value(program)).toBeCloseTo(10, 1)
-  })
+  }, 20000)
   test("when – a conditional effect: the condition gates, thunk errors stay loud", () => {
     expect(value("when(1, { 5 })")).toBe(5)
     expect(value("when(0, { 5 })")).toBe(null)
