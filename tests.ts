@@ -682,6 +682,17 @@ describe("errors", () => {
     expect(typeof run("valueOf")).toBe("symbol")
     expect(run("constructor(5)")).toBeInstanceOf(Error)
   })
+  test("bindings inside ( … ) and [ … ] are local; reads still inherit", () => {
+    // the inner a:2 is scoped to the parens/brackets, so the outer a survives
+    expect(value("a: 1, (a: 2, a), a")).toBe(1)
+    expect(value("a: 1, [a: 2, a], a")).toBe(1)
+    // within one list an earlier binding is still visible to later elements
+    expect(value("[t: 3, t × t]")).toEqual([3, 9])
+    expect(value("ListGet((t: 3, t × t), 1)")).toBe(9)
+    // elements still read names from the enclosing scope
+    expect(value("x: 5, [x, x + 1]")).toEqual([5, 6])
+    expect(value("x: 5, (x + 1)")).toBe(6)
+  })
   test("calling a non-function is an Error value", () => {
     expect(run("3(4)")).toBeInstanceOf(Error)
   })

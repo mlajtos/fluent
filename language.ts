@@ -571,7 +571,9 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "Tensor") {
-    const values = node.content.value.map((e) => evaluateSyntaxTreeNode(e, env))
+    // a binding inside a [ … ] literal is local to it, not leaked to the enclosing scope
+    const localEnv = Object.create(env) as CurrentScope
+    const values = node.content.value.map((e) => evaluateSyntaxTreeNode(e, localEnv))
     if (values.length === 0) {
       const value = track(np.array([]))
       setOrigin(value, node.origin)
@@ -586,7 +588,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     // optimizer step – and display reads skip the device round-trip.
     // (Elements are still lazy symbols here – resolve them first.)
     try {
-      const resolved = values.map((v) => reify(v, env))
+      const resolved = values.map((v) => reify(v, localEnv))
       if (resolved.every((v) => typeof v === "object" && v !== null && syncReadCache.has(v))) {
         const data = resolved.map((v) => syncReadCache.get(v as object))
         const value = track(np.array(data as number[]))
@@ -596,7 +598,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
       }
     } catch { /* unbound symbol, ragged or non-numeric – stack instead */ }
 
-    const value = safeApply(TensorStack, values, env)
+    const value = safeApply(TensorStack, values, localEnv)
     setOrigin(value, node.origin)
     return value
   }
@@ -615,8 +617,10 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "List") {
-    // Reify elements - List as value should have resolved symbols
-    const value = node.content.value.map((e) => reify(evaluateSyntaxTreeNode(e, env), env))
+    // a binding inside ( … ) is local to it, not leaked to the enclosing scope;
+    // elements still read outer names, since the child scope inherits
+    const localEnv = Object.create(env) as CurrentScope
+    const value = node.content.value.map((e) => reify(evaluateSyntaxTreeNode(e, localEnv), localEnv))
     setOrigin(value, node.origin)
     return value
   }
