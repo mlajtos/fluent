@@ -165,7 +165,7 @@ test("camera edge-detection demo produces non-flat output", async ({ page }) => 
   await open(page, `
 cam: Camera(320, 240),
 k: [[0, 1, 0], [1, -4, 1], [0, 1, 0]],
-edges: $({ abs(conv(k, mean(cam(), 2))) }),
+edges: $({ abs(conv(mean(cam(), 2), k)) }),
 edges
 `.trim())
   const canvas = panel(page).locator("canvas").first()
