@@ -798,11 +798,25 @@ const shapeOf = (v: Value): number[] =>
 type Arena = Set<np.Array>
 const arenaStack: Arena[] = []
 
+// Leak watch (test/dev-facing, off by default): while a watch is open, track()
+// also records every array Fluent adopts, so liveTensorCount() can report how
+// many still hold a device buffer (refCount > 0). This is the only reliable
+// leak signal we have – jax-js's own buffer table is a hard-private field.
+let tensorWatch: Arena | null = null
+const beginTensorWatch = () => { tensorWatch = new Set() }
+const endTensorWatch = () => { tensorWatch = null }
+const liveTensorCount = (): number => {
+  if (!tensorWatch) { return 0 }
+  for (const a of tensorWatch) { if (a.refCount <= 0) { tensorWatch.delete(a) } }
+  return tensorWatch.size
+}
+
 // Track a freshly created array (or a list holding some) in the active arena –
 // the generation arena when no expression arena is open. Tracers pass through.
 const track = <T>(value: T): T => {
   const arena = arenaStack[arenaStack.length - 1] ?? currentGeneration?.arena
   if (arena) { addConcreteArrays(value, arena) }
+  if (tensorWatch) { addConcreteArrays(value, tensorWatch) }
   return value
 }
 
@@ -947,21 +961,26 @@ const registerDisposable = (dispose: () => void) => {
 function evaluateGeneration<T>(evaluate: () => T): T {
   const previous = currentGeneration
   currentGeneration = { disposables: new Set(), arena: new Set() }
-  const result = evaluate()
-  if (previous) {
-    // dispose after the new UI committed, so old islands never touch freed tensors
-    setTimeout(() => {
-      for (const dispose of previous.disposables) {
-        try { dispose() } catch { /* already gone */ }
-      }
-      // every array the generation's evaluations created and kept lives here –
-      // signals and variables released their own references via disposables
-      for (const array of previous.arena) {
-        if (array.refCount > 0) { array.dispose() }
-      }
-    }, 50)
+  try {
+    return evaluate()
+  } finally {
+    // Retire the previous generation even if building this one threw – otherwise
+    // its effects, hardware sources, and GPU tensors leak permanently on any
+    // error. Deferred so the new UI commits first and old islands never touch
+    // freed tensors.
+    if (previous) {
+      setTimeout(() => {
+        for (const dispose of previous.disposables) {
+          try { dispose() } catch { /* already gone */ }
+        }
+        // every array the generation's evaluations created and kept lives here –
+        // signals and variables released their own references via disposables
+        for (const array of previous.arena) {
+          if (array.refCount > 0) { array.dispose() }
+        }
+      }, 50)
+    }
   }
-  return result
 }
 
 const disposeValueTensors = (value: unknown) => {
@@ -3136,6 +3155,10 @@ export {
   registerDisposable,
   disposeScopeTensors,
   disposeValueTensors,
+  // leak watch (test/dev)
+  beginTensorWatch,
+  endTensorWatch,
+  liveTensorCount,
   // environment
   DefaultEnvironment,
   extendEnvironment,

@@ -4,7 +4,8 @@
 
 import { describe, test, expect } from "bun:test"
 import { Signal } from "@preact/signals-core"
-import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, np, FluentVariable, setCodeNodePrinter, type SyntaxTreeNode, type Value } from "./language"
+import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, beginTensorWatch, endTensorWatch, liveTensorCount, type SyntaxTreeNode, type Value } from "./language"
+import { EXAMPLES } from "./examples"
 
 const run = (source: string) =>
   evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope()))
@@ -677,4 +678,66 @@ describe("null is a value", () => {
   test("using ◌ as a tensor is an Error, not a silent value", () => {
     expect(run("x: ◌, x + 1")).toBeInstanceOf(Error)
   })
+})
+
+// Leak watch: count Fluent-tracked tensors still holding a device buffer
+// (via the public .refCount) across generations. jax-js's own buffer table is
+// private, so this Fluent-side signal is the reliable one.
+describe("leak watch", () => {
+  const gen = (code: string) =>
+    evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(code), createScope()))
+  const settle = () => new Promise(r => setTimeout(r, 80)) // > the 50ms disposal timer
+
+  test("re-evaluating frees the previous generation's tensors", async () => {
+    beginTensorWatch()
+    try {
+      gen("a: (0 :: 500), Σ(a^2)")           // generation 1 – allocates a range + squares
+      const held = liveTensorCount()
+      expect(held).toBeGreaterThan(0)
+      gen("1 + 1")                            // generation 2 supersedes generation 1
+      await settle()                          // let the deferred disposal run
+      expect(liveTensorCount()).toBeLessThan(held)
+    } finally { endTensorWatch() }
+  })
+
+  test("a throwing re-evaluation still frees the previous generation", async () => {
+    // regression for the leak-on-error hole: the previous generation must be
+    // retired even when building the next one throws
+    beginTensorWatch()
+    try {
+      gen("a: (0 :: 500), Σ(a^2)")
+      const held = liveTensorCount()
+      expect(() => evaluateGeneration(() => { throw new Error("boom") })).toThrow("boom")
+      await settle()
+      expect(liveTensorCount()).toBeLessThan(held)
+    } finally { endTensorWatch() }
+  })
+})
+
+// Every shipped gallery example, run headless, must parse and evaluate without
+// error – a language/prelude change that breaks a demo fails CI here. The IDE
+// components examples reference live only in client.tsx, so we register light
+// stubs: sources hand back a tensor (they feed real math); widgets self-return,
+// so a curried Grid(3)(...) stays callable. (Full-stack behavior – WebGPU,
+// hardware, error panels – is the browser suite's job, added later.)
+describe("gallery examples smoke suite", () => {
+  const widget = function widget(): unknown { return widget }
+  const source2d = () => np.zeros([16, 16])
+  const scalar = () => np.array(0)
+  const stubs: Record<string, Value> = {}
+  for (const k of ["Button", "Checkbox", "Grid", "ImageUpload", "Layers", "Point2D", "Trail",
+    "Slider", "Scrubber", "Text", "TextEditor", "Code", "CodeEditor", "Print", "PrettyPrint",
+    "CodePrint"]) stubs[k] = widget as Value
+  for (const k of ["Camera", "Microphone", "MicrophoneSpectrum", "LoadTensorFromImageUrl",
+    "LoadSafeTensorFromURL", "Fetch"]) stubs[k] = source2d as Value
+  for (const k of ["Time", "SampleRate", "MousePosition"]) stubs[k] = scalar as Value
+  extendEnvironment(stubs)
+
+  for (const [name, src] of Object.entries(EXAMPLES)) {
+    test(`${name}`, () => {
+      const source = src.trim()
+      expect(CodeParse(source).type).not.toBe("Error")
+      expect(run(source)).not.toBeInstanceOf(Error)
+    })
+  }
 })
