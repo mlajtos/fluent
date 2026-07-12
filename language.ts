@@ -618,7 +618,18 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
 
   if (node.type === "List") {
     // a binding inside ( … ) is local to it, not leaked to the enclosing scope;
-    // elements still read outer names, since the child scope inherits
+    // elements still read outer names, since the child scope inherits.
+    //
+    // ASYMMETRY WART: this only isolates a ( … ) the parser sees as a List (two+
+    // elements, or a trailing comma). A bare single-element paren – (a: 2) –
+    // parses as NestedExpr and is unwrapped, so its binding still leaks; single
+    // and multi parens scope differently. The intended unification is the unit
+    // axiom (x) ≡ x – fold NestedExpr into a List that demotes on a single
+    // non-comma element, so a singleton scopes-then-demotes like every other
+    // paren (the inverse of what @ already does: bare value → [value], line
+    // ~1695). Undecided: whether names inside ( … ) are scoping temps (a pure
+    // positional list) or first-class (records / named args), and if the latter
+    // whether a named singleton (a: 2) demotes to 2 or stays the record {a: 2}.
     const localEnv = Object.create(env) as CurrentScope
     const value = node.content.value.map((e) => reify(evaluateSyntaxTreeNode(e, localEnv), localEnv))
     setOrigin(value, node.origin)
