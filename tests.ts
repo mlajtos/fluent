@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test"
 import { Signal } from "@preact/signals-core"
-import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, beginTensorWatch, endTensorWatch, liveTensorCount, type SyntaxTreeNode, type Value } from "./language"
+import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, beginTensorWatch, endTensorWatch, liveTensorCount, peakTensorCount, type SyntaxTreeNode, type Value } from "./language"
 import { EXAMPLES } from "./examples"
 
 const run = (source: string) =>
@@ -101,6 +101,12 @@ describe("combinators", () => {
   })
   test("composed functions iterate under ⍣", () => {
     expect(value("((1 ⊸ +) ⍣ 5)(0)")).toBe(5)
+    // ⍣ frees each consumed step (see the leak-watch test); these guard that
+    // the freeing is share-checked and never disposes a value still in use
+    expect(value("((1 ⊸ +) ⍣ 100)(0)")).toBe(100)           // fresh tensor each step
+    expect(value("(⊢ ⍣ 100)(7)")).toBe(7)                    // identity – result IS its input
+    expect(value("(({ x | x + 1 }) ⍣ 50)([0, 10])")).toEqual([50, 60]) // vector chain
+    expect(value("(√ ⍣ 3)(256)")).toBe(2)                    // 256 → 16 → 4 → 2
   })
   test("prelude functions built on hook-binds keep working", () => {
     // flat is (⍴ ⟜ [-1]); the List helpers map with (list ⊸ ListGet)
@@ -710,6 +716,16 @@ describe("leak watch", () => {
       expect(() => evaluateGeneration(() => { throw new Error("boom") })).toThrow("boom")
       await settle()
       expect(liveTensorCount()).toBeLessThan(held)
+    } finally { endTensorWatch() }
+  })
+
+  test("⍣ holds O(1) live tensors across iterations, not O(n)", () => {
+    beginTensorWatch()
+    try {
+      // 300 iterations must not retain ~300 live tensors – each step used to
+      // accumulate in a single arena freed only when the whole expression swept
+      gen("((1 ⊸ +) ⍣ 300)(0)")
+      expect(peakTensorCount()).toBeLessThan(30)
     } finally { endTensorWatch() }
   })
 })

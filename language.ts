@@ -803,20 +803,31 @@ const arenaStack: Arena[] = []
 // many still hold a device buffer (refCount > 0). This is the only reliable
 // leak signal we have – jax-js's own buffer table is a hard-private field.
 let tensorWatch: Arena | null = null
-const beginTensorWatch = () => { tensorWatch = new Set() }
+let tensorWatchPeak = 0
+const beginTensorWatch = () => { tensorWatch = new Set(); tensorWatchPeak = 0 }
 const endTensorWatch = () => { tensorWatch = null }
 const liveTensorCount = (): number => {
   if (!tensorWatch) { return 0 }
-  for (const a of tensorWatch) { if (a.refCount <= 0) { tensorWatch.delete(a) } }
-  return tensorWatch.size
+  let n = 0
+  for (const a of tensorWatch) { if (a.refCount > 0) { n++ } else { tensorWatch.delete(a) } }
+  return n
 }
+// Highest concurrent live count seen since beginTensorWatch. Sampled as track()
+// runs, so it catches a transient O(n) spike (e.g. f⍣n retaining every step)
+// that liveTensorCount – read after the arena sweep – would miss.
+const peakTensorCount = (): number => tensorWatchPeak
 
 // Track a freshly created array (or a list holding some) in the active arena –
 // the generation arena when no expression arena is open. Tracers pass through.
 const track = <T>(value: T): T => {
   const arena = arenaStack[arenaStack.length - 1] ?? currentGeneration?.arena
   if (arena) { addConcreteArrays(value, arena) }
-  if (tensorWatch) { addConcreteArrays(value, tensorWatch) }
+  if (tensorWatch) {
+    addConcreteArrays(value, tensorWatch)
+    let live = 0
+    for (const a of tensorWatch) { if (a.refCount > 0) { live++ } }
+    if (live > tensorWatchPeak) { tensorWatchPeak = live }
+  }
   return value
 }
 
@@ -1358,7 +1369,20 @@ const FunctionPower = (fn: Function, n: Value) => {
   return (...args: unknown[]) => {
     let value: unknown = args[0] ?? null
     for (let i = 0; i < times; i++) {
-      value = fn(value)
+      const prev = value
+      // each step in its own arena: per-iteration intermediates die immediately,
+      // only the chained value is handed forward (like FunctionIterate/⟳)
+      value = arena(() => fn(prev))
+      // release the just-consumed input so the chain holds O(1) live tensors,
+      // not O(iterations). Skip the caller's original arg (i === 0), and keep any
+      // tensor the new value still shares – an identity step like ⊢ returns it.
+      if (i > 0) {
+        const keep: Arena = new Set()
+        collectLiveArrays(value, keep)
+        const consumed: Arena = new Set()
+        collectLiveArrays(prev, consumed)
+        for (const a of consumed) { if (!keep.has(a) && a.refCount > 0) { a.dispose() } }
+      }
     }
     return value
   }
@@ -3159,6 +3183,7 @@ export {
   beginTensorWatch,
   endTensorWatch,
   liveTensorCount,
+  peakTensorCount,
   // environment
   DefaultEnvironment,
   extendEnvironment,
