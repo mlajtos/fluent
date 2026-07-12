@@ -180,6 +180,12 @@ describe("tensors", () => {
     expect(value("[3, 1, 2] reduce ⌊")).toBe(1)              // ⌊ reduce = min
     expect(value("reduce([[1, 2], [3, 4]], +, 0)")).toEqual([4, 6]) // along an axis
     expect(value("reduce([[1, 2], [3, 4]], +, 1)")).toEqual([3, 7])
+    // a fold with no axis collapses the leading axis (one rank off), NOT every
+    // axis – and the native op must agree with the equivalent lambda
+    expect(value("[[1, 2], [3, 4]] reduce +")).toEqual([4, 6])
+    expect(value("[[1, 2], [3, 4]] reduce { a, b | a + b }")).toEqual([4, 6])
+    expect(value("[[1, 2], [3, 4]] reduce ×")).toEqual([3, 8])
+    expect(value("[[1, 2], [3, 4]] reduce ⌈")).toEqual([3, 4])
     // a custom fn folds slice by slice, strictly left-to-right
     expect(value("[10, 3, 1] reduce -")).toBe(6)             // (10-3)-1
     expect(value("[1, 2, 3, 4] reduce { a, b | a - b }")).toBe(-8)

@@ -2075,6 +2075,11 @@ reducerFor.set(TensorMultiply, TensorProduct)
 reducerFor.set(TensorMaximum, TensorMax)
 reducerFor.set(TensorMinimum, TensorMin)
 
+// axis 0 as a reusable value – the default a fold collapses. Seeded in the
+// sync cache so reading it back is never a device round-trip.
+const LEADING_AXIS: Value = np.array(0)
+syncReadCache.set(LEADING_AXIS as object, 0)
+
 // Fold a tensor left-to-right with a binary fn, optionally along one axis:
 // `1 :: 10 reduce +` = 45, `x reduce { a, b | a - b }` = ((x_0-x_1)-x_2)-…
 // A known op takes its native reduction (fast, axis-aware); anything else folds
@@ -2084,7 +2089,11 @@ const TensorReduce = (tensor: Value, fn: Value, axis?: Value) => {
     return new Error("`reduce(tensor, fn, axis?)`: the second argument must be a function")
   }
   const fast = nativeReducer.get(fn as Function) ?? reducerFor.get(fn as Function)
-  if (fast) { return fast(tensor, axis) }
+  // a fold collapses the leading axis (axis 0), removing one rank – the same
+  // thing TensorUnstack does below. The native reducers default to all-axes, so
+  // pin axis 0 when none is given, or `reduce +` on a matrix would total it (a
+  // custom lambda folds the leading axis, and the two must agree).
+  if (fast) { return fast(tensor, axis === undefined ? LEADING_AXIS : axis) }
   const parts = TensorUnstack(tensor, axis) as unknown[]
   if (parts.length === 0) {
     // a known op has an identity (Σ[] = 0); a custom fn's is unknown, so an
