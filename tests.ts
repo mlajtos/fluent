@@ -153,6 +153,20 @@ describe("tensors", () => {
     // an in-bounds computed index still returns the right element
     expect(value("t: [10, 20, 30], t_(argmax([0, 5, 2], 0) + 1)")).toBe(30)
   })
+  test("reduce folds a tensor left-to-right; known ops go native, ⌈/⌊ give max/min", () => {
+    expect(value("1 :: 10 reduce +")).toBe(45)               // native np.sum
+    expect(value("[1, 2, 3, 4] reduce ×")).toBe(24)          // native np.prod
+    expect(value("[3, 1, 2] reduce ⌈")).toBe(3)              // ⌈ reduce = max (native)
+    expect(value("[3, 1, 2] reduce ⌊")).toBe(1)              // ⌊ reduce = min
+    expect(value("reduce([[1, 2], [3, 4]], +, 0)")).toEqual([4, 6]) // along an axis
+    expect(value("reduce([[1, 2], [3, 4]], +, 1)")).toEqual([3, 7])
+    // a custom fn folds slice by slice, strictly left-to-right
+    expect(value("[10, 3, 1] reduce -")).toBe(6)             // (10-3)-1
+    expect(value("[1, 2, 3, 4] reduce { a, b | a - b }")).toBe(-8)
+    // empty fold: a known op has an identity, a custom fn doesn't
+    expect(value("[] reduce +")).toBe(0)
+    expect(run("[] reduce { a, b | a + b }")).toBeInstanceOf(Error)
+  })
   test("⌈/⌊ are ceiling/floor (one arg) and max/min (two); max/min reduce with an axis", () => {
     // the axis question: max/min reduce like sum, honoring an optional axis.
     // As a cascade, max(x, axis) used to silently return x – the pairwise

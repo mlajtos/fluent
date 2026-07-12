@@ -1295,6 +1295,12 @@ const FunctionCascade = (candidates: Function[]) => tacitToString((a: Value, b: 
   return result
 })
 
+// reduce's fast path: a raw binary op → its native tensor reduction. Filled in
+// once the reductions are defined below; FunctionArity tags its dispatchers too,
+// so `reduce +` and `reduce ⌈` fold via np.sum/np.max instead of slice-by-slice.
+const reducerFor = new Map<Function, (x: Value, axis?: Value) => Value>()
+const nativeReducer = new WeakMap<Function, (x: Value, axis?: Value) => Value>()
+
 // Overloaded by arity: two operands run the binary op, one runs the unary op –
 // used for +, -, ×, · (add/abs, subtract/negate, multiply/sign). Unlike
 // FunctionCascade, a binary op that *fails* (e.g. an unbound-symbol operand) is
@@ -1317,6 +1323,10 @@ const FunctionArity = (candidates: Function[]) => {
       example: [b.example, u.example].filter(Boolean).join("\n") || undefined,
     })
   }
+  // if the binary op has a native reduction, `reduce`/fold with this dispatcher
+  // takes the fast path (e.g. `reduce +` → np.sum, `reduce ⌈` → np.max)
+  const nativeReduce = typeof binary === "function" ? reducerFor.get(binary) : undefined
+  if (nativeReduce) { nativeReducer.set(dispatch as Function, nativeReduce) }
   return dispatch
 }
 
@@ -2035,11 +2045,37 @@ const withOptionalAxis = (op: (a: any, axis?: number | number[] | null, opts?: {
       b === undefined ? null : requireData(b) as (number | number[]),
       keep === undefined ? undefined : { keepdims: asNumber(keep) !== 0 }))
 
-const TensorSum = withOptionalAxis(np.sum)      // TensorReduce(a, 0, +)
-const TensorProduct = withOptionalAxis(np.prod) // TensorReduce(a, 1, *)
+const TensorSum = withOptionalAxis(np.sum)      // TensorReduce(a, +)
+const TensorProduct = withOptionalAxis(np.prod) // TensorReduce(a, ×)
 const TensorMean = withOptionalAxis(np.mean)
 const TensorMin = withOptionalAxis(np.min)
 const TensorMax = withOptionalAxis(np.max)
+
+// The reductions above ARE folds; register the fast native path so that
+// `x reduce +` dispatches to np.sum rather than folding slice by slice.
+reducerFor.set(TensorAdd, TensorSum)
+reducerFor.set(TensorMultiply, TensorProduct)
+reducerFor.set(TensorMaximum, TensorMax)
+reducerFor.set(TensorMinimum, TensorMin)
+
+// Fold a tensor left-to-right with a binary fn, optionally along one axis:
+// `1 :: 10 reduce +` = 45, `x reduce { a, b | a - b }` = ((x_0-x_1)-x_2)-…
+// A known op takes its native reduction (fast, axis-aware); anything else folds
+// over the slices along the axis (default 0).
+const TensorReduce = (tensor: Value, fn: Value, axis?: Value) => {
+  if (typeof fn !== "function") {
+    return new Error("`reduce(tensor, fn, axis?)`: the second argument must be a function")
+  }
+  const fast = nativeReducer.get(fn as Function) ?? reducerFor.get(fn as Function)
+  if (fast) { return fast(tensor, axis) }
+  const parts = TensorUnstack(tensor, axis) as unknown[]
+  if (parts.length === 0) {
+    // a known op has an identity (Σ[] = 0); a custom fn's is unknown, so an
+    // empty fold has no answer to hand back
+    return new Error("`reduce`: cannot fold an empty tensor with a custom function")
+  }
+  return ListReduce(parts, (acc: Value, v: Value) => (fn as Function)(acc, v))
+}
 
 // argmax/argmin take a single axis (or none, over the flattened array) and
 // return int32 indices of the extreme element
@@ -2585,6 +2621,7 @@ doc(TensorOptimizationSgd, "sgd(lr, momentum?, vars?)", "Stochastic gradient des
 doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w = [8]")
 doc(TensorGradient, "∇(f)", "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", "∇({ x | x^2 })(3) = 6")
 doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6")
+doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so `x reduce ⌈` is max.", "1 :: 10 reduce + = 45")
 doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]")
 doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]")
 doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor.", "max([3, 1, 2]) = 3")
@@ -2734,6 +2771,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorMean,
   TensorMin,
   TensorMax,
+  TensorReduce,
   TensorArgMax,
   TensorArgMin,
   TensorNormalize,
@@ -3088,6 +3126,7 @@ nor: TensorNor,
 grad: TensorGradient,
 (Σ): TensorSum,
 sum: TensorSum,
+reduce: TensorReduce,
 (Π): TensorProduct,
 prod: TensorProduct,
 (μ): TensorMean,
