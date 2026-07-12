@@ -20,7 +20,7 @@
     "hero": "node screenshot.ts"
   },
   "overrides": {
-    "@jax-js/jax": "^0.1.18"
+    "@jax-js/jax": "0.1.18"
   },
   "dependencies": {
     "@jax-js/jax": "^0.1.18",

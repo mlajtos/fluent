@@ -44,7 +44,7 @@
     },
   },
   "overrides": {
-    "@jax-js/jax": "^0.1.18",
+    "@jax-js/jax": "0.1.18",
   },
   "packages": {
     "@babel/runtime": ["@babel/runtime@7.28.4", "", {}, "sha512-Q/N6JNWvIvPnLDvjlE1OUBLPQHH6l3CltCEsHIujp45zQUSSh8K+gHnaEX45yAT1nyngnINhvWtzN+Nb9D8RAQ=="],
