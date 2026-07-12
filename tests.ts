@@ -173,6 +173,27 @@ describe("tensors", () => {
     // an in-bounds computed index still returns the right element
     expect(value("t: [10, 20, 30], t_(argmax([0, 5, 2], 0) + 1)")).toBe(30)
   })
+  test("argmax/argmin of an empty tensor is an Error, not jax-js's sentinel index", () => {
+    // np.argmax([]) hands back -2147483648, which only trips the gather bounds
+    // check downstream – error at the source instead
+    expect(run("argmax([])")).toBeInstanceOf(Error)
+    expect(run("argmin([])")).toBeInstanceOf(Error)
+    expect(run("argmax([], 0)")).toBeInstanceOf(Error)
+    // non-empty, with and without an axis, is unaffected
+    expect(value("argmax([3, 1, 2])")).toBe(0)
+    expect(value("argmin([3, 1, 2])")).toBe(1)
+    expect(value("argmax([[1, 9], [8, 2]], 0)")).toEqual([1, 0])
+  })
+  test("an empty fold returns a known op's identity, but a custom fn has none", () => {
+    // every native monoid reduction over [] is its identity – consistent, and
+    // the reason max([])/min([]) are ∓∞ (the identity), not null or an error
+    expect(value("Σ([])")).toBe(0)                    // +  identity
+    expect(value("[] reduce ×")).toBe(1)              // ×  identity
+    expect(value("[] reduce ⌈")).toBe(-Infinity)      // max identity
+    expect(value("[] reduce ⌊")).toBe(Infinity)       // min identity
+    // a custom lambda has no known identity, so folding nothing has no answer
+    expect(run("[] reduce { a, b | a + b }")).toBeInstanceOf(Error)
+  })
   test("reduce folds a tensor left-to-right; known ops go native, ⌈/⌊ give max/min", () => {
     expect(value("1 :: 10 reduce +")).toBe(45)               // native np.sum
     expect(value("[1, 2, 3, 4] reduce ×")).toBe(24)          // native np.prod

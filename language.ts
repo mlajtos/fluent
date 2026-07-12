@@ -2117,11 +2117,22 @@ const TensorReduce = (tensor: Value, fn: Value, axis?: Value) => {
 }
 
 // argmax/argmin take a single axis (or none, over the flattened array) and
-// return int32 indices of the extreme element
+// return int32 indices of the extreme element. Over an empty reduction axis
+// there is no index, and jax-js hands back a sentinel int (-2147483648) that
+// silently corrupts a downstream gather – so error at the source instead.
+const emptyReductionAxis = (a: Value, axis?: Value): boolean => {
+  const shape = (a instanceof FluentVariable ? a.current : a as any)?.shape
+  if (!Array.isArray(shape)) { return false } // not a tensor – let the op handle it
+  if (axis === undefined) { return shape.some((d: number) => d === 0) }
+  const n = asNumber(axis)
+  return shape[n < 0 ? shape.length + n : n] === 0
+}
 const TensorArgMax = (a: Value, axis?: Value) =>
-  track(axis === undefined ? np.argmax(promoteBool(a)) : np.argmax(promoteBool(a), asNumber(axis)))
+  emptyReductionAxis(a, axis) ? new Error("`argmax`: an empty tensor has no maximal index")
+    : track(axis === undefined ? np.argmax(promoteBool(a)) : np.argmax(promoteBool(a), asNumber(axis)))
 const TensorArgMin = (a: Value, axis?: Value) =>
-  track(axis === undefined ? np.argmin(promoteBool(a)) : np.argmin(promoteBool(a), asNumber(axis)))
+  emptyReductionAxis(a, axis) ? new Error("`argmin`: an empty tensor has no minimal index")
+    : track(axis === undefined ? np.argmin(promoteBool(a)) : np.argmin(promoteBool(a), asNumber(axis)))
 
 const TensorNormalize = (a: Value, p?: Value) => {
   const ord = p !== undefined ? asNumber(p) : 2
