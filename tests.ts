@@ -153,6 +153,15 @@ describe("tensors", () => {
     // an in-bounds computed index still returns the right element
     expect(value("t: [10, 20, 30], t_(argmax([0, 5, 2], 0) + 1)")).toBe(30)
   })
+  test("⌈ and ⌊ are the same function as max and min (glyph == word)", () => {
+    // the three-names contract: a glyph must behave like its word. ⌈/⌊ were
+    // bound to the binary primitive only, so reducing a list errored where the
+    // word max/min worked – a fluency glyph that fails on `max([3,1,2])`'s job
+    expect(value("⌈([3, 1, 2])")).toBe(3)           // whole-tensor reduction, like max
+    expect(value("⌊([3, 1, 2])")).toBe(1)           // like min
+    expect(value("[1, 5] ⌈ [4, 2]")).toEqual([4, 5]) // pairwise form still works
+    expect(value("[1, 5] ⌊ [4, 2]")).toEqual([1, 2])
+  })
   test("linspace rounds a fractional point count", () => {
     // a live slider drives the count through fractional values – round, don't reject
     expect(value("#(linspace([0, 1], 5))")).toBe(5)
