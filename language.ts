@@ -696,45 +696,29 @@ np.Array.prototype.toString = function () {
   return this.toString()
 }
 
-// Extend the Symbol interface to include 'resolve' and 'assign'
-declare global {
-  interface Symbol {
-    resolve(env: CurrentScope): any;
-    assign(env: CurrentScope, value: any): void;
-  }
-}
-
-// @ts-ignore
-Symbol.prototype.resolve = function (this: Symbol, env: CurrentScope): Value {
-
-  const s = this[Symbol.toPrimitive]("symbol")
-  const k = Symbol.keyFor(s) ?? ""
-
+// Fluent identifiers are interned symbols (Symbol.for(name)); these look one up
+// in the scope chain. Free functions, not Symbol.prototype methods, so we don't
+// mutate the global Symbol for every symbol in the process (and every dependency).
+const resolveSymbol = (sym: symbol, env: CurrentScope): Value => {
+  const k = Symbol.keyFor(sym) ?? ""
   try {
     // `in` (which walks the scope chain), not `??`: a name bound to ◌ must
     // resolve to null – null is a value, absence is not. With `??` the binding
     // masqueraded as an unbound symbol, so `x: ◌, x` gave back the symbol x.
-    return k in env ? (env[k] ?? null) : s
-  } catch (e) {
+    return k in env ? (env[k] ?? null) : sym
+  } catch {
     return null
   }
 }
 
-// @ts-ignore
-Symbol.prototype.assign = function (env: CurrentScope, value: any) {
-
-  const s = this[Symbol.toPrimitive]("symbol")
-  const k = Symbol.keyFor(s) ?? ""
-
-  Object.assign(env, {
-    [k]: value,
-  })
+const assignSymbol = (sym: symbol, env: CurrentScope, value: Value): void => {
+  const k = Symbol.keyFor(sym) ?? ""
+  env[k] = value
 }
 
 const reify = (v: Value, env: CurrentScope): Value => {
   if (typeof v === "symbol") {
-    // @ts-ignore
-    const resolved = v.resolve(env)
+    const resolved = resolveSymbol(v, env)
 
     if (resolved === v) {
       return v
@@ -999,10 +983,14 @@ const flushRetirements = () => {
 // (tests, screenshots) have no rAF and flush explicitly.
 let retirementFlushScheduled = false
 const scheduleRetirementFlush = () => {
-  const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => void }).requestAnimationFrame
-  if (!raf || retirementFlushScheduled) { return }
+  if (retirementFlushScheduled) { return }
   retirementFlushScheduled = true
-  raf(() => { retirementFlushScheduled = false; flushRetirements() })
+  const done = () => { retirementFlushScheduled = false; flushRetirements() }
+  const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => void }).requestAnimationFrame
+  // Browser: flush on the next frame, aligned to the render cycle. Headless (no
+  // rAF): a macrotask, so generations still don't pile up between evaluations –
+  // there are no islands to outlive, so nothing to align to.
+  if (raf) { raf(done) } else { setTimeout(done, 0) }
 }
 
 function evaluateGeneration<T>(evaluate: () => T): T {
@@ -1676,8 +1664,8 @@ setMeta(Reactive, { noAutoLift: true })
 
 const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
   if (typeof a === "symbol") {
-    a.assign(this, b)
-    return a.resolve(this)
+    assignSymbol(a, this, b)
+    return resolveSymbol(a, this)
   } else {
     return new Error(`'SymbolAssign': Left side must be a symbol, got: ${String(a)}`)
   }
