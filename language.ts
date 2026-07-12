@@ -2169,6 +2169,7 @@ const TensorCrossEntropy = (labels: Value, logits: Value) =>
   track(np.mean(np.negative(np.sum(np.multiply(borrow(labels), nn.logSoftmax(borrow(logits))), -1))))
 
 const TensorSort = (x: Value) => track(np.sort(borrow(x)))
+const TensorArgSort = (x: Value) => track(np.argsort(borrow(x)))
 const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   const beginList = asNumberList(begin)
   const sizeList = size === undefined ? undefined : asNumberList(size)
@@ -2628,6 +2629,10 @@ const TensorRandomUniform = (a: Value) => track(random.uniform(nextRngKey(), asN
 const StringConcat = (...args: any[]) => "".concat(...args)
 const StringLength = (a: string) => track(np.array(a.length))
 
+// length works on whatever it's handed – a tensor's leading axis, a list's
+// element count, or a string's characters – by trying each in turn.
+const Length = FunctionCascade([TensorLength, ListLength, StringLength])
+
 // Text ↔ tensor: the door between strings and token land. Codes are float32 –
 // small integers are exact in float, and float spares downstream math from
 // int-promotion surprises. Decode rounds, so model outputs convert directly.
@@ -2691,6 +2696,8 @@ doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimensio
 doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 :: 3) (⊗ ×) (0 :: 3) = [[0,0,0],[0,1,2],[0,2,4]]")
 doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]")
 doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]")
+doc(TensorArgSort, "argsort(x)", "The indices that sort a vector into ascending order – grade up. x_argsort(x) is x sorted.", "argsort([3, 1, 2]) = [1, 2, 0]")
+doc(Length, "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\"abc\") = 3")
 doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]")
 doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0) = [1, 0, 3]")
 doc(TensorOr, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]")
@@ -2851,6 +2858,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorOneHot,
   TensorCrossEntropy,
   TensorSort,
+  TensorArgSort,
 
   TensorGradient,
 
@@ -2867,6 +2875,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorEinsum,
   TensorReshape,
   TensorLength,
+  Length,
   TensorShape,
   TensorGather,
   TensorWhere,
@@ -2980,9 +2989,9 @@ guard: FunctionGuard,
 when: FunctionWhen,
 
 ; Tensor shape/indexing
-(#): TensorLength,
-length: TensorLength,
-len: TensorLength,
+(#): Length,
+length: Length,
+len: Length,
 (_): TensorGather,
 gather: TensorGather,
 (⍴): TensorReshape,
@@ -3203,6 +3212,8 @@ watch: TensorWatch,
 
 ; Tensor ops
 sort: TensorSort,
+argsort: TensorArgSort,
+(⍋): TensorArgSort,
 roll: TensorRoll,
 flip: TensorReverse,
 mask: TensorMask,

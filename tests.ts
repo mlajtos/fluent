@@ -144,6 +144,26 @@ describe("tensors", () => {
     expect(value("a: [10, 20, 30], a_(-1)")).toBe(30)
     expect(value("#([1, 2, 3])")).toBe(3)
   })
+  test("length is a cascade: tensor, list, or string – #, length, len agree", () => {
+    expect(value("length([1, 2, 3])")).toBe(3)          // tensor
+    expect(value("length([[1, 2], [3, 4]])")).toBe(2)   // leading axis
+    expect(value("length((1, 2, 3))")).toBe(3)          // list
+    expect(value('length("abc")')).toBe(3)              // string
+    // the three tiers are one function
+    expect(value('#("hi")')).toBe(2)
+    expect(value('len("hello")')).toBe(5)
+    // empties work in every shape
+    expect(value("length([])")).toBe(0)
+    expect(value("length(())")).toBe(0)
+    expect(value('length("")')).toBe(0)
+  })
+  test("argsort: word, glyph ⍋, and long name all give the grade-up indices", () => {
+    expect(value("argsort([3, 1, 2])")).toEqual([1, 2, 0])
+    expect(value("⍋([3, 1, 2])")).toEqual([1, 2, 0])
+    expect(value("TensorArgSort([3, 1, 2])")).toEqual([1, 2, 0])
+    // x_argsort(x) is x sorted ascending
+    expect(value("t: [30, 10, 20], t_argsort(t)")).toEqual([10, 20, 30])
+  })
   test("chained subscripts index element-wise: a_i_j is (a_i)_j, not a_(ij)", () => {
     // `_` is the subscript operator; it must not swallow the next index as a
     // numeric digit separator – a_0_1 used to lex 0_1 as 01, giving a_1
