@@ -2989,13 +2989,12 @@ ListZip: { a, b |
   )
 },
 ListTake: { list, n |
-  ; clamp n to [0, length] so over-taking gives the whole list, not indices
-  ; past the end (which used to embed Error values and report the wrong length)
-  ListMap(TensorUnstack(TensorRange(0, (0 ⌈ n) ⌊ ListLength(list))), { i | ListGet(list, i) })
+  ; take the first n, with n clamped to [0, length]
+  ListMap(TensorUnstack(TensorRange(0, 0 ⌈ n ⌊ ListLength(list))), { i | ListGet(list, i) })
 },
 ListDrop: { list, n |
   len: ListLength(list),
-  ListMap(TensorUnstack(TensorRange((0 ⌈ n) ⌊ len, len)), { i | ListGet(list, i) })
+  ListMap(TensorUnstack(TensorRange(0 ⌈ n ⌊ len, len)), { i | ListGet(list, i) })
 },
 ListReverse: { list |
   n: ListLength(list),
