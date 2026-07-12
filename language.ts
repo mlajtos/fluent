@@ -48,7 +48,7 @@ const IDENTIFIER_RANGES: Record<string, [string, string]> = {
 }
 const identifierRegexp = /(?:\p{L})[\p{L}\p{N}\-]*/u
 
-const numberRegexp = /-?\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d[\d_]*)?/
+const numberRegexp = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/
 const stringRegexp = /"(?:[^"\\]|\\.)*"/
 
 const getSymbolRange = (range: [string, string]) => {
@@ -146,7 +146,7 @@ Fluent {
   exponent
     = ("e" | "E") ("+" | "-")? digitGroup
   digitGroup
-    = digit ("_"? digit)*
+    = digit+
   String          = #("\"" (~"\"" any)* "\"")
   Code            = #("${"`"}" (~"${"`"}" any)* "${"`"}")
   reserved        = "|" | "," | "{" | "}" | "(" | ")" | "[" | "]" | ";" | "\"" | "${"`"}"

@@ -135,6 +135,17 @@ describe("tensors", () => {
     expect(value("a: [10, 20, 30], a_(-1)")).toBe(30)
     expect(value("#([1, 2, 3])")).toBe(3)
   })
+  test("chained subscripts index element-wise: a_i_j is (a_i)_j, not a_(ij)", () => {
+    // `_` is the subscript operator; it must not swallow the next index as a
+    // numeric digit separator – a_0_1 used to lex 0_1 as 01, giving a_1
+    expect(value("a: [[1, 2], [3, 4]], a_0_1")).toBe(2)   // element (0, 1)
+    expect(value("a: [[1, 2], [3, 4]], a_1_0")).toBe(3)   // element (1, 0)
+    expect(value("a: [[10, 20], [30, 40]], a_1_1")).toBe(40)
+    // 1D indexing, negative, multi-gather, and float/exponent literals unaffected
+    expect(value("v: [10, 20, 30], v_[2, 0]")).toEqual([30, 10])
+    expect(value("1e3")).toBe(1000)
+    expect(value("3.14")).toBeCloseTo(3.14, 2)
+  })
   test("a literal index out of bounds is an Error, not a silent clamp", () => {
     // jax-js `take` clamps out-of-range indices; a typo'd `a_2` on a 2-vector
     // used to return a wrong element instead of erroring
