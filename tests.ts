@@ -692,6 +692,8 @@ describe("errors", () => {
     // elements still read names from the enclosing scope
     expect(value("x: 5, [x, x + 1]")).toEqual([5, 6])
     expect(value("x: 5, (x + 1)")).toBe(6)
+    // a binding among a call's arguments is local to the call
+    expect(value("a: 1, Grid(1)(a: 2, a), a")).toBe(1)
   })
   test("calling a non-function is an Error value", () => {
     expect(run("3(4)")).toBeInstanceOf(Error)

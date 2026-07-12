@@ -653,10 +653,12 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   if (node.type === "Operation") {
     const fn = evaluateSyntaxTreeNode(node.content.operator, env)
 
+    // a binding among the args (f(a: 2, b)) is local to the call, not leaked out
+    const argsEnv = Object.create(env) as CurrentScope
     // Process args directly (not via List evaluation) - safeApply handles quotedArgs
     const argNodes = node.content.args.content.value
     const args = argNodes.map((argNode: SyntaxTreeNode) =>
-      evaluateSyntaxTreeNode(argNode, env)
+      evaluateSyntaxTreeNode(argNode, argsEnv)
     )
 
     const value = safeApply(fn, args, env)
