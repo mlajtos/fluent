@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test"
 import { Signal } from "@preact/signals-core"
-import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, beginTensorWatch, endTensorWatch, liveTensorCount, peakTensorCount, type SyntaxTreeNode, type Value } from "./language"
+import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, beginTensorWatch, endTensorWatch, liveTensorCount, peakTensorCount, type SyntaxTreeNode, type Value } from "./language"
 import { EXAMPLES } from "./examples"
 
 const run = (source: string) =>
@@ -581,7 +581,7 @@ describe("backtick code literals", () => {
 })
 
 describe("resource lifetimes", () => {
-  test("watch(θ) releases its held reference when the generation retires", async () => {
+  test("watch(θ) releases its held reference when the generation retires", () => {
     const scope = createScope()
     const out = evaluateGeneration(() =>
       evaluateSyntaxTreeNode(CodeParse("θ: ~([2]), w: watch(θ), w"), scope)) as Signal<np.Array>
@@ -589,7 +589,7 @@ describe("resource lifetimes", () => {
     const payload = (scope["θ"] as FluentVariable).current
     expect(payload.refCount).toBeGreaterThan(1)
     evaluateGeneration(() => null) // retire the generation above
-    await Bun.sleep(80)            // its teardown runs on a 50ms timer
+    flushRetirements()             // its teardown runs when the renderer flushes
     expect(payload.refCount).toBe(0)
   })
 })
@@ -692,21 +692,20 @@ describe("null is a value", () => {
 describe("leak watch", () => {
   const gen = (code: string) =>
     evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(code), createScope()))
-  const settle = () => new Promise(r => setTimeout(r, 80)) // > the 50ms disposal timer
 
-  test("re-evaluating frees the previous generation's tensors", async () => {
+  test("re-evaluating frees the previous generation's tensors", () => {
     beginTensorWatch()
     try {
       gen("a: (0 :: 500), Σ(a^2)")           // generation 1 – allocates a range + squares
       const held = liveTensorCount()
       expect(held).toBeGreaterThan(0)
       gen("1 + 1")                            // generation 2 supersedes generation 1
-      await settle()                          // let the deferred disposal run
+      flushRetirements()                      // the renderer's post-frame flush
       expect(liveTensorCount()).toBeLessThan(held)
     } finally { endTensorWatch() }
   })
 
-  test("a throwing re-evaluation still frees the previous generation", async () => {
+  test("a throwing re-evaluation still frees the previous generation", () => {
     // regression for the leak-on-error hole: the previous generation must be
     // retired even when building the next one throws
     beginTensorWatch()
@@ -714,7 +713,7 @@ describe("leak watch", () => {
       gen("a: (0 :: 500), Σ(a^2)")
       const held = liveTensorCount()
       expect(() => evaluateGeneration(() => { throw new Error("boom") })).toThrow("boom")
-      await settle()
+      flushRetirements()
       expect(liveTensorCount()).toBeLessThan(held)
     } finally { endTensorWatch() }
   })

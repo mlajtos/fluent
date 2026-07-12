@@ -969,27 +969,53 @@ const registerDisposable = (dispose: () => void) => {
   currentGeneration?.disposables.add(dispose)
 }
 
+// Generations awaiting retirement. A retired generation's effects and tensors
+// are freed only once the NEW UI has committed and the old islands unmounted –
+// a still-mounted old island could otherwise recompute against a freed tensor.
+// The renderer signals that exact moment by calling flushRetirements() from a
+// post-commit effect (replacing a 50 ms timer that only guessed at it); tests
+// and headless callers call it directly.
+const pendingRetirements = new Set<Generation>()
+
+const retireGeneration = (g: Generation) => {
+  for (const dispose of g.disposables) {
+    try { dispose() } catch { /* already gone */ }
+  }
+  // every array the generation's evaluations created and kept lives here –
+  // signals and variables released their own references via disposables
+  for (const array of g.arena) {
+    if (array.refCount > 0) { array.dispose() }
+  }
+}
+
+const flushRetirements = () => {
+  for (const g of pendingRetirements) { retireGeneration(g) }
+  pendingRetirements.clear()
+}
+
+// In the browser, flush on the next animation frame – after this frame's DOM
+// work has replaced the old islands, before the next paint. That's aligned to
+// the render cycle instead of the old blind 50 ms guess. Headless callers
+// (tests, screenshots) have no rAF and flush explicitly.
+let retirementFlushScheduled = false
+const scheduleRetirementFlush = () => {
+  const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => void }).requestAnimationFrame
+  if (!raf || retirementFlushScheduled) { return }
+  retirementFlushScheduled = true
+  raf(() => { retirementFlushScheduled = false; flushRetirements() })
+}
+
 function evaluateGeneration<T>(evaluate: () => T): T {
   const previous = currentGeneration
   currentGeneration = { disposables: new Set(), arena: new Set() }
   try {
     return evaluate()
   } finally {
-    // Retire the previous generation even if building this one threw – otherwise
-    // its effects, hardware sources, and GPU tensors leak permanently on any
-    // error. Deferred so the new UI commits first and old islands never touch
-    // freed tensors.
+    // queue the previous generation even if building this one threw, so its
+    // effects, sources, and GPU tensors never leak on an error
     if (previous) {
-      setTimeout(() => {
-        for (const dispose of previous.disposables) {
-          try { dispose() } catch { /* already gone */ }
-        }
-        // every array the generation's evaluations created and kept lives here –
-        // signals and variables released their own references via disposables
-        for (const array of previous.arena) {
-          if (array.refCount > 0) { array.dispose() }
-        }
-      }, 50)
+      pendingRetirements.add(previous)
+      scheduleRetirementFlush()
     }
   }
 }
@@ -3176,6 +3202,7 @@ export {
   getOrigin,
   // generations
   evaluateGeneration,
+  flushRetirements,
   registerDisposable,
   disposeScopeTensors,
   disposeValueTensors,
