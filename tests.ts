@@ -30,7 +30,7 @@ describe("whitespace is precedence", () => {
   test("glued-left operator takes long right scope", () => {
     expect(value("a: 1 + 2, a")).toBe(3)
     expect(value("a: b: 2 + 3, a")).toBe(5)
-    expect(value("x: 1 :: 4, sum(x)")).toBe(6)
+    expect(value("x: 1 ..< 4, sum(x)")).toBe(6)
   })
   test("assignment evaluates to the assigned value", () => {
     expect(value("a: 1 + 2")).toBe(3)
@@ -79,7 +79,7 @@ describe("combinators", () => {
     expect(value("5 Φ(=, ∨, >) 3")).toBe(1)
     expect(value("5 Φ(=, ∨, >) 9")).toBe(0)
     // the fork inside a table – ≥ rebuilt from its parts
-    expect(value("(0 :: 3) (⊗ Φ(=, ∨, >)) (0 :: 3)")).toEqual([[1, 0, 0], [1, 1, 0], [1, 1, 1]])
+    expect(value("(0 ..< 3) (⊗ Φ(=, ∨, >)) (0 ..< 3)")).toEqual([[1, 0, 0], [1, 1, 0], [1, 1, 1]])
   })
   test("⊸ before and ⟜ after: hooks; a constant operand binds", () => {
     expect(value("(÷ ⟜ √)(16)")).toBe(4)      // S: x ÷ √x
@@ -215,7 +215,7 @@ describe("tensors", () => {
     expect(run("[] reduce { a, b | a + b }")).toBeInstanceOf(Error)
   })
   test("reduce folds a tensor left-to-right; known ops go native, ⌈/⌊ give max/min", () => {
-    expect(value("1 :: 10 reduce +")).toBe(45)               // native np.sum
+    expect(value("1 ..< 10 reduce +")).toBe(45)               // native np.sum
     expect(value("[1, 2, 3, 4] reduce ×")).toBe(24)          // native np.prod
     expect(value("[3, 1, 2] reduce ⌈")).toBe(3)              // ⌈ reduce = max (native)
     expect(value("[3, 1, 2] reduce ⌊")).toBe(1)              // ⌊ reduce = min
@@ -268,14 +268,24 @@ describe("tensors", () => {
   })
   test("reshape and range", () => {
     expect(value("[[1, 2], [3, 4]] ⍴ [4]")).toEqual([1, 2, 3, 4])
-    expect(value("0 :: 4")).toEqual([0, 1, 2, 3])
+    expect(value("0 ..< 4")).toEqual([0, 1, 2, 3])
+  })
+  test("range operators: ..< exclusive, ... inclusive, glued and descending", () => {
+    expect(value("1 ..< 5")).toEqual([1, 2, 3, 4])      // exclusive of the stop
+    expect(value("1 ... 5")).toEqual([1, 2, 3, 4, 5])   // inclusive of the stop
+    expect(value("1..<5")).toEqual([1, 2, 3, 4])        // glued
+    expect(value("1...5")).toEqual([1, 2, 3, 4, 5])     // glued: the number no longer swallows the dot
+    expect(value("5 ... 1")).toEqual([5, 4, 3, 2, 1])   // descending, inclusive
+    expect(value("3 ... 3")).toEqual([3])               // single element
+    // the number-lexing fix must not break real float literals
+    expect(value("1.5 + 0.25")).toBeCloseTo(1.75, 5)
   })
   test("new jax-js builtins: fft, meshgrid, einsum, topk, pad, repeat, flip, sinc", () => {
     // fft returns [real; imag] stacked; a period-4 wave peaks at bin 2
     // (round: jax-js ≥0.1.18 leaves ~1e-16 residuals in the near-zero bins)
     expect((value("f: fft([0, 1, 0, -1, 0, 1, 0, -1]), √(f_0^2 + f_1^2)") as number[]).map(x => Math.round(x))).toEqual([0, 0, 4, 0, 0])
     // meshgrid and topk return lists of tensors – pull one out with ListGet
-    expect(value("ListGet(meshgrid(0 :: 3, 0 :: 2), 0)")).toEqual([[0, 1, 2], [0, 1, 2]])
+    expect(value("ListGet(meshgrid(0 ..< 3, 0 ..< 2), 0)")).toEqual([[0, 1, 2], [0, 1, 2]])
     expect(value("einsum(\"ij,jk->ik\", [[1, 2], [3, 4]], [[5, 6], [7, 8]])")).toEqual([[19, 22], [43, 50]])
     expect(value("ListGet(topk([3, 1, 4, 1, 5, 9, 2], 3), 0)")).toEqual([9, 5, 4])
     expect(value("pad([1, 2, 3], 2)")).toEqual([0, 0, 1, 2, 3, 0, 0])
@@ -285,7 +295,7 @@ describe("tensors", () => {
   })
   test("stack with axis and broadcasting", () => {
     expect(value("stack(([1, 2], [3, 4]), 1)")).toEqual([[1, 3], [2, 4]])
-    expect(value("stack(0 :: 3, 9)")).toEqual([[0, 1, 2], [9, 9, 9]])
+    expect(value("stack(0 ..< 3, 9)")).toEqual([[0, 1, 2], [9, 9, 9]])
   })
   test("comparisons are float 0/1 and compose with arithmetic", () => {
     // jax-js bools promote through uint32, where weak negatives clamp to
@@ -316,7 +326,7 @@ describe("tensors", () => {
     expect(value("concat(([1, 2], [3, 4]), 0)")).toEqual([1, 2, 3, 4])
   })
   test("outer product ⊗", () => {
-    expect(value("(0 :: 3) (⊗ ×) (0 :: 3)")).toEqual([[0, 0, 0], [0, 1, 2], [0, 2, 4]])
+    expect(value("(0 ..< 3) (⊗ ×) (0 ..< 3)")).toEqual([[0, 0, 0], [0, 1, 2], [0, 2, 4]])
   })
   test("table with cell rank – frames cross, cells zip", () => {
     expect(value("[[1,2],[3,4]] (+ ⊗ 1) [[10,20],[30,40]]")).toEqual([
@@ -327,7 +337,7 @@ describe("tensors", () => {
   test("conv is rank-polymorphic and keeps input size (SAME)", () => {
     // signature is `arr conv kernel` – the data first, then the kernel, whose
     // rank sets the conv's rank
-    expect(value("conv(0 :: 6, [1, 2, 1])")).toEqual([1, 4, 8, 12, 16, 14])
+    expect(value("conv(0 ..< 6, [1, 2, 1])")).toEqual([1, 4, 8, 12, 16, 14])
     expect(value("conv([[0, 0, 0], [0, 1, 0], [0, 0, 0]], [[0, 1, 0], [1, -4, 1], [0, 1, 0]])"))
       .toEqual([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
   })
@@ -456,7 +466,7 @@ describe("differentiation and optimization", () => {
     // the optimizer is created ONCE, outside the loop – recreating a stateful
     // optimizer per step resets its moments (and recompiles its jit program)
     const program = `
-      x: 0 :: 8,
+      x: 0 ..< 8,
       y: x × 3,
       θ: ~([0]),
       𝓛: { mean((x × θ_0 - y)^2) },
@@ -781,7 +791,7 @@ describe("metadata arguments are strict", () => {
   })
   test("a typo'd shape or count is an Error", () => {
     expect(run("[1, 2, 3, 4] ⍴ shp")).toBeInstanceOf(Error)
-    expect(run("0 :: nope")).toBeInstanceOf(Error)
+    expect(run("0 ..< nope")).toBeInstanceOf(Error)
     expect(run("linspace(5, 3)")).toBeInstanceOf(Error)   // range must be [start, stop]
   })
   test("a guard on a typo'd condition is not silently truthy", () => {
@@ -825,7 +835,7 @@ describe("leak watch", () => {
   test("re-evaluating frees the previous generation's tensors", () => {
     beginTensorWatch()
     try {
-      gen("a: (0 :: 500), Σ(a^2)")           // generation 1 – allocates a range + squares
+      gen("a: (0 ..< 500), Σ(a^2)")           // generation 1 – allocates a range + squares
       const held = liveTensorCount()
       expect(held).toBeGreaterThan(0)
       gen("1 + 1")                            // generation 2 supersedes generation 1
@@ -839,7 +849,7 @@ describe("leak watch", () => {
     // retired even when building the next one throws
     beginTensorWatch()
     try {
-      gen("a: (0 :: 500), Σ(a^2)")
+      gen("a: (0 ..< 500), Σ(a^2)")
       const held = liveTensorCount()
       expect(() => evaluateGeneration(() => { throw new Error("boom") })).toThrow("boom")
       flushRetirements()

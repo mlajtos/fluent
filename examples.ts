@@ -55,7 +55,7 @@ a:[1,2,3], b:[4,5,6], a+b
 ; Automatic differentiation with ∇
 f : { x | x ^ 2 },
 g : ∇(f),
-x : (1 :: 10),
+x : (1 ..< 10),
 (f(x), g(x))
 `,
   "ad-hoc-operators": `
@@ -193,7 +193,7 @@ btn: { c | Button(c, { x | x ++ c } . append) },
 (++): TensorConcat,
 
 ; Data: y = 0.23x + 0.47
-x: 0 :: 10,
+x: 0 ..< 10,
 y: x×0.23 + 0.47,
 
 ; Model: f(x) = θ₀·x + θ₁
@@ -217,7 +217,7 @@ losses: $([]),
 )
 `,
   "linear-regression-compressed": `
-x: (0 :: 10),
+x: (0 ..< 10),
 y: (x × 0.23 + 0.47),
 θ: ~([0, 0]),
 f: { x | x × (θ_0) + (θ_1) },
@@ -253,7 +253,7 @@ t: $(0),
 (
   Slider(t),
   f(t),
-  f(0::100 / 100)
+  f(0..<100 / 100)
 )
 `,
   "deep-delta-learning": `
@@ -551,8 +551,8 @@ R: 13,
 
 ; a Gaussian ring kernel, normalised to sum 1
 ks: 2×R + 1,
-gx: (0 :: ks) ⍴ [ks, 1] tile [1, ks],
-gy: (0 :: ks) ⍴ [1, ks] tile [ks, 1],
+gx: (0 ..< ks) ⍴ [ks, 1] tile [1, ks],
+gy: (0 ..< ks) ⍴ [1, ks] tile [ks, 1],
 dist: √((gx - R)^2 + (gy - R)^2) ÷ R,
 ring: exp(0 - (dist - 0.5)^2 ÷ (2 × 0.15^2)) × (dist < 1),
 K: ring ÷ Σ(ring),
@@ -589,8 +589,8 @@ n: 48,   ; tokens
 d: 16,   ; embedding dimension
 
 ; sinusoidal positional embeddings, so nearby tokens are similar (K = Q)
-pos: 0 :: n,
-k: 0 :: (d ÷ 2),
+pos: 0 ..< n,
+k: 0 ..< (d ÷ 2),
 freqs: 1 ÷ (10000 ^ (k ÷ (d ÷ 2))),
 angles: pos (⊗ ×) freqs,
 Q: concat((sin(angles), cos(angles)), 1),
@@ -689,7 +689,7 @@ TT: [
   [1,1,0,0], [1,1,0,1], [1,1,1,0], [1,1,1,1]
 ],
 ; pool 20 gates per class: GROUP[c, g] = 1 where gate g belongs to class c
-GROUP: (0 :: 10) ⊗(=) floor((0 :: G2) ÷ (G2 ÷ 10)),
+GROUP: (0 ..< 10) ⊗(=) floor((0 ..< G2) ÷ (G2 ÷ 10)),
 
 ; a soft gate: expected truth table softmax(θ)·TT, blended over the 4 input corners
 gate: { A, B, W | Wt: transpose(W),
@@ -761,7 +761,7 @@ Wu: ~(randn([C, V]) × 0.1),
 
 rms: { x | x ÷ √(mean(x × x, -1, 1) + 0.001) },   ; the 1 keeps the reduced axis
 gelu: { x | x × sigmoid(x × 1.702) },
-nmask: where((0 :: T) ⊗(≥) (0 :: T), fill([T, T], 0), fill([T, T], -9999)),
+nmask: where((0 ..< T) ⊗(≥) (0 ..< T), fill([T, T], 0), fill([T, T], -9999)),
 att: { x | q: matmul(x, Wq), k: matmul(x, Wk), v: matmul(x, Wv),
   a: softmax((einsum("btc,bsc->bts", q, k) ÷ √(C)) + nmask),
   matmul(matmul(a, v), Wo) },
@@ -776,7 +776,7 @@ loss: { crossEntropy(oneHot(slice(D, [0, 1], [-1, T]), V), model(slice(D, [0, 0]
 codesF: linspace([0, V - 1], V),   ; float 0…26 – argmax is int, gather keeps it float
 τ: $(0.5),
 pick: { l | codesF _ argmax((l ÷ ((once(τ) × 1.5) ⌈ 0.05)) - log(-log(rand([V]))), -1) },
-grow: { s | ctx: s _ ((0 :: T) + (#(s) - T)),
+grow: { s | ctx: s _ ((0 ..< T) + (#(s) - T)),
   l: (model(ctx ⍴ [1, T]) ⍴ [T, V]) _ (T - 1),
   s ++ (pick(l) ⍴ [1]) },
 gen: { seed, n | (grow ⍣ n)(seed) },
@@ -796,7 +796,7 @@ stride: $(4),
       ; the plot keeps the WHOLE story, bounded: when it fills up,
       ; thin the history to every other point and log half as often
       when((#(losses())) ≥ 480, {
-        losses(losses() _ ((0 :: 240) × 2)),
+        losses(losses() _ ((0 ..< 240) × 2)),
         stride ← (once(stride) × 2)
       })
     }),
@@ -811,7 +811,7 @@ finish: $({ dream(), p: prompt(), s: fill([T], 0) ++ enc(p),
 
 ; what the head attends to while reading a name, live
 probeS: fill([T], 0) ++ enc("sophia"),
-probe: probeS _ ((0 :: T) + (#(probeS) - T)),
+probe: probeS _ ((0 ..< T) + (#(probeS) - T)),
 attn: $({ losses(),
   x: rms(matmul(oneHot(probe ⍴ [1, T], V), E) + P),
   softmax((einsum("btc,bsc->bts", matmul(x, Wq), matmul(x, Wk)) ÷ √(C)) + nmask) ⍴ [T, T] }),
@@ -882,7 +882,7 @@ names: ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"),
 detect: $({
   f: fft(mic()),
   mag: √(f_0^2 + f_1^2),
-  bins: 0 :: #(mag),
+  bins: 0 ..< #(mag),
   freqs: bins × sr ÷ size,
   ; only the musical range, so mic rumble and hiss don't win
   band: mag × (freqs > 55) × (freqs < 2000),

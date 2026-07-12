@@ -142,7 +142,7 @@ Fluent {
   identifier      = &(letter | idRanges) (alnum | "-" | idRanges)+
   idRanges        = ${getSymbolsRange(IDENTIFIER_RANGES)}
   number
-    = "-"? digitGroup ("." digitGroup?)? exponent?
+    = "-"? digitGroup ("." digitGroup)? exponent?
   exponent
     = ("e" | "E") ("+" | "-")? digitGroup
   digitGroup
@@ -2094,7 +2094,7 @@ const LEADING_AXIS: Value = np.array(0)
 syncReadCache.set(LEADING_AXIS as object, 0)
 
 // Fold a tensor left-to-right with a binary fn, optionally along one axis:
-// `1 :: 10 reduce +` = 45, `x reduce { a, b | a - b }` = ((x_0-x_1)-x_2)-…
+// `1 ..< 10 reduce +` = 45, `x reduce { a, b | a - b }` = ((x_0-x_1)-x_2)-…
 // A known op takes its native reduction (fast, axis-aware); anything else folds
 // over the slices along the axis (default 0).
 const TensorReduce = (tensor: Value, fn: Value, axis?: Value) => {
@@ -2235,6 +2235,15 @@ const TensorRange = (a: Value, b?: Value) => {
   return track(np.arange(start, stop, step).astype(np.float32))
 }
 
+// Inclusive range: like `start ..< stop`, but the endpoint is included –
+// `1 ... 5 = [1, 2, 3, 4, 5]`, `5 ... 1 = [5, 4, 3, 2, 1]`.
+const TensorRangeInclusive = (a: Value, b: Value) => {
+  const start = Math.trunc(asNumber(a))
+  const stop = Math.trunc(asNumber(b))
+  const step = start <= stop ? 1 : -1
+  return track(np.arange(start, stop + step, step).astype(np.float32))
+}
+
 const TensorLinearSpace = (range: Value, steps: Value) => {
   const bounds = requireData(range)
   if (!Array.isArray(bounds) || bounds.length < 2) {
@@ -2272,7 +2281,7 @@ const TensorFFT = (a: Value) => {
   return track(np.stack([real, imag]))
 }
 
-// Coordinate grids: meshgrid(0::w, 0::h) → [X, Y], each broadcast to the full grid
+// Coordinate grids: meshgrid(0 ..< w, 0 ..< h) → [X, Y], each broadcast to the full grid
 const TensorMeshgrid = (...args: Value[]) => track(np.meshgrid(args.map(borrow)))
 
 const TensorPad = (a: Value, width: Value) => track(np.pad(borrow(a), asNumber(width)))
@@ -2676,7 +2685,7 @@ doc(TensorOptimizationSgd, "sgd(lr, momentum?, vars?)", "Stochastic gradient des
 doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w = [8]")
 doc(TensorGradient, "∇(f)", "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", "∇({ x | x^2 })(3) = 6")
 doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6")
-doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so `x reduce ⌈` is max.", "1 :: 10 reduce + = 45")
+doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so `x reduce ⌈` is max.", "1 ..< 10 reduce + = 45")
 doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]")
 doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]")
 doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor.", "max([3, 1, 2]) = 3")
@@ -2691,9 +2700,10 @@ doc(TensorSubtract, "x - y", "Element-wise subtraction; shapes broadcast.", "[3,
 doc(TensorNegate, "neg(x)", "Negate each element.", "neg([1, -2]) = [-1, 2]")
 doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcast.", "[1, 2] × 3 = [3, 6]")
 doc(TensorSign, "sign(x)", "The sign of each element: -1, 0, or 1.", "sign([-5, 0, 3]) = [-1, 0, 1]")
-doc(TensorRange, "start :: stop", "Integer range from start (inclusive) to stop (exclusive).", "0 :: 5 = [0, 1, 2, 3, 4]")
+doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the `<` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]")
+doc(TensorRangeInclusive, "start ... stop", "Integer range from start through stop, endpoint included.", "1 ... 5 = [1, 2, 3, 4, 5]")
 doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]")
-doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 :: 3) (⊗ ×) (0 :: 3) = [[0,0,0],[0,1,2],[0,2,4]]")
+doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]")
 doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]")
 doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]")
 doc(TensorArgSort, "argsort(x)", "The indices that sort a vector into ascending order – grade up. x_argsort(x) is x sorted.", "argsort([3, 1, 2]) = [1, 2, 0]")
@@ -2864,6 +2874,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
 
   TensorTranspose,
   TensorRange,
+  TensorRangeInclusive,
   TensorLinearSpace,
   TensorConvolution,
   TensorFFT,
@@ -2996,8 +3007,10 @@ len: Length,
 gather: TensorGather,
 (⍴): TensorReshape,
 reshape: TensorReshape,
-(::): TensorRange,
+(..<): TensorRange,
 range: TensorRange,
+(...): TensorRangeInclusive,
+rangeInclusive: TensorRangeInclusive,
 shape: TensorShape,
 slice: TensorSlice,
 transpose: TensorTranspose,
@@ -3019,16 +3032,16 @@ unsqueeze: { x, axis |
 },
 
 windows: { w, arr |
-  starts: (0 :: (#(arr) - w + 1)),
-  offsets: (0 :: w),
+  starts: (0 ..< (#(arr) - w + 1)),
+  offsets: (0 ..< w),
   indices: (starts ⊗(+) offsets),
   arr _ indices
 },
 
 chunks: { w, arr |
   n: (#(arr) / w),
-  starts: (0 :: n × w),
-  offsets: (0 :: w),
+  starts: (0 ..< n × w),
+  offsets: (0 ..< w),
   indices: (starts ⊗(+) offsets),
   arr _ indices
 },

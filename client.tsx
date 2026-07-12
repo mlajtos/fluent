@@ -48,7 +48,7 @@ Button("Reset", { x(0) }),
   - indexing with \`_\`: \`a_0\`, \`a_(i + 1)\`, \`a_(-1)\` (last element)
     - glued \`_\` binds tight: \`x × θ_0 + θ_1\` needs no parentheses
   - length with \`#\`: \`#([1, 2, 3])\` is \`3\`
-  - range with \`::\`: \`0 :: 10\` is \`[0, 1, 2, ..., 9]\`
+  - ranges: \`..<\` exclusive (\`1 ..< 5\` is \`[1, 2, 3, 4]\`), \`...\` inclusive (\`1 ... 5\` is \`[1, 2, 3, 4, 5]\`)
 - Lists
   - ordered collection of heterogeneous values
   - e.g. \`(1, 2, 3)\`, \`(1, (2, 3), [4])\`, \`()\`, \`(42,)\`
@@ -102,7 +102,7 @@ Button("Reset", { x(0) }),
   - minimize: \`{ opt(loss) } ⟳ 100\`
 - Built-in functions
   - tensor math: \`+\`, \`-\`, \`*\`, \`/\`, \`^\`, \`√\`, \`sum\`, \`mean\`, \`max\`, \`min\`, \`sin\`, \`cos\`, \`log\`, \`exp\`, \`dot\`, \`matmul\`, \`transpose\`, \`reshape\`, \`clamp\`, \`sigmoid\`, \`relu\`, \`softmax\`, \`oneHot\`, \`crossEntropy\`, etc.
-  - tensor creation: \`::\` (range), \`linspace\`, \`eye\`, \`rand\`, \`randn\`
+  - tensor creation: \`..<\`/\`...\` (range), \`linspace\`, \`eye\`, \`rand\`, \`randn\`
   - axis variants: \`stack((a, b), axis)\`, \`concat((a, b), axis)\`, \`unstack(x, axis)\`, \`sum(x, axis)\`
   - outer product \`⊗\`: \`a (⊗ f) b\` pairs every cell of a with every cell of b; \`a (f ⊗ k) b\` keeps trailing k axes zipped
   - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
@@ -2350,7 +2350,7 @@ async function getEditor() {
 }
 
 // The token under the cursor: a letter-identifier (Greek included) via Monaco's
-// word detection, or an operator run (::, ⌈, ⊗, ∇, ←) expanded by hand – the
+// word detection, or an operator run (..<, ⌈, ⊗, ∇, ←) expanded by hand – the
 // language's word pattern only covers letters, so glyphs need this.
 const RESERVED_HOVER = new Set(["|", ",", "{", "}", "(", ")", "[", "]", ";", '"', "`"])
 const isOperatorChar = (ch: string | undefined): ch is string =>
