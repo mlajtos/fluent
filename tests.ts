@@ -167,6 +167,17 @@ describe("tensors", () => {
     expect(value("[] reduce +")).toBe(0)
     expect(run("[] reduce { a, b | a + b }")).toBeInstanceOf(Error)
   })
+  test("reduce with a custom function: left-to-right, named or inline, with an axis", () => {
+    // a Horner fold proves strict left-to-right accumulation, not just arithmetic
+    expect(value("[1, 2, 3] reduce { a, b | a × 10 + b }")).toBe(123) // ((1·10+2)·10+3)
+    // a named custom fn folds the same as an inline one
+    expect(value("f: { a, b | a - b }, [10, 3, 1] reduce f")).toBe(6)
+    // a custom fn folds along an axis too – over slices, not a native kernel
+    expect(value("reduce([[1, 2], [3, 4]], { a, b | a - b }, 0)")).toEqual([-2, -2])
+    expect(value("reduce([[1, 2], [3, 4]], { a, b | a - b }, 1)")).toEqual([-1, -1])
+    // a single element is returned untouched – the custom fn is never called
+    expect(value("[5] reduce { a, b | a - b }")).toBe(5)
+  })
   test("⌈/⌊ are ceiling/floor (one arg) and max/min (two); max/min reduce with an axis", () => {
     // the axis question: max/min reduce like sum, honoring an optional axis.
     // As a cascade, max(x, axis) used to silently return x – the pairwise
