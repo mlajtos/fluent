@@ -101,8 +101,10 @@ Long names make things findable; the more you use one, the shorter you want it. 
 | `Σ` | `sum` | `TensorSum` |
 | `Π` | `prod` | `TensorProduct` |
 | `μ` | `mean` | `TensorMean` |
-| `⌈` | `max` | `TensorMaximum` |
-| `⌊` | `min` | `TensorMinimum` |
+| `⌈` | `ceil` | `TensorCeil` |
+| `⌊` | `floor` | `TensorFloor` |
+| — | `max` | `TensorMax` |
+| — | `min` | `TensorMin` |
 | `#` | `length` | `TensorLength` |
 | `_` | `gather` | `TensorGather` |
 | `⍴` | `reshape` | `TensorReshape` |

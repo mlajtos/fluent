@@ -153,13 +153,19 @@ describe("tensors", () => {
     // an in-bounds computed index still returns the right element
     expect(value("t: [10, 20, 30], t_(argmax([0, 5, 2], 0) + 1)")).toBe(30)
   })
-  test("⌈ and ⌊ are the same function as max and min (glyph == word)", () => {
-    // the three-names contract: a glyph must behave like its word. ⌈/⌊ were
-    // bound to the binary primitive only, so reducing a list errored where the
-    // word max/min worked – a fluency glyph that fails on `max([3,1,2])`'s job
-    expect(value("⌈([3, 1, 2])")).toBe(3)           // whole-tensor reduction, like max
-    expect(value("⌊([3, 1, 2])")).toBe(1)           // like min
-    expect(value("[1, 5] ⌈ [4, 2]")).toEqual([4, 5]) // pairwise form still works
+  test("⌈/⌊ are ceiling/floor (one arg) and max/min (two); max/min reduce with an axis", () => {
+    // the axis question: max/min reduce like sum, honoring an optional axis.
+    // As a cascade, max(x, axis) used to silently return x – the pairwise
+    // candidate ate the axis as a second operand.
+    expect(value("max([3, 1, 2])")).toBe(3)
+    expect(value("max([[1, 2], [3, 4]], 0)")).toEqual([3, 4])
+    expect(value("min([[1, 2], [3, 4]], 1)")).toEqual([1, 3])
+    // the glyph is APL's ⌈/⌊: ceiling/floor on one tensor, pairwise on two.
+    // (⌈([3,1,2]) is now ceiling – a no-op on ints – not a max-reduction.)
+    expect(value("⌈(2.3)")).toBe(3)
+    expect(value("⌊(2.7)")).toBe(2)
+    expect(value("2 ⌈ 3")).toBe(3)
+    expect(value("[1, 5] ⌈ [4, 2]")).toEqual([4, 5])
     expect(value("[1, 5] ⌊ [4, 2]")).toEqual([1, 2])
   })
   test("linspace rounds a fractional point count", () => {
@@ -640,11 +646,10 @@ describe("errors", () => {
     // an unbound call is an Error value, so it legitimately falls through –
     // this is correct behavior, not a swallowed crash
     expect(value("cascade(({ self() }, { 42 }))()")).toBe(42)
-    // arity-overloaded builtins still dispatch by falling through a thrown
-    // arg-mismatch (the throw path cascade must keep catching)
-    expect(value("max([1, 2], [3, 1])")).toEqual([3, 2]) // binary elementwise
-    expect(value("max([[1, 2], [3, 4]])")).toBe(4)        // unary reduction
-    expect(value("min([5, 2, 8])")).toBe(2)
+    // a candidate that THROWS on an arg-mismatch (not returns an Error) still
+    // falls through to the next – TensorMaximum needs two operands, so on one
+    // it throws and cascade moves on to # (length)
+    expect(value("cascade((TensorMaximum, #))([3, 1, 2])")).toBe(3)
   })
 })
 

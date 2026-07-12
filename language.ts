@@ -1254,19 +1254,7 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
   }
 }
 
-// Give an overload dispatcher a doc card merged from its candidates (like
-// FunctionArity does for +/-/×), so max/min – and their glyphs ⌈/⌊ – show a
-// hover built from the pairwise op and the reduction, instead of nothing.
-const inheritMeta = (candidates: Function[], dispatch: Function): Function => {
-  const metas = candidates.filter((c): c is Function => typeof c === "function").map(getMeta)
-  const signature = metas.map(m => m.signature).filter(Boolean).join("  ·  ")
-  const doc = metas.map(m => m.doc).filter(Boolean).join(" ")
-  const example = metas.map(m => m.example).find(Boolean)
-  if (signature || doc) { setMeta(dispatch, { signature: signature || undefined, doc: doc || undefined, example }) }
-  return dispatch
-}
-
-const FunctionCascade = (candidates: Function[]) => inheritMeta(candidates, tacitToString((a: Value, b: Value) => {
+const FunctionCascade = (candidates: Function[]) => tacitToString((a: Value, b: Value) => {
   const noResultSymbol = Symbol('noResult')
 
   let result: (Value | typeof noResultSymbol) = noResultSymbol
@@ -1305,7 +1293,7 @@ const FunctionCascade = (candidates: Function[]) => inheritMeta(candidates, taci
   }
 
   return result
-}))
+})
 
 // Overloaded by arity: two operands run the binary op, one runs the unary op –
 // used for +, -, ×, · (add/abs, subtract/negate, multiply/sign). Unlike
@@ -2601,6 +2589,8 @@ doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] �
 doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]")
 doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor.", "max([3, 1, 2]) = 3")
 doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the whole tensor.", "min([3, 1, 2]) = 1")
+doc(TensorCeil, "⌈(x)  ·  ceil(x)", "Round each element up to the nearest integer.", "⌈(2.3) = 3")
+doc(TensorFloor, "⌊(x)  ·  floor(x)", "Round each element down to the nearest integer.", "⌊(2.7) = 2")
 // Leaf docs for the arity-overloaded operators – FunctionArity synthesizes
 // the +, -, ×, · cards from these
 doc(TensorAdd, "x + y", "Element-wise addition; shapes broadcast.", "[1, 2] + 10 = [11, 12]")
@@ -3103,13 +3093,14 @@ prod: TensorProduct,
 (μ): TensorMean,
 mean: TensorMean,
 
-; Min/max – the glyph is the same function as its word (three-names contract):
-; pairwise on two tensors, whole-tensor reduction on one. Define the overload
-; once, then point the glyph at it, like Σ/sum share TensorSum.
-max: FunctionCascade((TensorMaximum, TensorMax)),
-min: FunctionCascade((TensorMinimum, TensorMin)),
-(⌈): max,
-(⌊): min,
+; Min/max: the WORD reduces (whole tensor, or one axis like sum) – so
+; max(x, axis) works. The GLYPH is APL's ⌈/⌊: ceiling/floor on one tensor,
+; pairwise max/min on two. (max and ⌈ can't be one function – max(x, axis)
+; and pairwise max(a, b) share a shape, so the axis would be eaten as an operand.)
+max: TensorMax,
+min: TensorMin,
+(⌈): FunctionArity((TensorMaximum, TensorCeil)),
+(⌊): FunctionArity((TensorMinimum, TensorFloor)),
 argmax: TensorArgMax,
 argmin: TensorArgMin,
 

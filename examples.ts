@@ -41,15 +41,14 @@ a:[1,2,3], b:[4,5,6], a+b
 )
 `,
   "max-variations": `
-; Different ways to use max function
+; max/min reduce a tensor; ⌈/⌊ are APL ceiling/floor (one arg), max/min (two)
 (
-    (⌈): max,
-    max(2,3),
-    2 max 3,
-    (2,3) . max,
-    max(max(1,2), 3),
-    1 max 2 max 3,
-    1 ⌈ 2 ⌈ 3
+    max([3, 1, 2]),            ; 3 – the largest element
+    max([[1, 2], [3, 4]], 0),  ; [3, 4] – reduce along an axis, like sum
+    ⌈(2.3),                    ; 3 – ceiling
+    ⌊(2.7),                    ; 2 – floor
+    2 ⌈ 3,                     ; 3 – pairwise max
+    [1, 5] ⌈ [4, 2]            ; [4, 5] – element-wise max
 )
 `,
   "gradient": `
