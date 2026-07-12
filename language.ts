@@ -790,6 +790,14 @@ const borrow = (v: any): any => {
     // symbol still flows through as a value elsewhere – only coercion errors.
     throw new Error(`unknown name: ${v.description ?? Symbol.keyFor(v) ?? String(v)}`)
   }
+  if (typeof v === "string" || v instanceof String) {
+    // a string reached a numeric op (e.g. `"a" + "b"`): name the type instead of
+    // jax-js's opaque "Invalid type for full: a". StringConcat joins text.
+    throw new Error(`a string (${JSON.stringify(String(v))}) is not a tensor – numeric ops like + and × need tensors; use StringConcat to join text`)
+  }
+  if (typeof v === "function") {
+    throw new Error(`a function is not a tensor – numeric ops like + and × need tensors`)
+  }
   return v
 }
 

@@ -602,6 +602,15 @@ describe("operator arity", () => {
     // and the message names the culprit, not jax-js's Symbol-coercion throw
     expect((run("1 * x") as Error).message).toContain("unknown name: x")
   })
+  test("a string or function in a numeric op errors by type, not jax-js's opaque throw", () => {
+    const strErr = run('"a" + "b"') as Error
+    expect(strErr).toBeInstanceOf(Error)
+    expect(strErr.message).toContain("a string")
+    expect(strErr.message).not.toContain("Invalid type for full") // the old cryptic leak
+    expect((run("({ x | x }) + 1") as Error).message).toContain("a function")
+    // text-joining still has a home
+    expect(value('StringConcat("a", "b")')).toBe("ab")
+  })
   test("binary and unary forms both still work", () => {
     expect(value("1 + 2")).toBe(3)
     expect(value("5 - 3")).toBe(2)
