@@ -568,7 +568,7 @@ reseed: { world ← rand([n, n]) },
 ; convolve, grow, and keep the world in [0, 1]
 tick: {
   w: once(world),
-  world ← clamp(w + 0.1×growth(conv(K, w)), 0, 1),
+  world ← clamp(w + 0.1×growth(conv(w, K)), 0, 1),
 },
 
 reseed(),
@@ -848,7 +848,7 @@ cam: Camera(320, 240),
 k: [[0, 1, 0], [1, -4, 1], [0, 1, 0]],
 
 ; every frame: grayscale the image (mean over the color axis), convolve
-edges: $({ abs(conv(k, mean(cam(), 2))) }),
+edges: $({ abs(conv(mean(cam(), 2), k)) }),
 
 (
   Text("# 📷 Live Edges"),

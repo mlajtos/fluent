@@ -116,6 +116,15 @@ describe("combinators", () => {
     expect(value("ListGet(ListDrop((1, 2, 3), 1), 0)")).toBe(2)
     expect(value("ListGet(ListGather((5, 6, 7), (2, 0)), 0)")).toBe(7)
   })
+  test("ListTake/ListDrop clamp to the list length – no over-take", () => {
+    // over-taking used to walk past the end, embedding Error values and
+    // reporting the wrong length (ListTake((1,2,3), 5) claimed length 5)
+    expect(value("ListLength(ListTake((1, 2, 3), 5))")).toBe(3)
+    expect(value("ListGet(ListTake((1, 2, 3), 5), 2)")).toBe(3)
+    expect(value("ListLength(ListTake((1, 2, 3), -1))")).toBe(0)
+    expect(value("ListLength(ListDrop((1, 2, 3), 5))")).toBe(0)
+    expect(value("ListGet(ListDrop((1, 2, 3), 1), 0)")).toBe(2)
+  })
   test("isFunction answers the K-lift question, enabling userland bind", () => {
     expect(value("isFunction(√)")).toBe(1)
     expect(value("isFunction(5)")).toBe(0)
@@ -269,9 +278,10 @@ describe("tensors", () => {
     ])
   })
   test("conv is rank-polymorphic and keeps input size (SAME)", () => {
-    // the kernel's rank sets the conv's rank
-    expect(value("conv([1, 2, 1], 0 :: 6)")).toEqual([1, 4, 8, 12, 16, 14])
-    expect(value("conv([[0, 1, 0], [1, -4, 1], [0, 1, 0]], [[0, 0, 0], [0, 1, 0], [0, 0, 0]])"))
+    // signature is `arr conv kernel` – the data first, then the kernel, whose
+    // rank sets the conv's rank
+    expect(value("conv(0 :: 6, [1, 2, 1])")).toEqual([1, 4, 8, 12, 16, 14])
+    expect(value("conv([[0, 0, 0], [0, 1, 0], [0, 0, 0]], [[0, 1, 0], [1, -4, 1], [0, 1, 0]])"))
       .toEqual([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
   })
 })

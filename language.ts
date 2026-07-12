@@ -2199,7 +2199,7 @@ const TensorLinearSpace = (range: Value, steps: Value) => {
 // same conv slides a 1-D kernel over a vector or a 2-D kernel over an image.
 // Backed by lax.conv – a singleton batch/channel wraps the field (NCHW), zero
 // padded (SAME) so the output keeps the input's shape.
-const TensorConvolution = (kernel: Value, arr: Value) => {
+const TensorConvolution = (arr: Value, kernel: Value) => {
   const k = borrow(kernel) as np.Array
   const a = borrow(arr) as np.Array
   const ks = k.shape
@@ -2975,7 +2975,7 @@ chunks: { w, arr |
 },
 
 stencil: { w, f, arr | unstack(windows(w, arr)) ListMap f . stack },
-conv: TensorConvolution,   ; nD convolution – a 1D kernel over a vector, a 2D kernel over an image
+conv: TensorConvolution,   ; nD convolution: arr conv kernel – a 1D kernel over a vector, a 2D kernel over an image
 
 ; List operations
 ListGather: { a, b |
@@ -2989,11 +2989,13 @@ ListZip: { a, b |
   )
 },
 ListTake: { list, n |
-  ListMap(TensorUnstack(TensorRange(0, n)), { i | ListGet(list, i) })
+  ; clamp n to [0, length] so over-taking gives the whole list, not indices
+  ; past the end (which used to embed Error values and report the wrong length)
+  ListMap(TensorUnstack(TensorRange(0, (0 ⌈ n) ⌊ ListLength(list))), { i | ListGet(list, i) })
 },
 ListDrop: { list, n |
   len: ListLength(list),
-  ListMap(TensorUnstack(TensorRange(n, len)), { i | ListGet(list, i) })
+  ListMap(TensorUnstack(TensorRange((0 ⌈ n) ⌊ len, len)), { i | ListGet(list, i) })
 },
 ListReverse: { list |
   n: ListLength(list),
