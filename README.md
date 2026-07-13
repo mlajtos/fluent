@@ -132,7 +132,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 
 ## Where the tour goes next
 
-The tour stops at the basics; the language keeps going. `∇` differentiates a numeric function you wrote — and nests, so `∇(∇(f))` is the second derivative. `~` makes a trainable variable and an optimizer (`sgd`, `adam`, `adamw`, `adagrad`) minimizes a loss; `⟳` runs the loop between frames so the UI stays live. That's the whole of the linear-regression and Name Dreamer demos above.
+The tour stops at the basics; the language keeps going. `∇` differentiates any function you built from smooth numeric ops — reshape and indexing included — and nests, so `∇(∇(f))` is the second derivative. `~` makes a trainable variable and an optimizer (`sgd`, `adam`, `adamw`, `adagrad`) minimizes a loss; `⟳` runs the loop between frames so the UI stays live. That's the whole of the linear-regression and Name Dreamer demos above.
 
 ```clojure
 θ: ~([0, 0]),

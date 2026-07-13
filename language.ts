@@ -2690,7 +2690,7 @@ doc(CodesToString, "CodesToString(codes)", "A tensor of character codes back to 
 doc(TensorOptimizationAdamW, "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)")
 doc(TensorOptimizationSgd, "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)")
 doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w = [8]")
-doc(TensorGradient, "∇(f)", "Gradient of a function. ∇(f)(x) is df/dx, evaluated at x.", "∇({ x | x^2 })(3) = 6")
+doc(TensorGradient, "∇(f)", "Gradient of a function: ∇(f)(x) is df/dx at x. Works on any function of smooth numeric ops — reshape and indexing pass through; argmax/round/comparisons read as constant (zero gradient). Nests: ∇(∇(f)) is the second derivative.", "∇({ x | x^2 })(3) = 6")
 doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6")
 doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so `x reduce ⌈` is max.", "1 ..< 10 reduce + = 45")
 doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]")
