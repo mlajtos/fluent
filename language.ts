@@ -1231,6 +1231,13 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       throw new Error(`'${String(fnValue)}' is not a function.`)
     }
 
+    // KNOWN WART: arity is not checked here, so over-application silently drops
+    // surplus arguments – `+(1, 2, 4)` is `3`, not an error, because a binary JS
+    // op ignores the third arg. `fn.length` can't be the source of truth (it
+    // can't tell `()` nullary from `(...args)` variadic), so a proper fix makes
+    // arity a declared, first-class attribute of every function. Deferred – the
+    // design lives in arity-plan.md.
+
     if (fnValue instanceof Signal) {
 
       if (argsValue.length === 0) {
