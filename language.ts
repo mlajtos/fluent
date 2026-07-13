@@ -35,6 +35,7 @@ const OPERATOR_RANGES: Record<string, [string, string]> = {
   NOT_SIGN: ["\u00AC", "\u00AC"], // Logical Not
   MISCELLANEOUS_MATH_SYMBOLS_A: ["\u27C0", "\u27EF"],  // Miscellaneous Mathematical Symbols-A (\u27DC)
   MISCELLANEOUS_MATH_SYMBOLS_B: ["\u2980", "\u29FF"],  // Miscellaneous Mathematical Symbols-B
+  DIE_FACES: ["\u2680", "\u2685"], // Die faces \u2680\u2681\u2682\u2683\u2684\u2685 \u2013 \u2684 aliases rand
   MIDDLE_DOT: ["\u00B7", "\u00B7"], // Middle Dot (multiplication)
   DOUBLE_VERTICAL_LINE: ["\u2016", "\u2016"], // Norm
   VARIATION_SELECTORS: ["\uFE00", "\uFE0F"], // Variation Selectors (e.g. \u2194\uFE0E = \u2194 + U+FE0E)
@@ -2712,9 +2713,9 @@ doc(TensorRangeInclusive, "start ... stop", "Integer range from start through st
 doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]")
 doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]")
 doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]")
-doc(TensorConvolution, "arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] conv [1, 1, 1] = [3, 6, 9, 7]")
-doc(TensorTile, "x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] tile 3 = [1, 2, 1, 2, 1, 2]")
-doc(TensorRandomUniform, "rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "rand([2, 2])")
+doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]")
+doc(TensorTile, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]")
+doc(TensorRandomUniform, "⚄(shape)  ·  rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "⚄([2, 2])")
 doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]")
 doc(TensorArgSort, "argsort(x)", "The indices that sort a vector into ascending order – grade up. x_argsort(x) is x sorted.", "argsort([3, 1, 2]) = [1, 2, 0]")
 doc(Length, "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\"abc\") = 3")
@@ -3060,6 +3061,7 @@ chunks: { w, arr |
 
 stencil: { w, f, arr | unstack(windows(w, arr)) ListMap f . stack },
 conv: TensorConvolution,   ; nD convolution: arr conv kernel – a 1D kernel over a vector, a 2D kernel over an image
+(⊛): TensorConvolution,
 
 ; List operations
 ListGather: { a, b |
@@ -3257,6 +3259,7 @@ einsum: TensorEinsum,
 
 ; Creation
 rand: TensorRandomUniform,
+(⚄): TensorRandomUniform,
 randn: TensorRandomNormal,
 linspace: TensorLinearSpace,
 fill: TensorFill,
@@ -3264,6 +3267,7 @@ stack: TensorStack,
 unstack: TensorUnstack,
 concat: TensorConcat,
 tile: TensorTile,
+(⧉): TensorTile,
 
 ; Optimization
 adam: TensorOptimizationAdam,

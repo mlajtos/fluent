@@ -508,8 +508,8 @@ step ⟳ 100000,
 )
 `,
   "game-of-life-tacit": `
-next: (conv ⟜ (1 tile [3, 3])) ⊸ Φ(= ⟜ 3, ∨, = ⟜ (3 ⊸ +)),
-board: $(rand([256, 256]) < 0.3),
+next: (⊛ ⟜ (1 ⧉ [3, 3])) ⊸ Φ(= ⟜ 3, ∨, = ⟜ (3 ⊸ +)),
+board: $(⚄([256, 256]) < 0.3),
 { board ← next(once(board)) } ⟳ 100000,
 (Text("# 🐦 Game of Life, tacitly"), board)
 `,
