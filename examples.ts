@@ -507,6 +507,12 @@ step ⟳ 100000,
   board,
 )
 `,
+  "game-of-life-tacit": `
+next: (conv ⟜ (1 tile [3, 3])) ⊸ Φ(= ⟜ 3, ∨, = ⟜ (3 ⊸ +)),
+board: $(rand([256, 256]) < 0.3),
+{ board ← next(once(board)) } ⟳ 100000,
+(Text("# 🐦 Game of Life, tacitly"), board)
+`,
   "reaction-diffusion": `
 ; Gray–Scott reaction–diffusion – two chemicals paint Turing patterns.
 ; v eats u and reproduces (u × v²); both diffuse; explicit Euler.
