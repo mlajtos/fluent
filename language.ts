@@ -2712,6 +2712,9 @@ doc(TensorRangeInclusive, "start ... stop", "Integer range from start through st
 doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]")
 doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]")
 doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]")
+doc(TensorConvolution, "arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] conv [1, 1, 1] = [3, 6, 9, 7]")
+doc(TensorTile, "x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] tile 3 = [1, 2, 1, 2, 1, 2]")
+doc(TensorRandomUniform, "rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "rand([2, 2])")
 doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]")
 doc(TensorArgSort, "argsort(x)", "The indices that sort a vector into ascending order – grade up. x_argsort(x) is x sorted.", "argsort([3, 1, 2]) = [1, 2, 0]")
 doc(Length, "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\"abc\") = 3")
@@ -2723,6 +2726,8 @@ doc(TensorNot, "¬(x)", "Logical not: 1 where x is zero, else 0.", "¬([0, 2]) =
 doc(TensorXor, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]")
 doc(TensorNand, "x ⍲ y", "Element-wise nand: 0 where both operands are nonzero, else 1. Functionally complete – every gate builds from it.", "[0, 1, 1] ⍲ [1, 1, 0] = [1, 0, 1]")
 doc(TensorNor, "x ⍱ y", "Element-wise nor: 1 where both operands are zero, else 0. Functionally complete, like ⍲.", "[0, 1, 0] ⍱ [0, 1, 1] = [1, 0, 0]")
+doc(TensorEqual, "x = y", "Element-wise equality: 1 where the operands are equal, else 0; shapes broadcast.", "([1, 2, 3] = 2) = [0, 1, 0]")
+doc(TensorLess, "x < y", "Element-wise less-than: 1 where x is below y, else 0; shapes broadcast.", "([1, 2, 3] < 2) = [1, 0, 0]")
 
 // Control & function machinery – these cards teach the language, not just a
 // function: scoping, the three assignments, application, iteration, and the
