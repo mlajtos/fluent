@@ -910,27 +910,22 @@ detect: $({
 )
 `,
   "recursion": `
-; Recursive functions: factorial and Fibonacci
-fact: { n | 
-  f: self,
-  cascade((
-    guard(n = 0, { 1 }),
-    { n * f(n - 1) }
-  ))()
-},
+; Recursion two ways.
 
-fib: { n | 
-  f: self,
-  cascade((
-    guard(n = 0, { 0 }),
-    guard(n = 1, { 1 }),
-    { f(n - 1) + f(n - 2) }
-  ))()
-},
+; NAMED — a binding is visible inside its own body, so it just calls its
+; own name. This is the everyday way to recurse:
+fact: { n | cascade((guard(n = 0, { 1 }), { n × fact(n - 1) }))() },
+fib:  { n | cascade((guard(n < 2, { n }), { fib(n - 1) + fib(n - 2) }))() },
 
 (
-  fact(5),
-  fib(10)
+  fact(5),   ; 120
+  fib(10),   ; 55
+
+  ; ANONYMOUS — a nameless lambda has no name to call, so it grabs ITSELF
+  ; with 'self'. Capture it first (rec: self): inside the guard's thunk,
+  ; a bare 'self' would mean the thunk, not the function. Euclid's gcd,
+  ; defined and applied on the spot without ever being named:
+  ({ a, b | rec: self, cascade((guard(b = 0, { a }), { rec(b, a % b) }))() })(48, 36),   ; 12
 )
 `
 
