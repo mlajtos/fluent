@@ -868,6 +868,38 @@ describe("leak watch", () => {
   })
 })
 
+describe("adversarial edge cases", () => {
+  // modulo takes the sign of the divisor (floor-mod), not JS/C truncation;
+  // division by zero is IEEE Infinity, not an error
+  test("numeric edges: floor-mod sign, div-by-zero", () => {
+    expect(value("-7 % 3")).toBe(2)                 // floor-mod, not -1
+    expect(value("1 / 0")).toBe(Infinity)           // IEEE, not an Error
+  })
+  // ∨ is boolean (collapses to 0/1) — distinct from ⌈, which keeps the larger
+  // value; and the max/min split: the glyph ⌈ is pairwise max, the word reduces
+  test("logic ∨ vs max ⌈ vs reduce", () => {
+    expect(value("3 ∨ 0")).toBe(1)                  // logical or, NOT 3
+    expect(value("2 ⌈ 3")).toBe(3)                  // pairwise max
+    expect(value("max([3, 1, 2])")).toBe(3)         // word reduces a tensor
+  })
+  // an out-of-range index is a loud Error value; a tensor of negative indices
+  // counts from the end
+  test("indexing: OOB is loud, negatives wrap from the end", () => {
+    expect(run("[1, 2, 3]_5")).toBeInstanceOf(Error)
+    expect(value("[10, 20, 30]_[-1, -2]")).toEqual([30, 20])
+  })
+  // transposing a 1-D vector is a no-op (not a column vector, not an error);
+  // a reshape that changes the element count errors instead of padding
+  test("shape ops: 1-D transpose no-op, bad reshape errors", () => {
+    expect(value("transpose([1, 2, 3])")).toEqual([1, 2, 3])
+    expect(run("[1, 2, 3] ⍴ [2, 2]")).toBeInstanceOf(Error)
+  })
+  // ∇ nests arbitrarily deep: d³/dx³ x³ = 6
+  test("∇ nests to third order", () => {
+    expect(value("∇(∇(∇({ x | x^3 })))([5])")).toEqual([6])
+  })
+})
+
 // Every shipped gallery example, run headless, must parse and evaluate without
 // error – a language/prelude change that breaks a demo fails CI here. The IDE
 // components examples reference live only in client.tsx, so we register light
