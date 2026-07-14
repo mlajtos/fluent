@@ -1326,6 +1326,23 @@ const FunctionCascade = (candidates: Function[]) => tacitToString((a: Value, b: 
   return result
 })
 
+// Eager, variadic cascade: `cond(a, b, …)` runs each thunk in order and returns
+// the first non-Error result – `cascade((…))()` without the wrapper. Pairs with
+// guard: `cond(n = 0 ? { 1 }, { n × fact(n - 1) })`. Its own loop (not a rebuilt
+// FunctionCascade dispatcher) so recursion doesn't pay a per-call setup cost.
+const FunctionCond = function (this: CurrentScope, ...candidates: Function[]): Value {
+  for (const fn of candidates) {
+    let result: Value
+    // A throw (jax-js op/arg mismatch) or an Error value both mean "not this one";
+    // a TraceBailout is control flow that must reach the tracer.
+    try { result = (fn as Function).apply(this, []) }
+    catch (e) { if (e instanceof TraceBailout) { throw e } continue }
+    if (!(result instanceof Error)) { return result }
+  }
+  return new Error("cond: no branch matched")
+}
+setMeta(FunctionCond, { noAutoLift: true })
+
 // reduce's fast path: a raw binary op → its native tensor reduction. Filled in
 // once the reductions are defined below; FunctionArity tags its dispatchers too,
 // so `reduce +` and `reduce ⌈` fold via np.sum/np.max instead of slice-by-slice.
@@ -2799,6 +2816,7 @@ doc(FunctionRight, "x ⊢ y", "Right: yield the rightmost argument; with one arg
 doc(FunctionLeft, "x ⊣ y", "Left: yield the leftmost argument; with one argument, the identity.", "3 ⊣ 5 = 3")
 doc(FunctionIs, "isFunction(v)", "1 if v is a function, else 0 – the question a combinator asks before treating an operand as a constant. Composes like a comparison.", "isFunction(√) = 1, isFunction(5) = 0")
 doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order; the first result that isn’t an Error wins. Errors are values in Fluent – falling through is intended, not exceptional.", "cascade((guard(n = 0, { 1 }), { n × f(n - 1) }))()")
+doc(FunctionCond, "cond(a, b, …)", "Eager, variadic cascade: run each thunk in order, first non-Error wins. `cascade((…))()` without the wrapper – reads as a multi-way conditional next to guard.", "cond(guard(n = 0, { 1 }), { n × fact(n - 1) })")
 doc(FunctionGuard, "guard(cond, { value })", "A cascade candidate: yields the value while cond is truthy, an Error otherwise.", "guard(n = 0, { 1 })")
 doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Errors from the thunk stay loud – only the condition gates.", "when(training(), { opt(𝓛) })")
 
@@ -2829,6 +2847,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   FunctionLeft,
   FunctionIs,
   FunctionCascade,
+  FunctionCond,
   FunctionArity,
   FunctionEvaluate,
   FunctionApply,
@@ -3057,6 +3076,7 @@ isFunction: FunctionIs,
 (@): FunctionEvaluate,
 eval: FunctionEvaluate,
 cascade: FunctionCascade,
+cond: FunctionCond,
 guard: FunctionGuard,
 when: FunctionWhen,
 

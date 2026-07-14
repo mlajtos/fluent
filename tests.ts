@@ -929,6 +929,15 @@ describe("polymorphic index _ (string / list / tensor)", () => {
   })
 })
 
+describe("cond (eager variadic cascade)", () => {
+  test("runs candidates in order, first non-Error wins, branches stay lazy", () => {
+    expect(value("fact: { n | cond(guard(n = 0, { 1 }), { n × fact(n - 1) }) }, fact(5)")).toBe(120)
+    expect(value("cond(guard(0, { 1 }), { 42 })")).toBe(42)     // guard fails → default
+    expect(value("cond(guard(1, { 99 }), { nope })")).toBe(99)  // matched → the unbound else never runs
+    expect(run("cond(guard(0, { 1 }))")).toBeInstanceOf(Error)  // nothing matched
+  })
+})
+
 // Every shipped gallery example, run headless, must parse and evaluate without
 // error – a language/prelude change that breaks a demo fails CI here. The IDE
 // components examples reference live only in client.tsx, so we register light
