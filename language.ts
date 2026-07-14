@@ -2758,6 +2758,7 @@ doc(TensorSign, "sign(x)", "The sign of each element: -1, 0, or 1.", "sign([-5, 
 doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the `<` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]")
 doc(TensorRangeInclusive, "start ... stop", "Integer range from start through stop, endpoint included.", "1 ... 5 = [1, 2, 3, 4, 5]")
 doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]")
+doc(TensorGather, "x_i", "Index into a string, list, or tensor. `x_i` picks one element; `x_[i, j]` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30")
 doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]")
 doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]")
 doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]")
