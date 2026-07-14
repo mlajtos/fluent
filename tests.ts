@@ -898,6 +898,13 @@ describe("adversarial edge cases", () => {
   test("∇ nests to third order", () => {
     expect(value("∇(∇(∇({ x | x^3 })))([5])")).toEqual([6])
   })
+  // a scalar (shape []) is one item: #(5) is 1 (a missing axis is size 1),
+  // never NaN; an empty tensor (shape [0]) is 0
+  test("length of a scalar is 1, of an empty tensor is 0", () => {
+    expect(value("#(5)")).toBe(1)
+    expect(value("#([])")).toBe(0)
+    expect(value("#([1, 2, 3])")).toBe(3)
+  })
 })
 
 // Every shipped gallery example, run headless, must parse and evaluate without

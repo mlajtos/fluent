@@ -2329,11 +2329,14 @@ const TensorMatrixMultiply = binaryOp(np.matmul)
 const TensorDotProduct = binaryOp(np.dot)
 
 const TensorLength = (a: Value, b?: Value) => {
+  // A missing axis has size 1, never NaN: a scalar (shape []) is one item along
+  // its phantom leading axis, so `#(5)` is 1 (APL's tally ≢), matching how
+  // broadcasting treats absent axes as size 1. An empty tensor (shape [0]) stays 0.
   if (b !== undefined) {
-    return track(np.array(shapeOf(a)[asNumber(b)] ?? NaN))
+    return track(np.array(shapeOf(a)[asNumber(b)] ?? 1))
   }
 
-  return track(np.array(shapeOf(a)[0] ?? NaN))
+  return track(np.array(shapeOf(a)[0] ?? 1))
 }
 
 const TensorShape = (a: Value) => {
