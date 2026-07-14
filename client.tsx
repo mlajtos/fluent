@@ -1805,7 +1805,11 @@ const BarPlot = ({ data }: { data: np.Array }) => {
 // An X/Y plot: PointPlot(x, y) draws y against x with connecting lines and
 // dots; PointPlot(y) alone plots y against its index. Unlike the automatic
 // 1-D bar plot, x is your own axis – powers of two, timestamps, anything.
-const PointPlot = (x: np.Array, y?: np.Array) => {
+const PointPlot = (x: Value, y?: Value) => {
+  // Propagate an Error argument instead of silently drawing an empty plot –
+  // `PointPlot(1::10, …)` (unbound `::`) should show the error, not a blank chart.
+  if (x instanceof Error) { return x }
+  if (y instanceof Error) { return y }
   const ys = getAsSyncList(y ?? x) as number[]
   const xs = y === undefined ? ys.map((_, i) => i) : getAsSyncList(x) as number[]
   return (
