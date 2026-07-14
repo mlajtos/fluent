@@ -907,6 +907,28 @@ describe("adversarial edge cases", () => {
   })
 })
 
+describe("polymorphic index _ (string / list / tensor)", () => {
+  // `_` keeps the container's type: `_[i, j]` returns the same kind, `_i` one element
+  test("strings index to strings", () => {
+    expect(value('"abc"_0')).toBe("a")
+    expect(value('"abc"_[0, 1]')).toBe("ab")        // multi-index → a string
+    expect(value('"abcde"_(-1)')).toBe("e")         // negative from the end
+    expect(value('"abc"_[2, 1, 0]')).toBe("cba")    // reindex (here, reverse)
+    expect(run('"abc"_9')).toBeInstanceOf(Error)    // clean, typed bounds error
+  })
+  test("lists index to lists (no more raw-JS crash)", () => {
+    expect(value("(10, 20, 30)_0")).toBe(10)                  // scalar index → element
+    expect(value("(10, 20, 30)_(-1)")).toBe(30)
+    expect(value("ListGet((10, 20, 30)_[0, 2], 1)")).toBe(30) // multi → sublist (10, 30)
+    expect(run("(1, 2, 3)_9")).toBeInstanceOf(Error)
+  })
+  test("tensors unchanged; the three names agree; grad still flows", () => {
+    expect(value("[10, 20, 30]_[0, 2]")).toEqual([10, 30])
+    expect(value('gather("abc", [0, 1])')).toBe("ab")            // gather = _
+    expect(value("∇({ x | Σ(x_[0, 0]) })([3, 7])")).toEqual([2, 0])
+  })
+})
+
 // Every shipped gallery example, run headless, must parse and evaluate without
 // error – a language/prelude change that breaks a demo fails CI here. The IDE
 // components examples reference live only in client.tsx, so we register light

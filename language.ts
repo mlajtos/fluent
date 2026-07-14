@@ -2348,7 +2348,45 @@ const TensorShape = (a: Value) => {
   return value
 }
 
-const TensorGather = (a: Value, b: Value) => {
+// `_` reads its index arg as a scalar (`_0`) or a list/tensor of indices (`_[0, 1]`).
+const readIndexList = (b: Value): { multi: boolean, idxs: number[] } => {
+  if (Array.isArray(b)) return { multi: true, idxs: b.map(asNumber) }
+  let d: unknown
+  try { d = getAsSyncList(b) } catch { d = undefined }
+  if (Array.isArray(d)) return { multi: true, idxs: (d as number[]).flat(Infinity) }
+  return { multi: false, idxs: [asNumber(b)] }
+}
+const wrapIndex = (raw: number, n: number, kind: string): number | Error => {
+  const i = Math.trunc(raw) < 0 ? Math.trunc(raw) + n : Math.trunc(raw)
+  return (i < 0 || i >= n) ? new Error(`index ${raw} is out of bounds for a ${kind} of length ${n}`) : i
+}
+// A string indexes to a string, a list to a list – `_[i, j]` keeps the container's
+// type, `_i` picks one element. Same negative-from-the-end and bounds rules as tensors.
+const stringGather = (s: string, b: Value): Value => {
+  const { multi, idxs } = readIndexList(b)
+  const chars: string[] = []
+  for (const raw of idxs) {
+    const i = wrapIndex(raw, s.length, "string")
+    if (i instanceof Error) { return i }
+    chars.push(s[i]!)
+  }
+  return multi ? chars.join("") : chars[0]!
+}
+const listGather = (a: Value[], b: Value): Value => {
+  const { multi, idxs } = readIndexList(b)
+  const out: Value[] = []
+  for (const raw of idxs) {
+    const i = wrapIndex(raw, a.length, "list")
+    if (i instanceof Error) { return i }
+    out.push(a[i]!)
+  }
+  return multi ? (out as Value) : out[0]!
+}
+
+// `_` (TensorGather) is polymorphic over the container type: string / list / tensor.
+const TensorGather = (a: Value, b: Value): Value => {
+  if (typeof a === "string" || a instanceof String) { return stringGather(String(a), b) }
+  if (Array.isArray(a)) { return listGather(a as Value[], b) }
   const size = shapeOf(a)[0] ?? 0
   // Bounds-check every index we can read without aborting a trace – jax-js
   // `take` has no bounds mode, so an out-of-range index otherwise reads garbage
