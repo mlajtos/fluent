@@ -186,3 +186,8 @@ edges
     expect(spread).toBeGreaterThan(10)
   }).toPass({ timeout: 15_000 })
 })
+
+test("PointPlot draws an x/y plot (custom x axis)", async ({ page }) => {
+  await open(page, "PointPlot(2 ^ (0...7), [2.7, 1.98, 1.08, 0.82, 0.68, 0.62, 0.59, 0.57])")
+  await expect(panel(page).locator(".js-plotly-plot").first()).toBeVisible({ timeout: 20_000 })
+})

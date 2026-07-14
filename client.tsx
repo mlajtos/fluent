@@ -1802,6 +1802,36 @@ const BarPlot = ({ data }: { data: np.Array }) => {
   );
 }
 
+// An X/Y plot: PointPlot(x, y) draws y against x with connecting lines and
+// dots; PointPlot(y) alone plots y against its index. Unlike the automatic
+// 1-D bar plot, x is your own axis – powers of two, timestamps, anything.
+const PointPlot = (x: np.Array, y?: np.Array) => {
+  const ys = getAsSyncList(y ?? x) as number[]
+  const xs = y === undefined ? ys.map((_, i) => i) : getAsSyncList(x) as number[]
+  return (
+    <Plot
+      data={[{
+        x: xs,
+        y: ys,
+        type: 'scatter',
+        mode: 'lines+markers',
+        line: { color: '#666', width: 1 },
+        marker: { color: ys, colorscale: 'Viridis', size: 9, line: { color: 'black', width: 1 } },
+      }]}
+      layout={{
+        paper_bgcolor: 'transparent',
+        plot_bgcolor: 'transparent',
+        font: { color: '#D4D4D4' },
+        xaxis: { gridcolor: '#444444', zeroline: false, automargin: true },
+        yaxis: { gridcolor: '#444444', zeroline: false, automargin: true },
+        margin: { pad: 6, t: 6, l: 0, r: 6, b: 0 },
+      }}
+      config={{ staticPlot: true, responsive: false }}
+      style={{ width: '100%', height: '12em' }}
+    />
+  );
+}
+
 const HeatPlot = ({ data }: { data: np.Array }) => {
   const z = getAsSyncList(data) as number[][];
 
@@ -2018,6 +2048,7 @@ extendEnvironment({
   Layers,
   MousePosition,
   Point2D,
+  PointPlot,
   Trail,
   Slider,
   Scrubber,
