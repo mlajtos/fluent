@@ -791,6 +791,12 @@ const borrow = (v: any): any => {
     // symbol still flows through as a value elsewhere – only coercion errors.
     throw new Error(`unknown name: ${v.description ?? Symbol.keyFor(v) ?? String(v)}`)
   }
+  if (Array.isArray(v)) {
+    // Never silently coerce a list into a tensor: `Σ((1, 2, 3))` used to return
+    // the list unreduced, `(1, 2, 3) + 1` quietly became a tensor. A list is a
+    // structure, not a number bag – write `[1, 2, 3]` for a tensor.
+    throw new Error(`expected a tensor, got a list of ${v.length} – write it as a tensor [ … ]`)
+  }
   return v
 }
 
