@@ -320,6 +320,51 @@ surface: log(linspace(range_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(range_0
   𝓛(watch(θ)),   ; live loss – updates while you drag
 )
 `,
+"geometric-median": `
+; 📍 Geometric median – drag the three orange anchors. The blue point rolls
+; downhill on the total-distance field to the spot closest to all three,
+; re-optimizing (adam) live as you drag. The field below is that distance,
+; recomputed each frame; the blue point descends it.
+
+range: [[-2, 2], [-2, 2]],
+n: 140,
+soft: 0.02,   ; softens the distance at 0 so the gradient stays finite
+
+; three draggable anchors, each a 2-vector
+a: $([-1.2, 0.8]),
+b: $([1.3, 1.0]),
+c: $([0.1, -1.3]),
+
+; total distance from a point p to every anchor (indexed form is ⊗-friendly)
+dist: { p, q | √((p_0 - q_0)^2 + (p_1 - q_1)^2 + soft) },
+F: { p | dist(p, a()) + dist(p, b()) + dist(p, c()) },
+
+; the blue point descends F – the only trainable thing here
+p: ~([1.6, 1.6]),
+opt: adam(0.06),
+{ opt({ F(p) }) } ⟳ 100000,
+
+; the distance field as a heatmap, recomputed as the anchors move. Read the
+; anchors to CONCRETE tensors first (av/bv/cv) – reading a signal inside the ⊗
+; lambda would lift the trace and leak a tracer.
+g: linspace([-2, 2], n),
+field: $({ av: a(), bv: b(), cv: c(),
+  Fc: { q | dist(q, av) + dist(q, bv) + dist(q, cv) },
+  g (⊗ { y, x | Fc([x, y]) }) g }),
+
+(
+  Text("# 📍 Geometric median"),
+  Text("Drag the **orange** anchors — the **blue** point keeps finding the spot closest to all three."),
+  Layers(
+    field,
+    Point2D(a, range, "orange"),
+    Point2D(b, range, "orange"),
+    Point2D(c, range, "orange"),
+    Trail(p, range, "deepskyblue"),
+    Point2D(p, range, "deepskyblue"),
+  ),
+)
+`,
 "optimizer-race": `
 ; ⚔️ adam vs sgd – same start, same landscape, different characters
 
