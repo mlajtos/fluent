@@ -809,7 +809,10 @@ function WrapWithPrintIfNotReactElement(child: any): any {
 const Layers = (...children: any[]) => (
   <div className="relative w-fit" data-layers="true">
     {children.map((child, i) => (
-      <div key={i} className={i === 0 ? "" : "absolute inset-0"}>
+      // Overlay wrappers must not eat pointer events, or the topmost layer
+      // swallows every click and only its Point2D can be dragged. Interactive
+      // children (a Point2D's dot) re-enable events with pointer-events-auto.
+      <div key={i} className={i === 0 ? "" : "absolute inset-0 pointer-events-none"}>
         {child instanceof Signal
           ? computed(() => PrettyPrint((child as Signal<unknown>).value)) as unknown as JSX.Element
           : PrettyPrint(child)}

@@ -197,3 +197,18 @@ test("PointPlot surfaces an error argument, not a blank chart", async ({ page })
   await open(page, "PointPlot(1 ..< 10, 1::10)")
   await expect(panel(page)).toContainText(/not a function/i)
 })
+
+test("Layers: a lower Point2D is draggable, not just the top one", async ({ page }) => {
+  // regression: overlay wrappers were pointer-events-auto, so the topmost layer
+  // swallowed every click and only its Point2D could be dragged. `a` is the
+  // LOWER layer (b is on top); dragging a's dot must still move a.
+  await open(page, "a: $([0.25, 0.25]), b: $([0.75, 0.75]), r: [[0, 1], [0, 1]], (Layers(fill([40, 40], 0), Point2D(a, r), Point2D(b, r)), a)")
+  const box = panel(page).locator('[data-layers]').first()
+  await expect(box).toBeVisible({ timeout: 20_000 })
+  const bb = (await box.boundingBox())!
+  await page.mouse.move(bb.x + bb.width * 0.25, bb.y + bb.height * 0.25)  // over a's dot
+  await page.mouse.down()
+  await page.mouse.move(bb.x + bb.width * 0.55, bb.y + bb.height * 0.55, { steps: 8 })
+  await page.mouse.up()
+  await expect(panel(page)).toContainText(/0\.5/)  // a moved off 0.25 toward the centre
+})
