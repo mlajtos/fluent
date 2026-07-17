@@ -163,6 +163,10 @@ type Origin = {
   source: string;
   start: { line: number; column: number };
   end: { line: number; column: number };
+  // The whole program this origin's positions index into. Several documents
+  // can be live at once (the playground program, each tour/REPL cell) – the
+  // IDE routes hover-highlights to the editor whose text IS this document.
+  document?: string;
 }
 
 type SyntaxTreeNode =
@@ -183,6 +187,7 @@ function getLocationOrigin(node: any): Origin {
 
   return {
     source: node.source.contents,
+    document: node.source.sourceString,
     start: {
       line: from.lineNum,
       column: from.colNum,
@@ -200,20 +205,22 @@ function getLocationOrigin(node: any): Origin {
 // editor hover-highlighting maps each viz node back to the right source range.
 // Only the first inner line needs the column offset; later lines start at col 1
 // in both.
-const shiftOrigins = (node: any, startLine: number, startColumn: number): void => {
+const shiftOrigins = (node: any, startLine: number, startColumn: number, document: string): void => {
   if (!node || typeof node !== "object") return
   if (node.origin?.start && node.origin?.end) {
     const map = (p: { line: number; column: number }) => ({
       line: startLine + p.line - 1,
       column: p.line === 1 ? startColumn + p.column - 1 : p.column,
     })
-    node.origin = { ...node.origin, start: map(node.origin.start), end: map(node.origin.end) }
+    // positions are now outer-document coordinates, so the document is the
+    // outer one too – highlights must land in the editor that shows it
+    node.origin = { ...node.origin, document, start: map(node.origin.start), end: map(node.origin.end) }
   }
   for (const key in node) {
     if (key === "origin") continue
     const child = node[key]
-    if (Array.isArray(child)) { for (const c of child) shiftOrigins(c, startLine, startColumn) }
-    else if (child && typeof child === "object") shiftOrigins(child, startLine, startColumn)
+    if (Array.isArray(child)) { for (const c of child) shiftOrigins(c, startLine, startColumn, document) }
+    else if (child && typeof child === "object") shiftOrigins(child, startLine, startColumn, document)
   }
 }
 
@@ -404,7 +411,7 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
     // are relative to the inner text, so shift them back to the outer document.
     const inner = CodeParse(value.sourceString)
     const contentStart = getLocationOrigin(value).start
-    shiftOrigins(inner, contentStart.line, contentStart.column)
+    shiftOrigins(inner, contentStart.line, contentStart.column, this.source.sourceString)
     return {
       type: "Code",
       content: { value: inner },
@@ -467,6 +474,7 @@ const CodeParse = (program: string): SyntaxTreeNode => {
       content: matchResult.shortMessage ?? matchResult.message ?? "Unknown parse error",
       origin: {
         source: program,
+        document: program,
         start: { line: errorLocation.line, column: errorLocation.column },
         end: { line: errorLocation.line, column: errorLocation.column + 1 }
       }

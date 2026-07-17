@@ -466,12 +466,33 @@ const Button = (label?: string | Signal<string>, onClick?: () => void) => {
 }
 setMeta(Button, { noAutoLift: true })
 
+// Monaco's markdown renderer refuses relative link targets ("?example=lenia")
+// and renders them as plain text. Smuggle them through as an absolute URL on
+// a sentinel origin, then rewrite the rendered hrefs back to relative – so
+// prose can link into the playground ([gallery](?example=lenia)).
+const RELATIVE_LINK_SENTINEL = "https://fluent-relative.internal/"
+
 const convertTextToHTML = async (value: string) => {
-  const result = await renderMarkdown({ value }, {
+  const renderable = value.replace(/\]\((\?[^)\s]+)\)/g, (_, query) => `](${RELATIVE_LINK_SENTINEL}${query})`)
+  const result = await renderMarkdown({ value: renderable }, {
     codeBlockRenderer: colorizeCodeAsync,
   })
 
   const element = result.element as HTMLElement
+
+  element.querySelectorAll("a").forEach((a) => {
+    // the renderer leaves href empty and expects an action handler to run
+    // data-href – prose wants real navigation
+    const href = a.getAttribute("href") || a.getAttribute("data-href")
+    if (!href) { return }
+    if (href.startsWith(RELATIVE_LINK_SENTINEL)) {
+      const relative = new URL(href).search
+      a.setAttribute("href", relative)
+      a.setAttribute("title", relative)
+    } else {
+      a.setAttribute("href", href)
+    }
+  })
 
   // Unwrap single <p> elements for simple single-line text
   const firstChild = element.children[0]
@@ -747,12 +768,21 @@ const Grid = (cols: np.Array, rows: np.Array) => {
   // Without an explicit row template, rows hug their content (content-start) –
   // the default align-content: stretch would distribute the panel's spare
   // height across auto rows, inflating a small table to fill the whole panel.
+  // auto-rows-max is the other half: auto rows default to min-content when
+  // the content overflows the panel, and a scroll container's min-content
+  // height is ~zero – so a tall page of cells would crush its plots and
+  // button rows to slivers instead of letting the grid scroll.
+  // Cell keys are scoped to this Grid instance: two Grids swapped at the same
+  // tree position (tour rooms) must never have their cells reconciled into
+  // each other – a reused island keeps the OLD cell's mounted state (Monaco
+  // instances, plotly draw state) while showing the new cell's value.
+  const gridUid = ++gridInstanceCount
   const applyChildren = (...args: any[]) => {
     const buildCells = () => flattenCells(args.map(a => isListSignal(a) ? (a as Signal<unknown>).value : a))
       .map(WrapWithPrintIfNotReactElement)
-      .map((cell, i) => <div key={i} className="contents">{cell}</div>)
+      .map((cell, i) => <div key={`${gridUid}-${i}`} className="contents">{cell}</div>)
     return (
-      <div className={`grid gap-2 overflow-scroll h-full ${gridTemplateRows ? "" : "content-start"}`} style={{ gridTemplateColumns, gridTemplateRows }}>
+      <div className={`grid gap-2 overflow-scroll h-full ${gridTemplateRows ? "" : "content-start auto-rows-max"}`} style={{ gridTemplateColumns, gridTemplateRows }}>
         {/* @ts-ignore */}
         {args.some(isListSignal) ? computed(() => <>{buildCells()}</>) : buildCells()}
       </div>
@@ -1173,19 +1203,49 @@ type GridEdge = { parentRow: number, parentCol: number, childRow: number, childC
 // brighter frames and its edges brighter strokes. Null when nothing is hovered.
 const hoverSubtree = signal<Set<string> | null>(null)
 
-// Reference to main editor for hover highlighting
+// Reference to main editor for global shortcuts and as a highlight fallback
 let mainEditorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null
-let hoverDecorationsCollection: editor.IEditorDecorationsCollection | null = null
+let codeEditorInstanceCount = 0
+let gridInstanceCount = 0
+
+// Every mounted CodeEditor (the main panel AND embedded cells – tour rooms,
+// REPL). An origin carries the document it indexes into, so a hover routes
+// to the editor whose text IS that document instead of always painting the
+// main editor. Disposed editors are pruned lazily on lookup – Editor has no
+// unmount callback to hook.
+const editorRegistry = new Set<editor.IStandaloneCodeEditor>()
+const hoverCollections = new WeakMap<editor.IStandaloneCodeEditor, editor.IEditorDecorationsCollection>()
+let hoverTarget: editor.IStandaloneCodeEditor | null = null
+
+const editorForDocument = (document: string | undefined): editor.IStandaloneCodeEditor | null => {
+  // an origin without a document predates this routing – keep the old target
+  if (document === undefined) { return mainEditorRef?.editor ?? null }
+  for (const ed of editorRegistry) {
+    const model = ed.getModel()
+    if (!model) { editorRegistry.delete(ed); continue }
+    if (model.getValue() === document) { return ed }
+  }
+  // the document is known but no editor shows it (e.g. a value from an
+  // already-edited cell) – better no highlight than the right range in the
+  // wrong text
+  return null
+}
 
 const setHoverHighlight = (origin: Origin | null) => {
-  if (!mainEditorRef) return
-  const { editor: ed } = mainEditorRef
+  const target = origin ? editorForDocument(origin.document) : null
+  if (hoverTarget && hoverTarget !== target) {
+    hoverCollections.get(hoverTarget)?.set([])
+  }
+  hoverTarget = target
+  if (!target || !origin) { return }
 
-  if (!hoverDecorationsCollection) {
-    hoverDecorationsCollection = ed.createDecorationsCollection()
+  let collection = hoverCollections.get(target)
+  if (!collection) {
+    collection = target.createDecorationsCollection()
+    hoverCollections.set(target, collection)
   }
 
-  hoverDecorationsCollection.set(origin ? [{
+  collection.set([{
     range: {
       startLineNumber: origin.start.line,
       startColumn: origin.start.column,
@@ -1196,7 +1256,7 @@ const setHoverHighlight = (origin: Origin | null) => {
       className: 'ast-hover-highlight',
       isWholeLine: false,
     }
-  }] : [])
+  }])
 }
 
 function nodeWidth(label: string): number {
@@ -2079,6 +2139,20 @@ extendEnvironment({
   PrettyPrint,
 } as Record<string, Value>)
 
+// The Tour (tour.ts) is Fluent source, so it binds as a lazy getter rather
+// than a value: each read builds a fresh instance in a fresh scope, so every
+// evaluation gets its own live tour (a retired generation's disposal sweep
+// never reaches the one on screen), and a session that never evaluates
+// `Tour` never pays for it. Non-enumerable, because completion reads every
+// enumerable environment value when the popup opens – that would build a
+// tour per keystroke.
+import { TOUR_SOURCE } from "./tour"
+Object.defineProperty(DefaultEnvironment, "Tour", {
+  get: () => CodeEvaluate.call(createScope(), TOUR_SOURCE),
+  enumerable: false,
+  configurable: true,
+})
+
 // MARK: Examples
 import { EXAMPLES } from "./examples"
 
@@ -2310,8 +2384,18 @@ function Code(sourceCode: Signal<string>) {
 }
 setMeta(Code, { noAutoLift: true })
 
-function CodeEditor(sourceCode: Signal<string>) {
-  const height = SignalCreate("100%")
+// CodeEditor(code) fills its container – the playground's main panel.
+// CodeEditor(code, "auto") sizes itself to its content and grows as you type –
+// for editors embedded in auto-sized rows (tour cells, REPL cells), where
+// "100%" of an auto row would collapse to nothing.
+function CodeEditor(sourceCode: Signal<string>, sizing?: Value) {
+  const autoGrow = String(sizing ?? "") === "auto"
+  const height = SignalCreate(autoGrow ? "38px" : "100%")
+  // Each call is one editor identity. Without the key, swapping between two
+  // views with editors at the same tree position (tour rooms) makes React
+  // reuse the mounted Monaco instance: onMount never refires and the OLD
+  // cell's fit closure keeps writing the OLD cell's height signal.
+  const editorKey = `code-editor-${++codeEditorInstanceCount}`
 
   // each editor validates its own model (REPL cells stay independent)
   let editorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null
@@ -2333,8 +2417,26 @@ function CodeEditor(sourceCode: Signal<string>) {
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorOnMount(editor, monaco)
     editorRef = { editor, monaco }
-    // hover highlighting targets the first (main) editor
+    editorRegistry.add(editor)
+    // global shortcuts and legacy highlights target the first (main) editor
     if (!mainEditorRef) { mainEditorRef = { editor, monaco } }
+
+    if (autoGrow) {
+      const fit = () => {
+        const next = `${Math.min(editor.getContentHeight(), 320)}px`
+        if (height.peek() === next) { return }
+        // next frame, not now: a same-frame resize inside a ResizeObserver
+        // delivery is the textbook "ResizeObserver loop" browser error, and
+        // the dev overlay blocks the whole page for it
+        requestAnimationFrame(() => SignalUpdate(height, next))
+      }
+      editor.onDidContentSizeChange(fit)
+      fit()
+      // word-wrap breaks are computed on the first real layout, one frame
+      // after mount – the mount-time measurement is one line short for
+      // wrapped content, so measure once more when that layout has run
+      requestAnimationFrame(() => requestAnimationFrame(fit))
+    }
 
     // Validate on initial load
     const model = editor.getModel()
@@ -2347,6 +2449,7 @@ function CodeEditor(sourceCode: Signal<string>) {
     return (
       // @ts-ignore
       <Editor
+        key={editorKey}
         beforeMount={editorBeforeMount}
         onMount={handleEditorMount}
         // @ts-ignore
@@ -2430,17 +2533,31 @@ const docCardBody = (m: FunctionMeta): string =>
   [m.doc, m.example && "```fluent\n" + m.example + "\n```"]
     .filter(Boolean).join("\n\n")
 
+// Monaco-global setup below runs once per page, NOT once per editor:
+// beforeMount fires for every <Editor>, and register*Provider calls
+// ACCUMULATE – each extra registration stacks one more identical doc card
+// onto every hover. The disposables live on globalThis so a hot-reloaded
+// module replaces its predecessor's providers instead of stacking on them.
+const registeredProviders: { dispose(): void }[] =
+  ((globalThis as Record<string, unknown>).__fluentMonacoProviders ??= []) as { dispose(): void }[]
+let monacoConfigured = false
+
 const editorBeforeMount: BeforeMount = (monaco) => {
   EditorInstance = monaco.editor
+  if (monacoConfigured) { return }
+  monacoConfigured = true
+  for (const p of registeredProviders.splice(0)) {
+    try { p.dispose() } catch { /* already gone */ }
+  }
 
   monaco.languages.register({ id: "fluent" });
 
-  monaco.languages.registerHoverProvider("fluent", {
+  registeredProviders.push(monaco.languages.registerHoverProvider("fluent", {
     provideHover(model, position) {
       const meta = metaFor(fluentTokenAt(model, position))
       return meta ? { contents: [{ value: docCard(meta) }] } : null
     },
-  });
+  }));
 
   monaco.languages.setMonarchTokensProvider("fluent", {
     defaultToken: "",
@@ -2697,7 +2814,7 @@ const editorBeforeMount: BeforeMount = (monaco) => {
     detail,
     filterText,
   }));
-  monaco.languages.registerCompletionItemProvider('fluent', {
+  registeredProviders.push(monaco.languages.registerCompletionItemProvider('fluent', {
     provideCompletionItems: (model, position) => {
       const word = model.getWordUntilPosition(position);
 
@@ -2742,7 +2859,7 @@ const editorBeforeMount: BeforeMount = (monaco) => {
         ]
       })
     }
-  });
+  }));
 }
 
 const editorOnMount: OnMount = (editor, monaco) => {
@@ -2852,6 +2969,14 @@ const GLOBAL_SHORTCUTS: Record<string, { action: string, withShift?: boolean }> 
 window.addEventListener("unhandledrejection", (e) => {
   if (String(e.reason).includes("popErrorScope")) { e.preventDefault() }
 })
+
+// Same spirit for the one window error the spec itself calls ignorable:
+// Monaco's automaticLayout inside a same-frame-resized container (an
+// auto-growing editor cell) reports "ResizeObserver loop completed with
+// undelivered notifications", and the dev overlay would block the page for it.
+window.addEventListener("error", (e) => {
+  if (String(e.message).includes("ResizeObserver loop")) { e.stopImmediatePropagation(); e.preventDefault() }
+}, true)
 
 export function Playground() {
 
