@@ -338,3 +338,16 @@ test("Center centers its child in the cell", async ({ page }) => {
   const cellCenter = cell.x + cell.width / 2
   expect(Math.abs(labelCenter - cellCenter)).toBeLessThan(8)
 })
+
+test("global shortcuts survive transient cell editors", async ({ page }) => {
+  // regression: the first-mounted editor claimed the global-shortcut target;
+  // in the Tour that is a room's cell editor, which unmounts on navigation –
+  // ⌘O and ⌘S then pointed at a disposed editor
+  await open(page, "Tour")
+  await expect(page.getByText("Reading order is meaning")).toBeVisible()
+  await page.keyboard.press("Escape")
+  await page.getByRole("button", { name: "next ▸" }).click()
+  await expect(page.locator(".ast-tree").first()).toBeVisible()   // room 1 cells are gone now
+  await page.keyboard.press("ControlOrMeta+KeyO")
+  await expect(page.locator(".quick-input-widget")).toBeVisible() // the gallery picker
+})

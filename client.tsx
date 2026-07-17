@@ -2428,8 +2428,12 @@ function CodeEditor(sourceCode: Signal<string>, sizing?: Value) {
     editorOnMount(editor, monaco)
     editorRef = { editor, monaco }
     editorRegistry.add(editor)
-    // global shortcuts and legacy highlights target the first (main) editor
-    if (!mainEditorRef) { mainEditorRef = { editor, monaco } }
+    // Global shortcuts (⌘O gallery, ⌘S share) and legacy highlights target
+    // the app's MAIN editor – the one that fills its panel. Auto-grown
+    // editors are embedded cells (tour rooms, REPL): transient views that
+    // mount first and unmount on navigation, so letting one claim this ref
+    // left the shortcuts wired to a disposed editor.
+    if (!autoGrow && !mainEditorRef) { mainEditorRef = { editor, monaco } }
 
     if (autoGrow) {
       const fit = () => {
