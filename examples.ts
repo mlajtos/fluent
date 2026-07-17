@@ -952,7 +952,8 @@ dreamNow: { dream(StringConcat("### ", dec(slice(gen(fill([T], 0), 48), T)))) },
 
 ; --- training: ⟳-paced, gated by the checkbox ---
 training: $(1),
-opt: adamw(0.03, 0.001),   ; a little weight decay – memorize less, invent more
+opt: adamw(0.01, 0),   ; post-norm runs hotter than pre-norm: a cooler lr, and no
+                       ; weight decay – rms-normalized blocks shrink until they blow up
 losses: $([]),
 stride: $(4),
 { i |
