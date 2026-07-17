@@ -50,16 +50,22 @@ demo: { src |
     (CodeEditor(code, "auto"), CodeEvaluate(code))
 },
 
-nav: Grid([1, 2, 1])(
-    Button("◂ back", { step(0 ⌈ (step() - 1)) }),
-    Text(""),
-    Button("next ▸", { step((step() + 1) ⌊ 14) })
-),
-nav-final: Grid([1, 2, 1])(
-    Button("◂ back", { step(0 ⌈ (step() - 1)) }),
-    Text(""),
-    Button("start over ↺", { step(0) })
-),
+; The header doubles as navigation – every room's first row is
+; [◂ back]  Fluent Tour · n / 15  [next ▸]
+head: { label |
+    Grid([1, 2, 1])(
+        Button("◂ back", { step(0 ⌈ (step() - 1)) }),
+        Text(label),
+        Button("next ▸", { step((step() + 1) ⌊ 14) })
+    )
+},
+head-final: { label |
+    Grid([1, 2, 1])(
+        Button("◂ back", { step(0 ⌈ (step() - 1)) }),
+        Text(label),
+        Button("start over ↺", { step(0) })
+    )
+},
 
 ; character codes the checks look for:
 ; ( 40   * 42   + 43   . 46   : 58   _ 95   { 123   × 215   ∇ 8711   🍌 127820
@@ -67,9 +73,8 @@ nav-final: Grid([1, 2, 1])(
 ; ———————————————————— 1 · reading order ———————————————————————————
 
 s1: Grid(1)(
-    Text("● ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ · 1 / 15
-
-### Reading order is meaning
+    head("**Fluent Tour** · 1 / 15"),
+    Text("### Reading order is meaning
 
 **Fluent runs left to right, the way you read.** No precedence tables, nothing to memorize: in \`1 + 2 * 3\` the \`1\` and \`2\` meet first, so it says 9. Want a piece to go first? **Glue it** — hug the parts together with no space around the operator. (Parens work too. But where is the fun in that.)
 
@@ -79,29 +84,25 @@ s1: Grid(1)(
             (min(r = 7)) ∧ ((Σ(c = 40)) = 0) ∧ ((Σ(c = 43)) ≥ 1) ∧ (((Σ(c = 42)) + (Σ(c = 215))) ≥ 1) },
         Text("✅ **Seven.** You just changed what a program means with a *space*. Let that sink in."),
         Text("🎯 *Make the box say **7** — keep the \`+\` and the \`*\`, no parentheses. The check reads your code.*")
-    ),
-    nav
+    )
 ),
 
 ; ———————————————————— 2 · see the shape ———————————————————————————
 
 s2: Grid(1)(
-    Text("● ● ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ · 2 / 15
-
-### When in doubt, draw it
+    head("**Fluent Tour** · 2 / 15"),
+    Text("### When in doubt, draw it
 
 **Not sure how a line will group?** Put it in backticks and Fluent stops running it and *draws* it instead. The tree you see is not a diagram **of** the program — it **is** the program. Hover the nodes — the source they came from lights up in the box. Re-space the code. Watch the shape follow your spaces."),
     demo("\`1 + 2*3\`   ; ← put spaces around the * and watch the tree"),
-    Text("✅ **Nothing to solve here.** Just look. The shape you see is the order it runs — that sentence is the whole language."),
-    nav
+    Text("✅ **Nothing to solve here.** Just look. The shape you see is the order it runs — that sentence is the whole language.")
 ),
 
 ; —————————————————— 3 · lists act like one number ————————————————
 
 s3: Grid(1)(
-    Text("● ● ● ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ · 3 / 15
-
-### A list acts like one number
+    head("**Fluent Tour** · 3 / 15"),
+    Text("### A list acts like one number
 
 **One number at a time is no way to live.** Square brackets make a list — and a list does math as one thing, no loops: \`[1, 2, 3] + 10\` lands the 10 on *each*. To reach inside, use a spaced \`_\` — item 0 comes first."),
     demo("[1, 2, 3] + 10   ; the 10 lands on each"),
@@ -109,32 +110,28 @@ s3: Grid(1)(
         { r, s | c: StringToCodes(s), (min(r = 30)) ∧ ((Σ(c = 95)) ≥ 1) },
         Text("✅ **30.** Third item, index 2. You will never be off by one again. (You will.)"),
         Text("🎯 *Make the lower box say **30** — with \`_\`, not by typing 30. Counting starts at 0.*")
-    ),
-    nav
+    )
 ),
 
 ; ———————————————————— 4 · runs of numbers ————————————————————————
 
 s4: Grid(1)(
-    Text("● ● ● ● ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ · 4 / 15
-
-### Runs of numbers
+    head("**Fluent Tour** · 4 / 15"),
+    Text("### Runs of numbers
 
 **Writing long lists by hand is beneath you: \`1 ... 5\` counts from 1 through 5.** A run is a list like any other, so everything from the last room applies to it. Mind the spaces around \`...\` — you know why by now."),
     challenge("1 ... 5   ; ← turn this into [2, 4, 6, 8, 10]",
         { r, s | c: StringToCodes(s), (min(r = [2, 4, 6, 8, 10])) ∧ ((Σ(c = 46)) ≥ 3) },
         Text("✅ **The evens.** A run, times two — you composed two ideas and no loop appeared. None ever will."),
         Text("🎯 *Make it say **[2, 4, 6, 8, 10]** — grow it from a range, don’t type the list.*")
-    ),
-    nav
+    )
 ),
 
 ; ———————————————————— 5 · naming things ——————————————————————————
 
 s5: Grid(1)(
-    Text("● ● ● ● ● ○ ○ ○ ○ ○ ○ ○ ○ ○ ○ · 5 / 15
-
-### Name anything with \`:\`
+    head("**Fluent Tour** · 5 / 15"),
+    Text("### Name anything with \`:\`
 
 **Anything worth keeping deserves a name.** A \`:\` gives one to anything, and then you spend the name instead of retyping the value. Words work, kebab-case works, Greek works — type \`theta\`, press **Tab**, get \`θ\`. Even \`🍌\` works."),
     challenge("🍌: 7,
@@ -142,16 +139,14 @@ s5: Grid(1)(
         { r, s | c: StringToCodes(s), (min(r = 49)) ∧ ((Σ(c = 127820)) ≥ 3) },
         Text("✅ **49.** One name, three bananas, not a digit wasted. Naming things is compression."),
         Text("🎯 *Make the box say **49** — out of bananas, not out of numbers.*")
-    ),
-    nav
+    )
 ),
 
 ; —————————————— 6 · three names for everything ————————————————————
 
 s6: Grid(1)(
-    Text("● ● ● ● ● ● ○ ○ ○ ○ ○ ○ ○ ○ ○ · 6 / 15
-
-### Every built-in has three names
+    head("**Fluent Tour** · 6 / 15"),
+    Text("### Every built-in has three names
 
 **Your names sit next to the ones the language shipped with — and each built-in has three.** Long to discover, word for habit, glyph for speed: \`TensorSum\` is \`sum\` is \`Σ\`, one function in three sizes. **Hover any of them below** — the doc card pops up right here. (Type \`sigma\` + **Tab** for \`Σ\`.)"),
     demo("(
@@ -163,16 +158,14 @@ s6: Grid(1)(
         { r, s | c: StringToCodes(s), (min(r = 5050)) ∧ ((Σ(c = 40)) ≥ 1) },
         Text("✅ **5050.** Gauss needed a clever trick. You needed eleven keystrokes. History will decide whose was cooler."),
         Text("🎯 *Make the lower box say **5050** — the sum of every whole number from 1 to 100, summed, not typed.*")
-    ),
-    nav
+    )
 ),
 
 ; ———————————————— 7 · operators are functions ——————————————————————
 
 s7: Grid(1)(
-    Text("● ● ● ● ● ● ● ○ ○ ○ ○ ○ ○ ○ ○ · 7 / 15
-
-### Operators aren’t a special club
+    head("**Fluent Tour** · 7 / 15"),
+    Text("### Operators aren’t a special club
 
 **A secret about the names you’ve been using: \`+\` is one of them.** An operator is just a function with a short name — call it like one, or put any function’s name in the middle of two values. And that works for *your* names too."),
     demo("(
@@ -187,16 +180,14 @@ plus(40, 2)   ; ← now put plus in the MIDDLE",
             (min(r = 42)) ∧ ((Σ(c = 58)) ≥ 1) ∧ ((Σ(c = 40)) = 0) ∧ ((Σ(c = 43)) = 0) },
         Text("✅ **42.** You taught the language a word. Next room: teach it a whole function."),
         Text("🎯 *Make it say **42** with \`plus\` *between* the numbers — no parentheses, no \`+\`.*")
-    ),
-    nav
+    )
 ),
 
 ; ———————————————— 8 · make your own function ——————————————————————
 
 s8: Grid(1)(
-    Text("● ● ● ● ● ● ● ● ○ ○ ○ ○ ○ ○ ○ · 8 / 15
-
-### Make your own function
+    head("**Fluent Tour** · 8 / 15"),
+    Text("### Make your own function
 
 **Renaming built-ins is nice. Minting your own is better.** Braces make a function: \`{ x | x^2 }\` reads *take an \`x\`, hand back \`x^2\`*. Name it, call it — and lists flow through it the way they flow through \`+\`: one call, every item."),
     demo("square: { x | x^2 },
@@ -206,17 +197,15 @@ cube(3)",
         { r, s | c: StringToCodes(s), (min(r = 27)) ∧ ((Σ(c = 123)) ≥ 1) },
         Text("✅ **27.** You fixed a function. From here on, everything in the language is either a value or one of these."),
         Text("🎯 *\`cube\` doesn’t cube yet — one character stands between it and **27**.*")
-    ),
-    nav
+    )
 ),
 
 ; ———————————————————— 9 · make it move ————————————————————————————
 
 x: $(0.2),
 s9: Grid(1)(
-    Text("● ● ● ● ● ● ● ● ● ○ ○ ○ ○ ○ ○ · 9 / 15
-
-### Make it move
+    head("**Fluent Tour** · 9 / 15"),
+    Text("### Make it move
 
 **Everything so far ran once and sat still. Wrap a value in \`$( )\` and it comes alive.** Here \`x: $(0.2)\` made \`x\` a live value. The box holds one *writer* — the slider — and two *readers*: a percentage, and a whole wave. Drag — every reader follows, nobody re-runs anything."),
     demo("(
@@ -227,16 +216,14 @@ s9: Grid(1)(
     status({ x() > 0.9 },
         Text("✅ **Alive.** You changed a running program mid-flight and it didn’t even flinch. This is the trick behind every demo in the gallery."),
         Text("🎯 *No typing this time — **drag the slider** and pin \`x\` above 0.9.*")
-    ),
-    nav
+    )
 ),
 
 ; ———————————————————— 10 · the slope machine ——————————————————————
 
 s10: Grid(1)(
-    Text("● ● ● ● ● ● ● ● ● ● ○ ○ ○ ○ ○ · 10 / 15
-
-### The slope machine
+    head("**Fluent Tour** · 10 / 15"),
+    Text("### The slope machine
 
 *That was the everyday language — all of it. The rest of the tour is a single trick: teaching a value to find its own way to a goal. The trick starts with a slope.*
 
@@ -248,23 +235,20 @@ df(3)   ; ← now: the slope of x·x·x, at 2",
             (min(r = 12)) ∧ ((Σ(c = 123)) ≥ 1) ∧ (((Σ(c = 8711)) + (Σ(c = 103))) ≥ 1) },
         Text("✅ **12.** You differentiated a program by editing a program. Some people sit through a whole semester before they believe this is allowed."),
         Text("🎯 *Make the box say **12** — the slope of \`x^3\` at 2, computed by \`grad\`, not by you.*")
-    ),
-    nav
+    )
 ),
 
 ; ———————————————————— 11 · the slope, drawn ———————————————————————
 
 s11: Grid(1)(
-    Text("● ● ● ● ● ● ● ● ● ● ● ○ ○ ○ ○ · 11 / 15
-
-### The slope, drawn
+    head("**Fluent Tour** · 11 / 15"),
+    Text("### The slope, drawn
 
 **Slopes come whole, not point by point.** Below: a curve, and its slope, made by handing \`grad(f)\` the same run of numbers. Where the curve falls, the slope is below zero; where the curve bottoms out, the slope **crosses zero**. Keep that crossing in mind — the next three rooms stand on it."),
     demo("f: { x | x^2 ÷ 10 },
 xs: -10 ... 10,
 (f(xs), grad(f)(xs))   ; ← try wrapping f in grad( ) once more"),
-    Text("✅ **Nothing to solve.** A parabola’s slope is a straight line — you may have been told that once. Now you can just look at it."),
-    nav
+    Text("✅ **Nothing to solve.** A parabola’s slope is a straight line — you may have been told that once. Now you can just look at it.")
 ),
 
 ; ———————————————————— 12 · find the bottom by feel ————————————————
@@ -273,17 +257,15 @@ far: { g | (g - 42)^2 },
 dfar: grad(far),
 dial: $(10),
 s12: Grid(1)(
-    Text("● ● ● ● ● ● ● ● ● ● ● ● ○ ○ ○ · 12 / 15
-
-### Find the bottom by feel
+    head("**Fluent Tour** · 12 / 15"),
+    Text("### Find the bottom by feel
 
 **Put the slope to work.** \`far\` scores a guess by its distance from 42, and \`dfar: grad(far)\` is its slope function — named just like \`df\` last room. Below: the score, the slope, and the guess itself, **live and draggable**. Slide it. Negative slope: too low. Positive: too high. **Zero: you have arrived.**"),
     demo("(far(dial), dfar(dial), Scrubber(dial))   ; ← score · slope · drag me"),
     status({ (abs(dial() - 42)) < 0.5 },
         Text("✅ **Found it.** Score 0, slope 0, guess 42. You just solved an equation by feel — your hand did what the slope said."),
         Text("🎯 *No typing — **drag the rightmost number** until the slope reads **0**.*")
-    ),
-    nav
+    )
 ),
 
 ; ———————————————————— 13 · walk downhill ——————————————————————————
@@ -295,9 +277,8 @@ hist: $([10]),
 step-downhill: "step downhill",
 back-to-10: "back to 10",
 s13: Grid(1)(
-    Text("● ● ● ● ● ● ● ● ● ● ● ● ● ○ ○ · 13 / 15
-
-### Walk downhill
+    head("**Fluent Tour** · 13 / 15"),
+    Text("### Walk downhill
 
 **You found the bottom by feel. Now walk there deliberately.** Each press of the first button is one honest step: read the slope where you stand, scale it down, move the *other* way, remember the footprint. Watch the path: long strides far out, baby steps near the bottom — the slope itself shrinks as you close in."),
     demo("(
@@ -313,8 +294,7 @@ s13: Grid(1)(
     status({ (abs(guess() - 42)) < 1 },
         Text("✅ **Arrived.** Look at the path: the step size *is* the slope, so the walk brakes by itself. That graph is gradient descent, drawn by you pressing the button."),
         Text("🎯 *No typing — press **step downhill** until the path lands within 1 of 42. (Overshot? Edit the 0.3 and see why.)*")
-    ),
-    nav
+    )
 ),
 
 ; ———————————————————— 14 · let it run —————————————————————————————
@@ -327,9 +307,8 @@ trail: $([0.1]),
 ; the very training loop the room wants you to watch
 trail-plot: PointPlot(trail),
 s14: Grid(1)(
-    Text("● ● ● ● ● ● ● ● ● ● ● ● ● ● ○ · 14 / 15
-
-### Let it run
+    head("**Fluent Tour** · 14 / 15"),
+    Text("### Let it run
 
 **Now hand the button to the machine.** The question: *what number, squared, is 42?* The \`~\` marks \`answer\` as **trainable** — it starts at 0.1, knowing nothing. \`score\` is written exactly like \`far\` was, \`sgd\` presses the step button for you, and \`iter\` presses *that* two hundred times, between frames. Watch the line climb."),
     demo("score: { (answer*answer - 42)^2 },   ; how far answer·answer misses 42
@@ -340,16 +319,14 @@ watch(answer)"),
     status({ (abs((answer-live() * answer-live()) - 42)) < 0.1 },
         Text("✅ **6.4807….** That is the square root of 42, and nobody typed it — \`answer\` walked there, pressed downhill by its own slope, two hundred times. This is machine learning entire; the rest is scale."),
         Text("🎯 *Nothing to press — watch until \`answer · answer\` sits within 0.1 of 42. (Impatient? Raise the 0.0005.)*")
-    ),
-    nav
+    )
 ),
 
 ; ———————————————————— 15 · it keeps going —————————————————————————
 
 s15: Grid(1)(
-    Text("● ● ● ● ● ● ● ● ● ● ● ● ● ● ● · 15 / 15
-
-### It keeps going
+    head-final("**Fluent Tour** · 15 / 15"),
+    Text("### It keeps going
 
 **That was the tour** — numbers, lists, names, functions; then a slope, a bottom found by hand, a walk, and a value that found √42 on its own.
 
@@ -357,8 +334,7 @@ s15: Grid(1)(
 
 Want the reference instead? Evaluate \`Documentation\`. And the box below is yours:"),
     demo("1 + 1   ; ← your turn"),
-    Text("✅ **Fin.** It’s your language now. ∎"),
-    nav-final
+    Text("✅ **Fin.** It’s your language now. ∎")
 ),
 
 ; ———————————————————————————— the tour ————————————————————————————
