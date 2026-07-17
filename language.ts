@@ -458,6 +458,19 @@ const matchProgram = (program: string) => {
   return match
 }
 
+// Ohm's rightmost-failure message enumerates every alternative at the
+// failure point – for this grammar that includes whole operator glyph
+// ranges ("⚀".."⚅", "⦀".."⧿", …), which reads as line noise. A short
+// expectation list is genuinely helpful ("expected \")\"") and stays; a
+// long one collapses to the honest summary.
+const humanizeParseError = (message: string): string => {
+  const at = message.lastIndexOf("expected ")
+  if (at < 0) { return message }
+  const alternatives = message.slice(at + "expected ".length).split(", ")
+  if (alternatives.length <= 4) { return message }
+  return message.slice(0, at) + "expected an expression"
+}
+
 const CodeParse = (program: string): SyntaxTreeNode => {
   const matchResult = matchProgram(program);
 
@@ -471,7 +484,7 @@ const CodeParse = (program: string): SyntaxTreeNode => {
 
     return {
       type: "Error",
-      content: matchResult.shortMessage ?? matchResult.message ?? "Unknown parse error",
+      content: humanizeParseError(matchResult.shortMessage ?? matchResult.message ?? "Unknown parse error"),
       origin: {
         source: program,
         document: program,
@@ -502,7 +515,7 @@ const getParseErrors = (program: string): ParseError[] => {
   const endLocation = indexToLineAndColumn(program, program.length);
 
   return [{
-    message: matchResult.shortMessage ?? matchResult.message ?? "Syntax error",
+    message: humanizeParseError(matchResult.shortMessage ?? matchResult.message ?? "Syntax error"),
     start: startLocation,
     end: endLocation
   }];
@@ -1110,7 +1123,13 @@ const makeLiftedApply = (fnValue: Function, argsValue: Value[], env: CurrentScop
     try {
       return fnValue.apply(env, unwrapped)
     } catch (e) {
-      return e as Value
+      // control flow for an enclosing trace, never an error value
+      if (e instanceof TraceBailout) { throw e }
+      // a bare backend message with no callsite is undebuggable from a cell –
+      // say WHICH application failed, keep the original as the cause
+      const err = e instanceof Error ? e : new Error(String(e))
+      const label = (fnValue as { name?: string }).name || getOrigin(fnValue)?.source || "a function"
+      return new Error(`applying ${label} to (${unwrapped.map(describeArg).join(", ")})`, { cause: err })
     }
   }
 
@@ -1308,12 +1327,15 @@ const FunctionCascade = (candidates: Function[]) => tacitToString((a: Value, b: 
   const noResultSymbol = Symbol('noResult')
 
   let result: (Value | typeof noResultSymbol) = noResultSymbol
+  // the most specific rejection – shown as the cause when nothing matches,
+  // so "no overload matched" still says WHY the closest candidate said no
+  let lastRejection: Error | null = null
 
   let candidateIndex = 0
 
   while (result === noResultSymbol && candidateIndex < candidates.length) {
 
-    let candidateResult: (Value | typeof noResultSymbol) = noResultSymbol
+    let candidateResult: unknown = noResultSymbol
 
     try {
       const fn = candidates[candidateIndex]
@@ -1326,20 +1348,25 @@ const FunctionCascade = (candidates: Function[]) => tacitToString((a: Value, b: 
       // flow that must reach the tracer: swallowing it as a non-match would
       // compile the wrong branch into a jit trace, so let it propagate.
       if (e instanceof TraceBailout) { throw e }
+      lastRejection = e instanceof Error ? e : new Error(String(e))
       candidateIndex += 1
       continue
     }
 
     if (candidateResult instanceof Error) {
+      lastRejection = candidateResult
       candidateIndex += 1
       continue
     } else {
-      result = candidateResult
+      result = candidateResult as Value
     }
   }
 
   if (result === noResultSymbol) {
-    return new Error('No operator found')
+    const shown = a === undefined && b === undefined ? "no arguments"
+      : b === undefined ? describeArg(a)
+      : `${describeArg(a)}, ${describeArg(b)}`
+    return new Error(`no overload matched (${shown})`, lastRejection ? { cause: lastRejection } : undefined)
   }
 
   return result
@@ -1430,7 +1457,6 @@ const evaluateProgramWithScope = (program: string, scope: CurrentScope) => {
   const syntaxTree = CodeParse(program)
 
   if (syntaxTree.type === "Error") {
-    console.error("Error parsing program:", syntaxTree.content);
     return new Error(syntaxTree.content);
   }
 
@@ -1911,6 +1937,8 @@ const describeArg = (v: Value): string =>
     : Array.isArray(v) ? "a list"
     : typeof v === "string" || v instanceof String ? "a string"
     : typeof v === "function" ? "a function"
+    : v instanceof np.Array ? (v.shape.length === 0 ? "a number" : `a tensor [${v.shape.join(" ")}]`)
+    : v instanceof FluentVariable ? "a trainable variable"
     : `a ${typeof v}`
 
 const requireData = (v: Value): number | unknown[] => {

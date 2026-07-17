@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test"
 import { Signal } from "@preact/signals-core"
-import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, beginTensorWatch, endTensorWatch, liveTensorCount, peakTensorCount, type SyntaxTreeNode, type Value } from "./language"
+import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, beginTensorWatch, endTensorWatch, liveTensorCount, peakTensorCount, type SyntaxTreeNode, type Value } from "./language"
 import { EXAMPLES } from "./examples"
 
 const run = (source: string) =>
@@ -1015,5 +1015,35 @@ describe("lifts created inside owned computeds (reactive cells)", () => {
     expect(cellValue(r)).toBe(500)
     x.value = np.array(0.1)
     expect(cellValue(r)).toBeCloseTo(100)
+  })
+})
+
+describe("error messages carry context", () => {
+  test("a cascade that matches nothing names the arguments and the reason", () => {
+    const v = run(`cascade((guard(1 = 2, { 7 }),))(5)`) as Error
+    expect(v).toBeInstanceOf(Error)
+    expect(v.message).toContain("no overload matched")
+    expect(v.message).toContain("a number")
+    expect((v.cause as Error).message).toContain("Guard condition not met")
+  })
+  test("a failing application inside a cell says which application failed", () => {
+    const scope = createScope()
+    evaluateGeneration(() => evaluateSyntaxTreeNode(
+      CodeParse(`x: $(0.5), code: $("x ⍴ [2, 2]"), r: CodeEvaluate(code), r`), scope))
+    let v: any = scope["r"]
+    while (v && typeof v === "object" && "value" in v && !(v instanceof np.Array)) { v = v.value }
+    expect(v).toBeInstanceOf(Error)
+    expect(v.message).toContain("applying TensorReshape")
+    expect(v.message).toContain("a tensor [2]")
+    expect((v.cause as Error).message).toContain("reshape")
+  })
+  test("a monster parse-expectation list collapses to a summary", () => {
+    const [err] = getParseErrors("1 + (")
+    expect(err!.message).toContain("expected an expression")
+    expect(err!.message).not.toContain("⚀")
+  })
+  test("a short parse-expectation list stays verbatim", () => {
+    const [err] = getParseErrors("(1, 2")
+    expect(err!.message).toContain(`expected ")"`)
   })
 })
