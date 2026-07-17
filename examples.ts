@@ -228,12 +228,11 @@ losses: $([]),
 (losses, θ)`,
   "REPL": `
 ; Multi-cell REPL - each cell evaluates independently
-; BUG: CodeEditor's height doesn't auto-adjust on content change
 
 cell: {
     code: $("1 + 1"),
     result: CodeEvaluate(code),
-    Grid(1)(Print(result), CodeEditor(code))
+    Grid(1)(Print(result), CodeEditor(code, "auto"))
 },
 
 (cell(), cell(), cell())
@@ -887,6 +886,124 @@ editable: $({ 1 - training() }),
   attn,
   Text("**the letter embeddings**, learning:"),
   E,
+  Text("**the training data** – uncheck training to edit; resuming keeps the weights:"),
+  TextEditor(corpus, editable),
+)
+`,
+  "looped-dreamer": `
+; 🔁 The Looped Dreamer – a transformer that thinks in rounds.
+; Two physical blocks (φ1, φ2), stored once, are revisited R=3 times, so the
+; unrolled network is N = K·R = 6 blocks deep – for a third of the weights.
+; Every sublayer visit is post-norm, x ← rms(α·x + f(x)), with the DeepLoop
+; scaling rule (p = ½): skip α = (2N)^½, per-matrix init gain β = (8N)^-½ –
+; strong skips and gentle starts keep 12 sublayer visits stable.
+
+(++): TensorConcat,
+
+; --- vocabulary: ' ' → 0, a…z → 1…26 (anything else collapses to space) ---
+V: 27, T: 8, C: 32, F: 96,
+K: 2, R: 3, N: K × R,             ; physical blocks × rounds = unrolled depth
+α: √(2 × N), β: 1 ÷ √(8 × N),     ; the scaling rule
+enc: { s | clamp(StringToCodes(s) - 96, 0, 26) },
+dec: { t | CodesToString(where(t = 0, 32, t + 96)) },
+
+; --- the entire dataset is this editable string ---
+corpus: $("emma olivia ava isabella sophia charlotte mia amelia harper evelyn abigail emily elizabeth mila ella avery sofia camila aria scarlett victoria madison luna grace chloe penelope layla riley zoey nora lily eleanor hannah lillian addison aubrey ellie stella natalie zoe leah hazel violet aurora savannah audrey brooklyn bella claire skylar lucy paisley everly anna caroline nova genesis emilia kennedy samantha maya willow kinsley naomi aaliyah elena sarah ariana allison gabriella alice madelyn cora ruby eva serenity autumn adeline hailey gianna valentina isla eliana quinn ivy sadie piper lydia alexa josephine emery julia delilah arianna vivian kaylee sophie brielle madeline"),
+load: { c | windows(T + 1, enc(c)) },       ; every 9-char window is an example
+D: ~~(load(once(corpus))),
+SignalEffect({ D := load(corpus()) }),      ; corpus edits reload the slot – the weights stay
+
+; --- K=2 physical blocks: this is ALL the depth there is ---
+E:   ~(randn([V, C]) × 0.1),  P:   ~(randn([T, C]) × 0.1),  Wu: ~(randn([C, V]) × 0.1),
+Wq1: ~(randn([C, C]) × β),  Wk1: ~(randn([C, C]) × β),  Wv1: ~(randn([C, C]) × β),
+Wo1: ~(randn([C, C]) × β),  Wf1: ~(randn([C, F]) × β),  Wg1: ~(randn([F, C]) × β),
+Wq2: ~(randn([C, C]) × β),  Wk2: ~(randn([C, C]) × β),  Wv2: ~(randn([C, C]) × β),
+Wo2: ~(randn([C, C]) × β),  Wf2: ~(randn([C, F]) × β),  Wg2: ~(randn([F, C]) × β),
+
+rms: { x | x ÷ √(mean(x × x, -1, 1) + 0.001) },   ; the 1 keeps the reduced axis
+gelu: { x | x × sigmoid(x × 1.702) },
+nmask: where((0 ..< T) ⊗(≥) (0 ..< T), fill([T, T], 0), fill([T, T], -9999)),
+att: { x, Wq, Wk, Wv, Wo | q: matmul(x, Wq), k: matmul(x, Wk), v: matmul(x, Wv),
+  a: softmax((einsum("btc,bsc->bts", q, k) ÷ √(C)) + nmask),
+  matmul(matmul(a, v), Wo) },
+b1: { x | h: rms((x × α) + att(x, Wq1, Wk1, Wv1, Wo1)),
+  rms((h × α) + matmul(gelu(matmul(h, Wf1)), Wg1)) },
+b2: { x | h: rms((x × α) + att(x, Wq2, Wk2, Wv2, Wo2)),
+  rms((h × α) + matmul(gelu(matmul(h, Wf2)), Wg2)) },
+cycle: { x | b2(b1(x)) },                   ; one round: the whole stack, once
+
+embed: { ids | matmul(oneHot(ids, V), E) + P },
+model: { ids | matmul(cycle(cycle(cycle(embed(ids)))), Wu) },   ; training unrolls R=3 rounds
+modelAt: { ids, r | matmul((cycle ⍣ r)(embed(ids)), Wu) },      ; dreaming picks its own r
+
+loss: { crossEntropy(oneHot(slice(D, [0, 1], [-1, T]), V), model(slice(D, [0, 0], [-1, T]))) },
+
+; --- sampling: gumbel-max, with temperature and ROUNDS you can drag ---
+codesF: linspace([0, V - 1], V),   ; float 0…26 – argmax is int, gather keeps it float
+τ: $(0.5),
+rounds: $(0.4),                    ; 1 + 0.4×5 = the 3 rounds it is trained at
+pick: { l | codesF _ argmax((l ÷ ((once(τ) × 1.5) ⌈ 0.05)) - log(-log(rand([V]))), -1) },
+grow: { s | ctx: s _ ((0 ..< T) + (#(s) - T)),
+  l: (modelAt(ctx ⍴ [1, T], 1 + (once(rounds) × 5)) ⍴ [T, V]) _ (T - 1),
+  s ++ (pick(l) ⍴ [1]) },
+gen: { seed, n | (grow ⍣ n)(seed) },
+dream: $("### …one moment, it is waking up…"),
+dreamNow: { dream(StringConcat("### ", dec(slice(gen(fill([T], 0), 48), T)))) },
+
+; --- training: ⟳-paced, gated by the checkbox ---
+training: $(1),
+opt: adamw(0.03, 0.001),   ; a little weight decay – memorize less, invent more
+losses: $([]),
+stride: $(4),
+{ i |
+  when(once(training), {
+    l: opt(loss),
+    when((i % once(stride)) = 0, {
+      losses(losses() ++ (l ⍴ [1])),
+      ; the plot keeps the WHOLE story, bounded: when it fills up,
+      ; thin the history to every other point and log half as often
+      when((#(losses())) ≥ 480, {
+        losses(losses() _ ((0 ..< 240) × 2)),
+        stride ← (once(stride) × 2)
+      })
+    }),
+    when((i % 200) = 0, dreamNow)
+  })
+} ⟳ 1000000,
+
+; type a beginning – the model finishes it (works even while paused)
+prompt: $("kri"),
+finish: $({ dream(), p: prompt(), s: fill([T], 0) ++ enc(p),
+  StringConcat("## ", p, "·", dec(slice(gen(s, 10), #(s)))) }),
+
+; the SAME block 1, watched in round 1 and in round 3: shared weights, different work
+probeS: fill([T], 0) ++ enc("sophia"),
+probe: probeS _ ((0 ..< T) + (#(probeS) - T)),
+attProbe: { x | softmax((einsum("btc,bsc->bts", matmul(x, Wq1), matmul(x, Wk1)) ÷ √(C)) + nmask) ⍴ [T, T] },
+attn1: $({ losses(), attProbe(embed(probe ⍴ [1, T])) }),
+attn3: $({ losses(), attProbe(cycle(cycle(embed(probe ⍴ [1, T])))) }),
+
+editable: $({ 1 - training() }),
+(
+  Text("# 🔁 The Looped Dreamer"),
+  Text("Two transformer blocks, stored once, revisited three times – a 6-block-deep name dreamer for a third of the weights (~22k parameters)."),
+  Checkbox(training),
+  Text("**training** – uncheck to pause; pause to edit the corpus below"),
+  Text("**loss** – the whole run, from first step to now:"),
+  losses,
+  Text("**it dreams** – regenerated every 200 steps:"),
+  Text(dream),
+  Button("dream again", dreamNow),
+  Text("**rounds of thought** while dreaming – 1 on the left, 6 on the right; it trained at 3:"),
+  Slider(rounds),
+  Text("**finish my name:**"),
+  TextEditor(prompt),
+  Text(finish),
+  Text("**temperature:**"),
+  Slider(τ),
+  Text("**block 1's attention** reading “sophia” – in round 1, then in round 3 (row attends to column). Same weights, different work:"),
+  attn1,
+  attn3,
   Text("**the training data** – uncheck training to edit; resuming keeps the weights:"),
   TextEditor(corpus, editable),
 )

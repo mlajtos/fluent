@@ -212,21 +212,17 @@ cube(3)",
 ; ———————————————————— 9 · make it move ————————————————————————————
 
 x: $(0.2),
-x-percent: x * 100,
-wave: sin((0 ... 79) * x ÷ 2),
 s9: Grid(1)(
     Text("● ● ● ● ● ● ● ● ● ○ ○ ○ ○ ○ ○ · 9 / 15
 
 ### Make it move
 
-**Everything so far ran once and sat still. Wrap a value in \`$( )\` and it comes alive.** Here \`x: $(0.2)\` made \`x\` a live value. In the box: one *writer* (the slider) and one *reader*. Under the box: two more readers — \`x * 100\`, and a wave that is \`sin((0 ... 79) * x ÷ 2)\`. Drag — every reader follows, nobody re-runs anything."),
+**Everything so far ran once and sat still. Wrap a value in \`$( )\` and it comes alive.** Here \`x: $(0.2)\` made \`x\` a live value. The box holds one *writer* — the slider — and two *readers*: a percentage, and a whole wave. Drag — every reader follows, nobody re-runs anything."),
     demo("(
-    Slider(x),   ; ← writes x. drag it.
-    x            ; reads x
-)
-; under this box: x * 100, then sin((0 ... 79) * x ÷ 2)"),
-    x-percent,
-    wave,
+    Slider(x),                 ; ← writes x. drag it.
+    x * 100,                   ; reads x
+    sin((0 ... 79) * x ÷ 2)    ; reads x, draws a wave
+)"),
     status({ x() > 0.9 },
         Text("✅ **Alive.** You changed a running program mid-flight and it didn’t even flinch. This is the trick behind every demo in the gallery."),
         Text("🎯 *No typing this time — **drag the slider** and pin \`x\` above 0.9.*")

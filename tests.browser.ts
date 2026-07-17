@@ -212,3 +212,118 @@ test("Layers: a lower Point2D is draggable, not just the top one", async ({ page
   await page.mouse.up()
   await expect(panel(page)).toContainText(/0\.5/)  // a moved off 0.25 toward the centre
 })
+
+// ————————————————————————————————————————————————————————————————————
+// Embedded editors, reactive cells, and the Tour – the IDE surface the
+// tour build flushed out. Each test pins a bug that shipped once.
+
+// type into the Monaco cell whose visible text contains `anchor`:
+// select-all + Backspace first (insert-over-selection trips auto-surround),
+// insertText (keystrokes trip auto-closing brackets), Escape (a lingering
+// suggest widget swallows the next click)
+const typeInCell = async (page: Page, anchor: string, code: string) => {
+  await page.locator(".view-line", { hasText: anchor }).first().click()
+  await page.keyboard.press("ControlOrMeta+KeyA")
+  await page.keyboard.press("Backspace")
+  await page.keyboard.insertText(code)
+  await page.keyboard.press("Escape")
+}
+
+test("a reactive cell: lifts inside CodeEvaluate survive slider drags", async ({ page }) => {
+  // regression: constants captured by a lift created inside another owned
+  // computed were swept by the outer arena ("Referenced tracer Tensor
+  // (disposed) freed" on replay; nested lifts errored immediately)
+  await open(page, `x: $(0.5),\ncode: $("(Slider(x), 0 ... 100*x)"),\nCodeEvaluate(code)`)
+  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+  await page.locator('input[type="range"]').first().fill("0.9")
+  await expect(page.getByText(/disposed|freed|expected a tensor/)).toHaveCount(0)
+  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+})
+
+test("CodeEditor auto mode sizes to its content", async ({ page }) => {
+  await open(page, `code: $("a: 1,\nb: 2,\nc: 3,\nd: 4,\na + b + c + d"),\n(CodeEditor(code, "auto"), CodeEvaluate(code))`)
+  await expect(panel(page)).toContainText("10")
+  const cell = page.locator("section", { hasText: "a: 1" }).first()
+  // the fit is measured a frame after mount – poll rather than snapshot
+  await expect.poll(async () => (await cell.boundingBox())!.height).toBeGreaterThan(90)
+})
+
+test("hover on a value highlights its source in the cell that produced it", async ({ page }) => {
+  await open(page, `code: $("1 + 2*3"),\n(CodeEditor(code, "auto"), CodeEvaluate(code))`)
+  await expect(panel(page)).toContainText("7")
+  await page.getByText("7", { exact: true }).last().hover()
+  const hl = page.locator(".ast-hover-highlight").first()
+  await expect(hl).toBeVisible()
+  expect(await hl.evaluate(el => (el.closest(".monaco-editor")?.textContent ?? "").includes("2*3"))).toBe(true)
+})
+
+test("hover docs show exactly one card no matter how many editors mounted", async ({ page }) => {
+  // regression: providers registered per editor mount, stacking one more
+  // identical doc card onto every hover
+  await open(page, `a: $("sum([1, 2, 3])"), b: $("1 + 1"), c: $("2 + 2"),\n(CodeEditor(a, "auto"), CodeEditor(b, "auto"), CodeEditor(c, "auto"), CodeEvaluate(a))`)
+  await expect(panel(page)).toContainText("6")
+  await page.locator(".view-line", { hasText: "sum([1, 2, 3])" }).first()
+    .locator("span", { hasText: /^sum$/ }).first().hover()
+  await page.waitForTimeout(800)
+  const cards = ((await page.evaluate(() => document.body.innerText)).match(/Sum of the elements/g) ?? []).length
+  expect(cards).toBe(1)
+})
+
+test("swapping views does not recycle another view's mounted editor", async ({ page }) => {
+  // regression: Grid cells keyed by index alone let React reconcile one
+  // view's Monaco instance into the other's cell (stale onMount, height
+  // signal cross-wired to the old cell)
+  await open(page, [
+    `step: $(0),`,
+    `one: $("1 + 1"), many: $("v: [1, 2, 3],\nw: [4, 5, 6],\nv + w"),`,
+    `roomA: Grid(1)(Text("room a"), CodeEditor(one, "auto"), Button("go", { step(1) })),`,
+    `roomB: Grid(1)(Text("room b"), CodeEditor(many, "auto")),`,
+    `$({ ListGet((roomA, roomB), step()) })`,
+  ].join("\n"))
+  await expect(panel(page).getByText("room a")).toBeVisible()
+  await page.getByRole("button", { name: "go" }).click()
+  await expect(panel(page).getByText("room b")).toBeVisible()
+  const cell = panel(page).locator(".monaco-editor", { hasText: "v: [1, 2, 3]" }).first()
+  await expect(cell).toBeVisible()
+  await expect.poll(async () => (await cell.boundingBox())!.height).toBeGreaterThan(55)  // three lines, not room a's one
+})
+
+test("an overflowing panel scrolls instead of crushing its plots", async ({ page }) => {
+  // regression: auto rows fell back to min-content on overflow, and a
+  // scroll container's min-content height is ~zero – plots and button rows
+  // were squeezed to 28px slivers
+  await open(page, `(\nText("one"), 0 ... 8,\nText("two"), (1 ... 6) ⊗(×) (1 ... 6),\nText("three"), [0, 1, 4, 9, 16, 25],\nText("four"), [25, 16, 9, 4, 1, 0],\nText("five"), 8 ... 0\n)`)
+  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+  for (const plot of await page.locator(".js-plotly-plot").all()) {
+    const panelBox = await plot.evaluate(el => el.closest(".rounded-xl")!.getBoundingClientRect().height)
+    expect(panelBox).toBeGreaterThan(100)
+  }
+})
+
+test("prose links can navigate the playground", async ({ page }) => {
+  await open(page, `Text("[open lenia](?example=lenia)")`)
+  await page.getByRole("link", { name: "open lenia" }).click()
+  await page.waitForURL(/example=lenia/)
+  expect(page.url()).toContain("example=lenia")
+})
+
+test("REPL example: cells evaluate independently and size to content", async ({ page }) => {
+  await page.goto("/?example=REPL")
+  await expect(page.getByText("2", { exact: true }).first()).toBeVisible()
+  await typeInCell(page, "1 + 1", "6 * 7")
+  await expect(page.getByText("42", { exact: true })).toBeVisible()
+  await expect(page.getByText("2", { exact: true }).first()).toBeVisible()  // siblings untouched
+})
+
+test("the Tour opens, checks a challenge, and rejects a cheat", async ({ page }) => {
+  await open(page, "Tour")
+  await expect(page.getByText("Reading order is meaning")).toBeVisible()
+  await typeInCell(page, "make this say 7", "7")
+  await expect(page.getByText("Seven.")).toHaveCount(0)   // literal answer must not pass
+  await typeInCell(page, "7", "1 + 2*3")
+  await expect(page.getByText("Seven.")).toBeVisible()
+  // navigation reaches the tree room
+  await page.keyboard.press("Escape")
+  await page.getByRole("button", { name: "next ▸" }).click()
+  await expect(page.locator(".ast-tree").first()).toBeVisible()
+})
