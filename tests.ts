@@ -965,3 +965,55 @@ describe("gallery examples smoke suite", () => {
     })
   }
 })
+
+describe("lifts created inside owned computeds (reactive cells)", () => {
+  // A lift built during another computed's recompute (a CodeEvaluate cell, a
+  // $-thunk) reaches its argument tensors only through its closure. The arena
+  // sweep must see that edge via the lift registry – without it the constants
+  // are reaped at the end of the outer recompute and the lift's jit replay
+  // later dereferences disposed arrays.
+  const cellValue = (v: any): any => {
+    let x: any = v
+    while (x instanceof Signal) { x = x.value }
+    if (x instanceof np.Array) { return x.ref.js() }
+    return x
+  }
+
+  test("an inner lift's constants survive the cell's recompute", () => {
+    const scope = createScope()
+    evaluateGeneration(() => evaluateSyntaxTreeNode(
+      CodeParse(`x: $(0.5), code: $("x * 100"), r: CodeEvaluate(code), r`), scope))
+    const x = scope["x"] as Signal<Value>
+    const r = scope["r"]
+    expect(cellValue(r)).toBe(50)
+    x.value = np.array(0.25)
+    expect(cellValue(r)).toBe(25)
+    x.value = np.array(0.1)
+    expect(cellValue(r)).toBeCloseTo(10)
+  })
+
+  test("a chained lift in a cell: a range over a derived signal", () => {
+    const scope = createScope()
+    evaluateGeneration(() => evaluateSyntaxTreeNode(
+      CodeParse(`x: $(0.3), code: $("0 ... 10*x"), r: CodeEvaluate(code), r`), scope))
+    const x = scope["x"] as Signal<Value>
+    const r = scope["r"]
+    expect(cellValue(r)).toEqual([0, 1, 2, 3])
+    x.value = np.array(0.8)
+    expect(cellValue(r)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8])
+  })
+
+  test("editing the cell code rebuilds its lifts cleanly", () => {
+    const scope = createScope()
+    evaluateGeneration(() => evaluateSyntaxTreeNode(
+      CodeParse(`x: $(0.5), code: $("x * 100"), r: CodeEvaluate(code), r`), scope))
+    const code = scope["code"] as Signal<Value>
+    const x = scope["x"] as Signal<Value>
+    const r = scope["r"]
+    expect(cellValue(r)).toBe(50)
+    code.value = "x * 1000" as unknown as Value
+    expect(cellValue(r)).toBe(500)
+    x.value = np.array(0.1)
+    expect(cellValue(r)).toBeCloseTo(100)
+  })
+})

@@ -865,7 +865,18 @@ function collectLiveArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set(
   if (v instanceof np.Array) { out.add(v); return }
   if (v instanceof Tracer) { return }
   if (v instanceof FluentVariable) { out.add(v.current); return }
-  if (v instanceof Signal) { collectLiveArrays((v as any)._value, out, seen); return }
+  if (v instanceof Signal) {
+    // A lifted computed reaches its argument tensors only through its
+    // closure, which this walk cannot see – but the lift registry exposes
+    // exactly that edge. Without it, a lift created INSIDE another owned
+    // computed (a CodeEvaluate cell, a $-thunk) has its constants swept at
+    // the end of the outer recompute, and its jit replay later dereferences
+    // disposed arrays ("Referenced tracer Tensor (disposed) freed").
+    const lift = liftRegistry.get(v as Signal<Value>)
+    if (lift) { for (const arg of lift.args) { collectLiveArrays(arg, out, seen) } }
+    collectLiveArrays((v as any)._value, out, seen)
+    return
+  }
   if (v instanceof Error) { collectLiveArrays(v.cause, out, seen); return }
   if (Array.isArray(v)) {
     for (const item of v) { collectLiveArrays(item, out, seen) }
