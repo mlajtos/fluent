@@ -327,3 +327,14 @@ test("the Tour opens, checks a challenge, and rejects a cheat", async ({ page })
   await page.getByRole("button", { name: "next ▸" }).click()
   await expect(page.locator(".ast-tree").first()).toBeVisible()
 })
+
+test("Center centers its child in the cell", async ({ page }) => {
+  await open(page, `Grid([1, 2, 1])(Button("l"), Center(Text("mid")), Button("r"))`)
+  const label = panel(page).getByText("mid")
+  await expect(label).toBeVisible()
+  const box = (await label.boundingBox())!
+  const cell = (await panel(page).locator(".place-items-center").first().boundingBox())!
+  const labelCenter = box.x + box.width / 2
+  const cellCenter = cell.x + cell.width / 2
+  expect(Math.abs(labelCenter - cellCenter)).toBeLessThan(8)
+})

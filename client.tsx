@@ -834,6 +834,15 @@ function WrapWithPrintIfNotReactElement(child: any): any {
   }
 }
 
+// Center a child in its cell, both axes – Grid cells default to top-left,
+// which reads wrong for headers and captions: Center(Text("Fluent Tour"))
+const Center = (child: any) => (
+  <div className="grid place-items-center text-center h-full">
+    {WrapWithPrintIfNotReactElement(child)}
+  </div>
+)
+setMeta(Center, { noAutoLift: true })
+
 // Stack visuals on top of each other: the first child defines the size,
 // the rest overlay it – Layers(surface, Point2D(θ, range))
 const Layers = (...children: any[]) => (
@@ -2109,6 +2118,7 @@ extendEnvironment({
   CodePrint: PrettyPrintSyntaxTree,
 
   Button,
+  Center,
   Checkbox,
   Grid,
   ImageUpload,

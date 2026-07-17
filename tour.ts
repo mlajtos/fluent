@@ -55,14 +55,14 @@ demo: { src |
 head: { label |
     Grid([1, 2, 1])(
         Button("◂ back", { step(0 ⌈ (step() - 1)) }),
-        Text(label),
+        Center(Text(label)),
         Button("next ▸", { step((step() + 1) ⌊ 14) })
     )
 },
 head-final: { label |
     Grid([1, 2, 1])(
         Button("◂ back", { step(0 ⌈ (step() - 1)) }),
-        Text(label),
+        Center(Text(label)),
         Button("start over ↺", { step(0) })
     )
 },
