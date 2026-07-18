@@ -334,6 +334,37 @@ describe("tensors", () => {
       [[13, 24], [33, 44]],
     ])
   })
+  test("rank ⍤ applies f to each rank-k cell over the frame", () => {
+    expect(value("(Σ ⍤ 1)([[1,2,3],[4,5,6]])")).toEqual([6, 15])   // sum each row
+    expect(value("(Σ ⍤ 2)([[1,2,3],[4,5,6]])")).toBe(21)           // whole matrix is one cell
+    expect(value("Σ([[1,2,3],[4,5,6]])")).toBe(21)                 // bare Σ agrees
+  })
+  test("rank ⍤ lifts a whole-array function to act per row", () => {
+    const src = "nrm: { x | (x - min(x)) ÷ (max(x) - min(x)) }, (nrm ⍤ 1)([[1,2,3],[4,5,6],[7,8,9]])"
+    expect(value(src)).toEqual([[0, 0.5, 1], [0, 0.5, 1], [0, 0.5, 1]])
+  })
+  test("rank ⍤ is dyadic, a lone cell broadcasting over the frame", () => {
+    expect(value("([[1,2],[3,4]]) (+ ⍤ 1) ([10, 20])")).toEqual([[11, 22], [13, 24]])
+  })
+  test("rank ⍤ with negative k fixes the frame instead of the cell", () => {
+    expect(value("(Σ ⍤ -1)([[[1,2],[3,4]],[[5,6],[7,8]]])")).toEqual([10, 26])   // sum each 2×2
+    expect(value("(Σ ⍤ 1)([[[1,2],[3,4]],[[5,6],[7,8]]])")).toEqual([[3, 7], [11, 15]])   // sum each row
+  })
+  test("inner product ∙ is matmul, and swaps its ring", () => {
+    expect(value("[[1,2],[3,4]] (+ ∙ ×) [[5,6],[7,8]]")).toEqual([[19, 22], [43, 50]])   // +∙× = matmul
+    expect(value("[1,2,3] (+ ∙ ×) [4,5,6]")).toBe(32)                                     // vectors → dot
+    expect(value("[[0,3,999],[3,0,1],[999,1,0]] (⌊ ∙ +) [[0,3,999],[3,0,1],[999,1,0]]"))  // min-plus, one relaxation
+      .toEqual([[0, 3, 4], [3, 0, 1], [4, 1, 0]])
+  })
+  test("alongAxis applies any f along a named axis", () => {
+    expect(value("(Σ alongAxis 0)([[1,2,3],[4,5,6]])")).toEqual([5, 7, 9])    // reducer down columns
+    expect(value("(Σ ⌸ 0)([[1,2,3],[4,5,6]])")).toEqual([5, 7, 9])                    // tier-1 terse glyph
+    expect(value("(Σ TensorAlongAxis 0)([[1,2,3],[4,5,6]])")).toEqual([5, 7, 9])      // tier-3 descriptive [Type][Function]
+    expect(value("(Σ alongAxis 1)([[1,2,3],[4,5,6]])")).toEqual([6, 15])      // reducer across rows
+    expect(value("(Σ alongAxis -1)([[1,2,3],[4,5,6]])")).toEqual([6, 15])     // negative axis
+    const nrm = "nrm: { x | (x - min(x)) ÷ (max(x) - min(x)) }, "
+    expect(value(nrm + "(nrm alongAxis 0)([[1,4],[3,2]])")).toEqual([[0, 1], [1, 0]])   // shape-preserving, per column
+  })
   test("conv is rank-polymorphic and keeps input size (SAME)", () => {
     // signature is `arr conv kernel` – the data first, then the kernel, whose
     // rank sets the conv's rank
@@ -951,7 +982,7 @@ describe("gallery examples smoke suite", () => {
   const stubs: Record<string, Value> = {}
   for (const k of ["Button", "Checkbox", "Grid", "ImageUpload", "Layers", "Point2D", "Trail",
     "Slider", "Scrubber", "Text", "TextEditor", "Code", "CodeEditor", "Print", "PrettyPrint",
-    "CodePrint"]) stubs[k] = widget as Value
+    "CodePrint", "PointPlot"]) stubs[k] = widget as Value
   for (const k of ["Camera", "Microphone", "MicrophoneSpectrum", "LoadTensorFromImageUrl",
     "LoadSafeTensorFromURL", "Fetch"]) stubs[k] = source2d as Value
   for (const k of ["Time", "SampleRate", "MousePosition"]) stubs[k] = scalar as Value

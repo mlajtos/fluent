@@ -4,3 +4,10 @@ dist/
 .playwright-mcp/
 test-results/
 playwright-report/
+tiny_ref.json
+mlx_ref.json
+
+fluent3000/browser/bundle.js
+fluent3000/browser/driver/node_modules/
+fluent3000/browser/driver/package-lock.json
+fluent3000/browser/*.js

@@ -2369,7 +2369,7 @@ const TensorGradient = (f: Value) => {
 const TensorTranspose = unaryOp(np.transpose)
 // Move one axis to a new position, keeping the others' relative order (a zero-copy
 // view). The general axis-rotation that `transpose` (full reverse) can't express;
-// `byaxis` is built on it. Negative positions count from the end.
+// `alongAxis` is built on it. Negative positions count from the end.
 const TensorMoveAxis = (a: Value, from: Value, to: Value) => track(np.moveaxis(borrow(a), asNumber(from), asNumber(to)))
 const TensorIdentity = (a: Value) => {
   return track(np.eye(asNumber(a)))
@@ -3230,20 +3230,20 @@ outer: TensorOuter,
 rank: TensorRank,
 (∙): TensorInner,
 inner: TensorInner,
-byaxis: { f, k |
-  along: (f ⍤ 1),                                             ; f lifted to run on each trailing fibre
+alongAxis: { f, k |
+  lift: (f ⍤ 1),                                              ; f lifted to run on each trailing fibre
   { x |
     n: #(shape(x)),                                           ; the rank of x
-    lifted: along(moveaxis(x, k, n - 1)),                     ; rotate axis k to the trailing cell, run f
+    lifted: lift(moveaxis(x, k, n - 1)),                      ; rotate axis k to the trailing cell, run f
     cascade(
       (guard(#(shape(lifted)) = n, { moveaxis(lifted, n - 1, k) }),   ; shape-preserving f: rotate the axis home
        { lifted })                                                     ; reducer: axis k is gone
     )()
   }
 },
-doc(byaxis, "(f byaxis k)", "Apply f along axis k: f runs on each fibre parallel to axis k, mapping over the rest. Any function, any axis; a reducer drops the axis, a shape-preserving f keeps it.", "(Σ byaxis 0)([[1,2,3],[4,5,6]]) = [5, 7, 9]"),
-(⌸): byaxis,   ; tier 1 — glyph (tacit), APL's key
-axis: byaxis,  ; tier 2 — short word
+doc(alongAxis, "(f alongAxis k)", "Apply f along axis k: f runs on each fibre parallel to axis k, mapping over the rest. Any function, any axis; a reducer drops the axis, a shape-preserving f keeps it.", "(Σ alongAxis 0)([[1,2,3],[4,5,6]]) = [5, 7, 9]"),
+(⌸): alongAxis,                  ; tier 1 — terse glyph (APL's key); alongAxis itself is tier 2, the concise word
+TensorAlongAxis: alongAxis,      ; tier 3 — descriptive [Type][Function], stem matches (cf. rank/TensorRank)
 
 ; Shape manipulation
 flat: (⍴ ⟜ [-1]),

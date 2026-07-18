@@ -83,6 +83,50 @@ Grid(3)(
     ("Kite",            \`y\`,                 3 ⊢ 5                   ),
 )
 `,
+  "rank": `
+; ⍤ Rank — Iverson's rank conjunction. \`f ⍤ k\` applies f to each rank-k CELL of
+; its argument and maps over the leading FRAME. Write a function once, run it at
+; any rank: the SAME code re-scopes itself. (Dyadic \`a (f ⍤ k) b\` zips cells,
+; a lone cell broadcasting over the frame.)
+
+M: [[1, 4, 2, 8], [5, 3, 9, 1], [7, 2, 6, 4], [3, 8, 1, 5]],
+nrm: { x | (x - min(x)) ÷ (max(x) - min(x)) },   ; scales an array to 0..1
+
+(
+  Text("# ⍤ Rank polymorphism"),
+  Text("**One** function \`nrm\`, run at three ranks — no rewrite, the rank re-scopes it."),
+  Text("**nrm(M)** — the whole grid shares one min/max:"),
+  nrm(M),
+  Text("**(nrm ⍤ 1)(M)** — each ROW normalized on its own (every row now spans 0..1):"),
+  (nrm ⍤ 1)(M),
+  Text("**(Σ ⍤ 1)(M)** collapses each row to its sum; **Σ(M)** collapses the lot:"),
+  ((Σ ⍤ 1)(M), Σ(M)),
+)
+`,
+  "inner-product": `
+; ∙ Inner product — matrix multiply is just \`+ ∙ ×\`: reduce with +, combine with ×.
+; Keep the contraction, swap the RING, and the SAME operation becomes something
+; else. One combinator, every semiring — arithmetic, shortest paths, reachability.
+
+A: [[1, 2], [3, 4]],
+B: [[5, 6], [7, 8]],
+
+; a weighted graph — 999 stands in for "no edge"
+W: [[0, 3, 999, 999], [3, 0, 1, 999], [999, 1, 0, 2], [999, 999, 2, 0]],
+hop: { M | M (⌊ ∙ +) W },        ; one min-plus relaxation = allow one more edge
+
+(
+  Text("# ∙ One product, every semiring"),
+  Text("**A (+ ∙ ×) B** — ordinary matrix multiply (reduce +, combine ×):"),
+  A (+ ∙ ×) B,
+  Text("**edge weights** W (999 = no edge):"),
+  W,
+  Text("**W (⌊ ∙ +) W** — swap to min-plus: one round of shortest-path relaxation:"),
+  W (⌊ ∙ +) W,
+  Text("**all-pairs shortest paths** — iterate min-plus with ⍣ until it converges:"),
+  (hop ⍣ 3)(W),
+)
+`,
   "lerp": `
 ; Linear interpolation with custom operators
 ; lerp: 0.5 ≻ [10, 30] = 20
@@ -253,6 +297,71 @@ t: $(0),
   Slider(t),
   f(t),
   f(0..<100 / 100)
+)
+`,
+  "box-cox": `
+; 📈 Box–Cox — one dial λ reshapes the data, and ln sits at its center.
+; p_λ(x) = (x^λ − 1) / λ.  Scrub λ:  0 → ln,  ½ → √,  1 → linear,  2 → parabola.
+; It's a family of POWERS (x^λ). exp is NOT in it — exp lives in the INVERSE
+; transform, whose own λ→0 center is exp. So p₂(x) = (x²−1)/2 is a parabola, not eˣ.
+
+x: linspace([0.05, 4], 240),                 ; Box–Cox is defined for x > 0
+λ: $(0),                                      ; the dial — scrub me: try 0, 1, 2, −1
+
+; the transform. at λ = 0 the 0/0 limit is exactly ln(x), so branch there.
+; (x × 0 broadcasts the scalar test across the 240 sample points)
+p: { l | where((abs(l) < 0.001) + (x × 0), log(x), (x^l - 1) ÷ l) },
+
+; wrap the plot in a computed so it re-draws as you scrub λ (like Scrubber does)
+curve: $({ PointPlot(x, p(λ())) }),
+
+(
+  Text("# 📈 Box–Cox transform"),
+  Text("One dial **λ** reshapes data toward a bell curve. **λ→0 is ln** (the smooth center), 1 is linear, 2 is a parabola. A power family — **exp is not in it**."),
+  Grid([1, 6])(Text("**λ =**"), Scrubber(λ, 0.02)),
+  curve,
+)
+`,
+  "half-exp": `
+; 🌗 The half of exp — a net φ trained on ONE rule: φ(φ(x)) = eˣ.
+; No labels. The only signal is self-consistency: apply φ twice, land on exp.
+; φ settles HALFWAY — it nudges each x partway toward eˣ, and twice completes the
+; trip. This √exp has no elementary closed form (Kneser built it with complex
+; analysis); we just fit it, straight from its own equation.
+
+(++): TensorConcat,
+
+d: 16,
+x: linspace([-1, 1], 96),
+X: x ⍴ [96, 1],
+T: exp(x) ⍴ [96, 1],
+
+; residual MLP: φ(z) = z + net(z). net starts at 0 (W3 = 0), so φ begins as identity
+; and grows the half-step from there – which picks the increasing branch of √exp.
+σ: { z | z × sigmoid(z) },                       ; silu
+W1: ~(randn([1, d]) × 0.6),   b1: ~(fill([d], 0)),
+W2: ~(randn([d, d]) × 0.15),  b2: ~(fill([d], 0)),
+W3: ~(fill([d, 1], 0)),       b3: ~([0]),
+φ: { z | z + (matmul(σ(matmul(σ(matmul(z, W1) + b1), W2) + b2), W3) + b3) },
+
+; the ONLY loss: be self-consistent. no target for φ itself, only for φ∘φ.
+𝓛: { mean((φ(φ(X)) - T)^2) },
+opt: adam(0.02),
+
+losses: $([]),
+half:  $(φ(X) ⍴ [96]),        ; φ(x)     — climbs to sit between x and eˣ
+whole: $(φ(φ(X)) ⍴ [96]),     ; φ(φ(x))  — snaps onto eˣ
+{ losses(losses() ++ [opt(𝓛)]), half(φ(X) ⍴ [96]), whole(φ(φ(X)) ⍴ [96]) } ⟳ 2000,
+
+(
+  Text("# 🌗 The half of exp"),
+  Text("A net **φ** trained on one rule — **φ(φ(x)) = eˣ** — with no labels, only self-consistency. It learns √exp, a function with no closed form."),
+  Text("**loss** — self-consistency, converging:"),
+  losses,
+  Text("**φ(x)** (middle) settles between **x** (line) and **eˣ** (top) — genuinely halfway:"),
+  (x, half, exp(x)),
+  Text("**φ(φ(x))** lands on **eˣ**:"),
+  (exp(x), whole),
 )
 `,
   "deep-delta-learning": `
@@ -780,6 +889,139 @@ accuracy: $({ losses(), cascade((guard(loaded(), {
   accuracy,
   Text("**training loss**:"),
   losses,
+)
+`,
+  "error-diffusion": `
+; 🧠 A brain-plausible network learns MNIST — with NO backpropagation.
+; Dale's principle: every weight is non-negative, and each neuron is purely
+; excitatory or purely inhibitory (four sub-matrices per layer, +p −n / +n −p).
+; Credit is assigned by DIFFUSING the output error straight to the hidden
+; units — no ∇, no weight transport, no transposed backward pass. Each layer's
+; update is a local, Hebbian outer product: ΔW ∝ Aᵀ·(φ'(z)⊙routed-error).
+; After "Diffusing Blame", Yamada et al., Sakana AI (arXiv:2606.31700).
+
+(++): TensorConcat,
+
+; --- data: 14×14 binarised MNIST as safetensors (an empty list until it loads) ---
+data: LoadSafeTensorFromURL("mnist.safetensors"),
+loaded: { ListLength(data()) > 0 },
+Xtr: { ListGet(ListGet(data(), 0), 1) },   ; [6000, 196]  pixels in {0,1}
+Ytr: { ListGet(ListGet(data(), 1), 1) },   ; [6000, 10]   one-hot labels
+Xte: { ListGet(ListGet(data(), 2), 1) },   ; [1000, 196]
+Yte: { ListGet(ListGet(data(), 3), 1) },   ; [1000, 10]
+
+Din: 196, C: 10, H1: 200, H2: 100, α: 6, lr: 3, B: 128,
+
+; layer-specific sigmoid width α: wide sigmoids keep the derivative alive, or
+; the error attenuates ~25× per layer and nothing learns (the paper's key knob).
+; φ(z) = 1/(1+e^(-2z/α));  φ'(a) = (2/α)·a·(1-a)  — read straight off the activation.
+φ:  { z | sigmoid(z × (2 ÷ α)) },
+dφ: { a | (a × (1 - a)) × (2 ÷ α) },
+
+; modulo error routing: hidden unit i is wired to output class (i mod C). The
+; routing matrix M[i,c] = 1 iff i mod C = c; the hidden error is R = S·Mᵀ.
+route: { H | ((0 ..< H) % C) ⊗(=) (0 ..< C) },   ; [H, C]
+M1: route(H1), M2: route(H2),
+
+; asymmetric non-negative init: U[0,1)/√fan-in, excitatory ×1.5, inhibitory ×0.5
+; (a 3:1 E/I head start); the output layer stays symmetric to avoid saturation.
+ini: { fan, s | rand([fan, s]) ÷ √(fan) },
+Wpp1: $(ini(Din, H1) × 1.5), Wnp1: $(ini(Din, H1) × 0.5),
+Wnn1: $(ini(Din, H1) × 1.5), Wpn1: $(ini(Din, H1) × 0.5),
+Wpp2: $(ini(H1, H2) × 1.5),  Wnp2: $(ini(H1, H2) × 0.5),
+Wnn2: $(ini(H1, H2) × 1.5),  Wpn2: $(ini(H1, H2) × 0.5),
+Wppo: $(ini(H2, C)),         Wnpo: $(ini(H2, C)),
+Wnno: $(ini(H2, C)),         Wpno: $(ini(H2, C)),
+
+; one dual-stream layer: positive stream is excited by p, inhibited by n; the
+; negative stream mirrors it. The −signs are structural (Dale), never learned.
+fwd: { p, n, Wpp, Wnp, Wnn, Wpn |
+  (φ(matmul(p, Wpp) - matmul(n, Wnp)), φ(matmul(n, Wnn) - matmul(p, Wpn))) },
+
+; the ED weight step: a local outer product of presynaptic activity A and the
+; postsynaptic drive U, then clamp ≥ 1e-4 so weights can never turn negative.
+edUp: { W, A, U | (W + (matmul(transpose(A), U) × (lr ÷ B))) ⌈ 0.0001 },
+
+; readout for scoring: the output positive stream's logit, argmax over classes.
+model: { X | l1: fwd(X, X, Wpp1(), Wnp1(), Wnn1(), Wpn1()),
+  l2: fwd(l1_0, l1_1, Wpp2(), Wnp2(), Wnn2(), Wpn2()),
+  matmul(l2_0, Wppo()) - matmul(l2_1, Wnpo()) },   ; [n, 10]
+
+; ONE training step — a full forward, one diffused error, twelve local updates.
+train: { idx: floor(rand([B]) × 6000),
+  X: Xtr() _ idx, Y: Ytr() _ idx,
+  ; forward, keeping every stream's activation for its local update
+  l1: fwd(X, X, Wpp1(), Wnp1(), Wnn1(), Wpn1()), p1: l1_0, n1: l1_1,
+  l2: fwd(p1, n1, Wpp2(), Wnp2(), Wnn2(), Wpn2()), p2: l2_0, n2: l2_1,
+  lo: fwd(p2, n2, Wppo(), Wnpo(), Wnno(), Wpno()), po: lo_0, no: lo_1,
+  ; batch-centred one-vs-all error at the output (prediction = positive stream)
+  E: Y - po, S: E - mean(E, 0, 1),
+  ; the SAME output error, routed to each hidden layer — no backward pass
+  R1: matmul(S, transpose(M1)), R2: matmul(S, transpose(M2)),
+  ; postsynaptic drives: positive stream chases +R, negative stream chases −R
+  Up1: dφ(p1) × R1, Un1: dφ(n1) × (0 - R1),
+  Up2: dφ(p2) × R2, Un2: dφ(n2) × (0 - R2),
+  Upo: dφ(po) × S,  Uno: dφ(no) × (0 - S),
+  ; twelve local updates (inhibitory pathways carry the opposite-sign drive)
+  Wpp1(edUp(Wpp1(), X, Up1)),   Wnp1(edUp(Wnp1(), X, 0 - Up1)),
+  Wnn1(edUp(Wnn1(), X, Un1)),   Wpn1(edUp(Wpn1(), X, 0 - Un1)),
+  Wpp2(edUp(Wpp2(), p1, Up2)),  Wnp2(edUp(Wnp2(), n1, 0 - Up2)),
+  Wnn2(edUp(Wnn2(), n1, Un2)),  Wpn2(edUp(Wpn2(), p1, 0 - Un2)),
+  Wppo(edUp(Wppo(), p2, Upo)),  Wnpo(edUp(Wnpo(), n2, 0 - Upo)),
+  Wnno(edUp(Wnno(), n2, Uno)),  Wpno(edUp(Wpno(), p2, 0 - Uno)),
+  mean(abs(S)) },   ; how much blame is left to diffuse
+
+; --- the live displays ---
+training: $(1),
+errs: $([]), estride: $(2),
+{ i | when(loaded(), { when(once(training), {
+  s: train(),                                  ; train EVERY frame; log periodically
+  when((i % once(estride)) = 0, {
+    errs(errs() ++ (s ⍴ [1])),
+    when((#(errs())) ≥ 480, {                  ; bound the plot: thin + slow logging
+      errs(errs() _ ((0 ..< 240) × 2)),
+      estride ← (once(estride) × 2)
+    })
+  })
+}) }) } ⟳ 1000000,
+
+; test accuracy on held-out digits, recomputed as the error curve grows
+accuracy: $({ errs(), cascade((guard(loaded(), {
+  hits: argmax(model(Xte()), -1) = argmax(Yte(), -1),
+  round(mean(hits) × 1000) ÷ 10
+}), { 0 }))() }),
+
+; emergent E/I balance: mean excitatory vs inhibitory hidden weight. Starts at
+; 3:1 (the init), and learning drives it toward the cortical 1:1 on its own.
+eibal: $({ errs(),
+  (mean(Wpp1()) + mean(Wnn1()) + mean(Wpp2()) + mean(Wnn2()))
+  ÷ (mean(Wnp1()) + mean(Wpn1()) + mean(Wnp2()) + mean(Wpn2())) }),
+
+; look inside: the ten class "amplifiers" — for each class, the mean excitatory
+; input field of its 20 routed hidden units, reshaped to 14×14 and laid in a row.
+amp: $({ errs(),
+  m: mean(reshape(Wpp1(), [Din, 20, C]), 1),   ; [196, 10] per-class excitatory field
+  ; List(...) keeps the ten tiles a list (a [...] literal would stack them into one
+  ; tensor); concat lays them side by side into a 14×140 filmstrip.
+  concat(List( reshape(slice(m, [0, 0], [Din, 1]), [14, 14]), reshape(slice(m, [0, 1], [Din, 1]), [14, 14]),
+    reshape(slice(m, [0, 2], [Din, 1]), [14, 14]), reshape(slice(m, [0, 3], [Din, 1]), [14, 14]),
+    reshape(slice(m, [0, 4], [Din, 1]), [14, 14]), reshape(slice(m, [0, 5], [Din, 1]), [14, 14]),
+    reshape(slice(m, [0, 6], [Din, 1]), [14, 14]), reshape(slice(m, [0, 7], [Din, 1]), [14, 14]),
+    reshape(slice(m, [0, 8], [Din, 1]), [14, 14]), reshape(slice(m, [0, 9], [Din, 1]), [14, 14]) ), 1) }),
+
+(
+  Text("# 🧠 Learning MNIST without backprop"),
+  Text("A dual-stream, Dale-constrained network — every weight non-negative — trained by **Error Diffusion**: the output error is routed straight to the hidden units, no backward pass. After *Diffusing Blame* (Sakana AI)."),
+  Checkbox(training),
+  Text("**training** — uncheck to pause"),
+  Text("**test accuracy** (%), on digits it never trained on — climbing with no ∇:"),
+  accuracy,
+  Text("**the blame, diffusing** — mean output error, shrinking as credit finds its way home:"),
+  errs,
+  Text("**excitatory / inhibitory balance** — starts at 3:1, self-organises toward the cortical 1:1:"),
+  eibal,
+  Text("**the ten class amplifiers** — each excitatory stream's mean input field, learning a digit template live:"),
+  amp,
 )
 `,
   "dreamer": `
