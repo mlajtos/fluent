@@ -4,7 +4,7 @@
 
 **[Take the tour](https://mlajtos.github.io/fluent/?code=VG91cg)** — fifteen interactive rooms, from `1 + 2` to a value that finds √42 on its own. Or just **[open the playground](https://mlajtos.github.io/fluent/)** and type.
 
-Fluent is the working end of *[New Kind of Paper](https://mlajtos.mu/posts/new-kind-of-paper)*, an essay series about what math could feel like if pen, paper, and calculator were one instrument ([part two](https://mlajtos.mu/posts/new-kind-of-paper-2), [three](https://mlajtos.mu/posts/new-kind-of-paper-3), [four](https://mlajtos.mu/posts/new-kind-of-paper-4)).
+Fluent is the working end of *[New Kind of Paper](https://mlajtos.mu/posts/new-kind-of-paper)*, an essay series about what math could feel like if pen, paper, and calculator were one instrument ([part two](https://mlajtos.mu/posts/new-kind-of-paper-2), [three](https://mlajtos.mu/posts/new-kind-of-paper-3), [four](https://mlajtos.mu/posts/new-kind-of-paper-4), [five](https://mlajtos.mu/posts/new-kind-of-paper-5)).
 
 ## Example gallery
 
