@@ -1623,10 +1623,20 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
       ? (cb) => (globalThis as any).requestAnimationFrame(cb)
       : (cb) => { setTimeout(() => cb((globalThis as any).performance?.now?.() ?? 0), 0) }
 
+  // Between steps, hand the thread to pending input and rendering and then
+  // continue AHEAD of other queued work (scheduler.yield's front-of-queue
+  // semantics) – typing and scrolling stay alive inside a heavy batch
+  // instead of waiting for it. Chrome-only for now; elsewhere the batch
+  // runs unyielded, paced by rAF as before.
+  const schedulerYield: (() => Promise<void>) | null =
+    typeof (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler?.yield === "function"
+      ? () => (globalThis as unknown as { scheduler: { yield: () => Promise<void> } }).scheduler.yield()
+      : null
+
   let batch = 1
   let prev = 0
 
-  const frame = (t: number) => {
+  const frame = async (t: number) => {
     if (generation !== currentGeneration || i >= maxIterations) { return }
 
     // steer the batch by the inter-frame time. rAF is vsync-locked (~16.7ms), so
@@ -1641,13 +1651,16 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
     prev = t
 
     // The batch count is a plan, not a promise: bail out mid-batch the moment
-    // the frame budget is spent. Cheap ticks (a paused, checkbox-gated loop)
+    // the step budget is spent. Cheap ticks (a paused, checkbox-gated loop)
     // grow the batch toward the cap – without this, the first frame after
     // resuming would run the whole grown batch of now-expensive steps and
-    // freeze the tab for seconds.
-    const frameStart = (globalThis as any).performance?.now?.() ?? 0
+    // freeze the tab for seconds. The budget counts OUR time only: yielded
+    // time belongs to input and rendering and must not starve the batch.
+    const now = () => (globalThis as any).performance?.now?.() ?? 0
+    let stepTime = 0
     const end = Math.min(i + batch, maxIterations)
     while (i < end) {
+      const stepStart = now()
       // each step gets its own arena: per-iteration garbage dies immediately,
       // values that persist do so through signal/variable assignments
       arena(() => {
@@ -1656,7 +1669,13 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
         return null
       })
       i++
-      if ((((globalThis as any).performance?.now?.() ?? 0) - frameStart) > 25) { break }
+      stepTime += now() - stepStart
+      if (stepTime > 25) { break }
+      if (schedulerYield && i < end) {
+        await schedulerYield()
+        // the world may have moved on while we yielded
+        if (generation !== currentGeneration) { return }
+      }
     }
 
     // drain the lazy queue: jax-js never dispatches on its own, so a training
@@ -2049,6 +2068,58 @@ const TensorOuter = function (this: CurrentScope, f: Value, rank?: Value) {
   }
 }
 
+// Rank operator ⍤ – Iverson's rank conjunction (J's `"`). `f ⍤ k` applies f to
+// each rank-k CELL of its argument and reassembles over the leading FRAME axes,
+// so one function works at every rank: `normalize ⍤ 1` does each row, `⍤ 2` each
+// matrix, bare `normalize` the whole array. Dyadic `a (f ⍤ k) b` zips matching
+// frames. The frame is mapped by unstack→apply→stack (no tracer, so ∇ flows).
+const TensorRank = function (this: CurrentScope, f: Value, rank?: Value) {
+  const k = rank === undefined ? 0 : asNumber(rank)                            // k ≥ 0 = cell rank (trailing); k < 0 = frame rank (leading), J-style
+  const scope = this
+  const cellsOf = (a: Value): { frame: number[]; cells: Value[] } => {
+    const shape = shapeOf(a), split = k >= 0 ? Math.max(0, shape.length - k) : Math.min(shape.length, -k)
+    const frame = shape.slice(0, split), cell = shape.slice(split)
+    const flat = track(np.reshape(borrow(a), [frame.reduce((x, y) => x * y, 1), ...cell]))
+    return { frame, cells: TensorUnstack(flat) as Value[] }
+  }
+  return function (a: Value, b?: Value) {
+    const A = cellsOf(a)
+    let results: Value[], frame = A.frame
+    if (b === undefined) { results = A.cells.map((c) => safeApply(f, [c], scope)) }
+    else {
+      const B = cellsOf(b), na = A.cells.length, nb = B.cells.length
+      if (na !== nb && na !== 1 && nb !== 1) { return new Error("`(f ⍤ k)`: dyadic rank needs frames that match or broadcast") }
+      const N = Math.max(na, nb); frame = na >= nb ? A.frame : B.frame          // a lone cell broadcasts across the other's frame
+      results = Array.from({ length: N }, (_, i) => safeApply(f, [A.cells[na === 1 ? 0 : i]!, B.cells[nb === 1 ? 0 : i]!], scope))
+    }
+    const err = results.find((r) => r instanceof Error); if (err) { return err }
+    const stacked = TensorStack(results)
+    return track(np.reshape(borrow(stacked), [...frame, ...shapeOf(stacked).slice(1)]))
+  }
+}
+
+// Inner product ∙ – the dual of the table ⊗. `a (f ∙ g) b` contracts a's LAST
+// axis with b's FIRST: result = f-reduce over k of g(a[…,k], b[k,…]). Matrix
+// multiply is just `+ ∙ ×`; swap the ring for the rest – `⌊ ∙ +` is min-plus
+// (shortest paths), `∨ ∙ ∧` is boolean reachability. One combinator, any semiring.
+const TensorInner = function (this: CurrentScope, f: Value, g: Value) {
+  const scope = this
+  const gOuter = (u: Value, v: Value): Value => {                              // g between a rank-r u and rank-s v → the [u-frame, v-frame] table
+    const su = shapeOf(u), sv = shapeOf(v)
+    const uR = track(np.reshape(borrow(u), [...su, ...Array(sv.length).fill(1)]))
+    const vR = track(np.reshape(borrow(v), [...Array(su.length).fill(1), ...sv]))
+    return safeApply(g, [uR, vR], scope)
+  }
+  return function (a: Value, b: Value) {
+    const aSlices = TensorUnstack(track(np.moveaxis(borrow(a), -1, 0))) as Value[]   // a's contracted axis to the front
+    const bSlices = TensorUnstack(b) as Value[]                                      // b's contracted axis is already first
+    if (aSlices.length !== bSlices.length) { return new Error("`(f ∙ g)`: a's last axis and b's first axis must match") }
+    const terms = aSlices.map((u, k) => gOuter(u, bSlices[k]!))
+    const err = terms.find((t) => t instanceof Error); if (err) { return err }
+    return ListReduce(terms, (acc: Value, t: Value) => safeApply(f, [acc, t], scope))
+  }
+}
+
 const TensorAdd = binaryOp(np.add)
 const TensorSubtract = binaryOp(np.subtract)
 const TensorMultiply = binaryOp(np.multiply)
@@ -2296,6 +2367,10 @@ const TensorGradient = (f: Value) => {
   }
 }
 const TensorTranspose = unaryOp(np.transpose)
+// Move one axis to a new position, keeping the others' relative order (a zero-copy
+// view). The general axis-rotation that `transpose` (full reverse) can't express;
+// `byaxis` is built on it. Negative positions count from the end.
+const TensorMoveAxis = (a: Value, from: Value, to: Value) => track(np.moveaxis(borrow(a), asNumber(from), asNumber(to)))
 const TensorIdentity = (a: Value) => {
   return track(np.eye(asNumber(a)))
 }
@@ -2824,6 +2899,8 @@ doc(TensorRangeInclusive, "start ... stop", "Integer range from start through st
 doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]")
 doc(TensorGather, "x_i", "Index into a string, list, or tensor. `x_i` picks one element; `x_[i, j]` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30")
 doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]")
+doc(TensorRank, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1,2,3],[4,5,6]]) = [6, 15]")
+doc(TensorInner, "a (f ∙ g) b", "Inner product: contract a's last axis with b's first, combining with g and reducing with f. `+ ∙ ×` is matrix multiply; swap the ring for others.", "[[1,2],[3,4]] (+ ∙ ×) [[5,6],[7,8]] = [[19,22],[43,50]]")
 doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]")
 doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]")
 doc(TensorTile, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]")
@@ -3000,6 +3077,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorGradient,
 
   TensorTranspose,
+  TensorMoveAxis,
   TensorRange,
   TensorRangeInclusive,
   TensorLinearSpace,
@@ -3039,6 +3117,8 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorMatrixMultiply,
   TensorDotProduct,
   TensorOuter,
+  TensorRank,
+  TensorInner,
 
   // List operations
   List,
@@ -3142,9 +3222,28 @@ rangeInclusive: TensorRangeInclusive,
 shape: TensorShape,
 slice: TensorSlice,
 transpose: TensorTranspose,
+moveaxis: TensorMoveAxis,
 reverse: TensorReverse,
 (⊗): TensorOuter,
 outer: TensorOuter,
+(⍤): TensorRank,
+rank: TensorRank,
+(∙): TensorInner,
+inner: TensorInner,
+byaxis: { f, k |
+  along: (f ⍤ 1),                                             ; f lifted to run on each trailing fibre
+  { x |
+    n: #(shape(x)),                                           ; the rank of x
+    lifted: along(moveaxis(x, k, n - 1)),                     ; rotate axis k to the trailing cell, run f
+    cascade(
+      (guard(#(shape(lifted)) = n, { moveaxis(lifted, n - 1, k) }),   ; shape-preserving f: rotate the axis home
+       { lifted })                                                     ; reducer: axis k is gone
+    )()
+  }
+},
+doc(byaxis, "(f byaxis k)", "Apply f along axis k: f runs on each fibre parallel to axis k, mapping over the rest. Any function, any axis; a reducer drops the axis, a shape-preserving f keeps it.", "(Σ byaxis 0)([[1,2,3],[4,5,6]]) = [5, 7, 9]"),
+(⌸): byaxis,   ; tier 1 — glyph (tacit), APL's key
+axis: byaxis,  ; tier 2 — short word
 
 ; Shape manipulation
 flat: (⍴ ⟜ [-1]),
