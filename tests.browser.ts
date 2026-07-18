@@ -351,3 +351,22 @@ test("global shortcuts survive transient cell editors", async ({ page }) => {
   await page.keyboard.press("ControlOrMeta+KeyO")
   await expect(page.locator(".quick-input-widget")).toBeVisible() // the gallery picker
 })
+
+test("quoted-code trees are not clipped at their edges", async ({ page }) => {
+  // regression: the boundary nodes' rect strokes are centered on the svg
+  // viewport edge, and the default overflow:hidden ate the outer half – the
+  // rightmost node rendered with its border chopped off
+  await open(page, "`(f ∘ g) ⍨ x`")
+  const svg = page.locator("svg.ast-tree").first()
+  await expect(svg).toBeVisible()
+  const verdict = await svg.evaluate((el) => {
+    if (getComputedStyle(el).overflow !== "visible") { return "svg clips its drawing" }
+    const box = el.getBoundingClientRect()
+    for (const r of el.querySelectorAll("rect")) {
+      const rr = r.getBoundingClientRect()
+      if (rr.right > box.right - 1) { return "a node sits on the viewport edge" }
+    }
+    return "ok"
+  })
+  expect(verdict).toBe("ok")
+})

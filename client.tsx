@@ -1316,8 +1316,14 @@ function Tree(tree: SyntaxTreeNode & { type: "Program" }): JSX.Element {
     return s
   }
 
+  // Boundary nodes' rect strokes are CENTERED on the viewport edge (half the
+  // stroke lives outside), and glyph labels can run a hair wider than the
+  // 0.6em-per-char width estimate. A small bleed gutter plus visible
+  // overflow lets the drawing breathe – the surrounding panel's padding
+  // absorbs it, so edges stop getting chopped.
+  const bleed = 2
   return (
-    <svg className="ast-tree" style={{ width: totalWidth, height: totalHeight, shapeRendering: "optimizeSpeed" }} viewBox={`0 0 ${totalWidth} ${totalHeight}`}>
+    <svg className="ast-tree" style={{ width: totalWidth + 2 * bleed, height: totalHeight, overflow: "visible", shapeRendering: "optimizeSpeed" }} viewBox={`${-bleed} 0 ${totalWidth + 2 * bleed} ${totalHeight}`}>
       {/* one reactive region: re-renders on hover to re-tint frames/edges, but the
           layout above is computed only once per program */}
       {computed(() => {
