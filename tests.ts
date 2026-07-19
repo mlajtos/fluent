@@ -477,6 +477,14 @@ describe("reactivity", () => {
   test("watch bridges a variable into the signal world", () => {
     expect(value("θ: ~([2]), w: watch(θ), θ := [8], w")).toEqual([8])
   })
+  test("a signal can hold a list", () => {
+    // signals store VALUES – lists included. The borrow list-guard is for
+    // numeric ops; a $-signal of a list backs the tasks demo and the async
+    // loaders' empty-list placeholder (LoadSafeTensorFromURL).
+    expect(value("s: $(List(1, 2, 3)), ListLength(s())")).toBe(3)
+    expect(value("(++): ListConcat, s: $(List()), s(s() ++ List(7)), ListLength(s())")).toBe(1)
+    expect(value("(++): ListConcat, s: $(List()), s ← (s() ++ List(1, 2)), ListLength(s())")).toBe(2)
+  })
 })
 
 describe("differentiation and optimization", () => {
