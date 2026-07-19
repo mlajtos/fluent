@@ -175,7 +175,7 @@ type SyntaxTreeNode =
   | { type: "Symbol", content: { value: string }, origin: Origin }
   | { type: "Number", content: { value: number }, origin: Origin }
   | { type: "Tensor", content: { value: SyntaxTreeNode[] }, origin: Origin }
-  | { type: "List", content: { value: SyntaxTreeNode[] }, origin: Origin }
+  | { type: "List", content: { value: SyntaxTreeNode[], synthetic?: boolean }, origin: Origin }
   | { type: "Lambda", content: { args: SyntaxTreeNode[], expr: SyntaxTreeNode }, origin: Origin }
   | { type: "String", content: { value: string }, origin: Origin }
   | { type: "Error", content: string, origin: Origin }
@@ -251,7 +251,8 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
           type: "List",
           origin: getLocationOrigin(this),
           content: {
-            value: [left.toAST(this.args.mapping), right.toAST(this.args.mapping)]
+            value: [left.toAST(this.args.mapping), right.toAST(this.args.mapping)],
+            synthetic: true,   // infix operands are not an explicit ( … ): don't scope their bindings
           },
         }
       },
@@ -267,7 +268,8 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
           type: "List",
           origin: getLocationOrigin(this),
           content: {
-            value: [left.toAST(this.args.mapping), right.toAST(this.args.mapping)]
+            value: [left.toAST(this.args.mapping), right.toAST(this.args.mapping)],
+            synthetic: true,   // infix operands are not an explicit ( … ): don't scope their bindings
           },
         }
       },
@@ -283,7 +285,8 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
           type: "List",
           origin: getLocationOrigin(this),
           content: {
-            value: [left.toAST(this.args.mapping), right.toAST(this.args.mapping)]
+            value: [left.toAST(this.args.mapping), right.toAST(this.args.mapping)],
+            synthetic: true,   // infix operands are not an explicit ( … ): don't scope their bindings
           },
         }
       },
@@ -686,8 +689,9 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   if (node.type === "Operation") {
     const fn = evaluateSyntaxTreeNode(node.content.operator, env)
 
-    // a binding among the args (f(a: 2, b)) is local to the call, not leaked out
-    const argsEnv = Object.create(env) as CurrentScope
+    // a binding among a call's args (f(a: 2, b)) is local to the call. Infix operands
+    // aren't an explicit ( … ), so they bind in the enclosing scope: a: b: 23 binds both.
+    const argsEnv = (node.content.args.content.synthetic ? env : Object.create(env)) as CurrentScope
     // Process args directly (not via List evaluation) - safeApply handles quotedArgs
     const argNodes = node.content.args.content.value
     const args = argNodes.map((argNode: SyntaxTreeNode) =>
@@ -2196,14 +2200,9 @@ const TensorOr = comparisonOp(np.logicalOr)
 const TensorAnd = comparisonOp(np.logicalAnd)
 const TensorXor = comparisonOp(np.logicalXor)
 const TensorNot = (a: Value) => track(np.astype(np.logicalNot(borrow(a)), np.float32))
-const TensorNand = (a: Value, b: Value) => TensorNot(TensorAnd(a, b))
-const TensorNor = (a: Value, b: Value) => TensorNot(TensorOr(a, b))
 
 const TensorSine = unaryOp(np.sin)
 const TensorCosine = unaryOp(np.cos)
-const TensorTangent = unaryOp(np.tan)
-const TensorSineHyperbolic = unaryOp(np.sinh)
-const TensorCosineHyperbolic = unaryOp(np.cosh)
 const TensorTangentHyperbolic = unaryOp(np.tanh)
 const TensorSineInverse = unaryOp(np.asin)
 const TensorCosineInverse = unaryOp(np.acos)
@@ -2213,8 +2212,6 @@ const TensorCosineHyperbolicInverse = unaryOp(np.arccosh)
 const TensorTangentHyperbolicInverse = unaryOp(np.arctanh)
 const TensorArcTangent2 = binaryOp(np.arctan2)  // arctan2(y, x): angle of (x, y)
 const TensorHypotenuse = binaryOp(np.hypot)
-const TensorDegToRad = unaryOp(np.deg2rad)
-const TensorRadToDeg = unaryOp(np.rad2deg)
 
 // jax-js reduces bool arrays in bool arithmetic (add is `or`, so a bool sum
 // can only be 0 or 1) – promote to float like NumPy, so sum(x > 1) counts
@@ -2915,8 +2912,6 @@ doc(TensorOr, "x ∨ y", "Element-wise logical or: 1 where either operand is non
 doc(TensorAnd, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]")
 doc(TensorNot, "¬(x)", "Logical not: 1 where x is zero, else 0.", "¬([0, 2]) = [1, 0]")
 doc(TensorXor, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]")
-doc(TensorNand, "x ⍲ y", "Element-wise nand: 0 where both operands are nonzero, else 1. Functionally complete – every gate builds from it.", "[0, 1, 1] ⍲ [1, 1, 0] = [1, 0, 1]")
-doc(TensorNor, "x ⍱ y", "Element-wise nor: 1 where both operands are zero, else 0. Functionally complete, like ⍲.", "[0, 1, 0] ⍱ [0, 1, 1] = [1, 0, 0]")
 doc(TensorEqual, "x = y", "Element-wise equality: 1 where the operands are equal, else 0; shapes broadcast.", "([1, 2, 3] = 2) = [0, 1, 0]")
 doc(TensorLess, "x < y", "Element-wise less-than: 1 where x is below y, else 0; shapes broadcast.", "([1, 2, 3] < 2) = [1, 0, 0]")
 
@@ -3019,24 +3014,17 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorAnd,
   TensorNot,
   TensorXor,
-  TensorNand,
-  TensorNor,
   TensorSine,
   TensorCosine,
-  TensorTangent,
   TensorSineInverse,
   TensorCosineInverse,
   TensorTangentInverse,
-  TensorSineHyperbolic,
-  TensorCosineHyperbolic,
   TensorTangentHyperbolic,
   TensorSineHyperbolicInverse,
   TensorCosineHyperbolicInverse,
   TensorTangentHyperbolicInverse,
   TensorArcTangent2,
   TensorHypotenuse,
-  TensorDegToRad,
-  TensorRadToDeg,
 
   TensorSum,
   TensorProduct,
@@ -3333,8 +3321,7 @@ mul: TensorMultiply,
 (·): FunctionArity((TensorMultiply, TensorSign)),
 
 ; Math
-π: 3.141592653589793,
-pi: π,
+pi: π: 3.141592653589793,
 neg: TensorNegate,
 abs: TensorAbsolute,
 sign: TensorSign,
@@ -3344,28 +3331,20 @@ floor: TensorFloor,
 ceil: TensorCeil,
 reciprocal: TensorReciprocal,
 sqrt: TensorSquareRoot,
-TensorSquare: { x | x × x },
-square: TensorSquare,
+square: TensorSquare: { x | x × x },
 cbrt: TensorCubeRoot,
 hypot: TensorHypotenuse,
 log: TensorLogarithm,
-TensorLog2: { x | log(x) ÷ log(2) },
-log2: TensorLog2,
-TensorLog10: { x | log(x) ÷ log(10) },
-log10: TensorLog10,
+log2: TensorLog2: { x | log(x) ÷ log(2) },
+log10: TensorLog10: { x | log(x) ÷ log(10) },
 log1p: TensorLog1Plus,
 exp: TensorExponential,
 expm1: TensorExpMinus1,
-TensorClamp: { x, lo, hi | x ⌈ lo ⌊ hi },
-clamp: TensorClamp,
-TensorSigmoid: { x | 1 ÷ (1 + exp(-x)) },
-sigmoid: TensorSigmoid,
-TensorRelu: { x | x ⌈ 0 },
-relu: TensorRelu,
-TensorSilu: { x | x × sigmoid(x) },
-silu: TensorSilu,
-TensorReciprocalSquareRoot: { x | 1 ÷ sqrt(x) },
-rsqrt: TensorReciprocalSquareRoot,
+clamp: TensorClamp: { x, lo, hi | x ⌈ lo ⌊ hi },
+sigmoid: TensorSigmoid: { x | 1 ÷ (1 + exp(-x)) },
+relu: TensorRelu: { x | x ⌈ 0 },
+silu: TensorSilu: { x | x × sigmoid(x) },
+rsqrt: TensorReciprocalSquareRoot: { x | 1 ÷ sqrt(x) },
 softmax: TensorSoftmax,
 oneHot: TensorOneHot,
 crossEntropy: TensorCrossEntropy,
@@ -3373,7 +3352,7 @@ crossEntropy: TensorCrossEntropy,
 ; Trigonometry
 sin: TensorSine,
 cos: TensorCosine,
-tan: TensorTangent,
+tan: TensorTangent: { x | sin(x) ÷ cos(x) },
 asin: TensorSineInverse,
 acos: TensorCosineInverse,
 atan: TensorTangentInverse,
@@ -3382,8 +3361,8 @@ arccos: TensorCosineInverse,
 arctan: TensorTangentInverse,
 atan2: TensorArcTangent2,
 arctan2: TensorArcTangent2,
-sinh: TensorSineHyperbolic,
-cosh: TensorCosineHyperbolic,
+sinh: TensorSineHyperbolic: { x | (exp(x) - exp(-x)) ÷ 2 },
+cosh: TensorCosineHyperbolic: { x | (exp(x) + exp(-x)) ÷ 2 },
 tanh: TensorTangentHyperbolic,
 asinh: TensorSineHyperbolicInverse,
 acosh: TensorCosineHyperbolicInverse,
@@ -3391,8 +3370,8 @@ atanh: TensorTangentHyperbolicInverse,
 arcsinh: TensorSineHyperbolicInverse,
 arccosh: TensorCosineHyperbolicInverse,
 arctanh: TensorTangentHyperbolicInverse,
-deg2rad: TensorDegToRad,
-rad2deg: TensorRadToDeg,
+deg2rad: TensorDegreesToRadians: { x | x × (π ÷ 180) },
+rad2deg: TensorRadiansToDegrees: { x | x × (180 ÷ π) },
 
 ; Comparison
 (<): TensorLess,
@@ -3424,10 +3403,8 @@ and: TensorAnd,
 not: TensorNot,
 (⊻): TensorXor,
 xor: TensorXor,
-(⍲): TensorNand,
-nand: TensorNand,
-(⍱): TensorNor,
-nor: TensorNor,
+(⍲): nand: TensorNand: doc({ a, b | ¬(a ∧ b) }, "x ⍲ y", "Element-wise nand: 0 where both operands are nonzero, else 1. Functionally complete – every gate builds from it.", "[0, 1, 1] ⍲ [1, 1, 0] = [1, 0, 1]"),
+(⍱): nor: TensorNor: doc({ a, b | ¬(a ∨ b) }, "x ⍱ y", "Element-wise nor: 1 where both operands are zero, else 0. Functionally complete, like ⍲.", "[0, 1, 0] ⍱ [0, 1, 1] = [1, 0, 0]"),
 
 ; Reductions
 (∇): TensorGradient,

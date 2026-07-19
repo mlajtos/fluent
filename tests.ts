@@ -427,6 +427,15 @@ describe("math functions", () => {
   test("∇ flows through the Fluent-composed sigmoid", () => {
     expect(value("Σ(∇({ x | Σ(sigmoid(x)) })([0.0]))")).toBeCloseTo(0.25, 5)
   })
+  test("batch-2 prelude ops: tan/sinh/cosh, rad2deg, nand/nor (glyph + doc)", () => {
+    expect(value("tan(1)")).toBeCloseTo(1.5574, 3)     // sin(1)/cos(1)
+    expect(value("sinh(1)")).toBeCloseTo(1.1752, 3)
+    expect(value("cosh(1)")).toBeCloseTo(1.5431, 3)
+    expect(value("rad2deg(π)")).toBeCloseTo(180, 3)
+    expect(value("nand([0, 1, 1], [1, 1, 0])")).toEqual([1, 0, 1])
+    expect(value("[0, 1, 0] ⍱ [0, 1, 1]")).toEqual([1, 0, 0])  // nor via its glyph
+    expect(value("TensorTangent(1)")).toBeCloseTo(1.5574, 3)   // descriptive name holds the impl
+  })
   test("inverse trig, both arc* and short spellings", () => {
     expect(value("arcsin(1)")).toBeCloseTo(1.5708, 3)
     expect(value("asin(1)")).toBeCloseTo(1.5708, 3)   // short alias, same value
@@ -821,6 +830,10 @@ describe("errors", () => {
     expect(value("x: 5, (x + 1)")).toBe(6)
     // a binding among a call's arguments is local to the call
     expect(value("a: 1, Grid(1)(a: 2, a), a")).toBe(1)
+    // chained ':' binds every name — no explicit () means no scope, so both escape
+    // (this is what lets (glyph): concise: Descriptive: impl alias in one line)
+    expect(value("a: b: 23, [a, b]")).toEqual([23, 23])
+    expect(value("x: y: z: 5, x + y + z")).toBe(15)
   })
   test("calling a non-function is an Error value", () => {
     expect(run("3(4)")).toBeInstanceOf(Error)
