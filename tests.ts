@@ -485,6 +485,12 @@ describe("reactivity", () => {
     expect(value("(++): ListConcat, s: $(List()), s(s() ++ List(7)), ListLength(s())")).toBe(1)
     expect(value("(++): ListConcat, s: $(List()), s ← (s() ++ List(1, 2)), ListLength(s())")).toBe(2)
   })
+  test("a list-of-tensors signal survives churn (no use-after-free)", () => {
+    // regression: a list payload was stored verbatim, so its tensors weren't
+    // ref-counted – the arena reclaimed them and a later read hit a disposed
+    // tensor. Each tensor in a list payload is now borrowed and released.
+    expect(value("xy: $((fill([50], 7.0), fill([50], 3.0))), ({ i | xy((fill([50], 1.0), fill([50], 9.0))), i } ⍣ 20)(0), Σ(xy()_1)")).toBe(450)
+  })
 })
 
 describe("differentiation and optimization", () => {

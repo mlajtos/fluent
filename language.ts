@@ -1726,13 +1726,18 @@ const TensorScalarLive = (value: number): np.Array => {
   return backed
 }
 
-// Signals own one reference of their tensor payload: created with a borrowed
-// reference, released on every update. Reads hand out the payload unowned –
-// wrappers borrow at their call sites.
-// Signals hold Fluent VALUES: a list is stored as-is – borrow would reject it,
-// since the no-silent-coercion guard is for numeric ops, not storage. Tensors
-// still go through borrow so the signal keeps a live reference.
-const heldValue = (v: unknown) => (Array.isArray(v) ? v : borrow(v))
+// Signals own one reference of every tensor in their payload – including a
+// tensor nested in a list – borrowed on write, released on the next write.
+// Reads hand out the payload unowned; wrappers borrow at their call sites.
+// A list is a structure, not a number bag (borrow's no-coercion guard is for
+// numeric ops, not storage), so recurse: keep the list shape, borrow each
+// tensor in it. Owning those refs is what stops the arena from reclaiming them
+// out from under the signal – without it a later read hits a disposed tensor.
+const heldValue = (v: unknown): unknown => (Array.isArray(v) ? v.map((e) => heldValue(e)) : borrow(v))
+const releaseHeld = (v: unknown): void => {
+  if (Array.isArray(v)) { for (const e of v) { releaseHeld(e) } }
+  else if (v instanceof np.Array && v.refCount > 0) { v.dispose() }
+}
 
 const SignalCreate = (<T,>(initial: T) => signal(bufferBackedScalar(initial) ?? heldValue(initial))) as typeof signal
 
@@ -1749,9 +1754,7 @@ const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
     if (tracingActive) { throw new TraceBailout("signal write during trace") }
     const previous = s.peek() as unknown
     s.value = (bufferBackedScalar(v) ?? heldValue(v)) as T
-    if (previous instanceof np.Array && previous.refCount > 0) {
-      previous.dispose()
-    }
+    releaseHeld(previous)
     return
   }
 
