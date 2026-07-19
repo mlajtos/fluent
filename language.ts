@@ -3081,11 +3081,11 @@ SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current sco
 
 ; Combinators – glyph, array-language name, mainstream name
 (∘): then: compose: doc(FunctionCompose, "(f ∘ g)", "Then: apply f to the arguments, then g to the result – (f ∘ g)(x, y) = g(f(x, y)). Reading order is evaluation order. The Queer bird – APL's atop, swapped to read left-to-right.", "(+ ∘ √)(9, 16) = 5"),
-(⍨): commute: swap: doc(FunctionCommute, "(⍨ f)", "Commute: flip a binary function's arguments – x (⍨ f) y = f(y, x). With one argument, duplicate it: (⍨ f)(x) = f(x, x). The Cardinal and the Warbler.", "3 (⍨ -) 10 = 7"),
+(⍨): swap: commute: doc(FunctionCommute, "(⍨ f)", "Commute: flip a binary function's arguments – x (⍨ f) y = f(y, x). With one argument, duplicate it: (⍨ f)(x) = f(x, x). The Cardinal and the Warbler.", "3 (⍨ -) 10 = 7"),
 (⍥): over: doc(FunctionOver, "(g ⍥ f)", "Over: preprocess each argument with g, then combine with f – x (g ⍥ f) y = f(g(x), g(y)). The preprocessor is read first because it runs first. The Psi bird.", "-3 (abs ⍥ =) 3 = 1"),
-Φ: fork: phi: doc(FunctionFork, "Φ(f, g, h)", "Fork: apply the outer tines f and h to the arguments, combine the results with the middle tine g – x Φ(f, g, h) y = g(f(x, y), h(x, y)). A non-function tine is held constant. The Phoenix; dyadically the Pheasant.", "Φ(Σ, ÷, #)([1, 2, 3, 4]) = 2.5"),
+Φ: phi: fork: doc(FunctionFork, "Φ(f, g, h)", "Fork: apply the outer tines f and h to the arguments, combine the results with the middle tine g – x Φ(f, g, h) y = g(f(x, y), h(x, y)). A non-function tine is held constant. The Phoenix; dyadically the Pheasant.", "Φ(Σ, ÷, #)([1, 2, 3, 4]) = 2.5"),
 (⊸): before: doc(FunctionBefore, "(f ⊸ g)", "Before: preprocess the left (or only) argument with f, then combine with g – (f ⊸ g)(x, y) = g(f(x), y); (f ⊸ g)(x) = g(f(x), x). A constant binds the left argument. The Violet Starling; dyadically the Zebra Dove.", "(1 ⊸ +)(41) = 42"),
-(⟜): after: hook: doc(FunctionAfter, "(f ⟜ g)", "After: preprocess the right (or only) argument with g, then combine with f – (f ⟜ g)(x, y) = f(x, g(y)); (f ⟜ g)(x) = f(x, g(x)) – the J hook. A constant binds the right argument. The Starling; dyadically the Dove.", "(÷ ⟜ √)(16) = 4"),
+(⟜): hook: after: doc(FunctionAfter, "(f ⟜ g)", "After: preprocess the right (or only) argument with g, then combine with f – (f ⟜ g)(x, y) = f(x, g(y)); (f ⟜ g)(x) = f(x, g(x)) – the J hook. A constant binds the right argument. The Starling; dyadically the Dove.", "(÷ ⟜ √)(16) = 4"),
 (⊢): right: doc(FunctionRight, "x ⊢ y", "Right: yield the rightmost argument; with one argument, the identity.", "3 ⊢ 5 = 5"),
 (⊣): left: doc(FunctionLeft, "x ⊣ y", "Left: yield the leftmost argument; with one argument, the identity.", "3 ⊣ 5 = 3"),
 isFunction: doc(FunctionIs, "isFunction(v)", "1 if v is a function, else 0 – the question a combinator asks before treating an operand as a constant. Composes like a comparison.", "isFunction(√) = 1, isFunction(5) = 0"),
@@ -3097,7 +3097,7 @@ guard: doc(FunctionGuard, "guard(cond, { value })", "A cascade candidate: yields
 when: doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Errors from the thunk stay loud – only the condition gates.", "when(training(), { opt(𝓛) })"),
 
 ; Tensor shape/indexing
-(#): length: len: Length,
+(#): len: length: Length,
 (_): gather: doc(TensorGather, "x_i", "Index into a string, list, or tensor. \`x_i\` picks one element; \`x_[i, j]\` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30"),
 (⍴): reshape: doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]"),
 (..<): range: doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the \`<\` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]"),
@@ -3213,7 +3213,7 @@ mul: doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcas
 (·): FunctionArity((TensorMultiply, TensorSign)),
 
 ; Math
-pi: π: 3.141592653589793,
+π: pi: 3.141592653589793,
 neg: doc(TensorNegate, "neg(x)", "Negate each element.", "neg([1, -2]) = [-1, 2]"),
 abs: doc(TensorAbsolute, "abs(x)", "Absolute value of each element.", "abs([-2, 3]) = [2, 3]"),
 sign: doc(TensorSign, "sign(x)", "The sign of each element: -1, 0, or 1.", "sign([-5, 0, 3]) = [-1, 0, 1]"),
@@ -3259,12 +3259,12 @@ deg2rad: TensorDegreesToRadians: { x | x × (π ÷ 180) },
 rad2deg: TensorRadiansToDegrees: { x | x × (180 ÷ π) },
 
 ; Comparison
-(<): less: lt: doc(TensorLess, "x < y", "Element-wise less-than: 1 where x is below y, else 0; shapes broadcast.", "([1, 2, 3] < 2) = [1, 0, 0]"),
-(>): greater: gt: TensorGreater,
-(≤): (<=): lessEqual: le: TensorLessEqual,
-(≥): (>=): greaterEqual: ge: TensorGreaterEqual,
+(<): lt: less: doc(TensorLess, "x < y", "Element-wise less-than: 1 where x is below y, else 0; shapes broadcast.", "([1, 2, 3] < 2) = [1, 0, 0]"),
+(>): gt: greater: doc(TensorGreater, "x > y", "Element-wise greater-than: 1 where x is above y, else 0; shapes broadcast.", "([1, 2, 3] > 2) = [0, 0, 1]"),
+(≤): (<=): le: lessEqual: doc(TensorLessEqual, "x ≤ y", "Element-wise less-than-or-equal: 1 where x is at most y, else 0; shapes broadcast.", "([1, 2, 3] ≤ 2) = [1, 1, 0]"),
+(≥): (>=): ge: greaterEqual: doc(TensorGreaterEqual, "x ≥ y", "Element-wise greater-than-or-equal: 1 where x is at least y, else 0; shapes broadcast.", "([1, 2, 3] ≥ 2) = [0, 1, 1]"),
 (=): equal: doc(TensorEqual, "x = y", "Element-wise equality: 1 where the operands are equal, else 0; shapes broadcast.", "([1, 2, 3] = 2) = [0, 1, 0]"),
-(≠): (!=): notEqual: TensorNotEqual,
+(≠): (!=): notEqual: doc(TensorNotEqual, "x ≠ y", "Element-wise inequality: 1 where the operands differ, else 0; shapes broadcast.", "([1, 2, 3] ≠ 2) = [1, 0, 1]"),
 
 ; Logical
 (∨): or: doc(TensorOr, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]"),
@@ -3299,7 +3299,7 @@ watch: doc(TensorWatch, "watch(variable)", "A signal that updates whenever a var
 
 ; Tensor ops
 sort: doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]"),
-argsort: (⍋): doc(TensorArgSort, "argsort(x)", "The indices that sort a vector into ascending order – grade up. x_argsort(x) is x sorted.", "argsort([3, 1, 2]) = [1, 2, 0]"),
+(⍋): argsort: doc(TensorArgSort, "argsort(x)", "The indices that sort a vector into ascending order – grade up. x_argsort(x) is x sorted.", "argsort([3, 1, 2]) = [1, 2, 0]"),
 roll: doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]"),
 flip: TensorReverse,
 mask: doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]"),
@@ -3317,14 +3317,14 @@ topk: TensorTopK,
 einsum: TensorEinsum,
 
 ; Creation
-rand: (⚄): doc(TensorRandomUniform, "⚄(shape)  ·  rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "⚄([2, 2])"),
+(⚄): rand: doc(TensorRandomUniform, "⚄(shape)  ·  rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "⚄([2, 2])"),
 randn: TensorRandomNormal,
 linspace: TensorLinearSpace,
 fill: TensorFill,
 stack: TensorStack,
 unstack: TensorUnstack,
 concat: TensorConcat,
-tile: (⧉): doc(TensorTile, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]"),
+(⧉): tile: doc(TensorTile, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]"),
 
 ; Optimization
 adam: TensorOptimizationAdam,
