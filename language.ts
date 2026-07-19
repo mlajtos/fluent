@@ -2861,86 +2861,6 @@ const CodesToString = (a: Value) => {
 const Null = null
 
 
-// MARK: Built-in docs
-// Authored on the canonical functions themselves, so every prelude alias that
-// resolves to one (⌈ → TensorMaximum, once → SignalOnce, …) inherits the same
-// card: the doc lives on the value, not the name. Editor hover and completion
-// read it back with getMeta. Signatures use the ergonomic notation people type.
-doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $(4), once(x) + 1 = 5")
-doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2")
-doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad. For data the loss reads but never trains, use ~~.", "θ: ~([0, 0])")
-doc(TensorData, "~~(init)", "Make a data slot – every optimizer step reads it fresh, but no gradient flows into it and nothing trains it. Assign with := any time, even to a new shape – training carries on.", "x: ~~([1, 2]), x := [3, 4, 5]")
-doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\"abc\") = [97, 98, 99]")
-doc(CodesToString, "CodesToString(codes)", "A tensor of character codes back to text. Rounds first, so model outputs decode directly.", "CodesToString([104, 105]) = \"hi\"")
-doc(TensorOptimizationAdamW, "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)")
-doc(TensorOptimizationSgd, "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)")
-doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w = [8]")
-doc(TensorGradient, "∇(f)", "Gradient of a function: ∇(f)(x) is df/dx at x. Works on any function of smooth numeric ops — reshape and indexing pass through; argmax/round/comparisons read as constant (zero gradient). Nests: ∇(∇(f)) is the second derivative.", "∇({ x | x^2 })(3) = 6")
-doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6")
-doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so `x reduce ⌈` is max.", "1 ..< 10 reduce + = 45")
-doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]")
-doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]")
-doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor.", "max([3, 1, 2]) = 3")
-doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the whole tensor.", "min([3, 1, 2]) = 1")
-doc(TensorCeil, "⌈(x)  ·  ceil(x)", "Round each element up to the nearest integer.", "⌈(2.3) = 3")
-doc(TensorFloor, "⌊(x)  ·  floor(x)", "Round each element down to the nearest integer.", "⌊(2.7) = 2")
-// Leaf docs for the arity-overloaded operators – FunctionArity synthesizes
-// the +, -, ×, · cards from these
-doc(TensorAdd, "x + y", "Element-wise addition; shapes broadcast.", "[1, 2] + 10 = [11, 12]")
-doc(TensorAbsolute, "abs(x)", "Absolute value of each element.", "abs([-2, 3]) = [2, 3]")
-doc(TensorSubtract, "x - y", "Element-wise subtraction; shapes broadcast.", "[3, 4] - 1 = [2, 3]")
-doc(TensorNegate, "neg(x)", "Negate each element.", "neg([1, -2]) = [-1, 2]")
-doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcast.", "[1, 2] × 3 = [3, 6]")
-doc(TensorSign, "sign(x)", "The sign of each element: -1, 0, or 1.", "sign([-5, 0, 3]) = [-1, 0, 1]")
-doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the `<` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]")
-doc(TensorRangeInclusive, "start ... stop", "Integer range from start through stop, endpoint included.", "1 ... 5 = [1, 2, 3, 4, 5]")
-doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]")
-doc(TensorGather, "x_i", "Index into a string, list, or tensor. `x_i` picks one element; `x_[i, j]` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30")
-doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]")
-doc(TensorRank, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1,2,3],[4,5,6]]) = [6, 15]")
-doc(TensorInner, "a (f ∙ g) b", "Inner product: contract a's last axis with b's first, combining with g and reducing with f. `+ ∙ ×` is matrix multiply; swap the ring for others.", "[[1,2],[3,4]] (+ ∙ ×) [[5,6],[7,8]] = [[19,22],[43,50]]")
-doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]")
-doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]")
-doc(TensorTile, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]")
-doc(TensorRandomUniform, "⚄(shape)  ·  rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "⚄([2, 2])")
-doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]")
-doc(TensorArgSort, "argsort(x)", "The indices that sort a vector into ascending order – grade up. x_argsort(x) is x sorted.", "argsort([3, 1, 2]) = [1, 2, 0]")
-doc(Length, "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\"abc\") = 3")
-doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]")
-doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0) = [1, 0, 3]")
-doc(TensorOr, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]")
-doc(TensorAnd, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]")
-doc(TensorNot, "¬(x)", "Logical not: 1 where x is zero, else 0.", "¬([0, 2]) = [1, 0]")
-doc(TensorXor, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]")
-doc(TensorEqual, "x = y", "Element-wise equality: 1 where the operands are equal, else 0; shapes broadcast.", "([1, 2, 3] = 2) = [0, 1, 0]")
-doc(TensorLess, "x < y", "Element-wise less-than: 1 where x is below y, else 0; shapes broadcast.", "([1, 2, 3] < 2) = [1, 0, 0]")
-
-// Control & function machinery – these cards teach the language, not just a
-// function: scoping, the three assignments, application, iteration, and the
-// errors-are-values control flow have no NumPy analogue to lean on.
-doc(SymbolAssign, "name: value", "Bind a name in the current scope. Glued to its left operand, `:` takes everything to its right – `a: 1 + 2` binds 3.", "a: 1 + 2, a × 10 = 30")
-doc(TensorAssign, "θ := value", "Assign a new value to a variable (made with ~ or ~~); optimizers do this every step, watch(θ) sees it. Mid-expression, parenthesize the value: θ := (a + b).", "θ: ~([0, 0]), θ := [1, 2]")
-doc(FunctionApply, "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]")
-doc(FunctionEvaluate, "f @ x", "Apply the function on the left to the argument on the right – reads as “f at x”. A list spreads as multiple arguments.", "∇({ x | x^2 }) @ 3 = 6")
-doc(FunctionIterate, "step ⟳ n", "Run a thunk n times, paced between display frames so the UI stays live – the loop for training and simulation. Async: a re-evaluation cancels it.", "opt: sgd(0.1), { opt(𝓛) } ⟳ 100")
-doc(FunctionPower, "(f ⍣ n)(x)", "Function power: f composed with itself n times – f(f(…f(x))). Synchronous; for a frame-paced loop use ⟳.", "double: { x | x × 2 }, (double ⍣ 5)(1) = 32")
-
-// Combinators – the cards name the birds so the taxonomy stays discoverable
-doc(FunctionCompose, "(f ∘ g)", "Then: apply f to the arguments, then g to the result – (f ∘ g)(x, y) = g(f(x, y)). Reading order is evaluation order. The Queer bird – APL's atop, swapped to read left-to-right.", "(+ ∘ √)(9, 16) = 5")
-doc(FunctionCommute, "(⍨ f)", "Commute: flip a binary function's arguments – x (⍨ f) y = f(y, x). With one argument, duplicate it: (⍨ f)(x) = f(x, x). The Cardinal and the Warbler.", "3 (⍨ -) 10 = 7")
-doc(FunctionOver, "(g ⍥ f)", "Over: preprocess each argument with g, then combine with f – x (g ⍥ f) y = f(g(x), g(y)). The preprocessor is read first because it runs first. The Psi bird.", "-3 (abs ⍥ =) 3 = 1")
-doc(FunctionFork, "Φ(f, g, h)", "Fork: apply the outer tines f and h to the arguments, combine the results with the middle tine g – x Φ(f, g, h) y = g(f(x, y), h(x, y)). A non-function tine is held constant. The Phoenix; dyadically the Pheasant.", "Φ(Σ, ÷, #)([1, 2, 3, 4]) = 2.5")
-doc(FunctionBefore, "(f ⊸ g)", "Before: preprocess the left (or only) argument with f, then combine with g – (f ⊸ g)(x, y) = g(f(x), y); (f ⊸ g)(x) = g(f(x), x). A constant binds the left argument. The Violet Starling; dyadically the Zebra Dove.", "(1 ⊸ +)(41) = 42")
-doc(FunctionAfter, "(f ⟜ g)", "After: preprocess the right (or only) argument with g, then combine with f – (f ⟜ g)(x, y) = f(x, g(y)); (f ⟜ g)(x) = f(x, g(x)) – the J hook. A constant binds the right argument. The Starling; dyadically the Dove.", "(÷ ⟜ √)(16) = 4")
-doc(FunctionRight, "x ⊢ y", "Right: yield the rightmost argument; with one argument, the identity.", "3 ⊢ 5 = 5")
-doc(FunctionLeft, "x ⊣ y", "Left: yield the leftmost argument; with one argument, the identity.", "3 ⊣ 5 = 3")
-doc(FunctionIs, "isFunction(v)", "1 if v is a function, else 0 – the question a combinator asks before treating an operand as a constant. Composes like a comparison.", "isFunction(√) = 1, isFunction(5) = 0")
-doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order; the first result that isn’t an Error wins. Errors are values in Fluent – falling through is intended, not exceptional.", "cascade((guard(n = 0, { 1 }), { n × f(n - 1) }))()")
-doc(FunctionCond, "cond(a, b, …)", "Eager, variadic cascade: run each thunk in order, first non-Error wins. `cascade((…))()` without the wrapper – reads as a multi-way conditional next to guard.", "cond(guard(n = 0, { 1 }), { n × fact(n - 1) })")
-doc(FunctionGuard, "guard(cond, { value })", "A cascade candidate: yields the value while cond is truthy, an Error otherwise.", "guard(n = 0, { 1 })")
-doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Errors from the thunk stay loud – only the condition gates.", "when(training(), { opt(𝓛) })")
-
-
 // MARK: Environment
 
 // Null-prototype: an environment is a bare name→value mapping. A plain `{}`
@@ -3074,7 +2994,8 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorEinsum,
   TensorReshape,
   TensorLength,
-  Length,
+  // length's example shows a string literal ("abc"), which a Fluent string can't contain — so it's doc'd here, not inline in the prelude
+  Length: doc(Length, "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\"abc\") = 3"),
   TensorShape,
   TensorGather,
   TensorWhere,
@@ -3115,8 +3036,8 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   String,
   StringConcat,
   StringLength,
-  StringToCodes,
-  CodesToString,
+  StringToCodes: doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\"abc\") = [97, 98, 99]"),
+  CodesToString: doc(CodesToString, "CodesToString(codes)", "A tensor of character codes back to text. Rounds first, so model outputs decode directly.", "CodesToString([104, 105]) = \"hi\""),
 
   "◌": Null,
   "null": Null,
@@ -3150,69 +3071,45 @@ const setCodeNodePrinter = (printer: (node: SyntaxTreeNode) => Value) => {
 // MARK: Prelude
 
 const PRELUDE = `
-SymbolAssign(:, SymbolAssign),
-(:=): TensorAssign,
+SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current scope. Glued to its left operand, \`:\` takes everything to its right – \`a: 1 + 2\` binds 3.", "a: 1 + 2, a × 10 = 30")),
+(:=): doc(TensorAssign, "θ := value", "Assign a new value to a variable (made with ~ or ~~); optimizers do this every step, watch(θ) sees it. Mid-expression, parenthesize the value: θ := (a + b).", "θ: ~([0, 0]), θ := [1, 2]"),
 
 ; Functions
-(.): FunctionApply,
-apply: FunctionApply,
-(⟳): FunctionIterate,
-iter: FunctionIterate,
-(⍣): FunctionPower,
+(.): apply: doc(FunctionApply, "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]"),
+(⟳): iter: doc(FunctionIterate, "step ⟳ n", "Run a thunk n times, paced between display frames so the UI stays live – the loop for training and simulation. Async: a re-evaluation cancels it.", "opt: sgd(0.1), { opt(𝓛) } ⟳ 100"),
+(⍣): doc(FunctionPower, "(f ⍣ n)(x)", "Function power: f composed with itself n times – f(f(…f(x))). Synchronous; for a frame-paced loop use ⟳.", "double: { x | x × 2 }, (double ⍣ 5)(1) = 32"),
 
 ; Combinators – glyph, array-language name, mainstream name
-(∘): FunctionCompose,
-then: FunctionCompose,
-compose: FunctionCompose,
-(⍨): FunctionCommute,
-commute: FunctionCommute,
-swap: FunctionCommute,
-(⍥): FunctionOver,
-over: FunctionOver,
-Φ: FunctionFork,
-fork: FunctionFork,
-phi: FunctionFork,
-(⊸): FunctionBefore,
-before: FunctionBefore,
-(⟜): FunctionAfter,
-after: FunctionAfter,
-hook: FunctionAfter,
-(⊢): FunctionRight,
-right: FunctionRight,
-(⊣): FunctionLeft,
-left: FunctionLeft,
-isFunction: FunctionIs,
+(∘): then: compose: doc(FunctionCompose, "(f ∘ g)", "Then: apply f to the arguments, then g to the result – (f ∘ g)(x, y) = g(f(x, y)). Reading order is evaluation order. The Queer bird – APL's atop, swapped to read left-to-right.", "(+ ∘ √)(9, 16) = 5"),
+(⍨): commute: swap: doc(FunctionCommute, "(⍨ f)", "Commute: flip a binary function's arguments – x (⍨ f) y = f(y, x). With one argument, duplicate it: (⍨ f)(x) = f(x, x). The Cardinal and the Warbler.", "3 (⍨ -) 10 = 7"),
+(⍥): over: doc(FunctionOver, "(g ⍥ f)", "Over: preprocess each argument with g, then combine with f – x (g ⍥ f) y = f(g(x), g(y)). The preprocessor is read first because it runs first. The Psi bird.", "-3 (abs ⍥ =) 3 = 1"),
+Φ: fork: phi: doc(FunctionFork, "Φ(f, g, h)", "Fork: apply the outer tines f and h to the arguments, combine the results with the middle tine g – x Φ(f, g, h) y = g(f(x, y), h(x, y)). A non-function tine is held constant. The Phoenix; dyadically the Pheasant.", "Φ(Σ, ÷, #)([1, 2, 3, 4]) = 2.5"),
+(⊸): before: doc(FunctionBefore, "(f ⊸ g)", "Before: preprocess the left (or only) argument with f, then combine with g – (f ⊸ g)(x, y) = g(f(x), y); (f ⊸ g)(x) = g(f(x), x). A constant binds the left argument. The Violet Starling; dyadically the Zebra Dove.", "(1 ⊸ +)(41) = 42"),
+(⟜): after: hook: doc(FunctionAfter, "(f ⟜ g)", "After: preprocess the right (or only) argument with g, then combine with f – (f ⟜ g)(x, y) = f(x, g(y)); (f ⟜ g)(x) = f(x, g(x)) – the J hook. A constant binds the right argument. The Starling; dyadically the Dove.", "(÷ ⟜ √)(16) = 4"),
+(⊢): right: doc(FunctionRight, "x ⊢ y", "Right: yield the rightmost argument; with one argument, the identity.", "3 ⊢ 5 = 5"),
+(⊣): left: doc(FunctionLeft, "x ⊣ y", "Left: yield the leftmost argument; with one argument, the identity.", "3 ⊣ 5 = 3"),
+isFunction: doc(FunctionIs, "isFunction(v)", "1 if v is a function, else 0 – the question a combinator asks before treating an operand as a constant. Composes like a comparison.", "isFunction(√) = 1, isFunction(5) = 0"),
 
-(@): FunctionEvaluate,
-eval: FunctionEvaluate,
-cascade: FunctionCascade,
-cond: FunctionCond,
-guard: FunctionGuard,
-when: FunctionWhen,
+(@): eval: doc(FunctionEvaluate, "f @ x", "Apply the function on the left to the argument on the right – reads as “f at x”. A list spreads as multiple arguments.", "∇({ x | x^2 }) @ 3 = 6"),
+cascade: doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order; the first result that isn’t an Error wins. Errors are values in Fluent – falling through is intended, not exceptional.", "cascade((guard(n = 0, { 1 }), { n × f(n - 1) }))()"),
+cond: doc(FunctionCond, "cond(a, b, …)", "Eager, variadic cascade: run each thunk in order, first non-Error wins. \`cascade((…))()\` without the wrapper – reads as a multi-way conditional next to guard.", "cond(guard(n = 0, { 1 }), { n × fact(n - 1) })"),
+guard: doc(FunctionGuard, "guard(cond, { value })", "A cascade candidate: yields the value while cond is truthy, an Error otherwise.", "guard(n = 0, { 1 })"),
+when: doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Errors from the thunk stay loud – only the condition gates.", "when(training(), { opt(𝓛) })"),
 
 ; Tensor shape/indexing
-(#): Length,
-length: Length,
-len: Length,
-(_): TensorGather,
-gather: TensorGather,
-(⍴): TensorReshape,
-reshape: TensorReshape,
-(..<): TensorRange,
-range: TensorRange,
-(...): TensorRangeInclusive,
-rangeInclusive: TensorRangeInclusive,
+(#): length: len: Length,
+(_): gather: doc(TensorGather, "x_i", "Index into a string, list, or tensor. \`x_i\` picks one element; \`x_[i, j]\` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30"),
+(⍴): reshape: doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]"),
+(..<): range: doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the \`<\` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]"),
+(...): rangeInclusive: doc(TensorRangeInclusive, "start ... stop", "Integer range from start through stop, endpoint included.", "1 ... 5 = [1, 2, 3, 4, 5]"),
 shape: TensorShape,
 slice: TensorSlice,
 transpose: TensorTranspose,
 moveaxis: TensorMoveAxis,
 reverse: TensorReverse,
-(⊗): TensorOuter,
-outer: TensorOuter,
-(⍤): TensorRank,
-rank: TensorRank,
-(∙): TensorInner,
-inner: TensorInner,
+(⊗): outer: doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]"),
+(⍤): rank: doc(TensorRank, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1,2,3],[4,5,6]]) = [6, 15]"),
+(∙): inner: doc(TensorInner, "a (f ∙ g) b", "Inner product: contract a's last axis with b's first, combining with g and reducing with f. \`+ ∙ ×\` is matrix multiply; swap the ring for others.", "[[1,2],[3,4]] (+ ∙ ×) [[5,6],[7,8]] = [[19,22],[43,50]]"),
 alongAxis: { f, k |
   lift: (f ⍤ 1),                                              ; f lifted to run on each trailing fibre
   { x |
@@ -3258,7 +3155,7 @@ chunks: { w, arr |
 
 stencil: { w, f, arr | unstack(windows(w, arr)) ListMap f . stack },
 conv: TensorConvolution,   ; nD convolution: arr conv kernel – a 1D kernel over a vector, a 2D kernel over an image
-(⊛): TensorConvolution,
+(⊛): doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]"),
 
 ; List operations
 ListGather: { a, b |
@@ -3302,18 +3199,13 @@ ListScan: { list, f, init |
 },
 
 ; Arithmetic
-(/): TensorDivide,
-(÷): TensorDivide,
-div: TensorDivide,
-(%): TensorRemainder,
-mod: TensorRemainder,
-(^): TensorPower,
-pow: TensorPower,
-(√): TensorRoot,
-root: TensorRoot,
-add: TensorAdd,
-sub: TensorSubtract,
-mul: TensorMultiply,
+(/): (÷): div: TensorDivide,
+(%): mod: TensorRemainder,
+(^): pow: TensorPower,
+(√): root: TensorRoot,
+add: doc(TensorAdd, "x + y", "Element-wise addition; shapes broadcast.", "[1, 2] + 10 = [11, 12]"),
+sub: doc(TensorSubtract, "x - y", "Element-wise subtraction; shapes broadcast.", "[3, 4] - 1 = [2, 3]"),
+mul: doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcast.", "[1, 2] × 3 = [3, 6]"),
 (+): FunctionArity((TensorAdd, TensorAbsolute)),
 (-): FunctionArity((TensorSubtract, TensorNegate)),
 (*): FunctionArity((TensorMultiply, TensorSign)),
@@ -3322,13 +3214,13 @@ mul: TensorMultiply,
 
 ; Math
 pi: π: 3.141592653589793,
-neg: TensorNegate,
-abs: TensorAbsolute,
-sign: TensorSign,
+neg: doc(TensorNegate, "neg(x)", "Negate each element.", "neg([1, -2]) = [-1, 2]"),
+abs: doc(TensorAbsolute, "abs(x)", "Absolute value of each element.", "abs([-2, 3]) = [2, 3]"),
+sign: doc(TensorSign, "sign(x)", "The sign of each element: -1, 0, or 1.", "sign([-5, 0, 3]) = [-1, 0, 1]"),
 round: TensorRound,
 trunc: TensorTruncate,
-floor: TensorFloor,
-ceil: TensorCeil,
+floor: doc(TensorFloor, "⌊(x)  ·  floor(x)", "Round each element down to the nearest integer.", "⌊(2.7) = 2"),
+ceil: doc(TensorCeil, "⌈(x)  ·  ceil(x)", "Round each element up to the nearest integer.", "⌈(2.3) = 3"),
 reciprocal: TensorReciprocal,
 sqrt: TensorSquareRoot,
 square: TensorSquare: { x | x × x },
@@ -3353,96 +3245,65 @@ crossEntropy: TensorCrossEntropy,
 sin: TensorSine,
 cos: TensorCosine,
 tan: TensorTangent: { x | sin(x) ÷ cos(x) },
-asin: TensorSineInverse,
-acos: TensorCosineInverse,
-atan: TensorTangentInverse,
-arcsin: TensorSineInverse,
-arccos: TensorCosineInverse,
-arctan: TensorTangentInverse,
-atan2: TensorArcTangent2,
-arctan2: TensorArcTangent2,
+asin: arcsin: TensorSineInverse,
+acos: arccos: TensorCosineInverse,
+atan: arctan: TensorTangentInverse,
+atan2: arctan2: TensorArcTangent2,
 sinh: TensorSineHyperbolic: { x | (exp(x) - exp(-x)) ÷ 2 },
 cosh: TensorCosineHyperbolic: { x | (exp(x) + exp(-x)) ÷ 2 },
 tanh: TensorTangentHyperbolic,
-asinh: TensorSineHyperbolicInverse,
-acosh: TensorCosineHyperbolicInverse,
-atanh: TensorTangentHyperbolicInverse,
-arcsinh: TensorSineHyperbolicInverse,
-arccosh: TensorCosineHyperbolicInverse,
-arctanh: TensorTangentHyperbolicInverse,
+asinh: arcsinh: TensorSineHyperbolicInverse,
+acosh: arccosh: TensorCosineHyperbolicInverse,
+atanh: arctanh: TensorTangentHyperbolicInverse,
 deg2rad: TensorDegreesToRadians: { x | x × (π ÷ 180) },
 rad2deg: TensorRadiansToDegrees: { x | x × (180 ÷ π) },
 
 ; Comparison
-(<): TensorLess,
-less: TensorLess,
-lt: TensorLess,
-(>): TensorGreater,
-greater: TensorGreater,
-gt: TensorGreater,
-(≤): TensorLessEqual,
-(<=): TensorLessEqual,
-lessEqual: TensorLessEqual,
-le: TensorLessEqual,
-(≥): TensorGreaterEqual,
-(>=): TensorGreaterEqual,
-greaterEqual: TensorGreaterEqual,
-ge: TensorGreaterEqual,
-(=): TensorEqual,
-equal: TensorEqual,
-(≠): TensorNotEqual,
-(!=): TensorNotEqual,
-notEqual: TensorNotEqual,
+(<): less: lt: doc(TensorLess, "x < y", "Element-wise less-than: 1 where x is below y, else 0; shapes broadcast.", "([1, 2, 3] < 2) = [1, 0, 0]"),
+(>): greater: gt: TensorGreater,
+(≤): (<=): lessEqual: le: TensorLessEqual,
+(≥): (>=): greaterEqual: ge: TensorGreaterEqual,
+(=): equal: doc(TensorEqual, "x = y", "Element-wise equality: 1 where the operands are equal, else 0; shapes broadcast.", "([1, 2, 3] = 2) = [0, 1, 0]"),
+(≠): (!=): notEqual: TensorNotEqual,
 
 ; Logical
-(∨): TensorOr,
-or: TensorOr,
-(∧): TensorAnd,
-and: TensorAnd,
-(¬): TensorNot,
-not: TensorNot,
-(⊻): TensorXor,
-xor: TensorXor,
+(∨): or: doc(TensorOr, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]"),
+(∧): and: doc(TensorAnd, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]"),
+(¬): not: doc(TensorNot, "¬(x)", "Logical not: 1 where x is zero, else 0.", "¬([0, 2]) = [1, 0]"),
+(⊻): xor: doc(TensorXor, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]"),
 (⍲): nand: TensorNand: doc({ a, b | ¬(a ∧ b) }, "x ⍲ y", "Element-wise nand: 0 where both operands are nonzero, else 1. Functionally complete – every gate builds from it.", "[0, 1, 1] ⍲ [1, 1, 0] = [1, 0, 1]"),
 (⍱): nor: TensorNor: doc({ a, b | ¬(a ∨ b) }, "x ⍱ y", "Element-wise nor: 1 where both operands are zero, else 0. Functionally complete, like ⍲.", "[0, 1, 0] ⍱ [0, 1, 1] = [1, 0, 0]"),
 
 ; Reductions
-(∇): TensorGradient,
-grad: TensorGradient,
-(Σ): TensorSum,
-sum: TensorSum,
-reduce: TensorReduce,
-(Π): TensorProduct,
-prod: TensorProduct,
-(μ): TensorMean,
-mean: TensorMean,
+(∇): grad: doc(TensorGradient, "∇(f)", "Gradient of a function: ∇(f)(x) is df/dx at x. Works on any function of smooth numeric ops — reshape and indexing pass through; argmax/round/comparisons read as constant (zero gradient). Nests: ∇(∇(f)) is the second derivative.", "∇({ x | x^2 })(3) = 6"),
+(Σ): sum: doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6"),
+reduce: doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so \`x reduce ⌈\` is max.", "1 ..< 10 reduce + = 45"),
+(Π): prod: TensorProduct,
+(μ): mean: TensorMean,
 
 ; Min/max: the WORD reduces (whole tensor, or one axis like sum) – so
 ; max(x, axis) works. The GLYPH is APL's ⌈/⌊: ceiling/floor on one tensor,
 ; pairwise max/min on two. (max and ⌈ can't be one function – max(x, axis)
 ; and pairwise max(a, b) share a shape, so the axis would be eaten as an operand.)
-max: TensorMax,
-min: TensorMin,
-(⌈): FunctionArity((TensorMaximum, TensorCeil)),
-(⌊): FunctionArity((TensorMinimum, TensorFloor)),
+max: doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor.", "max([3, 1, 2]) = 3"),
+min: doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the whole tensor.", "min([3, 1, 2]) = 1"),
+(⌈): FunctionArity((doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]"), TensorCeil)),
+(⌊): FunctionArity((doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]"), TensorFloor)),
 argmax: TensorArgMax,
 argmin: TensorArgMin,
 
 ; Variables
-(~): TensorVariable,
-var: TensorVariable,
-(~~): TensorData,
-data: TensorData,
-watch: TensorWatch,
+(~): var: doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad. For data the loss reads but never trains, use ~~.", "θ: ~([0, 0])"),
+(~~): data: doc(TensorData, "~~(init)", "Make a data slot – every optimizer step reads it fresh, but no gradient flows into it and nothing trains it. Assign with := any time, even to a new shape – training carries on.", "x: ~~([1, 2]), x := [3, 4, 5]"),
+watch: doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w = [8]"),
 
 ; Tensor ops
-sort: TensorSort,
-argsort: TensorArgSort,
-(⍋): TensorArgSort,
-roll: TensorRoll,
+sort: doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]"),
+argsort: (⍋): doc(TensorArgSort, "argsort(x)", "The indices that sort a vector into ascending order – grade up. x_argsort(x) is x sorted.", "argsort([3, 1, 2]) = [1, 2, 0]"),
+roll: doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]"),
 flip: TensorReverse,
-mask: TensorMask,
-where: TensorWhere,
+mask: doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]"),
+where: doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0) = [1, 0, 3]"),
 isNaN: TensorIsNaN,
 eye: TensorIdentity,
 dot: TensorDotProduct,
@@ -3456,28 +3317,26 @@ topk: TensorTopK,
 einsum: TensorEinsum,
 
 ; Creation
-rand: TensorRandomUniform,
-(⚄): TensorRandomUniform,
+rand: (⚄): doc(TensorRandomUniform, "⚄(shape)  ·  rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "⚄([2, 2])"),
 randn: TensorRandomNormal,
 linspace: TensorLinearSpace,
 fill: TensorFill,
 stack: TensorStack,
 unstack: TensorUnstack,
 concat: TensorConcat,
-tile: TensorTile,
-(⧉): TensorTile,
+tile: (⧉): doc(TensorTile, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]"),
 
 ; Optimization
 adam: TensorOptimizationAdam,
-adamw: TensorOptimizationAdamW,
-sgd: TensorOptimizationSgd,
+adamw: doc(TensorOptimizationAdamW, "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)"),
+sgd: doc(TensorOptimizationSgd, "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)"),
 adagrad: TensorOptimizationAdaGrad,
 
 ; Misc
-($): Reactive,
+($): doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2"),
 ; ← is defined here in the prelude, so its doc lives here too
 (←): doc(FunctionNoAutoLift({ s, v | s(v) }), "signal ← value", "Write a value into a signal – same as signal(value), but reads left-to-right. Chains like any spaced operator: parenthesize compound values, s ← (a + b).", "x: $(1), x ← 9, x() = 9"),
-once: SignalOnce,
+once: doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $(4), once(x) + 1 = 5"),
 `
 
 // Parse the prelude once – createScope runs on every evaluation (each keystroke)
