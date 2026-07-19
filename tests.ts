@@ -411,6 +411,22 @@ describe("math functions", () => {
     expect(value("log1p(0)")).toBe(0)
     expect(value("trunc(0 - 2.7)")).toBe(-2)  // toward zero, unlike floor
   })
+  test("prelude-native additions: silu, rsqrt, π", () => {
+    expect(value("silu(0)")).toBe(0)
+    expect(value("silu(1)")).toBeCloseTo(0.7311, 3)   // 1 · sigmoid(1)
+    expect(value("rsqrt(4)")).toBe(0.5)               // 1 / √4
+    expect(value("round(π × 1000)")).toBe(3142)
+    expect(value("pi")).toBe(value("π"))
+  })
+  test("descriptive Tensor* names alias the concise ops", () => {
+    // sigmoid/relu/clamp/etc. now live in Fluent; the [Type][Function] name holds the impl
+    expect(value("TensorClamp(7, 2, 5)")).toBe(5)
+    expect(value("TensorSigmoid(0)")).toBe(0.5)
+    expect(value("TensorSquare(4)")).toBe(16)
+  })
+  test("∇ flows through the Fluent-composed sigmoid", () => {
+    expect(value("Σ(∇({ x | Σ(sigmoid(x)) })([0.0]))")).toBeCloseTo(0.25, 5)
+  })
   test("inverse trig, both arc* and short spellings", () => {
     expect(value("arcsin(1)")).toBeCloseTo(1.5708, 3)
     expect(value("asin(1)")).toBeCloseTo(1.5708, 3)   // short alias, same value

@@ -2300,24 +2300,17 @@ const TensorNegate = unaryOp(np.negative)
 const TensorAbsolute = unaryOp(np.absolute)
 const TensorSign = unaryOp(np.sign)
 const TensorLogarithm = unaryOp(np.log)
-const TensorLog2 = unaryOp(np.log2)
-const TensorLog10 = unaryOp(np.log10)
 const TensorLog1Plus = unaryOp(np.log1p)      // log(1 + x), accurate near 0
 const TensorExponential = unaryOp(np.exp)
 const TensorExpMinus1 = unaryOp(np.expm1)     // exp(x) - 1, accurate near 0
 const TensorReciprocal = unaryOp(np.reciprocal)
 const TensorSquareRoot = unaryOp(np.sqrt)
-const TensorSquare = unaryOp(np.square)
 const TensorCubeRoot = unaryOp(np.cbrt)
 const TensorRound = unaryOp(np.round)
 const TensorTruncate = unaryOp(np.trunc)      // toward zero, unlike floor
 const TensorCeil = unaryOp(np.ceil)
 const TensorFloor = unaryOp(np.floor)
 const TensorErrorFunction = unaryOp(lax.erf)
-const TensorSigmoid = unaryOp(nn.sigmoid)
-const TensorRelu = unaryOp(nn.relu)
-const TensorClamp = (x: Value, min: Value, max: Value) =>
-  track(np.clip(borrow(x), borrow(min), borrow(max)))
 const TensorSoftmax = (x: Value, axis?: Value) =>
   track(nn.softmax(borrow(x), axis === undefined ? undefined : asNumber(axis)))
 const TensorOneHot = (indices: Value, depth: Value) =>
@@ -3059,23 +3052,17 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorAbsolute,
   TensorSign,
   TensorLogarithm,
-  TensorLog2,
-  TensorLog10,
   TensorLog1Plus,
   TensorExponential,
   TensorExpMinus1,
   TensorReciprocal,
   TensorSquareRoot,
-  TensorSquare,
   TensorCubeRoot,
   TensorRound,
   TensorTruncate,
   TensorCeil,
   TensorFloor,
   TensorErrorFunction,
-  TensorSigmoid,
-  TensorRelu,
-  TensorClamp,
   TensorSoftmax,
   TensorOneHot,
   TensorCrossEntropy,
@@ -3346,6 +3333,8 @@ mul: TensorMultiply,
 (·): FunctionArity((TensorMultiply, TensorSign)),
 
 ; Math
+π: 3.141592653589793,
+pi: π,
 neg: TensorNegate,
 abs: TensorAbsolute,
 sign: TensorSign,
@@ -3355,18 +3344,28 @@ floor: TensorFloor,
 ceil: TensorCeil,
 reciprocal: TensorReciprocal,
 sqrt: TensorSquareRoot,
+TensorSquare: { x | x × x },
 square: TensorSquare,
 cbrt: TensorCubeRoot,
 hypot: TensorHypotenuse,
 log: TensorLogarithm,
+TensorLog2: { x | log(x) ÷ log(2) },
 log2: TensorLog2,
+TensorLog10: { x | log(x) ÷ log(10) },
 log10: TensorLog10,
 log1p: TensorLog1Plus,
 exp: TensorExponential,
 expm1: TensorExpMinus1,
+TensorClamp: { x, lo, hi | x ⌈ lo ⌊ hi },
 clamp: TensorClamp,
+TensorSigmoid: { x | 1 ÷ (1 + exp(-x)) },
 sigmoid: TensorSigmoid,
+TensorRelu: { x | x ⌈ 0 },
 relu: TensorRelu,
+TensorSilu: { x | x × sigmoid(x) },
+silu: TensorSilu,
+TensorReciprocalSquareRoot: { x | 1 ÷ sqrt(x) },
+rsqrt: TensorReciprocalSquareRoot,
 softmax: TensorSoftmax,
 oneHot: TensorOneHot,
 crossEntropy: TensorCrossEntropy,
