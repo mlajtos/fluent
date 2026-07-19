@@ -473,6 +473,51 @@ field: $({ av: a(), bv: b(), cv: c(),
   ),
 )
 `,
+"differentiable-reach": `
+n: 16,  ; joints
+len: 0.85 ÷ n,  ; segment length
+θ: ~(fill([n], 0.15)),  ; the only trainable thing
+
+tril: (0 ..< n) ⊗(≥) (0 ..< n),  ; prefix-sum matrix
+cumsum: { v | matmul(tril, v ⍴ [n, 1]) ⍴ [n] },  ; scan
+fk: { a |  ; forward kinematics
+  ang: cumsum(a),  ; cumulative angle
+  step: len × stack((cos(ang), sin(ang)), 1),  ; xy step
+  matmul(tril, step) - [0.45, 0]  ; joint positions
+},
+
+target: $([0.55, 0.35]),  ; drag me (orange)
+obstacle: $([-0.1, -0.3]),  ; drag me (red)
+last: oneHot(n - 1, n) ⍴ [n, 1],  ; picks the tip
+
+𝓛: {  ; loss
+  P: fk(θ),  ; joint positions
+  tip: Σ(P × last, 0),  ; the hand
+  reach: Σ((tip - target())^2),  ; hand → target
+  avoid: Σ(1 ÷ (Σ((P - obstacle())^2, 1) + 0.02)),  ; repel
+  reach + 0.004 × avoid
+},
+
+opt: adam(0.05),  ; optimiser
+joints: $(fk(θ)),  ; live pose for the glow
+{ opt(𝓛), joints(fk(θ)) } ⟳ 100000,  ; step, then publish
+
+range: [[-1, 1], [-1, 1]],  ; view box
+gres: 300,  ; glow resolution
+g: linspace([-1, 1], gres),  ; grid axis
+arm: $({  ; the glowing arm
+  q: transpose(joints()),  ; xs, ys as rows
+  dx: (g ⍴ [1, gres, 1]) - (q_0 ⍴ [1, 1, n]),
+  dy: (g ⍴ [gres, 1, 1]) - (q_1 ⍴ [1, 1, n]),
+  Σ(exp(0 - (dx^2 + dy^2) ÷ 0.005), 2)  ; Σ gaussians
+}),
+
+(
+  Text("# 🦾 Differentiable reach"),
+  Text("Drag the **orange** target — the arm gradient-descends to it. Drag the **red** obstacle — it bends away. FRP × AD, one graph."),
+  Layers(arm, Point2D(target, range, "orange"), Point2D(obstacle, range, "red")),
+)
+`,
 "optimizer-race": `
 ; ⚔️ adam vs sgd – same start, same landscape, different characters
 
