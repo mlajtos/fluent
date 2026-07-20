@@ -76,23 +76,20 @@ Fluent {
   Expr
     = Operation
 
+  // Every non-tight operator lives here; the whitespace around it picks its tier:
+  //  · glued-LEFT "a op· b" – glued to its left operand, space on its right – is the
+  //    LOOSEST. It splits: the whole chain on its left, the entire rest on its right,
+  //    right-associatively. "a: 1 + 2"; "1 + 2* 3 + 4" is "(1 + 2) * (3 + 4)". The
+  //    (Operation | TightOperation) left gives the split both a non-recursive seed
+  //    (the tight left of "a: …") and a recursive one (the spaced left of "a + b*").
+  //    The operator is any Atom, so referential transparency holds – "1add 2 * 3" is
+  //    f(1, 2*3). (A number can't glue lexically, and a glued "(...)" is an argument
+  //    list – see Application below.)
+  //  · spaced "a op b" (and inert glued-RIGHT "a ·op b") chain left-to-right.
+  //  · a leading operator with no left operand is prefix "-a".
   Operation
-    = LongOperation
-    | SpacedOperation
-
-  // operator glued to its left operand, space after it:
-  // everything to the right is the right operand – "a: 1 + 2" is "a: (1 + 2)"
-  // the glued operator is any Atom, so referential transparency holds: an
-  // identifier glued here behaves like the value it is bound to, glued here –
-  // "1add 2 * 3" and "1{x,y|x+y} 2 * 3" both mean f(1, 2*3), given add:{x,y|x+y}.
-  // (Number can't glue lexically, and a parenthesized value "1(f) 2" is claimed
-  // by application, not this rule – see the Application note below.)
-  LongOperation
-    = TightOperation #(~space) Atom #(space) Expr
-
-  // spaced operators chain left-to-right – "1 + 2 * 3" is "(1 + 2) * 3"
-  SpacedOperation
-    = (SpacedOperation | TightOperation) TightOperation TightOperation --infix
+    = (Operation | TightOperation) #(~space) Atom #(space) Expr --gluedSplit
+    | (Operation | TightOperation) TightOperation TightOperation --infix
     | TightOperation TightOperation --prefix
     | TightOperation
 
@@ -239,13 +236,13 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
       origin: getLocationOrigin(this),
     }
   },
-  LongOperation(left, operator, _space, right) {
+  Operation_gluedSplit(left, operator, _space, right) {
     return {
       type: "Operation",
       content: {
         // toAST (not operatorSymbolNode) so the glued operator keeps its real
         // value node – a Symbol stays a Symbol, a Lambda stays a Lambda, etc.
-        // (referential transparency, same handling as SpacedOperation_infix)
+        // (referential transparency, same handling as Operation_infix)
         operator: operator.toAST(this.args.mapping),
         args: {
           type: "List",
@@ -259,7 +256,7 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
       origin: getLocationOrigin(this),
     }
   },
-  SpacedOperation_infix(left, operator, right) {
+  Operation_infix(left, operator, right) {
     return {
       type: "Operation",
       content: {
@@ -313,7 +310,7 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
       origin: getLocationOrigin(this),
     }
   },
-  SpacedOperation_prefix(left, right) {
+  Operation_prefix(left, right) {
     const rightValue: SyntaxTreeNode = right.toAST(this.args.mapping);
     const isList = rightValue.type === "List";
     const args: SyntaxTreeNode = isList ? rightValue : {

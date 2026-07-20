@@ -32,6 +32,20 @@ describe("whitespace is precedence", () => {
     expect(value("a: b: 2 + 3, a")).toBe(5)
     expect(value("x: 1 ..< 4, sum(x)")).toBe(6)
   })
+  test("a glued-left operator splits: left and right are maximal spaced chains", () => {
+    // "1 + 2* 3 + 4" is "(1 + 2) * (3 + 4)" = 3 * 7 = 21 – the glued * outranks the
+    // spaced +s and takes the whole chain on each side, unlike the all-spaced form.
+    expect(value("1 + 2* 3 + 4")).toBe(21)
+    expect(value("1 + 2 * 3 + 4")).toBe(13)   // all spaced: plain left-to-right
+    expect(value("1 + 2 + 3* 4")).toBe(24)    // left reaches back over the chain: (1 + 2 + 3) * 4
+  })
+  test("glued-left operators are right-associative, spaced ones left-associative", () => {
+    expect(value("10- 4- 3")).toBe(9)         // 10 - (4 - 3)
+    expect(value("10 - 4 - 3")).toBe(3)       // (10 - 4) - 3
+  })
+  test("the glued-left operator can be any value (referential transparency)", () => {
+    expect(value("add: { x, y | x + y }, 1add 2 * 3")).toBe(7)   // add(1, 2 * 3)
+  })
   test("assignment evaluates to the assigned value", () => {
     expect(value("a: 1 + 2")).toBe(3)
   })
