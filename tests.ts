@@ -400,6 +400,27 @@ describe("math functions", () => {
     expect(value("sigmoid(0)")).toBe(0.5)
     expect(value("relu(0 - 3)")).toBe(0)
   })
+  test("softplus, gelu, mish – and their tier names resolve to the same op", () => {
+    expect(value("softplus(0)")).toBeCloseTo(0.6931, 3)   // log 2
+    expect(value("softRelu(0)")).toBeCloseTo(0.6931, 3)   // alt name
+    expect(value("gelu(0)")).toBe(0)
+    expect(value("gelu(1)")).toBeCloseTo(0.8412, 3)
+    expect(value("TensorGelu(1)")).toBeCloseTo(0.8412, 3) // descriptive name
+    expect(value("mish(0)")).toBe(0)
+    expect(value("mish(1)")).toBeCloseTo(0.8651, 3)
+  })
+  test("statistics: variance, std (σ), l2norm – with glyph tiers", () => {
+    expect(value("variance([1, 2, 3])")).toBeCloseTo(0.6667, 3)
+    expect(value("𝕍([1, 2, 3])")).toBeCloseTo(0.6667, 3)  // glyph tier
+    expect(value("std([2, 4, 4, 4, 5, 5, 7, 9])")).toBe(2)
+    expect(value("σ([2, 4, 4, 4, 5, 5, 7, 9])")).toBe(2)  // glyph tier
+    expect(value("norm([3, 4])")).toBe(5)
+    expect(value("l2norm([3, 4])")).toBe(5)               // alt name
+  })
+  test("eye is the identity matrix, folded from an outer-product equality", () => {
+    expect(value("eye(2)")).toEqual([[1, 0], [0, 1]])
+    expect(value("𝕀(3)")).toEqual([[1, 0, 0], [0, 1, 0], [0, 0, 1]])  // glyph tier
+  })
   test("softmax sums to one", () => {
     expect(value("sum(softmax([1, 2, 3]))")).toBeCloseTo(1, 5)
   })

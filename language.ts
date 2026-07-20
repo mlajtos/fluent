@@ -2369,10 +2369,6 @@ const TensorTranspose = unaryOp(np.transpose)
 // view). The general axis-rotation that `transpose` (full reverse) can't express;
 // `alongAxis` is built on it. Negative positions count from the end.
 const TensorMoveAxis = (a: Value, from: Value, to: Value) => track(np.moveaxis(borrow(a), asNumber(from), asNumber(to)))
-const TensorIdentity = (a: Value) => {
-  return track(np.eye(asNumber(a)))
-}
-
 const TensorRange = (a: Value, b?: Value) => {
   // jax-js arange is int32 and weak-typed floats truncate against it – Fluent
   // tensors are float32 throughout
@@ -2999,7 +2995,6 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorGather,
   TensorWhere,
   TensorIsNaN,
-  TensorIdentity,
   TensorMask,
   TensorSlice,
   TensorFill,
@@ -3257,6 +3252,11 @@ atanh: arctanh: TensorTangentHyperbolicInverse,
 deg2rad: TensorDegreesToRadians: { x | x × (π ÷ 180) },
 rad2deg: TensorRadiansToDegrees: { x | x × (180 ÷ π) },
 
+; Activations (after Trig, so tanh is in scope; sigmoid/relu/silu live up in Math)
+softplus: softRelu: TensorSoftplus: doc({ x | log1p(exp(-abs(x))) + (x ⌈ 0) }, "softplus(x)", "A smooth, always-positive ReLU: log(1 + exp x). Differentiable everywhere.", "softplus([-2, 0, 2]) ≈ [0.13, 0.69, 2.13]"),
+gelu: TensorGelu: doc({ x | 0.5 × x × (1 + tanh(0.7978845608 × (x + (0.044715 × x^3)))) }, "gelu(x)", "Gaussian Error Linear Unit – a smooth ReLU that gates x by a Gaussian. The transformer default.", "gelu([-1, 0, 1]) ≈ [-0.16, 0, 0.84]"),
+mish: TensorMish: doc({ x | x × tanh(softplus(x)) }, "mish(x)", "A self-gated activation, x · tanh(softplus x) – smooth and non-monotonic.", "mish([-1, 0, 1]) ≈ [-0.30, 0, 0.87]"),
+
 ; Comparison
 (<): lt: less: doc(TensorLess, "x < y", "Element-wise less-than: 1 where x is below y, else 0; shapes broadcast.", "([1, 2, 3] < 2) = [1, 0, 0]"),
 (>): gt: greater: doc(TensorGreater, "x > y", "Element-wise greater-than: 1 where x is above y, else 0; shapes broadcast.", "([1, 2, 3] > 2) = [0, 0, 1]"),
@@ -3291,6 +3291,11 @@ min: doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the
 argmax: TensorArgMax,
 argmin: TensorArgMin,
 
+; Statistics
+𝕍: variance: TensorVariance: doc({ x | μ((x - μ(x))^2) }, "𝕍(x)", "Mean squared deviation from the mean, μ((x - μx)²).", "variance([1, 2, 3]) = 0.667"),
+σ: std: TensorStandardDeviation: doc({ x | √(variance(x)) }, "σ(x)", "Standard deviation, √variance – how far x spreads around its mean.", "σ([2, 4, 4, 4, 5, 5, 7, 9]) = 2"),
+norm: l2norm: TensorL2Norm: doc({ x | √(Σ(x × x)) }, "norm(x)", "Euclidean (L2) norm, √(Σ x²) – the length of x as a vector.", "norm([3, 4]) = 5"),
+
 ; Variables
 (~): var: doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad. For data the loss reads but never trains, use ~~.", "θ: ~([0, 0])"),
 (~~): data: doc(TensorData, "~~(init)", "Make a data slot – every optimizer step reads it fresh, but no gradient flows into it and nothing trains it. Assign with := any time, even to a new shape – training carries on.", "x: ~~([1, 2]), x := [3, 4, 5]"),
@@ -3304,7 +3309,7 @@ flip: TensorReverse,
 mask: doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]"),
 where: doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0) = [1, 0, 3]"),
 isNaN: TensorIsNaN,
-eye: TensorIdentity,
+𝕀: eye: TensorIdentity: doc({ n | (0 ..< n) ⊗(=) (0 ..< n) }, "𝕀(n)", "The n×n identity matrix – 1 on the diagonal, 0 elsewhere.", "eye(2) = [[1, 0], [0, 1]]"),
 dot: TensorDotProduct,
 matmul: TensorMatrixMultiply,
 fft: TensorFFT,
