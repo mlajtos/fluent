@@ -518,6 +518,37 @@ arm: $({  ; the glowing arm
   Layers(arm, Point2D(target, range, "orange"), Point2D(obstacle, range, "red")),
 )
 `,
+"differentiable-aim": `
+; 🎯 aim by calculus — ∇ through a physics simulation finds the launch that lands on the target
+T: 48, dt: 0.04, g: [0, -4.2],   ; steps · timestep · gravity
+p0: [-0.78, -0.55],              ; the muzzle (fixed)
+vel: ~([1.7, 2.3]),              ; launch velocity — the only trainable thing
+
+t: (0 ..< T) × dt,               ; sample times [T]
+fly: { u | p0 + (t ⊗(×) u) + (0.5 × ((t^2) ⊗(×) g)) },   ; the ballistic path, [T, 2]
+
+target: $([0.72, 0.12]),         ; drag me (orange)
+𝓛: { Σ((fly(vel)_(T - 1) - target())^2) },   ; squared miss of where the shot lands
+
+opt: adam(0.06),                 ; optimiser
+path: $(fly(vel)),               ; live trajectory for the glow
+{ opt(𝓛), path(fly(vel)) } ⟳ 100000,   ; descend the miss, then publish the arc
+
+range: [[-1, 1], [-1, 1]], gres: 280,
+gg: linspace([-1, 1], gres),
+shot: $({                        ; glow along the trajectory — a Gaussian at every sample
+  q: transpose(path()),
+  dx: (gg ⍴ [1, gres, 1]) - (q_0 ⍴ [1, 1, T]),
+  dy: (gg ⍴ [gres, 1, 1]) - (q_1 ⍴ [1, 1, T]),
+  Σ(exp(0 - (dx^2 + dy^2) ÷ 0.0005), 2)
+}),
+
+(
+  Text("# 🎯 Aim by calculus"),
+  Text("Drag the **orange** target. The launch velocity gradient-descends *through a physics simulation* until the shot lands on it — no ballistics algebra, just ∇ of the miss. FRP × AD in one graph."),
+  Layers(shot, Point2D(target, range, "orange")),
+)
+`,
 "optimizer-race": `
 ; ⚔️ adam vs sgd – same start, same landscape, different characters
 
