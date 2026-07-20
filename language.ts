@@ -145,7 +145,8 @@ Fluent {
     = ("e" | "E") ("+" | "-")? digitGroup
   digitGroup
     = digit+
-  String          = #("\"" (~"\"" any)* "\"")
+  String          = #("\"" (stringEscape | ~"\"" any)* "\"")
+  stringEscape    = "\\" any
   Code            = #("${"`"}" (~"${"`"}" any)* "${"`"}")
   reserved        = "|" | "," | "{" | "}" | "(" | ")" | "[" | "]" | ";" | "\"" | "${"`"}"
   operator        = (#(~(reserved | alnum) specialChar))+
@@ -632,8 +633,10 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "String") {
-    // Use String object (not primitive) so we can track origin via WeakMap
-    const value = new String(dedent(node.content.value))
+    // Use String object (not primitive) so we can track origin via WeakMap.
+    // A backslash escapes the next character literally – so a string can hold a
+    // quote (\") or a backslash (\\). (Minimal: no \n/\t sequences yet.)
+    const value = new String(dedent(node.content.value).replace(/\\([\s\S])/g, "$1"))
     setOrigin(value, node.origin)
     return value
   }
@@ -2991,8 +2994,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorEinsum,
   TensorReshape,
   TensorLength,
-  // length's example shows a string literal ("abc"), which a Fluent string can't contain — so it's doc'd here, not inline in the prelude
-  Length: doc(Length, "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\"abc\") = 3"),
+  Length,
   TensorShape,
   TensorGather,
   TensorWhere,
@@ -3033,8 +3035,8 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   String,
   StringConcat,
   StringLength,
-  StringToCodes: doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\"abc\") = [97, 98, 99]"),
-  CodesToString: doc(CodesToString, "CodesToString(codes)", "A tensor of character codes back to text. Rounds first, so model outputs decode directly.", "CodesToString([104, 105]) = \"hi\""),
+  StringToCodes,
+  CodesToString,
 
   "◌": Null,
   "null": Null,
@@ -3094,7 +3096,7 @@ guard: doc(FunctionGuard, "guard(cond, { value })", "A cascade candidate: yields
 when: doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Errors from the thunk stay loud – only the condition gates.", "when(training(), { opt(𝓛) })"),
 
 ; Tensor shape/indexing
-(#): len: length: Length,
+(#): len: length: doc(Length, "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\\"abc\\") = 3"),
 (_): gather: doc(TensorGather, "x_i", "Index into a string, list, or tensor. \`x_i\` picks one element; \`x_[i, j]\` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30"),
 (⍴): reshape: doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]"),
 (..<): range: doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the \`<\` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]"),
@@ -3328,6 +3330,10 @@ adam: TensorOptimizationAdam,
 adamw: doc(TensorOptimizationAdamW, "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)"),
 sgd: doc(TensorOptimizationSgd, "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)"),
 adagrad: TensorOptimizationAdaGrad,
+
+; Strings
+StringToCodes: doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\\"abc\\") = [97, 98, 99]"),
+CodesToString: doc(CodesToString, "CodesToString(codes)", "A tensor of character codes back to text. Rounds first, so model outputs decode directly.", "CodesToString([104, 105]) = \\"hi\\""),
 
 ; Misc
 ($): doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2"),
