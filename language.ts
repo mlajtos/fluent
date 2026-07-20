@@ -3151,37 +3151,44 @@ chunks: TensorChunks: doc({ w, arr |
 conv: TensorConvolution,   ; nD convolution: arr conv kernel – a 1D kernel over a vector, a 2D kernel over an image
 (⊛): doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]"),
 
-; List operations
-ListGather: { a, b |
+; List operations – a list is a heterogeneous (a, b, …); these are its verbs,
+; kept prefixed so they never blur into the tensor vocabulary (ListMap vs ⍤).
+List: doc(List, "List(a, b, …)", "Build a list from its arguments – the same list a bare (a, b, …) makes.", "ListLength(List(1, 2, 3)) = 3"),
+ListLength: doc(ListLength, "ListLength(list)", "How many elements a list has.", "ListLength((1, 2, 3)) = 3"),
+ListConcat: doc(ListConcat, "ListConcat(a, b)", "Join two lists end to end.", "ListConcat((1, 2), (3, 4)) = (1, 2, 3, 4)"),
+ListGet: doc(ListGet, "ListGet(list, i)", "The element at index i; a negative i counts from the end.", "ListGet((10, 20, 30), -1) = 30"),
+ListMap: doc(ListMap, "ListMap(list, f)", "Apply f to every element, giving a new list – the list-land counterpart of ⍤.", "ListGet(ListMap((1, 2, 3), { x | x × 10 }), 1) = 20"),
+ListReduce: doc(ListReduce, "ListReduce(list, f, init)", "Fold a list left to right: start at init, then f(acc, element) across the list.", "ListReduce((1, 2, 3), { a, b | a + b }, 0) = 6"),
+ListGather: doc({ a, b |
   ListMap(b, { i | ListGet(a, i) })
-},
-ListZip: { a, b |
+}, "ListGather(list, indices)", "Pick the elements at the given indices, in that order – a list-land _.", "ListGather((10, 20, 30), (2, 0)) = (30, 10)"),
+ListZip: doc({ a, b |
   n: TensorMinimum(ListLength(a), ListLength(b)),
   ListMap(
     TensorUnstack(TensorRange(0, n)),
     { i | List(ListGet(a, i), ListGet(b, i)) }
   )
-},
-ListTake: { list, n |
+}, "ListZip(a, b)", "Pair up elements of a and b, stopping at the shorter length.", "ListZip((1, 2), (3, 4)) = ((1, 3), (2, 4))"),
+ListTake: doc({ list, n |
   ; take the first n, with n clamped to [0, length]
   ListMap(TensorUnstack(TensorRange(0, 0 ⌈ n ⌊ ListLength(list))), { i | ListGet(list, i) })
-},
-ListDrop: { list, n |
+}, "ListTake(list, n)", "The first n elements, with n clamped to [0, length].", "ListTake((7, 8, 9), 2) = (7, 8)"),
+ListDrop: doc({ list, n |
   len: ListLength(list),
   ListMap(TensorUnstack(TensorRange(0 ⌈ n ⌊ len, len)), { i | ListGet(list, i) })
-},
-ListReverse: { list |
+}, "ListDrop(list, n)", "All but the first n elements, with n clamped to [0, length].", "ListDrop((7, 8, 9), 1) = (8, 9)"),
+ListReverse: doc({ list |
   n: ListLength(list),
   ListMap(TensorUnstack(TensorReverse(TensorRange(0, n))), { i | ListGet(list, i) })
-},
-ListEnumerate: { list |
+}, "ListReverse(list)", "The list back to front.", "ListReverse((1, 2, 3)) = (3, 2, 1)"),
+ListEnumerate: doc({ list |
   n: ListLength(list),
   ListMap(
     TensorUnstack(TensorRange(0, n)),
     { i | List(i, ListGet(list, i)) }
   )
-},
-ListScan: { list, f, init |
+}, "ListEnumerate(list)", "Pair each element with its index, as (index, element).", "ListEnumerate((7, 8)) = ((0, 7), (1, 8))"),
+ListScan: doc({ list, f, init |
   ListReduce(
     list,
     { acc, val |
@@ -3189,8 +3196,8 @@ ListScan: { list, f, init |
       ListConcat(acc, List(f(prev, val)))
     },
     List(init)
-  ),
-},
+  )
+}, "ListScan(list, f, init)", "Like ListReduce, but keep every step – the running fold, starting from init.", "ListScan((1, 2, 3), +, 0) = (0, 1, 3, 6)"),
 
 ; Arithmetic
 (/): (÷): div: TensorDivide,
