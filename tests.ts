@@ -752,6 +752,14 @@ describe("prelude list helpers", () => {
     expect(value("ListLength(ListScan((1, 2, 3), { a, b | a + b }, 0))")).toBe(4)
     expect(value("ListGet(ListScan((1, 2, 3), { a, b | a + b }, 0), 3)")).toBe(6)
   })
+  test("windows, chunks, stencil slide over a vector", () => {
+    expect(value("windows(2, [1, 2, 3, 4])")).toEqual([[1, 2], [2, 3], [3, 4]])
+    expect(value("chunks(2, [1, 2, 3, 4])")).toEqual([[1, 2], [3, 4]])
+    // stencil applies a (reducing) f to each window – it used unstack→ListMap→stack,
+    // which choked on the scalar reductions ({}); (f ⍤ 1) over the windows is correct
+    expect(value("stencil(3, Σ, [1, 2, 3, 4, 5])")).toEqual([6, 9, 12])
+    expect(value("stencil(2, μ, [2, 4, 6, 8])")).toEqual([3, 5, 7])
+  })
 })
 
 describe("operator arity", () => {

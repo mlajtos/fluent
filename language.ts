@@ -3147,7 +3147,7 @@ chunks: { w, arr |
   arr _ indices
 },
 
-stencil: { w, f, arr | unstack(windows(w, arr)) ListMap f . stack },
+stencil: { w, f, arr | (f ⍤ 1)(windows(w, arr)) },
 conv: TensorConvolution,   ; nD convolution: arr conv kernel – a 1D kernel over a vector, a 2D kernel over an image
 (⊛): doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]"),
 
