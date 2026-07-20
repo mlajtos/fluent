@@ -3132,22 +3132,22 @@ unsqueeze: { x, axis |
   x ⍴ newShape
 },
 
-windows: { w, arr |
+windows: TensorWindows: doc({ w, arr |
   starts: (0 ..< (#(arr) - w + 1)),
   offsets: (0 ..< w),
   indices: (starts ⊗(+) offsets),
   arr _ indices
-},
+}, "windows(w, arr)", "The overlapping width-w sliding windows of arr, one per row (step 1).", "windows(2, [1, 2, 3, 4]) = [[1, 2], [2, 3], [3, 4]]"),
 
-chunks: { w, arr |
+chunks: TensorChunks: doc({ w, arr |
   n: (#(arr) / w),
   starts: (0 ..< n × w),
   offsets: (0 ..< w),
   indices: (starts ⊗(+) offsets),
   arr _ indices
-},
+}, "chunks(w, arr)", "Split arr into non-overlapping width-w chunks; arr's length should be a multiple of w.", "chunks(2, [1, 2, 3, 4]) = [[1, 2], [3, 4]]"),
 
-stencil: { w, f, arr | (f ⍤ 1)(windows(w, arr)) },
+(⌺): stencil: TensorStencil: doc({ w, f, arr | (f ⍤ 1)(windows(w, arr)) }, "stencil(w, f, arr)", "Slide a width-w window over arr, reducing each with f – a windowed map. stencil(w, Σ, …) is a moving sum. The glyph is APL's stencil.", "stencil(3, Σ, [1, 2, 3, 4, 5]) = [6, 9, 12]"),
 conv: TensorConvolution,   ; nD convolution: arr conv kernel – a 1D kernel over a vector, a 2D kernel over an image
 (⊛): doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]"),
 
