@@ -698,6 +698,13 @@ describe("lists and strings", () => {
     expect(run('CodesToString("nope")')).toBeInstanceOf(Error)
     expect(run("StringToCodes([1, 2])")).toBeInstanceOf(Error)
   })
+  test("a backslash escapes the next character in a string", () => {
+    expect(String(value('"a\\"b"'))).toBe('a"b')          // a string can hold a quote
+    expect(value('#("a\\"b")')).toBe(3)                   // …and it counts as one character
+    expect(String(value('"\\\\"'))).toBe('\\')            // "\\" is a single backslash
+    expect(value('StringToCodes("\\"")')).toEqual([34])   // \" is just the char '"' (code 34)
+    expect(String(value('CodesToString(StringToCodes("say \\"hi\\""))'))).toBe('say "hi"')
+  })
 })
 
 describe("prelude list helpers", () => {
