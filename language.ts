@@ -47,7 +47,19 @@ const IDENTIFIER_RANGES: Record<string, [string, string]> = {
   MATHEMATICAL_ALPHANUMERIC_SYMBOLS: [String.fromCodePoint(0x1D400), String.fromCodePoint(0x1D7FF)], // Mathematical Alphanumeric Symbols
   EMOJIS: [String.fromCodePoint(0x1F300), String.fromCodePoint(0x1FFFF)], // Emoticons
 }
-const identifierRegexp = /(?:\p{L})[\p{L}\p{N}]*/u
+// Monaco highlights with these regexes; deriving them from the same range tables
+// the ohm grammar uses keeps the editor lexer from drifting from the parser.
+const rangesToCharClass = (ranges: Record<string, [string, string]>): string =>
+  Object.values(ranges).map(([lo, hi]) => {
+    const a = "\\u{" + lo.codePointAt(0)!.toString(16) + "}"
+    const b = "\\u{" + hi.codePointAt(0)!.toString(16) + "}"
+    return lo === hi ? a : a + "-" + b
+  }).join("")
+const IDENTIFIER_CHAR_CLASS = rangesToCharClass(IDENTIFIER_RANGES)
+// identifier: a letter or identifier-range symbol (math-alphanumeric, emoji), then
+// letters / digits / those symbols — mirrors the grammar's `identifier` rule. No
+// '-', which is an operator now, not an identifier character.
+const identifierRegexp = new RegExp(`[\\p{L}${IDENTIFIER_CHAR_CLASS}][\\p{L}\\p{N}${IDENTIFIER_CHAR_CLASS}]*`, "u")
 
 const numberRegexp = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/
 const stringRegexp = /"(?:[^"\\]|\\.)*"/
@@ -62,7 +74,10 @@ const getSymbolsRange = (symbolRangeObject: Record<string, [string, string]>) =>
   return `(${Object.values(symbolRangeObject).map(range => getSymbolRange(range)).join(" | ")})`;
 };
 
-const operatorRegexp = /[^\p{L}\p{N}]/u
+// operator: one symbol from the operator ranges (the grammar's `specialChar`); the
+// token pipeline peels identifiers/numbers/strings/delimiters off first, so the
+// alnum/reserved chars that BASIC_OPERATORS overlaps never reach this rule.
+const operatorRegexp = new RegExp(`[${rangesToCharClass(OPERATOR_RANGES)}]`, "u")
 
 const delimiterRegexp = new RegExp(RESERVED_SYMBOLS, "u")
 
@@ -371,7 +386,7 @@ const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
     return {
       type: "Number",
       content: {
-        value: +value.sourceString.replace(/_/g, ""), // remove underscores
+        value: +value.sourceString,
       },
       origin: getLocationOrigin(this),
     }
@@ -827,6 +842,12 @@ const borrow = (v: any): any => {
 
 const shapeOf = (v: Value): number[] =>
   (v instanceof FluentVariable ? v.current : (v as np.Array)).shape
+
+// A scalar is a rank-0 tensor holding a single phantom item (#(5) = 1), so
+// index/sort/softmax on it return the rank-0 identity rather than leaking the
+// backend's "axis of length 0" for an axis the scalar doesn't have.
+const isScalarTensor = (v: Value): boolean =>
+  (isTensor(v) || v instanceof FluentVariable) && shapeOf(v).length === 0
 
 type Arena = Set<np.Array>
 const arenaStack: Arena[] = []
@@ -2309,14 +2330,20 @@ const TensorCeil = unaryOp(np.ceil)
 const TensorFloor = unaryOp(np.floor)
 const TensorErrorFunction = unaryOp(lax.erf)
 const TensorSoftmax = (x: Value, axis?: Value) =>
-  track(nn.softmax(borrow(x), axis === undefined ? undefined : asNumber(axis)))
+  isScalarTensor(x)
+    ? track(np.reshape(nn.softmax(np.reshape(borrow(x), [1]), 0), []))
+    : track(nn.softmax(borrow(x), axis === undefined ? undefined : asNumber(axis)))
 const TensorOneHot = (indices: Value, depth: Value) =>
   track(nn.oneHot(np.astype(borrow(indices), np.int32), asNumber(depth)))
 const TensorCrossEntropy = (labels: Value, logits: Value) =>
   track(np.mean(np.negative(np.sum(np.multiply(borrow(labels), nn.logSoftmax(borrow(logits))), -1))))
 
-const TensorSort = (x: Value) => track(np.sort(borrow(x)))
-const TensorArgSort = (x: Value) => track(np.argsort(borrow(x)))
+const TensorSort = (x: Value) =>
+  isScalarTensor(x) ? track(np.reshape(borrow(x), [])) : track(np.sort(borrow(x)))
+const TensorArgSort = (x: Value) =>
+  isScalarTensor(x)
+    ? track(np.reshape(np.argsort(np.reshape(borrow(x), [1])), []))
+    : track(np.argsort(borrow(x)))
 const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   const beginList = asNumberList(begin)
   const sizeList = size === undefined ? undefined : asNumberList(size)
@@ -2526,6 +2553,8 @@ const listGather = (a: Value[], b: Value): Value => {
 const TensorGather = (a: Value, b: Value): Value => {
   if (typeof a === "string" || a instanceof String) { return stringGather(String(a), b) }
   if (Array.isArray(a)) { return listGather(a as Value[], b) }
+  // a scalar is a rank-0 tensor with a single phantom item (#(5) = 1): 5_0 = 5
+  if (isScalarTensor(a)) { a = track(np.reshape(borrow(a), [1])) }
   const size = shapeOf(a)[0] ?? 0
   // Bounds-check every index we can read without aborting a trace – jax-js
   // `take` has no bounds mode, so an out-of-range index otherwise reads garbage

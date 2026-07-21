@@ -1033,6 +1033,15 @@ describe("adversarial edge cases", () => {
     expect(value("#([])")).toBe(0)
     expect(value("#([1, 2, 3])")).toBe(3)
   })
+  // a scalar IS its one rank-0 item, so index/sort/softmax return the rank-0
+  // identity instead of leaking the backend's "axis of length 0"
+  test("a scalar is a uniform rank-0 tensor: index/sort/softmax return the identity", () => {
+    expect(value("5_0")).toBe(5)         // the single item (consistent with #(5) = 1)
+    expect(value("5_(0 - 1)")).toBe(5)   // -1 wraps to that same item
+    expect(value("sort(5)")).toBe(5)     // sorting one element is that element
+    expect(value("⍋(5)")).toBe(0)        // its grade-up index is 0
+    expect(value("softmax(5)")).toBe(1)  // softmax over a single logit is 1
+  })
 })
 
 describe("polymorphic index _ (string / list / tensor)", () => {
