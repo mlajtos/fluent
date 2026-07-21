@@ -49,8 +49,12 @@ describe("whitespace is precedence", () => {
   test("assignment evaluates to the assigned value", () => {
     expect(value("a: 1 + 2")).toBe(3)
   })
-  test("kebab-case identifiers absorb hyphens", () => {
-    expect(value("foo-bar: 7, foo-bar")).toBe(7)
+  test("a glued hyphen is subtraction, not part of an identifier", () => {
+    // - is always the operator; identifiers can't contain it (no kebab-case)
+    expect(value("a: 5, b: 3, a-b")).toBe(2)
+    expect(value("nx: 6, nx-1")).toBe(5)
+    expect(value("a: 5, b: 3, a-b^2")).toBe(4) // (a-b)^2 – tight tier is left-to-right
+    expect(value("[0, -4.2]")).toEqual([0, -4.199999809265137]) // negative literals still parse
   })
   test("scientific notation", () => {
     expect(value("1e-3 × 1000")).toBe(1)
@@ -858,7 +862,7 @@ describe("errors", () => {
     expect(run("} {")).toBeInstanceOf(Error)
   })
   test("unresolved symbols stay symbolic", () => {
-    expect(typeof run("certainly-not-defined")).toBe("symbol")
+    expect(typeof run("certainlyNotDefined")).toBe("symbol")
   })
   test("names colliding with Object.prototype don't resolve to JS builtins", () => {
     // scopes used to chain up to Object.prototype, so `constructor`/`toString`

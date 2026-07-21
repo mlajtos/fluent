@@ -47,7 +47,7 @@ const IDENTIFIER_RANGES: Record<string, [string, string]> = {
   MATHEMATICAL_ALPHANUMERIC_SYMBOLS: [String.fromCodePoint(0x1D400), String.fromCodePoint(0x1D7FF)], // Mathematical Alphanumeric Symbols
   EMOJIS: [String.fromCodePoint(0x1F300), String.fromCodePoint(0x1FFFF)], // Emoticons
 }
-const identifierRegexp = /(?:\p{L})[\p{L}\p{N}\-]*/u
+const identifierRegexp = /(?:\p{L})[\p{L}\p{N}]*/u
 
 const numberRegexp = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/
 const stringRegexp = /"(?:[^"\\]|\\.)*"/
@@ -137,7 +137,7 @@ Fluent {
   // they behave as names everywhere the rule is used – including the glued
   // operator slot of LongOperation. They were previously a separate Symbol
   // alternative, which made "1🔥 2 * 3" fail to glue like "1add 2 * 3".
-  identifier      = &(letter | idRanges) (alnum | "-" | idRanges)+
+  identifier      = &(letter | idRanges) (alnum | idRanges)+
   idRanges        = ${getSymbolsRange(IDENTIFIER_RANGES)}
   number
     = "-"? digitGroup ("." digitGroup)? exponent?

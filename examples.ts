@@ -164,7 +164,7 @@ x: linspace([-PI, PI], points),
 (++=): FunctionNoAutoLift({ a, b | a(a() ++ List(b)) }),
 
 ; Task factory - creates editable task with toggle
-task-create: { name |
+taskCreate: { name |
     text: $(name),
     done: $("🔴"),
     Grid([1, 9])(
@@ -174,24 +174,24 @@ task-create: { name |
 },
 
 ; App state
-task-name: $(""),
+taskName: $(""),
 tasks: $(List()),
 
 ; UI
 (
     Text("# TODO App"),
     Grid([5, 1])(
-        TextEditor(task-name),
+        TextEditor(taskName),
         Button("Add Task", {
-            tasks ++= task-create(task-name()),
-            task-name ← "",
+            tasks ++= taskCreate(taskName()),
+            taskName ← "",
         }),
     ),
     tasks,
 )
 `,
   "tasks-compressed": `
-(++):ListConcat,task-name: $(""),task-create:{name|s: $(name),f: $("🔴"),Grid([1,10])(Button(f,{f("✅")}),TextEditor(s))},tasks: $(()),(Text("# TODO"),Grid([5,1])(TextEditor(task-name),Button("Add",{tasks(tasks()++List(task-create(task-name()))),task-name("")})),tasks)
+(++):ListConcat,taskName: $(""),taskCreate:{name|s: $(name),f: $("🔴"),Grid([1,10])(Button(f,{f("✅")}),TextEditor(s))},tasks: $(()),(Text("# TODO"),Grid([5,1])(TextEditor(taskName),Button("Add",{tasks(tasks()++List(taskCreate(taskName()))),taskName("")})),tasks)
 `,
   "tasks-mini": `
 ; Minimal TODO app
