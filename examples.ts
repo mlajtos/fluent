@@ -520,14 +520,14 @@ arm: $({  ; the glowing arm
 `,
 "differentiable-aim": `
 ; 🎯 aim by calculus — ∇ through a physics simulation finds the launch that lands on the target
-T: 48, dt: 0.04, g: [0, -4.2],   ; steps · timestep · gravity
-p0: [-0.78, -0.55],              ; the muzzle (fixed)
-vel: ~([1.7, 2.3]),              ; launch velocity — the only trainable thing
+T: 48, dt: 0.04, g: [0, 4.2],    ; steps · timestep · gravity (down is +y on screen)
+p0: [-0.78, 0.55],               ; the muzzle at the bottom-left (fixed)
+vel: ~([1.7, -2.3]),             ; launch velocity (up-and-right) — the only trainable thing
 
 t: (0 ..< T) × dt,               ; sample times [T]
 fly: { u | p0 + (t ⊗(×) u) + (0.5 × ((t^2) ⊗(×) g)) },   ; the ballistic path, [T, 2]
 
-target: $([0.72, 0.12]),         ; drag me (orange)
+target: $([0.72, -0.12]),        ; drag me (orange)
 𝓛: { Σ((fly(vel)_(T - 1) - target())^2) },   ; squared miss of where the shot lands
 
 opt: adam(0.06),                 ; optimiser
@@ -549,98 +549,83 @@ shot: $({                        ; glow along the trajectory — a Gaussian at e
   Layers(shot, Point2D(target, range, "orange")),
 )
 `,
-"inverse-render": `
-; 🌀 inverse rendering — a cloud of soft blobs gradient-descends until what they *paint* matches a target shape. Perception, run backwards.
-res: 120, K: 14,                     ; canvas resolution · number of blobs
-gg: linspace([-1, 1], res),          ; shared grid axis
-gx: gg ⍴ [1, res], gy: gg ⍴ [res, 1],
+"gradient-paint": `
+; 🖌 differentiable rasterisation — soft blobs rearrange so the picture they paint matches a target
+K: 14, blobW: 0.008,
+lres: 40, vres: 100,                 ; the loss is scored on a coarse grid (cheap ∇); the picture is drawn on a fine one
+lg: linspace([-1, 1], lres), vg: linspace([-1, 1], vres),
 
 center: $([0, 0]),                   ; drag me (orange) — moves the target ring
-targetOf: { c |                      ; the goal image: a bright ring of radius 0.5
-  rx: gx - c_0, ry: gy - c_1,
-  r: √((rx^2) + (ry^2)),
+ring: { g, n, c |                    ; the goal image: a bright ring of radius 0.5 around c, on an n×n grid
+  gx: g ⍴ [1, n], gy: g ⍴ [n, 1],
+  r: √(((gx - c_0)^2) + ((gy - c_1)^2)),
   exp(0 - ((r - 0.5)^2) ÷ 0.006)
 },
-
-blobW: 0.006,
-render: { p |                        ; paint K Gaussian blobs at centers p [K, 2] → a [res, res] image
+paint: { p, g, n |                   ; render K Gaussian blobs at centers p [K, 2] onto an n×n image
   q: transpose(p),
-  dx: (gg ⍴ [1, res, 1]) - (q_0 ⍴ [1, 1, K]),
-  dy: (gg ⍴ [res, 1, 1]) - (q_1 ⍴ [1, 1, K]),
+  dx: (g ⍴ [1, n, 1]) - (q_0 ⍴ [1, 1, K]),
+  dy: (g ⍴ [n, 1, 1]) - (q_1 ⍴ [1, 1, K]),
   Σ(exp(0 - ((dx^2) + (dy^2)) ÷ blobW), 2)
 },
 
-a0: (0 ..< K) × ((2 × π) ÷ K),       ; blobs start as a tiny huddle near the middle
-θ: ~(stack((0.15 × cos(a0), 0.15 × sin(a0)), 1)),   ; the only trainable thing — K blob centers
+a0: (0 ..< K) × ((2 × π) ÷ K),       ; blobs start as a tiny huddle at the middle
+θ: ~(stack((0.15 × cos(a0), 0.15 × sin(a0)), 1)),   ; K blob centers — the only trainable thing
 
-𝓛: { Σ((render(θ) - targetOf(center()))^2) },   ; pixel-wise mismatch between paint and goal
+𝓛: { Σ((paint(θ, lg, lres) - ring(lg, lres, center()))^2) },   ; coarse pixel mismatch
 
 opt: adam(0.02),
-shown: $(render(θ)),                 ; live painted image for the glow
-{ opt(𝓛), shown(render(θ)) } ⟳ 100000,   ; descend the mismatch, then publish the picture
+shown: $(paint(θ, vg, vres)),        ; the fine picture, for display
+{ opt(𝓛), shown(paint(θ, vg, vres)) } ⟳ 100000,   ; descend the mismatch, then repaint
 
 range: [[-1, 1], [-1, 1]],
 (
-  Text("# 🌀 Inverse rendering"),
-  Text("Fourteen soft blobs start in a huddle. Gradient descent flows them outward until the image they *paint* matches a target ring — vision solved in reverse. Drag the **orange** dot to move the goal; the blobs chase it live."),
+  Text("# 🖌 Painting with gradients"),
+  Text("Fourteen soft blobs start in a huddle. Gradient descent moves them until the image they *paint* matches a target ring — differentiable rasterisation. Drag the **orange** dot to move the goal; the blobs chase it live."),
   Layers(shown, Point2D(center, range, "orange")),
 )
 `,
 "differentiable-cloth": `
-; 🧵 differentiable cloth — a mass-spring sheet poses itself when you drag a corner; ∇ descends its elastic energy each frame
+; 🧵 differentiable cloth — a mass-spring sheet hangs and re-poses when you drag a corner; ∇ descends its elastic energy
 nx: 6, ny: 6, K: nx × ny,
 xs: linspace([-0.45, 0.45], nx),
-ys: linspace([0.45, -0.45], ny),
-Xg: fill([ny], 1) ⊗(×) xs,
-Yg: ys ⊗(×) fill([nx], 1),
-θ: ~(stack((Xg, Yg), 2)),   ; the node positions — the only trainable thing [ny, nx, 2]
+ys: linspace([-0.4, 0.4], ny),          ; row 0 is the top edge (+y is downward on screen)
+grid0: stack((fill([ny], 1) ⊗(×) xs, ys ⊗(×) fill([nx], 1)), 2),   ; the flat starting sheet [ny, nx, 2]
+θ: ~(grid0),                            ; node positions — the only trainable thing
 
-restH: 0.9 ÷ (nx - 1),      ; rest lengths of the structural springs
-restV: 0.9 ÷ (ny - 1),
-restD: √((restH^2) + (restV^2)),   ; and of the shear diagonals
-grav: 0.05,                 ; gravity strength
-pinW: 40,                   ; how hard the pins hold
+restH: 0.9 ÷ (nx - 1), restV: 0.8 ÷ (ny - 1),   ; rest lengths of the edge springs …
+restD: √((restH^2) + (restV^2)),                ; … and of the shear diagonals
+grav: 0.06, pinW: 40,
 
-pinL: $([-0.55, 0.4]),      ; drag me (orange)
-pinR: $([0.55, 0.4]),       ; drag me (cyan)
+pinL: $([-0.55, -0.4]),   ; drag me (orange) — the top-left corner
+pinR: $([0.55, -0.4]),    ; drag me (cyan)   — the top-right corner
 
-𝓛: {                        ; total elastic energy of the sheet
-  P: θ,
-  L: slice(P, [0, 0, 0], [ny, nx - 1, 2]),
-  Rt: slice(P, [0, 1, 0], [ny, nx - 1, 2]),
-  eh: Σ((√(Σ((Rt - L)^2, 2)) - restH)^2),   ; horizontal springs
-  Tp: slice(P, [0, 0, 0], [ny - 1, nx, 2]),
-  Bt: slice(P, [1, 0, 0], [ny - 1, nx, 2]),
-  ev: Σ((√(Σ((Bt - Tp)^2, 2)) - restV)^2),   ; vertical springs
-  A1: slice(P, [0, 0, 0], [ny - 1, nx - 1, 2]),
-  B1: slice(P, [1, 1, 0], [ny - 1, nx - 1, 2]),
-  A2: slice(P, [0, 1, 0], [ny - 1, nx - 1, 2]),
-  B2: slice(P, [1, 0, 0], [ny - 1, nx - 1, 2]),
-  ed: Σ((√(Σ((B1 - A1)^2, 2)) - restD)^2) + Σ((√(Σ((B2 - A2)^2, 2)) - restD)^2),   ; shear diagonals — stop the sheet folding to a line
-  eg: grav × Σ(P × [0, 1]),   ; gravity pulls every node down
-  pin: Σ(((P_0)_0 - pinL())^2) + Σ(((P_0)_(nx - 1) - pinR())^2),   ; the two top corners follow the dots
-  eh + ev + ed + eg + (pinW × pin)
+; springs as edge-vector fields between shifted views of the sheet — keeps 𝓛 free of raw slices
+elen: { e | √(Σ(e^2, 2)) },                                                            ; length of every edge vector
+hor: { P | slice(P, [0, 1, 0], [ny, nx - 1, 2]) - slice(P, [0, 0, 0], [ny, nx - 1, 2]) },   ; horizontal edges
+ver: { P | slice(P, [1, 0, 0], [ny - 1, nx, 2]) - slice(P, [0, 0, 0], [ny - 1, nx, 2]) },   ; vertical edges
+dia: { P, a, b | slice(P, b, [ny - 1, nx - 1, 2]) - slice(P, a, [ny - 1, nx - 1, 2]) },      ; one diagonal of every quad
+spring: { e, rest | Σ((elen(e) - rest)^2) },                                            ; energy of an edge set vs its rest length
+
+𝓛: {
+  struct: spring(hor(θ), restH) + spring(ver(θ), restV),                               ; edges resist stretch
+  shear: spring(dia(θ, [0, 0, 0], [1, 1, 0]), restD) + spring(dia(θ, [0, 1, 0], [1, 0, 0]), restD),   ; diagonals resist folding flat
+  gravity: grav × Σ(θ × [0, -1]),                                                      ; every node pulled down (screen +y)
+  pin: Σ(((θ_0)_0 - pinL())^2) + Σ(((θ_0)_(nx - 1) - pinR())^2),                        ; the two top corners follow the dots
+  ((struct + shear) + gravity) + (pinW × pin)
 },
 
-opt: adam(0.03),                       ; optimiser
-pose: $(stack((Xg, Yg), 2)),           ; live grid for the glow
-{ opt(𝓛), pose(θ) } ⟳ 100000,          ; descend the energy, then publish the pose
+opt: adam(0.03),
+pose: $(grid0),
+{ opt(𝓛), pose(θ) } ⟳ 100000,           ; descend the energy, then publish the pose
 
 range: [[-1, 1], [-1, 1]], gres: 240, gg: linspace([-1, 1], gres),
-mesh: $({                              ; the glowing cloth — a Gaussian at every node and every edge sample
+strand: { A, B | concat(List((A + (0.25 × (B - A))) ⍴ [-1, 2], (A + (0.5 × (B - A))) ⍴ [-1, 2], (A + (0.75 × (B - A))) ⍴ [-1, 2]), 0) },   ; 3 samples along each edge
+mesh: $({                                ; glow at every node + edge sample → continuous strands
   P: pose(),
-  nd: P ⍴ [K, 2],
-  L: slice(P, [0, 0, 0], [ny, nx - 1, 2]),
-  Rt: slice(P, [0, 1, 0], [ny, nx - 1, 2]),
-  hseg: Rt - L,
-  Tp: slice(P, [0, 0, 0], [ny - 1, nx, 2]),
-  Bt: slice(P, [1, 0, 0], [ny - 1, nx, 2]),
-  vseg: Bt - Tp,
-  hs: concat(List((L + (0.25 × hseg)) ⍴ [-1, 2], (L + (0.5 × hseg)) ⍴ [-1, 2], (L + (0.75 × hseg)) ⍴ [-1, 2]), 0),
-  vs: concat(List((Tp + (0.25 × vseg)) ⍴ [-1, 2], (Tp + (0.5 × vseg)) ⍴ [-1, 2], (Tp + (0.75 × vseg)) ⍴ [-1, 2]), 0),
-  pts: concat(List(nd, hs, vs), 0),    ; 36 nodes + edge samples → continuous strands
-  M: #(pts),
-  q: transpose(pts),
+  pts: concat(List(P ⍴ [K, 2],
+    strand(slice(P, [0, 0, 0], [ny, nx - 1, 2]), slice(P, [0, 1, 0], [ny, nx - 1, 2])),
+    strand(slice(P, [0, 0, 0], [ny - 1, nx, 2]), slice(P, [1, 0, 0], [ny - 1, nx, 2]))), 0),
+  M: #(pts), q: transpose(pts),
   dx: (gg ⍴ [1, gres, 1]) - (q_0 ⍴ [1, 1, M]),
   dy: (gg ⍴ [gres, 1, 1]) - (q_1 ⍴ [1, 1, M]),
   Σ(exp(0 - (dx^2 + dy^2) ÷ 0.0006), 2)
@@ -648,7 +633,7 @@ mesh: $({                              ; the glowing cloth — a Gaussian at eve
 
 (
   Text("# 🧵 Differentiable cloth"),
-  Text("Drag either **corner** — the whole elastic sheet re-poses itself. Springs on every edge, shear diagonals, and gravity; gradient descent on the node positions minimizes the total energy each frame. IK on a soft body."),
+  Text("Drag either **corner** — the whole elastic sheet re-hangs itself. Springs on every edge, shear diagonals to keep it from folding flat, and gravity; gradient descent on the node positions minimises the total energy each frame. IK on a soft body."),
   Layers(mesh, Point2D(pinL, range, "orange"), Point2D(pinR, range, "cyan")),
 )
 `,
@@ -696,44 +681,6 @@ field: $({ up(grid()) + (0.18 × up(targetG)) }), ; grown shape over a faint tar
   Text("# 🌱 Growing automata"),
   Text("A single lit cell, one **local** update rule, applied 20 times. The rule — a per-cell MLP that sees only its own neighbourhood — gradient-descends until the colony **grows into the target disk** (the faint ghost). Morphogenesis by ∇: a global form emerges from a rule that never sees the whole. FRP × AD in one graph."),
   Layers(field),
-)
-`,
-"differentiable-equilibrium": `
-; ♨ differentiable equilibrium — ∇ through a steady state, not a trajectory.
-; A heat source s is trained so the STEADY field (40 Jacobi relaxations of
-; u ← ¼·(4 neighbours) + s) is hot under the orange probe and cold under the blue.
-G: 28, K: 40, ww: 0.045,          ; grid · relaxation steps · probe width
-gx: linspace([-1, 1], G),
-s: ~(fill([G, G], 0)),            ; the source field — the only trainable thing
-u0: fill([G, G], 0),
-relax: { u | (0.25 × (roll(u, 1, 0) + roll(u, -1, 0) + roll(u, 1, 1) + roll(u, -1, 1))) + s },
-solve: { (relax ⍣ K)(u0) },       ; run to (near-)equilibrium
-
-hot: $([0.4, 0.3]),               ; drag me (orange) — pin the field HIGH here
-cold: $([-0.4, -0.35]),           ; drag me (blue)  — pin the field LOW here
-probe: { p |                      ; a soft Gaussian pickup at point p
-  dr: gx - (p_1), dc: gx - (p_0),
-  D2: (dr^2) ⊗(+) (dc^2),
-  exp(0 - (D2 ÷ ww))
-},
-sample: { u, w | Σ(u × w) ÷ Σ(w) },
-𝓛: {
-  u: solve(),
-  ((sample(u, probe(hot())) - 1)^2) + (sample(u, probe(cold()))^2) + (0.3 × Σ(s × s))
-},
-
-opt: adam(0.08),                  ; optimiser
-heat: $(solve()),                 ; live steady field for the glow
-{ opt(𝓛), heat(solve()) } ⟳ 100000,   ; relax → ∇ → step → publish
-
-range: [[-1, 1], [-1, 1]], gres: 240,
-P: oneHot(⌊(((0 ..< gres) × G) ÷ gres), G),   ; nearest-neighbour upsampler [gres, G]
-field: $({ matmul(matmul(P, heat()), transpose(P)) }),   ; [G,G] → [gres,gres]
-
-(
-  Text("# ♨ Differentiable equilibrium"),
-  Text("Drag the **orange** probe (keep the field hot) or the **blue** probe (keep it cold). A heat *source* is trained by ∇ **through 40 Jacobi relaxations** so the resulting **steady state** obeys both — you're differentiating through the equilibrium itself, not a trajectory."),
-  Layers(field, Point2D(hot, range, "orange"), Point2D(cold, range, "blue")),
 )
 `,
 "optimizer-race": `
