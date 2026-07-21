@@ -589,48 +589,48 @@ range: [[-1, 1], [-1, 1]],
 nx: 6,
 ny: 6,
 xs: linspace([-0.45, 0.45], nx),
-ys: linspace([-0.4, 0.4], ny),                                   ; row 0 is the top edge (+y is downward on screen)
-θ: ~(stack((fill([ny], 1) ⊗(×) xs, ys ⊗(×) fill([nx], 1)), 2)),   ; node positions [ny, nx, 2] — the only trainable thing
+ys: linspace([-0.4, 0.4], ny), ; row 0 is the top edge (+y is downward on screen)
+θ: ~(stack((fill([ny], 1) ⊗(×) xs, ys ⊗(×) fill([nx], 1)), 2)), ; node positions [ny, nx, 2] — the only trainable thing
 
-restH: 0.9 ÷ (nx - 1),                     ; horizontal spring rest length …
-restV: 0.8 ÷ (ny - 1),                     ; … vertical …
-restD: √((restH^2) + (restV^2)),           ; … and the shear diagonals
-rest: [restH, restV, restD, restD] ⍴ [4, 1, 1],   ; one per neighbour, ready to broadcast
+restH: 0.9 ÷ (nx - 1), ; horizontal spring rest length
+restV: 0.8 ÷ (ny - 1), ; vertical rest length
+restD: √(restH^2 + restV^2), ; shear-diagonal rest length
+rest: [restH, restV, restD, restD] ⍴ [4, 1, 1], ; one per neighbour, ready to broadcast
 grav: 0.06,
 pinW: 40,
 
-z: fill([ny, nx], 1),                      ; broadcaster / node weights
-inCol: ((0 ..< nx) < (nx - 1)) ⍴ [1, nx],   ; drop the last column …
-inRow: ((0 ..< ny) < (ny - 1)) ⍴ [ny, 1],   ; … the last row …
-inColL: ((0 ..< nx) > 0) ⍴ [1, nx],         ; … the first column — mask off roll's wrap-around
+z: fill([ny, nx], 1), ; broadcaster / node weights
+inCol: 0..<nx < (nx - 1) ⍴ [1, nx], ; drop the last column
+inRow: 0..<ny < (ny - 1) ⍴ [ny, 1], ; drop the last row
+inColL: 0..<nx > 0 ⍴ [1, nx], ; drop the first column — mask off roll's wrap-around
 
-pinL: $([-0.55, -0.4]),   ; drag me (orange) — the top-left corner
-pinR: $([0.55, -0.4]),    ; drag me (cyan)   — the top-right corner
+pinL: $([-0.55, -0.4]), ; drag me (orange) — the top-left corner
+pinR: $([0.55, -0.4]), ; drag me (cyan) — the top-right corner
 
 𝓛: {
-  D: roll(θ, -1, 0),                                                  ; the row below
-  nbr: stack((roll(θ, -1, 1), D, roll(D, -1, 1), roll(D, 1, 1)), 0),   ; four neighbours →  ↓  ↘  ↙  [4, ny, nx, 2]
-  keep: stack((inCol × z, inRow × z, inRow × inCol, inRow × inColL), 0),   ; …and which of them are real edges
-  stretch: √(Σ((nbr - θ)^2, 3)) - rest,                              ; how far each spring is from its rest length
-  springs: Σ(keep × (stretch^2)),                                    ; every spring, all four families at once
-  gravity: grav × Σ(θ × [0, -1]),                                    ; every node pulled down (screen +y)
-  pins: Σ((θ_0_0 - pinL())^2) + Σ((θ_0_(nx - 1) - pinR())^2),        ; the two top corners follow the dots
+  D: roll(θ, -1, 0), ; the row below
+  nbr: stack((roll(θ, -1, 1), D, roll(D, -1, 1), roll(D, 1, 1)), 0), ; four neighbours →  ↓  ↘  ↙  [4, ny, nx, 2]
+  keep: stack((inCol × z, inRow × z, inRow × inCol, inRow × inColL), 0), ; which of those neighbours are real edges
+  stretch: √(Σ((nbr - θ)^2, 3)) - rest, ; how far each spring is from its rest length
+  springs: Σ(keep × (stretch^2)), ; every spring, all four families at once
+  gravity: grav × Σ(θ × [0, -1]), ; every node pulled down (screen +y)
+  pins: Σ((θ_0_0 - pinL())^2) + Σ((θ_0_(nx - 1) - pinR())^2), ; the two top corners follow the dots
   (springs + gravity) + (pinW × pins)
 },
 
 opt: adam(0.03),
 pose: $(θ),
-{ opt(𝓛), pose(θ) } ⟳ 100000,           ; descend the energy, then publish the pose
+{ opt(𝓛), pose(θ) } ⟳ 100000, ; descend the energy, then publish the pose
 
 range: [[-1, 1], [-1, 1]],
 gres: 240,
 gg: linspace([-1, 1], gres),
-mesh: $({                                ; glow at every node + 3 samples along each edge → continuous strands
+mesh: $({ ; glow at every node + 3 samples along each edge → continuous strands
   P: pose(),
-  seg: { B | P + ([0.25, 0.5, 0.75] ⊗(×) (B - P)) },   ; 3 points along an edge → [3, ny, nx, 2]
-  wt: { m | [1, 1, 1] ⊗(×) m },                        ; the same weight for those 3 points
-  pts: concat(List(P ⍴ [1, ny, nx, 2], seg(roll(P, -1, 1)), seg(roll(P, -1, 0))), 0) ⍴ [-1, 2],
-  w: concat(List(z ⍴ [1, ny, nx], wt(inCol × z), wt(inRow × z)), 0) ⍴ [-1],   ; wrap edges weighted 0
+  seg: { B | P + ([0.25, 0.5, 0.75] ⊗(×) (B - P)) }, ; 3 points along an edge → [3, ny, nx, 2]
+  wt: { m | [1, 1, 1] ⊗(×) m }, ; the same weight for those 3 points
+  pts: concat((P ⍴ [1, ny, nx, 2], seg(roll(P, -1, 1)), seg(roll(P, -1, 0))), 0) ⍴ [-1, 2],
+  w: concat((z ⍴ [1, ny, nx], wt(inCol × z), wt(inRow × z)), 0) ⍴ [-1], ; wrap edges weighted 0
   M: #(w),
   q: transpose(pts),
   dx: (gg ⍴ [1, gres, 1]) - (q_0 ⍴ [1, 1, M]),
