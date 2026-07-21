@@ -614,7 +614,7 @@ pinR: $([0.55, -0.4]), ; drag me (cyan) — the top-right corner
   stretch: √(Σ((nbr - θ)^2, 3)) - rest, ; how far each spring is from its rest length
   springs: Σ(keep × stretch^2), ; every spring, all four families at once
   gravity: grav × Σ(θ × [0, -1]), ; every node pulled down (screen +y)
-  pins: Σ((θ_0_0 - pinL())^2) + Σ((θ_0_(nx - 1) - pinR())^2), ; the two top corners follow the dots
+  pins: Σ(θ_0_0 - pinL() ^2) + Σ(θ_0_(nx - 1) - pinR() ^2), ; the two top corners follow the dots
   springs + gravity + (pinW × pins)
 },
 
