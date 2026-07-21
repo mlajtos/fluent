@@ -586,49 +586,46 @@ range: [[-1, 1], [-1, 1]],
 `,
 "differentiable-cloth": `
 ; 🧵 differentiable cloth — a mass-spring sheet hangs and re-poses when you drag a corner; ∇ descends its elastic energy
-nx: 6, ny: 6, K: nx × ny,
-xs: linspace([-0.45, 0.45], nx),
-ys: linspace([-0.4, 0.4], ny),          ; row 0 is the top edge (+y is downward on screen)
-grid0: stack((fill([ny], 1) ⊗(×) xs, ys ⊗(×) fill([nx], 1)), 2),   ; the flat starting sheet [ny, nx, 2]
-θ: ~(grid0),                            ; node positions — the only trainable thing
+nx: 6, ny: 6,
+xs: linspace([-0.45, 0.45], nx), ys: linspace([-0.4, 0.4], ny),   ; row 0 is the top edge (+y is downward on screen)
+θ: ~(stack((fill([ny], 1) ⊗(×) xs, ys ⊗(×) fill([nx], 1)), 2)),   ; node positions [ny, nx, 2] — the only trainable thing
 
 restH: 0.9 ÷ (nx - 1), restV: 0.8 ÷ (ny - 1),   ; rest lengths of the edge springs …
 restD: √((restH^2) + (restV^2)),                ; … and of the shear diagonals
 grav: 0.06, pinW: 40,
+inCol: ((0 ..< nx) < (nx - 1)) ⍴ [1, nx],       ; 1 everywhere but the last column …
+inRow: ((0 ..< ny) < (ny - 1)) ⍴ [ny, 1],       ; … and the last row — mask off roll's wrap-around edge
 
 pinL: $([-0.55, -0.4]),   ; drag me (orange) — the top-left corner
 pinR: $([0.55, -0.4]),    ; drag me (cyan)   — the top-right corner
 
-; springs as edge-vector fields between shifted views of the sheet — keeps 𝓛 free of raw slices
-elen: { e | √(Σ(e^2, 2)) },                                                            ; length of every edge vector
-hor: { P | slice(P, [0, 1, 0], [ny, nx - 1, 2]) - slice(P, [0, 0, 0], [ny, nx - 1, 2]) },   ; horizontal edges
-ver: { P | slice(P, [1, 0, 0], [ny - 1, nx, 2]) - slice(P, [0, 0, 0], [ny - 1, nx, 2]) },   ; vertical edges
-dia: { P, a, b | slice(P, b, [ny - 1, nx - 1, 2]) - slice(P, a, [ny - 1, nx - 1, 2]) },      ; one diagonal of every quad
-spring: { e, rest | Σ((elen(e) - rest)^2) },                                            ; energy of an edge set vs its rest length
+len: { e | √(Σ(e^2, 2)) },                                       ; length of every edge vector
+pull: { edge, rest, keep | Σ(keep × ((len(edge) - rest)^2)) },   ; stretch energy of an edge set (masked to real edges)
 
 𝓛: {
-  struct: spring(hor(θ), restH) + spring(ver(θ), restV),                               ; edges resist stretch
-  shear: spring(dia(θ, [0, 0, 0], [1, 1, 0]), restD) + spring(dia(θ, [0, 1, 0], [1, 0, 0]), restD),   ; diagonals resist folding flat
-  gravity: grav × Σ(θ × [0, -1]),                                                      ; every node pulled down (screen +y)
-  pin: Σ(((θ_0)_0 - pinL())^2) + Σ(((θ_0)_(nx - 1) - pinR())^2),                        ; the two top corners follow the dots
-  ((struct + shear) + gravity) + (pinW × pin)
+  R: roll(θ, -1, 1),   ; each node's right neighbour (sheet shifted one column)
+  D: roll(θ, -1, 0),   ; each node's neighbour below (shifted one row)
+  edges: pull(R - θ, restH, inCol) + pull(D - θ, restV, inRow),                             ; edges resist stretch
+  shear: pull(roll(R, -1, 0) - θ, restD, inRow × inCol) + pull(D - R, restD, inRow × inCol),   ; diagonals resist folding flat
+  gravity: grav × Σ(θ × [0, -1]),                                ; every node pulled down (screen +y)
+  pins: Σ((θ_0_0 - pinL())^2) + Σ((θ_0_(nx - 1) - pinR())^2),    ; the two top corners follow the dots
+  ((edges + shear) + gravity) + (pinW × pins)
 },
 
 opt: adam(0.03),
-pose: $(grid0),
+pose: $(θ),
 { opt(𝓛), pose(θ) } ⟳ 100000,           ; descend the energy, then publish the pose
 
 range: [[-1, 1], [-1, 1]], gres: 240, gg: linspace([-1, 1], gres),
-strand: { A, B | concat(List((A + (0.25 × (B - A))) ⍴ [-1, 2], (A + (0.5 × (B - A))) ⍴ [-1, 2], (A + (0.75 × (B - A))) ⍴ [-1, 2]), 0) },   ; 3 samples along each edge
-mesh: $({                                ; glow at every node + edge sample → continuous strands
-  P: pose(),
-  pts: concat(List(P ⍴ [K, 2],
-    strand(slice(P, [0, 0, 0], [ny, nx - 1, 2]), slice(P, [0, 1, 0], [ny, nx - 1, 2])),
-    strand(slice(P, [0, 0, 0], [ny - 1, nx, 2]), slice(P, [1, 0, 0], [ny - 1, nx, 2]))), 0),
-  M: #(pts), q: transpose(pts),
+mesh: $({                                ; glow at every node + 3 samples along each edge → continuous strands
+  P: pose(), R: roll(P, -1, 1), D: roll(P, -1, 0), z: fill([ny, nx], 1),
+  seg: { B | concat(List(P + (0.25 × (B - P)), P + (0.5 × (B - P)), P + (0.75 × (B - P))), 0) },   ; 3 points inside an edge
+  pts: concat(List(P, seg(R), seg(D)), 0) ⍴ [-1, 2],
+  w: concat(List(z, inCol × z, inCol × z, inCol × z, inRow × z, inRow × z, inRow × z), 0) ⍴ [-1],   ; wrap edges weighted 0
+  M: #(w), q: transpose(pts),
   dx: (gg ⍴ [1, gres, 1]) - (q_0 ⍴ [1, 1, M]),
   dy: (gg ⍴ [gres, 1, 1]) - (q_1 ⍴ [1, 1, M]),
-  Σ(exp(0 - (dx^2 + dy^2) ÷ 0.0006), 2)
+  Σ((w ⍴ [1, 1, M]) × exp(0 - (dx^2 + dy^2) ÷ 0.0007), 2)
 }),
 
 (
