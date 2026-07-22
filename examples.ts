@@ -1536,8 +1536,19 @@ detect: $({
 
 ; NAMED — a binding is visible inside its own body, so it just calls its
 ; own name. This is the everyday way to recurse:
-fact: { n | cascade((guard(n = 0, { 1 }), { n × fact(n - 1) }))() },
-fib:  { n | cascade((guard(n < 2, { n }), { fib(n - 1) + fib(n - 2) }))() },
+fact: { n |
+  cascade((
+    guard(n = 0, { 1 }),
+    { n × fact(n - 1) }
+  ))()
+},
+
+fib:  { n |
+  cascade((
+    guard(n < 2, { n }),
+    { fib(n - 1) + fib(n - 2) }
+  ))()
+},
 
 (
   fact(5),   ; 120
@@ -1547,7 +1558,14 @@ fib:  { n | cascade((guard(n < 2, { n }), { fib(n - 1) + fib(n - 2) }))() },
   ; Y combinator, also 𝕐) hands it one: recur({ f | … f … }) ties the knot
   ; with no binding in sight. Euclid's gcd, defined and applied on the
   ; spot without ever being named:
-  recur({ gcd | { a, b | cascade((guard(b = 0, { a }), { gcd(b, a % b) }))() } })(48, 36),   ; 12
+  recur({ gcd |
+    { a, b |
+      cascade((
+        guard(b = 0, { a }),
+        { gcd(b, a % b) }
+      ))()
+    }
+  })(48, 36),   ; 12
 )
 `
 
