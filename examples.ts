@@ -1543,11 +1543,11 @@ fib:  { n | cascade((guard(n < 2, { n }), { fib(n - 1) + fib(n - 2) }))() },
   fact(5),   ; 120
   fib(10),   ; 55
 
-  ; ANONYMOUS — a nameless lambda has no name to call, so it grabs ITSELF
-  ; with 'self'. Capture it first (rec: self): inside the guard's thunk,
-  ; a bare 'self' would mean the thunk, not the function. Euclid's gcd,
-  ; defined and applied on the spot without ever being named:
-  ({ a, b | rec: self, cascade((guard(b = 0, { a }), { rec(b, a % b) }))() })(48, 36),   ; 12
+  ; ANONYMOUS — a nameless function has no name to call, so 'recur' (the
+  ; Y combinator, also 𝕐) hands it one: recur({ f | … f … }) ties the knot
+  ; with no binding in sight. Euclid's gcd, defined and applied on the
+  ; spot without ever being named:
+  recur({ gcd | { a, b | cascade((guard(b = 0, { a }), { gcd(b, a % b) }))() } })(48, 36),   ; 12
 )
 `
 

@@ -688,9 +688,6 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
           return acc
         }, Object.create(env) as CurrentScope)
 
-      // FunctionSelf: inject self-reference for anonymous recursion
-      localEnv['self'] = fn
-
       // Reify in localEnv so symbols resolve to local values, not outer scope
       return reify(evaluateSyntaxTreeNode(node.content.expr, localEnv), localEnv)
     }
@@ -3109,6 +3106,7 @@ SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current sco
 Φ: phi: fork: doc(FunctionFork, "Φ(f, g, h)", "Fork: apply the outer tines f and h to the arguments, combine the results with the middle tine g – x Φ(f, g, h) y = g(f(x, y), h(x, y)). A non-function tine is held constant. The Phoenix; dyadically the Pheasant.", "Φ(Σ, ÷, #)([1, 2, 3, 4]) = 2.5"),
 (⊸): before: doc(FunctionBefore, "(f ⊸ g)", "Before: preprocess the left (or only) argument with f, then combine with g – (f ⊸ g)(x, y) = g(f(x), y); (f ⊸ g)(x) = g(f(x), x). A constant binds the left argument. The Violet Starling; dyadically the Zebra Dove.", "(1 ⊸ +)(41) = 42"),
 (⟜): hook: after: doc(FunctionAfter, "(f ⟜ g)", "After: preprocess the right (or only) argument with g, then combine with f – (f ⟜ g)(x, y) = f(x, g(y)); (f ⟜ g)(x) = f(x, g(x)) – the J hook. A constant binds the right argument. The Starling; dyadically the Dove.", "(÷ ⟜ √)(16) = 4"),
+𝕐: fix: recur: FunctionFix: doc({ f | g: { x | f(x(x)) }, g(g) }, "𝕐(f)", "Fixpoint – anonymous recursion. 𝕐(f) is the x with x = f(x): hand f its own recursion handle so a nameless function can call itself. The Y combinator; equivalently (⍨ @)((⍨ @) ∘ f). Named recursion needs nothing – a binding is visible in its own body.", "𝕐({ rec | { n | cascade((guard(n = 0, { 1 }), { n × rec(n - 1) }))() } })(5) = 120"),
 (⊢): right: doc(FunctionRight, "x ⊢ y", "Right: yield the rightmost argument; with one argument, the identity.", "3 ⊢ 5 = 5"),
 (⊣): left: doc(FunctionLeft, "x ⊣ y", "Left: yield the leftmost argument; with one argument, the identity.", "3 ⊣ 5 = 3"),
 isFunction: doc(FunctionIs, "isFunction(v)", "1 if v is a function, else 0 – the question a combinator asks before treating an operand as a constant. Composes like a comparison.", "isFunction(√) = 1, isFunction(5) = 0"),

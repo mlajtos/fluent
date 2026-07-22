@@ -68,9 +68,14 @@ describe("functions", () => {
   test("lambda as infix operator", () => {
     expect(value("1 {x, y | x + y} 2")).toBe(3)
   })
-  test("recursion via self, cascade and guard", () => {
-    const fact = `fact: { n | f: self, cascade((guard(n = 0, { 1 }), { n * f(n - 1) }))() }, fact(5)`
-    expect(value(fact)).toBe(120)
+  test("recursion: named (self-visible binding) and anonymous (fix / recur / 𝕐)", () => {
+    // a binding is visible in its own body – named recursion needs nothing special
+    expect(value(`fact: { n | cascade((guard(n = 0, { 1 }), { n × fact(n - 1) }))() }, fact(5)`)).toBe(120)
+    // fix ties the knot for a nameless function; the three aliases agree
+    const anon = (name: string) => `${name}({ rec | { n | cascade((guard(n = 0, { 1 }), { n × rec(n - 1) }))() } })(5)`
+    expect(value(anon("fix"))).toBe(120)
+    expect(value(anon("recur"))).toBe(120)
+    expect(value(anon("𝕐"))).toBe(120)
   })
   test("function power ⍣ iterates synchronously", () => {
     expect(value("double: { x | x × 2 }, (double ⍣ 5)(1)")).toBe(32)
@@ -898,7 +903,7 @@ describe("errors", () => {
     expect(value("cascade((guard(1, { 1 }), { 2 }))()")).toBe(1)   // guard true → win
     // an unbound call is an Error value, so it legitimately falls through –
     // this is correct behavior, not a swallowed crash
-    expect(value("cascade(({ self() }, { 42 }))()")).toBe(42)
+    expect(value("cascade(({ missing() }, { 42 }))()")).toBe(42)
     // a candidate that THROWS on an arg-mismatch (not returns an Error) still
     // falls through to the next – TensorMaximum needs two operands, so on one
     // it throws and cascade moves on to # (length)
