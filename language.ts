@@ -2672,7 +2672,15 @@ const TensorWatch = (a: Value): Value => {
 const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: FluentVariable[]) => {
   let state: optax.OptState | null = null
   let stateVars: FluentVariable[] = []
-  let stepSlots: FluentData[] = []
+  // What the compiled step captured. The loss thunk belongs in here: it is the
+  // largest thing the trace closes over, and a different closure means a
+  // different program even when the variables and slots are identical (a
+  // per-batch thunk captures a different batch index). Comparing only the
+  // variables and slots let the first thunk replay forever, so a minibatch
+  // loop trained on batch 0 and reported a convincing loss curve for it.
+  const KEY_SEP = Symbol("slots")
+  let stepKey: unknown[] = []
+  const sameStepKey = (k: unknown[]) => k.length === stepKey.length && k.every((x, i) => x === stepKey[i])
   registerDisposable(() => {
     if (state !== null) {
       tree.dispose(state)
@@ -2711,7 +2719,8 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
       demoteStep()
       stepMode = "probe"
     }
-    if (compiledStep !== null && (stepSlots.length !== slots.length || stepSlots.some((s, i) => s !== slots[i]))) {
+    const key = [lossThunk, ...vars, KEY_SEP, ...slots]
+    if (compiledStep !== null && !sameStepKey(key)) {
       demoteStep()
       stepMode = "probe"
     }
@@ -2754,7 +2763,7 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
 
     // compile the whole step – gradient, transform, apply – as one program,
     // retraced automatically when parameter or data shapes change
-    if (compiledStep === null) { stepSlots = slots }
+    if (compiledStep === null) { stepKey = key }
     compiledStep ??= jaxJit((params: np.Array[], data: np.Array[], optState: optax.OptState) => {
       const [loss, grads] = valueAndGrad(lossFromParams)(tree.ref(params) as np.Array[], data)
       const [updates, nextState] = transform.update(grads as np.Array[], optState, tree.ref(params) as np.Array[])

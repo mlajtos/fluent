@@ -447,10 +447,13 @@ c: $([0.1, -1.3]),
 dist: { p, q | √((p_0 - q_0)^2 + (p_1 - q_1)^2 + soft) },
 F: { p | dist(p, a()) + dist(p, b()) + dist(p, c()) },
 
-; the blue point descends F – the only trainable thing here
+; the blue point descends F – the only trainable thing here. Name the loss
+; thunk: the optimizer compiles the step per thunk, so a fresh { } each
+; iteration would recompile the whole program every step.
 p: ~([1.6, 1.6]),
 opt: adam(0.06),
-{ opt({ F(p) }) } ⟳ 100000,
+𝓛: { F(p) },
+{ opt(𝓛) } ⟳ 100000,
 
 ; the distance field as a heatmap, recomputed as the anchors move. Read the
 ; anchors to CONCRETE tensors first (av/bv/cv) – reading a signal inside the ⊗
@@ -697,8 +700,14 @@ field: $({ up(grid()) + (0.18 × up(targetG)) }), ; grown shape over a faint tar
 
 a: ~([0, -0.3]),   ; adam, orange
 s: ~([0, -0.3]),   ; sgd, blue
-opt: adam(0.08),
-step: { opt({ 𝓛(a) }), sgd(0.002)({ 𝓛(s) }) },
+; both optimizers and both loss thunks are named, not rebuilt per step – an
+; optimizer compiles its step per thunk, and sgd(0.002) inside the step would
+; be a brand new optimizer, with brand new state, every iteration
+optA: adam(0.08),
+optS: sgd(0.002),
+𝓛a: { 𝓛(a) },
+𝓛s: { 𝓛(s) },
+step: { optA(𝓛a), optS(𝓛s) },
 
 n: 300,
 range: [[-5, 5], [-5, 5]],
