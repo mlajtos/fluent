@@ -1676,18 +1676,36 @@ const FunctionIs = (v: Value) => track(np.array(isFn(v) ? 1 : 0))
 // belongs to the evaluation that started it – a re-evaluation cancels it.
 // (For synchronous function iteration f(f(f(x))) use ⍣ / FunctionPower.)
 const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => {
-  if (!(typeof fn === "function" && (iterations === undefined || isTensor(iterations)))) {
+  const live = iterations instanceof Signal || iterations instanceof FluentVariable
+  if (!(typeof fn === "function" && (iterations === undefined || isTensor(iterations) || live))) {
     throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` must be a scalar Tensor");
   }
 
-  const maxIterations = iterations === undefined ? 1 : getAsSyncList(iterations)
-  if (typeof maxIterations !== "number" || Number.isNaN(maxIterations)) {
-    // a non-scalar count would make `i >= maxIterations` always false – an
-    // accidental infinite loop instead of an error
-    throw new Error("`FunctionIterate(fn, iterations)`: `iterations` must be a scalar Tensor");
+  // The count is a BUDGET: `f ⟳ n` runs f n times in total. A live count is the
+  // same budget, read fresh – raise the slider and the loop runs on to the new
+  // total, lower it past what has already run and it stops. A constant signal
+  // therefore behaves exactly like the literal, which is the property that
+  // makes the two spellings mean one thing.
+  const readTarget = (): number => {
+    if (iterations === undefined) { return 1 }
+    const inner = iterations instanceof Signal ? iterations.value
+      : iterations instanceof FluentVariable ? (iterations.version.value, iterations.current)
+      : iterations
+    const n = getAsSyncList(inner)
+    // a non-scalar count would make `i >= target` always false – an accidental
+    // infinite loop instead of an error
+    if (typeof n !== "number" || Number.isNaN(n)) {
+      throw new Error("`FunctionIterate(fn, iterations)`: `iterations` must be a scalar Tensor");
+    }
+    return n
   }
+  readTarget()   // a bad count is an error at the call, not silently zero frames
+
   const generation = currentGeneration
   let i = 0
+  let scheduled = false
+  let cancelled = false
+  registerDisposable(() => { cancelled = true })
 
   // Pace with requestAnimationFrame: steps align to the display, the loop pauses
   // with a hidden tab, and a batch of steps per frame amortizes the ~4ms one
@@ -1714,7 +1732,12 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
   let prev = 0
 
   const frame = async (t: number) => {
-    if (generation !== currentGeneration || i >= maxIterations) { return }
+    scheduled = false
+    if (generation !== currentGeneration || cancelled) { return }
+    // idle, not finished: a live budget may grow again and the effect below
+    // re-arms the pump when it does
+    const maxIterations = readTarget()
+    if (i >= maxIterations) { return }
 
     // steer the batch by the inter-frame time. rAF is vsync-locked (~16.7ms), so
     // a frame that hits vsync means there was headroom – grow; a frame that slips
@@ -1768,12 +1791,28 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
       )
     }
 
+    schedule()
+  }
+
+  // one pending frame at a time: without this, every wake-up would start a
+  // second pump in the same generation and the tick rate would multiply
+  function schedule() {
+    if (scheduled || cancelled) { return }
+    scheduled = true
     raf(frame)
   }
-  raf(frame)
+
+  // a live budget re-arms the pump when it changes – including after the loop
+  // has gone idle at its old total
+  if (live) { registerDisposable(effect(() => { try { readTarget() } catch { return } schedule() })) }
+  schedule()
 
   return null
 }
+// ⟳ drives its own loop and reads its own count, so a signal argument must not
+// wrap the call in a lazy computed that nothing subscribes to – that ran the
+// loop zero times, silently.
+setMeta(FunctionIterate, { noAutoLift: true })
 
 // jax-js backs every 1-element array with an inline constant (np.array
 // special-cases size === 1 into full()), so kernels consuming it embed the
