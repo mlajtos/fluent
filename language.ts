@@ -2507,6 +2507,14 @@ const TensorGradient = (f: Value) => {
     const held = isTensor(source) ? source.refCount : 0
     const primal = borrow(x) as np.Array
     let pullback: ReturnType<typeof jaxVjp>[1] | null = null
+    // ∇ is a tracing entry point like makeLiftedApply and the optimizer step,
+    // so it has to arm the same guards. Without this the "write during trace"
+    // check was unreachable under ∇ and a `:=` inside a differentiated body
+    // stored a live JVPTracer in the variable permanently — reading it back
+    // then threw raw JS out of the evaluator.
+    const outerTracing = tracingActive
+    const outerTouched = traceTouchedState
+    tracingActive = true
     try {
       const [out, pb] = jaxVjp((traced: np.Array) => {
         const result = (f as Function)(traced)
@@ -2518,7 +2526,17 @@ const TensorGradient = (f: Value) => {
       pullback = pb
       const [dx] = pb(np.onesLike(out))
       return track(dx)
+    } catch (e) {
+      // there is no eager fallback for ∇: a write inside a differentiated body
+      // cannot be honoured at all, so say that rather than let the internal
+      // bailout escape as an exception
+      if (e instanceof TraceBailout) {
+        return new Error(`\`grad(f)\`: \`f\` cannot write state while being differentiated (${e.message})`)
+      }
+      throw e
     } finally {
+      tracingActive = outerTracing
+      traceTouchedState = outerTouched
       pullback?.dispose()
       if (isTensor(source)) { while (source.refCount > held) { source.dispose() } }
     }
