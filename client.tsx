@@ -56,9 +56,9 @@ Button("Reset", { x(0) }),
   - lambda with \`{}\`: \`{ x | x + 1 }\`, \`{ x, y | x * y }\`, \`{ 42 }\`
   - last expression is the return value: \`{ a: 1, b: 2, a + b }\` returns \`3\`
   - application: \`add(1, 2)\` or infix \`1 add 2\`
-  - self-reference: \`self\` refers to the current function (for recursion)
+  - recursion: a binding is visible in its own body, so \`fact: { n | … fact(n - 1) … }\` just works. For an ANONYMOUS function use the prelude's fixpoint: \`fix\` (also \`recur\`, \`𝕐\`)
 - Symbols
-  - letter-based: \`a\`, \`FooBar\`, \`bar-baz-1\`, \`α\`, \`β\`, \`θ\`
+  - letter-based: \`a\`, \`FooBar\`, \`barBaz1\`, \`α\`, \`β\`, \`θ\` – no \`-\`, which is always the subtraction operator
   - operator-based: \`+\`, \`≠\`, \`!=\`, \`√\`, \`∇\`
   - assignment with \`:\`: \`a: 23, b: a + 24\`
 - Evaluation order – whitespace IS precedence
@@ -70,7 +70,7 @@ Button("Reset", { x(0) }),
     - chains right: \`a: b: 1 + 2\` is \`a: (b: (1 + 2))\`
   - parentheses always override: \`1 + (2 * 3)\` is \`7\`
   - within a tier, evaluation is left-to-right: \`2*3^2\` is \`(2 * 3) ^ 2\` = \`36\`
-  - one trap: glued \`-\` after a letter is part of the name (\`n-1\` is a symbol, kebab-case) – write \`n - 1\`
+  - \`-\` is never part of a name: \`n-1\` is \`n - 1\` glued, so it binds tighter than a spaced operator
 - Comments
   - single-line with \`;\`: \`a: 1, ; this is a comment\`
 - Program structure
@@ -94,7 +94,7 @@ Button("Reset", { x(0) }),
 - Pattern matching
   - \`guard(cond, { value })\`: returns a function that yields value if cond is truthy, else Error
   - use with \`cascade\` for pattern matching: \`cascade((guard(...), { default }))(arg)\`
-  - example: \`fact: { n | f: self, cascade((guard(n = 0, { 1 }), { n * f(n - 1) }))() }\`
+  - example: \`fact: { n | cascade((guard(n = 0, { 1 }), { n * fact(n - 1) }))() }\`
 - Optimization
   - create variable: \`θ: ~([0, 0])\`
   - define loss: \`loss: { sum(θ^2) }\`
@@ -1011,10 +1011,15 @@ function LoadTensorFromImageUrl(url: string): Signal<np.Array | null> {
   imgElement.crossOrigin = "anonymous";
   imgElement.src = url;
 
+  // `img.src` reads back as the RESOLVED absolute URL, so testing it against
+  // the relative "/proxy?url=" prefix was never true and every failure
+  // re-assigned the same src forever (~1300 req/s, one loop per evaluation
+  // since onerror had no retired() guard). Retry through the proxy once.
+  let triedProxy = false
   imgElement.onerror = () => {
-    if (!imgElement.src.startsWith(proxied(""))) {
-      imgElement.src = proxied(url)
-    }
+    if (retired() || triedProxy) { return }
+    triedProxy = true
+    imgElement.src = proxied(url)
   }
   imgElement.onload = () => {
     if (retired()) { return }

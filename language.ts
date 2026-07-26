@@ -3300,7 +3300,11 @@ log1p: TensorLog1Plus,
 exp: TensorExponential,
 expm1: TensorExpMinus1,
 clamp: TensorClamp: { x, lo, hi | x ⌈ lo ⌊ hi },
-sigmoid: TensorSigmoid: { x | 1 ÷ (1 + exp(-x)) },
+; written through tanh, not 1 ÷ (1 + exp(-x)): the naive form's reverse rule
+; is Inf ÷ Inf² once exp(-x) overflows float32 (below x ≈ -89), so a saturated
+; unit hands back NaN where the true derivative underflows smoothly to 0. Same
+; values to float32; softplus below is stable for the same reason.
+sigmoid: TensorSigmoid: { x | 0.5 × (1 + tanh(x ÷ 2)) },
 relu: TensorRelu: { x | x ⌈ 0 },
 silu: TensorSilu: { x | x × sigmoid(x) },
 rsqrt: TensorReciprocalSquareRoot: { x | 1 ÷ sqrt(x) },
@@ -3365,7 +3369,7 @@ argmax: TensorArgMax,
 argmin: TensorArgMin,
 
 ; Statistics
-𝕍: variance: TensorVariance: doc({ x | μ((x - μ(x))^2) }, "𝕍(x)", "Mean squared deviation from the mean, μ((x - μx)²).", "variance([1, 2, 3]) = 0.667"),
+𝕍: variance: TensorVariance: doc({ x | μ((x - μ(x))^2) }, "𝕍(x)", "Mean squared deviation from the mean, μ((x - μx)²).", "variance([1, 2, 3]) ≈ 0.667"),
 σ: std: TensorStandardDeviation: doc({ x | √(variance(x)) }, "σ(x)", "Standard deviation, √variance – how far x spreads around its mean.", "σ([2, 4, 4, 4, 5, 5, 7, 9]) = 2"),
 norm: l2norm: TensorL2Norm: doc({ x | √(Σ(x × x)) }, "norm(x)", "Euclidean (L2) norm, √(Σ x²) – the length of x as a vector.", "norm([3, 4]) = 5"),
 
