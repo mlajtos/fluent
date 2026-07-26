@@ -108,6 +108,17 @@ test("a checkbox bound to a ~ variable writes to it", async ({ page }) => {
   await expect(panel(page)).toContainText("11")
 })
 
+test("PointPlot says what it wanted instead of plotting the index", async ({ page }) => {
+  // regression: getAsSyncList returns undefined for a list, so a list axis
+  // reached plotly as undefined and it silently plotted against the point
+  // index; the single-argument form threw a raw TypeError out of .map
+  await open(page, "PointPlot((1, 2, 3))")
+  await expect(panel(page)).toContainText("must be a tensor")
+  await expect(page.getByText("Something went wrong")).toHaveCount(0)
+  await open(page, "PointPlot((1, 2, 3), [4, 5, 6])")
+  await expect(panel(page)).toContainText("must be a tensor")
+})
+
 test("button click updates a reactive value", async ({ page }) => {
   await open(page, 'x: $(0), (Button("increment", { x(x() + 41) }), x)')
   await expect(panel(page)).toContainText("0")

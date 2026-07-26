@@ -1915,8 +1915,22 @@ const PointPlot = (x: Value, y?: Value) => {
   // `PointPlot(1::10, …)` (unbound `::`) should show the error, not a blank chart.
   if (x instanceof Error) { return x }
   if (y instanceof Error) { return y }
-  const ys = getAsSyncList(y ?? x) as number[]
-  const xs = y === undefined ? ys.map((_, i) => i) : getAsSyncList(x) as number[]
+  // getAsSyncList reads a tensor and returns undefined for anything else, so a
+  // list or a string used to reach plotly as undefined: a raw TypeError from
+  // .map for the single-argument form, and silently plotting against the point
+  // INDEX when it was the x axis.
+  const axis = (v: Value, what: string): number[] | Error => {
+    const data = getAsSyncList(v)
+    if (typeof data === "number") { return [data] }
+    if (!Array.isArray(data)) {
+      return new Error(`\`PointPlot\`: ${what} must be a tensor – write a list as [ … ]`)
+    }
+    return data as number[]
+  }
+  const ys = axis(y ?? x, y === undefined ? "the argument" : "y")
+  if (ys instanceof Error) { return ys }
+  const xs = y === undefined ? ys.map((_, i) => i) : axis(x, "x")
+  if (xs instanceof Error) { return xs }
   return (
     <Plot
       data={[{
