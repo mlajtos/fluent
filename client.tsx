@@ -287,6 +287,23 @@ const updateWithFresh = (target: Signal<any>, fresh: np.Array) => {
   fresh.dispose()
 }
 
+// A control can be bound to a signal or to a `~` variable, the way Point2D and
+// Trail already accept both. Without this the other controls rendered a fully
+// interactive widget over a variable and every write vanished: SignalUpdate
+// returns an Error for a non-signal and updateWithFresh discards it.
+// Reading a variable subscribes to its version signal, so an assignment from
+// anywhere else (an optimizer step, `:=`) moves the control too.
+type Bindable = Signal<any> | FluentVariable
+const boundValue = (target: Bindable): any => {
+  if (target instanceof FluentVariable) { target.version.value; return target.current }
+  return target?.value
+}
+const writeBound = (target: Bindable, fresh: np.Array) => {
+  // assign() takes ownership; updateWithFresh borrows and drops its copy
+  if (target instanceof FluentVariable) { target.assign(fresh) }
+  else { updateWithFresh(target, fresh) }
+}
+
 // MARK: GPU blit
 // Render tensors straight from their WebGPU buffers: a fullscreen triangle
 // samples the storage buffer per pixel – no readback, no ImageData loop.
@@ -609,9 +626,9 @@ const TextEditor = (editedValue: Signal<string>, enabled?: Signal<np.Array> | np
 }
 setMeta(TextEditor, { noAutoLift: true })
 
-const Slider = (editedValue: Signal<np.Array>) => {
+const Slider = (editedValue: Bindable) => {
   return SignalComputed(() => {
-    const valueAsList = getAsSyncList(editedValue?.value) as number
+    const valueAsList = getAsSyncList(boundValue(editedValue)) as number
 
     return (
       <div className="grid">
@@ -621,7 +638,7 @@ const Slider = (editedValue: Signal<np.Array>) => {
           max={1}
           step={0.01}
           value={valueAsList}
-          onChange={(e) => updateWithFresh(editedValue, TensorScalarLive(parseFloat(e.target.value)))}
+          onChange={(e) => writeBound(editedValue, TensorScalarLive(parseFloat(e.target.value)))}
           className="bg-neutral-900 focus:bg-neutral-800 rounded-xl border border-neutral-800 hover:border-neutral-700 focus:border-neutral-600 outline-none p-2 w-full h-2 cursor-pointer dark:bg-gray-700 place-self-center"
         />
       </div>
@@ -630,14 +647,14 @@ const Slider = (editedValue: Signal<np.Array>) => {
 }
 setMeta(Slider, { noAutoLift: true })
 
-const Scrubber = (editedValue: Signal<np.Array>, sensitivity?: np.Array) => {
+const Scrubber = (editedValue: Bindable, sensitivity?: np.Array) => {
   const step = sensitivity ? getAsSyncList(sensitivity) as number : 1  // 0=stuck, negative=flipped
   const decimals = Math.max(0, Math.ceil(-Math.log10(Math.abs(step) || 1)))
   const factor = Math.pow(10, decimals)
   const color = COLORS.find(rule => rule.token === "number")?.foreground ?? "FFFFFF"
 
   return SignalComputed(() => {
-    const value = getAsSyncList(editedValue?.value) as number
+    const value = getAsSyncList(boundValue(editedValue)) as number
 
     const handlePointerDown = (e: React.PointerEvent<HTMLSpanElement>) => {
       e.preventDefault()
@@ -645,7 +662,7 @@ const Scrubber = (editedValue: Signal<np.Array>, sensitivity?: np.Array) => {
 
       const onMove = (me: PointerEvent) => {
         const raw = startValue + (me.clientX - startX) * step * 0.1
-        updateWithFresh(editedValue, TensorScalarLive(Math.round(raw * factor) / factor))
+        writeBound(editedValue, TensorScalarLive(Math.round(raw * factor) / factor))
       }
       const onUp = () => {
         window.removeEventListener('pointermove', onMove)
@@ -667,14 +684,14 @@ const Scrubber = (editedValue: Signal<np.Array>, sensitivity?: np.Array) => {
 }
 setMeta(Scrubber, { noAutoLift: true })
 
-const Checkbox = (editedValue: Signal<np.Array>) => {
+const Checkbox = (editedValue: Bindable) => {
   return SignalComputed(() => {
-    const checked = (getAsSyncList(editedValue?.value) as number) >= 0.5
+    const checked = (getAsSyncList(boundValue(editedValue)) as number) >= 0.5
     return (
       <input
         type="checkbox"
         checked={checked}
-        onChange={(e) => updateWithFresh(editedValue, TensorScalarLive(e.target.checked ? 1 : 0))}
+        onChange={(e) => writeBound(editedValue, TensorScalarLive(e.target.checked ? 1 : 0))}
         className="w-5 h-5 accent-white cursor-pointer place-self-start"
       />
     )

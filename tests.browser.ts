@@ -90,6 +90,24 @@ test("slider drives a reactive recompute", async ({ page }) => {
   await expect(panel(page)).toContainText("0.64")
 })
 
+test("a control bound to a ~ variable actually writes to it", async ({ page }) => {
+  // regression: SignalUpdate returns an Error for a non-signal and
+  // updateWithFresh discarded it, so Slider/Scrubber/Checkbox over a `~`
+  // variable rendered fully interactive controls whose every write vanished.
+  // Point2D and Trail already accepted both.
+  await open(page, "θ: ~(0.25), (Slider(θ), watch(θ) × 100)")
+  await expect(panel(page)).toContainText("25")
+  await page.locator("input[type=range]").fill("0.75")
+  await expect(panel(page)).toContainText("75")
+})
+
+test("a checkbox bound to a ~ variable writes to it", async ({ page }) => {
+  await open(page, "on: ~(0), (Checkbox(on), watch(on) + 10)")
+  await expect(panel(page)).toContainText("10")
+  await page.locator("input[type=checkbox]").check()
+  await expect(panel(page)).toContainText("11")
+})
+
 test("button click updates a reactive value", async ({ page }) => {
   await open(page, 'x: $(0), (Button("increment", { x(x() + 41) }), x)')
   await expect(panel(page)).toContainText("0")
