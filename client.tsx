@@ -1777,8 +1777,16 @@ function PrettyPrintInner(obj: any): JSX.Element {
         return <TensorCanvas data={obj} />
       }
 
+      // rank > 3 has no plot: BarPlot flattens it, which draws a real-looking
+      // chart of something the tensor isn't. Show the shape and say so rather
+      // than warn to a console nobody has open and then draw it anyway.
       if (obj.ndim > 3) {
-        console.warn("Tensor with rank > 3 is not supported for plotting", obj);
+        return (
+          <div className="">
+            <span className="font-bold">Tensor:</span> {obj.shape.join(", ")}<br />
+            <span className="text-neutral-500">rank {obj.ndim} – reshape or slice it to plot</span>
+          </div>
+        );
       }
 
       return (
@@ -2042,8 +2050,12 @@ const TensorCanvas = ({ data }: { data: np.Array }) => {
 
     const device = getBlitDevice()
     const scalar = WGSL_SCALAR[data.dtype]
-    if (device && scalar && getCanvasBlitState(device, canvas)) {
-      const channels = data.shape[2] ?? 1
+    const channels = data.shape[2] ?? 1
+    // the shader reads base, base+1, base+2 for anything that isn't 1-channel,
+    // so a 2-channel tensor read across into the next pixel and past the end of
+    // the buffer on the last one. Only 1 and 3 are meaningful here – the CPU
+    // path documents the same pair – so let anything else fall through to it.
+    if (device && scalar && (channels === 1 || channels === 3) && getCanvasBlitState(device, canvas)) {
       const scale = data.dtype === np.int32 || data.dtype === np.uint32 ? 1 / 255 : 1
       // gpuBuffer() consumes a reference; an animated source (⟳) disposes
       // this frame's tensor before the async read resolves, recycling its

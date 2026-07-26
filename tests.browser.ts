@@ -119,6 +119,24 @@ test("PointPlot says what it wanted instead of plotting the index", async ({ pag
   await expect(panel(page)).toContainText("must be a tensor")
 })
 
+test("a rank-4 tensor reports its shape instead of plotting a flattened lie", async ({ page }) => {
+  // regression: this warned to the console that rank > 3 is unsupported and
+  // then handed the tensor to BarPlot anyway, which flattens it – a
+  // real-looking chart of something the tensor is not
+  await open(page, "reshape(0 ..< 16, [2, 2, 2, 2])")
+  await expect(panel(page)).toContainText("2, 2, 2, 2")
+  await expect(panel(page)).toContainText("reshape or slice it to plot")
+  await expect(panel(page).locator(".js-plotly-plot")).toHaveCount(0)
+})
+
+test("a 2-channel image renders instead of reading past its buffer", async ({ page }) => {
+  // the GPU shader reads base+1/base+2 for anything not 1-channel, so [h,w,2]
+  // crossed into the next pixel and off the end of the buffer on the last one
+  await open(page, "fill([8, 8, 2], 0.5)")
+  await expect(panel(page).locator("canvas").first()).toBeVisible()
+  await expect(page.getByText("Something went wrong")).toHaveCount(0)
+})
+
 test("button click updates a reactive value", async ({ page }) => {
   await open(page, 'x: $(0), (Button("increment", { x(x() + 41) }), x)')
   await expect(panel(page)).toContainText("0")
