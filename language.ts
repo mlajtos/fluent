@@ -1250,8 +1250,10 @@ const makeLiftedApply = (fnValue: Function, argsValue: Value[], env: CurrentScop
     const outerTouched = traceTouchedState
     tracingActive = true
     traceTouchedState = false
+    const untraceable = Symbol("untraceable")
+    let traced: Value | typeof untraceable = untraceable
     try {
-      const result = track(compiled!(...payloads.map((p) => (p as np.Array).ref)))
+      traced = track(compiled!(...payloads.map((p) => (p as np.Array).ref)))
       if (traceTouchedState || rngCounter !== rngBefore) {
         // the trace froze outside state or a random draw – this round's
         // result is valid, but a replay would not be
@@ -1259,16 +1261,18 @@ const makeLiftedApply = (fnValue: Function, argsValue: Value[], env: CurrentScop
       } else {
         mode = "jit"
       }
-      return result
-    } catch (e) {
+    } catch {
       demote()
-      // TraceBailout: the body is untraceable – run it for real.
-      // Anything else: eager reruns and surfaces it as an Error value.
-      return eagerApply(argsValue.map(unwrapSignals))
     } finally {
       tracingActive = outerTracing
       traceTouchedState = outerTouched || traceTouchedState
     }
+    // TraceBailout: the body is untraceable – run it for real.
+    // Anything else: eager reruns and surfaces it as an Error value.
+    // This runs OUTSIDE the try, after the flags above are restored: under
+    // `tracingActive` the rerun would hit the very write guard that bailed.
+    if (traced === untraceable) { return eagerApply(argsValue.map(unwrapSignals)) }
+    return traced
   }
 
   return { recompute, lift }
@@ -1334,6 +1338,13 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       return fnValue.apply(env, argsValue)
     })
   } catch (e) {
+    // A TraceBailout is control flow, not a value: it says the body cannot be
+    // traced faithfully and must reach the tracer. Returning it as an Error
+    // value (it extends Error) would let cond/cascade read it as "candidate
+    // declines" and compile the losing branch, and would turn a state write
+    // during a trace into a silent no-op. Same line as eagerApply, cascade
+    // and cond.
+    if (e instanceof TraceBailout) { throw e }
     // inject cause to the caught error from argument errors
     if (e instanceof Error && errorArgs.length > 0) {
       return new Error(e.message, { cause: errorArgs[0] })
