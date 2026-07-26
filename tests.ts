@@ -4,8 +4,9 @@
 
 import { describe, test, expect } from "bun:test"
 import { Signal } from "@preact/signals-core"
-import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, beginTensorWatch, endTensorWatch, liveTensorCount, peakTensorCount, type SyntaxTreeNode, type Value } from "./language"
+import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, beginTensorWatch, endTensorWatch, liveTensorCount, peakTensorCount, SignalCreate, DefaultEnvironment, type SyntaxTreeNode, type Value } from "./language"
 import { EXAMPLES } from "./examples"
+import { TOUR_SOURCE } from "./tour"
 
 const run = (source: string) =>
   evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope()))
@@ -1088,24 +1089,125 @@ describe("cond (eager variadic cascade)", () => {
 // hardware, error panels – is the browser suite's job, added later.)
 describe("gallery examples smoke suite", () => {
   const widget = function widget(): unknown { return widget }
-  const source2d = () => np.zeros([16, 16])
-  const scalar = () => np.array(0)
+  // Live sources hand back a SIGNAL of a tensor, not a tensor – a stub that
+  // returned the tensor made `mic()` a call on a tensor, so the demos that
+  // read their source never actually ran here. Shapes match the real thing
+  // too: a spectrum demo indexes fft(mic()) as [real; imag], which only works
+  // on a waveform of the length the demo asked for.
+  const at = (v: unknown) => { const s = SignalCreate(v as any); return s }
+  const num = (v: Value, fallback: number) => { try { return Number((v as np.Array).ref.js()) } catch { return fallback } }
   const stubs: Record<string, Value> = {}
   for (const k of ["Button", "Checkbox", "Grid", "ImageUpload", "Layers", "Point2D", "Trail",
     "Slider", "Scrubber", "Text", "TextEditor", "Code", "CodeEditor", "Print", "PrettyPrint",
     "CodePrint", "PointPlot"]) stubs[k] = widget as Value
-  for (const k of ["Camera", "Microphone", "MicrophoneSpectrum", "LoadTensorFromImageUrl",
-    "LoadSafeTensorFromURL", "Fetch"]) stubs[k] = source2d as Value
-  for (const k of ["Time", "SampleRate", "MousePosition"]) stubs[k] = scalar as Value
+  stubs["Camera"] = ((w?: Value, h?: Value) => at(np.zeros([num(h, 48), num(w, 64), 3]))) as Value
+  stubs["Microphone"] = ((n?: Value) => at(np.zeros([num(n, 512)]))) as Value
+  stubs["MicrophoneSpectrum"] = ((n?: Value) => at(np.zeros([num(n, 512)]))) as Value
+  stubs["MousePosition"] = (() => at(np.zeros([2]))) as Value
+  stubs["Time"] = (() => at(np.array(0))) as Value
+  stubs["SampleRate"] = (() => np.array(48000)) as Value        // a plain number, not a signal
+  for (const k of ["LoadTensorFromImageUrl", "LoadSafeTensorFromURL", "Fetch"]) {
+    stubs[k] = (() => np.zeros([16, 16])) as Value
+  }
   extendEnvironment(stubs)
+
+  // Force every value the example binds, following signals, variables and
+  // lists, and read each tensor off the device. The top-level value of a demo
+  // is almost always a Grid, so asserting only that it isn't an Error passed
+  // demos whose entire contents were broken – a hyphenated binding, a dead
+  // gradient, an op erroring inside a cell. Returns the first failure found.
+  const forceEverything = (scope: Record<string, Value>): string | null => {
+    const seen = new Set<unknown>()
+    const walk = (v: any, path: string, depth = 0): string | null => {
+      if (v == null || depth > 8) { return null }
+      if (typeof v === "object") { if (seen.has(v)) { return null }; seen.add(v) }
+      try {
+        if (v instanceof Error) { return `${path}: ${v.message}` }
+        if (v instanceof Signal) { return walk(v.value, `${path}()`, depth + 1) }
+        if (v instanceof FluentVariable) { return walk(v.current, path, depth + 1) }
+        if (v instanceof np.Array) { v.ref.js(); return null }
+        if (Array.isArray(v)) {
+          for (let i = 0; i < v.length; i++) { const bad = walk(v[i], `${path}[${i}]`, depth + 1); if (bad) { return bad } }
+        }
+      } catch (e: any) { return `${path}: threw ${e?.message ?? e}` }
+      return null
+    }
+    for (const key of Object.keys(scope)) { const bad = walk(scope[key], key); if (bad) { return bad } }
+    return null
+  }
 
   for (const [name, src] of Object.entries(EXAMPLES)) {
     test(`${name}`, () => {
       const source = src.trim()
       expect(CodeParse(source).type).not.toBe("Error")
-      expect(run(source)).not.toBeInstanceOf(Error)
+      const scope = createScope()
+      const result = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), scope))
+      expect(result).not.toBeInstanceOf(Error)
+      expect(forceEverything(scope)).toBeNull()
+      flushRetirements()
     })
   }
+})
+
+// A name that resolves to nothing is the shape almost every language change
+// leaves behind in shipped Fluent source: `self` was deleted, `-` stopped
+// being an identifier character, a builtin got renamed. Evaluating the source
+// does NOT catch it – the failure is an Error in an intermediate statement,
+// and a Fluent sequence discards those, so `neigh-bours: 3` binds `bours`,
+// leaves `neigh` unbound, and every value in scope still looks fine. That is
+// exactly how the Tour shipped broken with the suite green.
+describe("every name in shipped Fluent source resolves", () => {
+  const symbolOf = (n: any): string | undefined =>
+    n?.type === "Symbol" ? (n.content?.value as string) : undefined
+
+  const unresolvedNames = (source: string): string[] => {
+    const tree: any = CodeParse(source)
+    if (tree instanceof Error || tree.type === "Error") { return ["<parse error>"] }
+    // prelude names are own keys of a scope; the natives are on its prototype
+    const scope = createScope()
+    const bound = new Set([...Object.keys(scope), ...Object.keys(DefaultEnvironment)])
+    const used = new Map<string, number>()
+    const collect = (n: any) => {
+      if (!n || typeof n !== "object") { return }
+      if (Array.isArray(n)) { n.forEach(collect); return }
+      // a backtick literal is drawn, not run – its free symbols are the point
+      if (n.type === "Code") { return }
+      // `name: value` – an Operation over ":" whose first operand is a Symbol
+      if (n.type === "Operation" && symbolOf(n.content?.operator) === ":") {
+        const name = symbolOf(n.content?.args?.content?.value?.[0])
+        if (name) { bound.add(name) }
+      }
+      const s = symbolOf(n)
+      // operators are symbols too; only letter-led names can be "unresolved"
+      if (s && /^[\p{L}\p{N}_]/u.test(s)) { used.set(s, (used.get(s) ?? 0) + 1) }
+      for (const k of Object.keys(n)) { if (k !== "origin") { collect(n[k]) } }
+    }
+    collect(tree)
+    // lambda parameter lists: `{ a, b | … }`
+    for (const m of source.matchAll(/\{\s*([\p{L}\p{N}_]+(?:\s*,\s*[\p{L}\p{N}_]+)*)\s*\|/gu)) {
+      for (const p of m[1]!.split(",")) { bound.add(p.trim()) }
+    }
+    return [...used.keys()].filter((n) => !bound.has(n))
+  }
+
+  // components and live sources live in client.tsx, which this suite cannot
+  // import – they are real names, just not ones the language knows about
+  const ideNames = new Set(["Grid", "Text", "Center", "Button", "Slider", "Scrubber",
+    "PointPlot", "CodeEditor", "TextEditor", "Checkbox", "Layers", "Point2D", "Trail",
+    "Print", "PrettyPrint", "CodePrint", "Code", "ImageUpload", "Camera", "Microphone",
+    "MicrophoneSpectrum", "Time", "SampleRate", "MousePosition", "Fetch",
+    "LoadTensorFromImageUrl", "LoadSafeTensorFromURL"])
+  const unknown = (source: string) => unresolvedNames(source).filter((n) => !ideNames.has(n))
+
+  for (const [name, src] of Object.entries(EXAMPLES)) {
+    test(`gallery: ${name}`, () => {
+      expect(unknown((src as string).trim())).toEqual([])
+    })
+  }
+
+  test("the Tour", () => {
+    expect(unknown(TOUR_SOURCE)).toEqual([])
+  })
 })
 
 describe("lifts created inside owned computeds (reactive cells)", () => {

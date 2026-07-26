@@ -247,6 +247,11 @@ const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): 
     pixelReader.height = height
   }
   const context = pixelReader.getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D
+  // one module-level canvas serves every reader, and drawImage composites
+  // source-over – without this an image with alpha shows through to whatever
+  // was decoded last at the same size (a transparent upload read back as the
+  // previous frame, and the camera shares this canvas)
+  context.clearRect(0, 0, width, height)
   context.drawImage(source, 0, 0)
   const { data } = context.getImageData(0, 0, width, height)
   const rgbFlat = new Float32Array(width * height * 3)
