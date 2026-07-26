@@ -1382,7 +1382,17 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
   }
 }
 
-const FunctionCascade = (candidates: Function[]) => tacitToString((a: Value, b: Value) => {
+const FunctionCascade = (candidates: Function[]) => {
+  // `cascade(f)` instead of `cascade((f, g))` used to leave the loop with
+  // nothing to iterate and hand back a silent ◌ — the doc card's own shape is
+  // a list, so say what was expected
+  if (!Array.isArray(candidates)) {
+    return new Error(`\`cascade\`: expected a list of candidates, got ${describeArg(candidates as Value)} – write cascade((f, g, …))`)
+  }
+  return cascadeOver(candidates)
+}
+
+const cascadeOver = (candidates: Function[]) => tacitToString((a: Value, b: Value) => {
   const noResultSymbol = Symbol('noResult')
 
   let result: (Value | typeof noResultSymbol) = noResultSymbol
@@ -1982,6 +1992,10 @@ const ListConcat = (...args: Value[]) => {
 }
 
 const ListLength = (a: unknown[]) => {
+  // a JS string also has `.length`, so without this guard the Length cascade
+  // answered for strings here — in UTF-16 units — before ever reaching
+  // StringLength, and disagreed with StringToCodes about how long one is
+  if (!Array.isArray(a)) { throw new Error(`expected a list, got ${describeArg(a as Value)}`) }
   return track(np.array(a.length))
 }
 
@@ -2684,11 +2698,14 @@ const wrapIndex = (raw: number, n: number, kind: string): number | Error => {
 // type, `_i` picks one element. Same negative-from-the-end and bounds rules as tensors.
 const stringGather = (s: string, b: Value): Value => {
   const { multi, idxs } = readIndexList(b)
+  // index characters, not UTF-16 units – `"a🍌b"_1` used to return half of an
+  // emoji, and the count disagreed with StringToCodes/#
+  const source = [...s]
   const chars: string[] = []
   for (const raw of idxs) {
-    const i = wrapIndex(raw, s.length, "string")
+    const i = wrapIndex(raw, source.length, "string")
     if (i instanceof Error) { return i }
-    chars.push(s[i]!)
+    chars.push(source[i]!)
   }
   return multi ? chars.join("") : chars[0]!
 }
@@ -3016,7 +3033,9 @@ const TensorRandomNormal = (a: Value) => track(random.normal(nextRngKey(), asNum
 const TensorRandomUniform = (a: Value) => track(random.uniform(nextRngKey(), asNumberList(a)))
 
 const StringConcat = (...args: any[]) => "".concat(...args)
-const StringLength = (a: string) => track(np.array(a.length))
+// characters, not UTF-16 units: `#` disagreed with StringToCodes about how
+// long a string is (4 vs 3 for "a🍌b"), and `_` handed back lone surrogates
+const StringLength = (a: string) => track(np.array([...a].length))
 
 // length works on whatever it's handed – a tensor's leading axis, a list's
 // element count, or a string's characters – by trying each in turn.
