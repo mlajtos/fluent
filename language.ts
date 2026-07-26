@@ -3066,6 +3066,43 @@ const nextRngKey = () => random.key(rngCounter++)
 const TensorRandomNormal = (a: Value) => track(random.normal(nextRngKey(), asNumberList(a)))
 const TensorRandomUniform = (a: Value) => track(random.uniform(nextRngKey(), asNumberList(a)))
 
+// A value as the Fluent SOURCE that reproduces it, so CodeEvaluate(String(x))
+// gives x back. This is repr, not display: a string comes back quoted, a list
+// keeps its parens, a tensor keeps its rank. Joining with commas (what a JS
+// string coercion does) is not just lossy — the text re-parses as a SEQUENCE,
+// so `[1, 2, 3]` came back as 3.
+//
+// The law holds exactly for the values that are data: numbers, tensors of any
+// rank, lists, strings, ◌. It cannot hold for values with identity — a signal
+// or a `~` variable round-trips to a NEW one, equal but not the same — nor for
+// a closure over names the target scope does not have. Those are best effort.
+const numberLiteral = (n: number): string =>
+  Number.isFinite(n) ? String(n)
+    // no literal for these, but these expressions evaluate to them
+    : Number.isNaN(n) ? "(0 ÷ 0)"
+    : n > 0 ? "(1 ÷ 0)" : "(0 - 1 ÷ 0)"
+
+const nestedLiteral = (d: unknown): string =>
+  Array.isArray(d) ? `[${d.map(nestedLiteral).join(", ")}]` : numberLiteral(Number(d))
+
+const StringLiteral = (v: Value): string => {
+  if (v === null || v === undefined) { return "◌" }
+  if (typeof v === "string" || v instanceof String) {
+    return `"${String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+  }
+  if (typeof v === "symbol") { return Symbol.keyFor(v) ?? String(v) }
+  if (v instanceof FluentVariable) { return `~(${StringLiteral(v.current)})` }
+  if (v instanceof Signal) { return `$(${StringLiteral(v.peek() as Value)})` }
+  if (isTensor(v)) { return nestedLiteral(getAsSyncList(v)) }
+  if (Array.isArray(v)) {
+    // a one-element list needs its trailing comma, or the parens are just grouping
+    const parts = v.map((e) => StringLiteral(e as Value))
+    return parts.length === 1 ? `(${parts[0]},)` : `(${parts.join(", ")})`
+  }
+  if (typeof v === "function") { return String(v) }
+  return String(v)   // an Error has no literal form – show it rather than lie
+}
+
 const StringConcat = (...args: any[]) => "".concat(...args)
 // characters, not UTF-16 units: `#` disagreed with StringToCodes about how
 // long a string is (4 vs 3 for "a🍌b"), and `_` handed back lone surrogates
@@ -3272,6 +3309,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
 
   // String operations
   StringConcat,
+  StringLiteral,
   StringLength,
   StringToCodes,
   CodesToString,
@@ -3597,7 +3635,7 @@ adagrad: TensorOptimizationAdaGrad,
 ; Strings
 StringToCodes: doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\\"abc\\") = [97, 98, 99]"),
 CodesToString: doc(CodesToString, "CodesToString(codes)", "A tensor of character codes back to text. Rounds first, so model outputs decode directly.", "CodesToString([104, 105]) = \\"hi\\""),
-String: doc({ x | StringConcat("", x) }, "String(x)", "Any value as text – a number, a tensor's elements, a list, or a string unchanged. The text a value prints as, as a value you can join.", "String(42) = \\"42\\""),
+String: doc(StringLiteral, "String(x)", "The Fluent source that reproduces a value: CodeEvaluate(String(x)) is x again. A string comes back quoted, a list keeps its parens, a tensor keeps its rank. Exact for data; a signal or ~ round-trips to a new one, and a lambda needs its free names in scope.", "String([1, 2]) = \\"[1, 2]\\""),
 
 ; Misc
 ($): doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2"),

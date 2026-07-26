@@ -1181,6 +1181,48 @@ describe("gallery examples smoke suite", () => {
 // and a Fluent sequence discards those, so `neigh-bours: 3` binds `bours`,
 // leaves `neigh` unbound, and every value in scope still looks fine. That is
 // exactly how the Tour shipped broken with the suite green.
+describe("String is the inverse of CodeEvaluate", () => {
+  // The law: CodeEvaluate(String(x)) is x. String emits the SOURCE that
+  // reproduces a value, not display text – joining a tensor's elements with
+  // commas re-parses as a SEQUENCE, so `[1, 2, 3]` used to come back as 3.
+  // Stated as String ∘ CodeEvaluate ∘ String = String, which holds for every
+  // type including lists and empty tensors, where `=` is not elementwise.
+  for (const src of [
+    "42", "0.5", "0 - 7",
+    "[1, 2, 3]", "[[1, 2], [3, 4]]", "[[[1, 2]]]", "[]", "[1]",
+    "(1, 2, 3)", "(1,)", "()", "((1, 2), (3, 4))",
+    "1 ÷ 0", "0 - 1 ÷ 0", "◌",
+  ]) {
+    test(`round-trips ${src}`, () => {
+      expect(value(`String(CodeEvaluate(String(${src})))`)).toBe(value(`String(${src})`))
+    })
+  }
+
+  // and the values themselves, where they can be compared elementwise
+  for (const src of ["42", "[1, 2, 3]", "[[1, 2], [3, 4]]", "1 ÷ 0"]) {
+    test(`round-trips ${src} by value`, () => {
+      expect(value(`min(CodeEvaluate(String(${src})) = (${src}))`)).toBe(1)
+    })
+  }
+
+  test("a string comes back quoted, and as a string", () => {
+    expect(value(`String("hi")`)).toBe('"hi"')
+    // CodeEvaluate hands back a String object, not a primitive – coerce to compare
+    expect(String(value(`CodeEvaluate(String("hi"))`))).toBe("hi")
+    expect(String(value(`CodeEvaluate(String("a\\"b"))`))).toBe('a"b')   // embedded quote survives
+  })
+
+  test("◌ round-trips as ◌, not as the host's null", () => {
+    expect(value("String(◌)")).toBe("◌")
+    expect(run("CodeEvaluate(String(◌))")).toBeNull()
+  })
+
+  test("rank survives, which comma-joining could not", () => {
+    expect(value("String([[1, 2], [3, 4]])")).toBe("[[1, 2], [3, 4]]")
+    expect(value("String((1, 2, 3))")).toBe("(1, 2, 3)")
+  })
+})
+
 describe("every name in shipped Fluent source resolves", () => {
   const symbolOf = (n: any): string | undefined =>
     n?.type === "Symbol" ? (n.content?.value as string) : undefined
