@@ -10,9 +10,13 @@
 // the door to the gallery.
 //
 // Authoring rules the grammar imposes on this string:
-// – Fluent strings run to the next `"` and have no escapes, so the prose
-//   uses typographic quotes (“ ”) and never a straight double quote – and a
-//   CELL can never contain one either (button labels live at tour level).
+// – A backslash escapes the next character in a Fluent string, so a literal
+//   `"` is written `\\"` here – the template literal eats one backslash on
+//   the way through. The prose sticks to typographic quotes (“ ”) anyway.
+// – Identifiers hold no `-`: it is always the subtraction operator. A
+//   hyphenated name binds nothing AND reads its left half, so a top-level
+//   `step-foo:` makes the whole program a reader of the `step` signal and
+//   every navigation click resets the tour. Names here are camelCase.
 // – Backticks appear inside cell code (quoted ASTs); in this template
 //   literal they must be written as \` – a regular template literal keeps
 //   them as plain backticks (String.raw would keep the backslash too).
@@ -59,7 +63,7 @@ head: { label |
         Button("next ▸", { step((step() + 1) ⌊ 14) })
     )
 },
-head-final: { label |
+headFinal: { label |
     Grid([1, 2, 1])(
         Button("◂ back", { step(0 ⌈ (step() - 1)) }),
         Center(Text(label)),
@@ -133,7 +137,7 @@ s5: Grid(1)(
     head("**Fluent Tour** · 5 / 15"),
     Text("### Name anything with \`:\`
 
-**Anything worth keeping deserves a name.** A \`:\` gives one to anything, and then you spend the name instead of retyping the value. Words work, kebab-case works, Greek works — type \`theta\`, press **Tab**, get \`θ\`. Even \`🍌\` works."),
+**Anything worth keeping deserves a name.** A \`:\` gives one to anything, and then you spend the name instead of retyping the value. Words work, Greek works — type \`theta\`, press **Tab**, get \`θ\`. Even \`🍌\` works."),
     challenge("🍌: 7,
 🍌 + 🍌   ; ← a waste of good bananas. make 49.",
         { r, s | c: StringToCodes(s), (min(r = 49)) ∧ ((Σ(c = 127820)) ≥ 3) },
@@ -272,23 +276,23 @@ s12: Grid(1)(
 
 guess: $(10),
 hist: $([10]),
-; a cell can never hold a double quote (Fluent strings have no escapes),
-; so the button labels are named out here – the names ARE the labels
-step-downhill: "step downhill",
-back-to-10: "back to 10",
+; the button labels are named out here so the cell reads as one short
+; expression – the names ARE the labels
+stepDownhill: "step downhill",
+backTo10: "back to 10",
 s13: Grid(1)(
     head("**Fluent Tour** · 13 / 15"),
     Text("### Walk downhill
 
 **You found the bottom by feel. Now walk there deliberately.** Each press of the first button is one honest step: read the slope where you stand, scale it down, move the *other* way, remember the footprint. Watch the path: long strides far out, baby steps near the bottom — the slope itself shrinks as you close in."),
     demo("(
-    Button(step-downhill, {
+    Button(stepDownhill, {
         here: guess(),                 ; where the guess stands
         there: here - dfar(here)*0.3,  ; a small step AGAINST the slope
         guess(there),                  ; move
         hist(hist() concat [there])    ; remember the footprint
     }),
-    Button(back-to-10, { guess(10), hist([10]) })
+    Button(backTo10, { guess(10), hist([10]) })
 )"),
     hist,
     status({ (abs(guess() - 42)) < 1 },
@@ -300,12 +304,12 @@ s13: Grid(1)(
 ; ———————————————————— 14 · let it run —————————————————————————————
 
 answer: ~(0.1),
-answer-live: watch(answer),
+answerLive: watch(answer),
 trail: $([0.1]),
 ; a line plot, not the annotated bar chart – the trail grows by one point
 ; per FRAME, and re-annotating hundreds of bars each frame would throttle
 ; the very training loop the room wants you to watch
-trail-plot: PointPlot(trail),
+trailPlot: PointPlot(trail),
 s14: Grid(1)(
     head("**Fluent Tour** · 14 / 15"),
     Text("### Let it run
@@ -315,8 +319,8 @@ s14: Grid(1)(
 opt: sgd(0.0005),
 { opt(score), trail(trail() concat [answer]) } iter 200,
 watch(answer)"),
-    trail-plot,
-    status({ (abs((answer-live() * answer-live()) - 42)) < 0.1 },
+    trailPlot,
+    status({ (abs((answerLive() * answerLive()) - 42)) < 0.1 },
         Text("✅ **6.4807….** That is the square root of 42, and nobody typed it — \`answer\` walked there, pressed downhill by its own slope, two hundred times. This is machine learning entire; the rest is scale."),
         Text("🎯 *Nothing to press — watch until \`answer · answer\` sits within 0.1 of 42. (Impatient? Raise the 0.0005.)*")
     )
@@ -325,7 +329,7 @@ watch(answer)"),
 ; ———————————————————— 15 · it keeps going —————————————————————————
 
 s15: Grid(1)(
-    head-final("**Fluent Tour** · 15 / 15"),
+    headFinal("**Fluent Tour** · 15 / 15"),
     Text("### It keeps going
 
 **That was the tour** — numbers, lists, names, functions; then a slope, a bottom found by hand, a walk, and a value that found √42 on its own.

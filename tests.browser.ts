@@ -4,9 +4,18 @@
 // Run with `bun run test:browser`; `bunx playwright install chromium` once.
 import { test, expect, type Page } from "@playwright/test"
 
+// The dev server injects a <bun-hmr> status overlay that sits above the page
+// and swallows pointer events once it has rendered. It is harness chrome, not
+// app UI, so tests take it out of the hit-testing path.
+const hideDevOverlay = (page: Page) =>
+  page.addStyleTag({ content: "bun-hmr { display: none !important; pointer-events: none !important }" })
+
 // mirror of client.tsx's StringSerialize (js-base64 encodeURI = unpadded base64url)
-const open = (page: Page, code: string) =>
-  page.goto(`/?code=${Buffer.from(code).toString("base64url")}`)
+const open = async (page: Page, code: string) => {
+  const response = await page.goto(`/?code=${Buffer.from(code).toString("base64url")}`)
+  await hideDevOverlay(page)
+  return response
+}
 
 // the result panel – scoped so Monaco's text and line numbers never match
 const panel = (page: Page) => page.getByTestId("print-panel").first()
@@ -326,6 +335,134 @@ test("the Tour opens, checks a challenge, and rejects a cheat", async ({ page })
   await page.keyboard.press("Escape")
   await page.getByRole("button", { name: "next ▸" }).click()
   await expect(page.locator(".ast-tree").first()).toBeVisible()
+})
+
+// A learner doing the whole Tour, room by room: solve every challenge, drive
+// every control, and only ever advance with the header button. The per-room
+// tests above pin one mechanism each; this one is the only thing that runs
+// rooms 2-15 at all, and it is what catches a language change quietly
+// breaking a room (a hyphenated binding froze navigation on room 1 with no
+// console error, and 211/211 unit tests stayed green).
+test("a learner walks the whole Tour, solving every room", async ({ page }) => {
+  test.setTimeout(240_000)   // 15 rooms, two of them wall-clock training loops
+
+  const next = async () => {
+    await page.keyboard.press("Escape")   // a lingering suggest widget eats the click
+    await page.getByRole("button", { name: "next ▸" }).click()
+  }
+  const room = (heading: string) => expect(page.getByText(heading)).toBeVisible()
+  const solved = (done: string) => expect(page.getByText(done)).toBeVisible()
+
+  await open(page, "Tour")
+
+  // 1 · reading order – glue the * so it binds tighter than the spaced +
+  await room("Reading order is meaning")
+  await typeInCell(page, "make this say 7", "1 + 2*3")
+  await solved("You just changed what a program means with a")
+  await next()
+
+  // 2 · see the shape – no challenge, the backtick literal must draw a tree
+  await room("When in doubt, draw it")
+  await expect(page.locator(".ast-tree").first()).toBeVisible()
+  await next()
+
+  // 3 · indexing
+  await room("A list acts like one number")
+  await typeInCell(page, "fish out the 30", "[10, 20, 30] _ 2")
+  await solved("Third item, index 2")
+  await next()
+
+  // 4 · a run, doubled
+  await room("Runs of numbers")
+  await typeInCell(page, "turn this into", "1 ... 5 * 2")
+  await solved("A run, times two")
+  await next()
+
+  // 5 · naming – the check insists on three bananas, not a typed 49
+  await room("Name anything with")
+  await typeInCell(page, "waste of good bananas", "🍌: 7, 🍌 * 🍌")
+  await solved("One name, three bananas")
+  await next()
+
+  // 6 · three names for everything
+  await room("Every built-in has three names")
+  await typeInCell(page, "now sum 1 through 100", "sum(1 ... 100)")
+  await solved("Gauss needed a clever trick")
+  await next()
+
+  // 7 · operators are functions – a name in operator position, no parens, no +
+  await room("Operators aren")
+  await typeInCell(page, "now put plus in the MIDDLE", "plus: add, 40 plus 2")
+  await solved("You taught the language a word")
+  await next()
+
+  // 8 · your own function
+  await room("Make your own function")
+  await typeInCell(page, "almost. a cube is", "cube: { x | x^3 }, cube(3)")
+  await solved("You fixed a function")
+  await next()
+
+  // 9 · reactivity – drag the slider past 0.9, no typing
+  await room("Make it move")
+  await page.locator("input[type=range]").first().fill("0.95")
+  await solved("You changed a running program mid-flight")
+  await next()
+
+  // 10 · grad reads a function
+  await room("The slope machine")
+  await typeInCell(page, "the slope of x·x·x, at 2", "f: { x | x^3 }, df: grad(f), df(2)")
+  await solved("You differentiated a program by editing a program")
+  await next()
+
+  // 11 · the slope, drawn – no challenge, both curves must plot
+  await room("The slope, drawn")
+  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+  await next()
+
+  // 12 · find the bottom by feel – scrub the guess from 10 to 42.
+  // Scrubber maps 0.1 of a unit per pixel of pointer travel, and it listens on
+  // window, so the drag has to be real pointer events rather than a fill().
+  await room("Find the bottom by feel")
+  const scrubber = page.locator('span[style*="ew-resize"]').first()
+  for (let i = 0; i < 8; i++) {
+    const shown = Number((await scrubber.innerText()).replace(/_/g, ""))
+    if (Math.abs(shown - 42) < 0.5) break
+    // each press captures the value it started from, so a drag that runs out
+    // of viewport just gets picked up by the next one
+    const grip = (await scrubber.boundingBox())!
+    const startX = grip.x + grip.width / 2, y = grip.y + grip.height / 2
+    const headroom = page.viewportSize()!.width - startX - 8
+    const dx = Math.max(-(startX - 8), Math.min(headroom, (42 - shown) * 10))
+    await page.mouse.move(startX, y)
+    await page.mouse.down()
+    await page.mouse.move(startX + dx, y, { steps: 12 })
+    await page.mouse.up()
+  }
+  await solved("Score 0, slope 0, guess 42")
+  await next()
+
+  // 13 · walk downhill – each press is one gradient step, g ← 0.4g + 25.2,
+  // so it lands inside 1 of 42 in seven presses; press a few extra and stop
+  // as soon as the light turns.
+  await room("Walk downhill")
+  const arrived = page.getByText("That graph is gradient descent")
+  for (let i = 0; i < 14 && !(await arrived.isVisible()); i++) {
+    await page.getByRole("button", { name: "step downhill" }).click()
+  }
+  await expect(arrived).toBeVisible()
+  await next()
+
+  // 14 · let it run – nothing to press, sgd finds √42 on its own
+  await room("Let it run")
+  await expect(page.getByText("That is the square root of 42")).toBeVisible({ timeout: 120_000 })
+  await next()
+
+  // 15 · the door out – the final header swaps next ▸ for start over ↺
+  await room("It keeps going")
+  await expect(page.getByRole("button", { name: "start over ↺" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "next ▸" })).toHaveCount(0)
+  await page.getByRole("button", { name: "start over ↺" }).click()
+  await room("Reading order is meaning")
 })
 
 test("Center centers its child in the cell", async ({ page }) => {
