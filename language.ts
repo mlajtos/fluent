@@ -893,7 +893,15 @@ function addConcreteArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set(
 // Arrays reachable from an arena result survive the sweep. Unlike tf.tidy's
 // walk this descends into plain objects (JSX props) but stops at the reactive
 // graph: a signal's payload is its own to hold and to free.
+// Set by the walk when it meets a closure. A lambda's captured environment is
+// not a property of anything – a tensor the body minted and kept alive only
+// through the function it returned is invisible here. "Unreachable" is then
+// not a conclusion the walk is entitled to draw, so it records that and the
+// arena keeps everything rather than freeing on a guess.
+let walkMetClosure = false
+
 function collectLiveArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set()): void {
+  if (typeof v === "function") { walkMetClosure = true; return }
   if (v === null || typeof v !== "object") { return }
   if (seen.has(v)) { return }
   seen.add(v)
@@ -931,9 +939,11 @@ function arenaInto<T>(owner: Arena | null, fn: () => T): T {
     arenaStack.pop()
     if (scratch.size > 0) {
       const live: Arena = new Set()
+      walkMetClosure = false
       collectLiveArrays(result, live)
+      const keepAll = walkMetClosure
       for (const array of scratch) {
-        if (live.has(array)) { owner?.add(array) }
+        if (keepAll || live.has(array)) { owner?.add(array) }
         else if (array.refCount > 0) { array.dispose() }
       }
     }
