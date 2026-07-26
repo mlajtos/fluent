@@ -891,8 +891,8 @@ function addConcreteArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set(
 }
 
 // Arrays reachable from an arena result survive the sweep. Unlike tf.tidy's
-// walk this descends into plain objects (JSX props) but treats the reactive
-// graph shallowly: signal payloads are peeked, never computed.
+// walk this descends into plain objects (JSX props) but stops at the reactive
+// graph: a signal's payload is its own to hold and to free.
 function collectLiveArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set()): void {
   if (v === null || typeof v !== "object") { return }
   if (seen.has(v)) { return }
@@ -909,7 +909,6 @@ function collectLiveArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set(
     // disposed arrays ("Referenced tracer Tensor (disposed) freed").
     const lift = liftRegistry.get(v as Signal<Value>)
     if (lift) { for (const arg of lift.args) { collectLiveArrays(arg, out, seen) } }
-    collectLiveArrays((v as any)._value, out, seen)
     return
   }
   if (v instanceof Error) { collectLiveArrays(v.cause, out, seen); return }
@@ -1761,7 +1760,15 @@ const releaseHeld = (v: unknown): void => {
   else if (v instanceof np.Array && v.refCount > 0) { v.dispose() }
 }
 
-const SignalCreate = (<T,>(initial: T) => signal(bufferBackedScalar(initial) ?? heldValue(initial))) as typeof signal
+// The owning reference taken here is released when the evaluation that created
+// the signal retires – the same contract FluentVariable has. Nothing else can
+// free it: collectLiveArrays cannot see through a Signal, so a signal that
+// registers no disposable strands its payload for the life of the page.
+const SignalCreate = (<T,>(initial: T) => {
+  const s = signal(bufferBackedScalar(initial) ?? heldValue(initial))
+  registerDisposable(() => releaseHeld(s.peek()))
+  return s
+}) as typeof signal
 
 const SignalRead = <T,>(s: Signal<T>) => {
   if (!(s instanceof Signal)) {
@@ -2373,18 +2380,30 @@ const TensorGradient = (f: Value) => {
     // vjp with a ones cotangent: scalar outputs give the classic gradient,
     // elementwise outputs get per-element derivatives – ∇({x | x^2}) works
     // on vectors like it did on TFJS
-    const [out, pullback] = jaxVjp((primal: np.Array) => {
-      const result = (f as Function)(primal)
-      const value = result instanceof Signal ? result.peek() : result
-      if (value instanceof Error) { throw value }
-      if (!isTensor(value)) { throw new Error("`grad(f)`: `f` must return a tensor") }
-      return value as np.Array
-    }, [borrow(x) as np.Array])
+    // vjp is traced through Fluent's own wrappers, and those borrow their
+    // arguments without ever consuming them – so each op in `f`'s body leaves
+    // a reference on the primal that nothing will return, and pullback.dispose
+    // hands back only jax-js's own. ∇ borrows like every other operator, so
+    // restore the count the caller had: without this every ∇ strands a buffer,
+    // and a hand-written descent loop strands one per step.
+    const source = x instanceof FluentVariable ? x.current : x
+    const held = isTensor(source) ? source.refCount : 0
+    const primal = borrow(x) as np.Array
+    let pullback: ReturnType<typeof jaxVjp>[1] | null = null
     try {
-      const [dx] = pullback(np.onesLike(out))
+      const [out, pb] = jaxVjp((traced: np.Array) => {
+        const result = (f as Function)(traced)
+        const value = result instanceof Signal ? result.peek() : result
+        if (value instanceof Error) { throw value }
+        if (!isTensor(value)) { throw new Error("`grad(f)`: `f` must return a tensor") }
+        return value as np.Array
+      }, [primal])
+      pullback = pb
+      const [dx] = pb(np.onesLike(out))
       return track(dx)
     } finally {
-      pullback.dispose()
+      pullback?.dispose()
+      if (isTensor(source)) { while (source.refCount > held) { source.dispose() } }
     }
   }
 }
