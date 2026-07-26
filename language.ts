@@ -818,7 +818,6 @@ const borrow = (v: any): any => {
   if (v instanceof FluentVariable) {
     // a variable holding a tracer is a swapped-in parameter of the ongoing
     // trace (optimizer step) – only reading a CONCRETE value freezes state
-    if (tracingActive && v.current instanceof np.Array) { traceTouchedState = true }
     return v.current.ref
   }
   if (isTensor(v)) { return v.ref }
@@ -907,7 +906,7 @@ function collectLiveArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set(
   seen.add(v)
   if (v instanceof np.Array) { out.add(v); return }
   if (v instanceof Tracer) { return }
-  if (v instanceof FluentVariable) { out.add(v.current); return }
+  if (v instanceof FluentVariable) { out.add(v.raw); return }
   if (v instanceof Signal) {
     // A lifted computed reaches its argument tensors only through its
     // closure, which this walk cannot see – but the lift registry exposes
@@ -979,7 +978,25 @@ const computedOwned = <T,>(fn: () => T): Signal<T> => {
 // reference of its current value; assignment takes ownership of the next
 // value and bumps the version signal (drag, optimizer step, :=).
 class FluentVariable {
-  current: np.Array
+  // Reading the concrete payload during a trace freezes it into the compiled
+  // program, so EVERY such read has to mark the trace non-replayable. Only
+  // borrow() used to, and the reads that bypass it — getAsSyncList, the
+  // integer-power fast path, the shape/dtype helpers — are exactly the ones
+  // that put a `~` in a structural slot (axis, shift, exponent, shape), where
+  // it was baked in and every later `:=` silently ignored. Making the read
+  // itself the guard means a new structural op cannot forget it.
+  // `raw` is the same field without the guard, for bookkeeping that is not a
+  // read of the value: disposal, the arena walk, and the optimizer swapping
+  // its tracers in and out on every step.
+  #payload!: np.Array
+  // A variable holding a tracer is a swapped-in parameter of the ongoing trace
+  // (an optimizer step): only reading a CONCRETE value freezes state.
+  get current(): np.Array {
+    if (tracingActive && this.#payload instanceof np.Array) { traceTouchedState = true }
+    return this.#payload
+  }
+  set current(next: np.Array) { this.#payload = next }
+  get raw(): np.Array { return this.#payload }
   readonly version = signal(0)
 
   // takes ownership of `initial`
@@ -994,7 +1011,7 @@ class FluentVariable {
     registry.add(this)
     registerDisposable(() => {
       registry.delete(this)
-      if (this.current.refCount > 0) { this.current.dispose() }
+      if (this.raw.refCount > 0) { this.raw.dispose() }
     })
   }
 
@@ -1008,13 +1025,13 @@ class FluentVariable {
       if (next.refCount > 0) { next.dispose() }
       next = backed
     }
-    const previous = this.current
+    const previous = this.raw
     this.current = next
     if (previous.refCount > 0) { previous.dispose() }
     this.version.value++
   }
 
-  toString() { return this.current.toString() }
+  toString() { return this.raw.toString() }
 }
 
 // Optimizers with no explicit variable list train everything alive – the
@@ -1733,8 +1750,8 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
     // graph – realize what the batch retained. Defensive: a corrupted
     // variable must never kill the loop itself.
     for (const variable of [...trainableVariables, ...dataVariables]) {
-      if (!(variable.current instanceof np.Array)) { continue }
-      const held = variable.current.ref
+      if (!(variable.raw instanceof np.Array)) { continue }
+      const held = variable.raw.ref
       held.blockUntilReady().then(
         () => { if (held.refCount > 0) { held.dispose() } },
         () => { /* generation retired mid-flight */ },
@@ -2753,7 +2770,7 @@ const TensorWatch = (a: Value): Value => {
   return computed(() => {
     a.version.value
     if (previous && previous.refCount > 0) { previous.dispose() }
-    previous = a.current.ref
+    previous = a.raw.ref
     return previous
   })
 }
@@ -2817,7 +2834,7 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
       stepMode = "probe"
     }
     if (state === null) {
-      state = transform.init(vars.map(v => v.current.ref))
+      state = transform.init(vars.map(v => v.raw.ref))
       stateVars = vars
     }
 
@@ -2826,8 +2843,8 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     // trace. Only the params leaf differentiates – jax's default argnums is 0,
     // and jax-js stop-gradients the remaining arguments itself.
     const lossFromParams = (params: np.Array[], data: np.Array[]) => {
-      const saved = vars.map(v => v.current)
-      const savedData = slots.map(s => s.current)
+      const saved = vars.map(v => v.raw)
+      const savedData = slots.map(s => s.raw)
       vars.forEach((v, i) => { v.current = params[i]! })
       slots.forEach((s, i) => { s.current = data[i]! })
       try {
@@ -2843,10 +2860,10 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     }
 
     const eagerStep = (): Value => {
-      const [loss, grads] = valueAndGrad(lossFromParams)(vars.map(v => v.current.ref), slots.map(s => s.current.ref))
-      const [updates, nextState] = transform.update(grads as np.Array[], state!, vars.map(v => v.current.ref))
+      const [loss, grads] = valueAndGrad(lossFromParams)(vars.map(v => v.raw.ref), slots.map(s => s.raw.ref))
+      const [updates, nextState] = transform.update(grads as np.Array[], state!, vars.map(v => v.raw.ref))
       state = nextState
-      const fresh = optax.applyUpdates(vars.map(v => v.current.ref), updates as np.Array[]) as np.Array[]
+      const fresh = optax.applyUpdates(vars.map(v => v.raw.ref), updates as np.Array[]) as np.Array[]
       vars.forEach((v, i) => { v.assign(fresh[i]!) })
       return track(loss)
     }
@@ -2871,7 +2888,7 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     try {
       // pass a referenced copy of the state tree: on a failed trace our own
       // references stay valid and the eager fallback still has its state
-      const [loss, fresh, nextState] = compiledStep!(vars.map(v => v.current.ref), slots.map(s => s.current.ref), tree.ref(state!) as optax.OptState)
+      const [loss, fresh, nextState] = compiledStep!(vars.map(v => v.raw.ref), slots.map(s => s.raw.ref), tree.ref(state!) as optax.OptState)
       tree.dispose(state!)
       state = nextState
       vars.forEach((v, i) => { v.assign(fresh[i]!) })
