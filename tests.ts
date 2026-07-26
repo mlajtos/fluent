@@ -1147,6 +1147,31 @@ describe("gallery examples smoke suite", () => {
       flushRetirements()
     })
   }
+
+  // The IDE re-evaluates on every keystroke, so anything a demo strands per
+  // evaluation is stranded per keystroke. Assert the live count RETURNS TO
+  // where it was, not merely that it shrank: a relative assertion passes
+  // while almost everything leaks, and this is the shape that caught signals
+  // never freeing their payload (25 of 51 demos leaked a buffer per
+  // evaluation) and ops stranding a reference when they throw.
+  test("no gallery example strands a tensor per evaluation", () => {
+    const leaks: string[] = []
+    for (const [name, src] of Object.entries(EXAMPLES)) {
+      const source = (src as string).trim()
+      beginTensorWatch()
+      try {
+        const counts: number[] = []
+        for (let i = 0; i < 3; i++) {
+          evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope()))
+          flushRetirements()
+          counts.push(liveTensorCount())
+        }
+        // compare the last two: the first evaluation seeds shared constants
+        if (counts[2]! > counts[1]!) { leaks.push(`${name} +${counts[2]! - counts[1]!} [${counts.join(", ")}]`) }
+      } finally { endTensorWatch() }
+    }
+    expect(leaks).toEqual([])
+  })
 })
 
 // A name that resolves to nothing is the shape almost every language change
