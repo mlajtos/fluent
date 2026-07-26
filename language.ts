@@ -2520,7 +2520,7 @@ const TensorGradient = (f: Value) => {
     const source = x instanceof FluentVariable ? x.current : x
     const held = isTensor(source) ? source.refCount : 0
     const primal = borrow(x) as np.Array
-    let pullback: ReturnType<typeof jaxVjp>[1] | null = null
+    let pullback: { (cotangents: any): any[], dispose: () => void } | null = null
     // ∇ is a tracing entry point like makeLiftedApply and the optimizer step,
     // so it has to arm the same guards. Without this the "write during trace"
     // check was unreachable under ∇ and a `:=` inside a differentiated body

@@ -1095,7 +1095,7 @@ describe("gallery examples smoke suite", () => {
   // too: a spectrum demo indexes fft(mic()) as [real; imag], which only works
   // on a waveform of the length the demo asked for.
   const at = (v: unknown) => { const s = SignalCreate(v as any); return s }
-  const num = (v: Value, fallback: number) => { try { return Number((v as np.Array).ref.js()) } catch { return fallback } }
+  const num = (v: Value | undefined, fallback: number) => { try { return Number((v as np.Array).ref.js()) } catch { return fallback } }
   const stubs: Record<string, Value> = {}
   for (const k of ["Button", "Checkbox", "Grid", "ImageUpload", "Layers", "Point2D", "Trail",
     "Slider", "Scrubber", "Text", "TextEditor", "Code", "CodeEditor", "Print", "PrettyPrint",
