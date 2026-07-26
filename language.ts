@@ -2038,6 +2038,24 @@ const asNumber = (v: Value): number => {
 }
 const asNumberList = (v: Value): number[] => ([] as number[]).concat(requireData(v) as any)
 
+// Sizes, counts, axes and repeat factors are whole numbers, but Fluent has one
+// dtype and the README teaches scaling a 0..1 slider by arithmetic, so they
+// arrive fractional constantly. Round, the policy linspace and ⍣ already state
+// in their own comments – the alternative is a tensor with a fractional shape,
+// which jax-js builds lazily and then throws on at READ time, outside the
+// evaluator's try, so it takes down the panel instead of becoming an Error.
+// ±Infinity is not a length; asNumber already rejects NaN.
+const asFinite = (v: Value): number => {
+  const n = asNumber(v)
+  if (!Number.isFinite(n)) { throw new Error(`expected a whole number, got ${n}`) }
+  return n
+}
+const asWhole = (v: Value): number => Math.round(asFinite(v))
+const asWholeList = (v: Value): number[] => asNumberList(v).map((n) => {
+  if (!Number.isFinite(n)) { throw new Error(`expected whole numbers, got ${n}`) }
+  return Math.round(n)
+})
+
 const Tensor = (values: unknown, shape?: Value) => {
   const source: any = isTensor(values) || values instanceof FluentVariable ? borrow(values) : values
   return track(np.array(source, shape === undefined ? undefined : { shape: asNumberList(shape) }))
@@ -2272,7 +2290,7 @@ const promoteBool = (v: any): any => {
 const withOptionalAxis = (op: (a: any, axis?: number | number[] | null, opts?: { keepdims?: boolean }) => np.Array) =>
   (a: Value, b?: Value, keep?: Value) =>
     track(op(promoteBool(a),
-      b === undefined ? null : requireData(b) as (number | number[]),
+      b === undefined ? null : (Array.isArray(requireData(b)) ? asWholeList(b) : asWhole(b)),
       keep === undefined ? undefined : { keepdims: asNumber(keep) !== 0 }))
 
 const TensorSum = withOptionalAxis(np.sum)      // TensorReduce(a, +)
@@ -2327,12 +2345,15 @@ const emptyReductionAxis = (a: Value, axis?: Value): boolean => {
   const n = asNumber(axis)
   return shape[n < 0 ? shape.length + n : n] === 0
 }
+// jax-js's arg-ops return int32, and a weak float constant truncates against an
+// int32 array – `argmax(x) ÷ #(x)` came back a confident 0. Fluent is float32
+// throughout, so cast like TensorRange does; `_` re-casts its index to int32.
 const TensorArgMax = (a: Value, axis?: Value) =>
   emptyReductionAxis(a, axis) ? new Error("`argmax`: an empty tensor has no maximal index")
-    : track(axis === undefined ? np.argmax(promoteBool(a)) : np.argmax(promoteBool(a), asNumber(axis)))
+    : track((axis === undefined ? np.argmax(promoteBool(a)) : np.argmax(promoteBool(a), asWhole(axis))).astype(np.float32))
 const TensorArgMin = (a: Value, axis?: Value) =>
   emptyReductionAxis(a, axis) ? new Error("`argmin`: an empty tensor has no minimal index")
-    : track(axis === undefined ? np.argmin(promoteBool(a)) : np.argmin(promoteBool(a), asNumber(axis)))
+    : track((axis === undefined ? np.argmin(promoteBool(a)) : np.argmin(promoteBool(a), asWhole(axis))).astype(np.float32))
 
 const TensorNormalize = (a: Value, p?: Value) => {
   const ord = p !== undefined ? asNumber(p) : 2
@@ -2357,9 +2378,26 @@ const TensorErrorFunction = unaryOp(lax.erf)
 const TensorSoftmax = (x: Value, axis?: Value) =>
   isScalarTensor(x)
     ? track(np.reshape(nn.softmax(np.reshape(borrow(x), [1]), 0), []))
-    : track(nn.softmax(borrow(x), axis === undefined ? undefined : asNumber(axis)))
-const TensorOneHot = (indices: Value, depth: Value) =>
-  track(nn.oneHot(np.astype(borrow(indices), np.int32), asNumber(depth)))
+    : track(nn.softmax(borrow(x), axis === undefined ? undefined : asWhole(axis)))
+// oneHot is a gather over eye(depth) with no bounds mode, so indices alias with
+// period depth+1: an off-by-one label column, or a -1 "unknown" sentinel, would
+// produce a confident one-hot for a DIFFERENT class and train the model toward
+// it with no error anywhere. Bounds-check exactly the way `_` does one screen
+// down, tracer bailout included – a live tracer index comes from trusted data
+// and flows through unchecked.
+const TensorOneHot = (indices: Value, depth: Value) => {
+  const n = asWhole(depth)
+  let idx: unknown
+  try { idx = getAsSyncList(indices) } catch (e) { if (!(e instanceof TraceBailout)) throw e }
+  if (idx !== undefined) {
+    const flat = (Array.isArray(idx) ? idx.flat(Infinity) : [idx]) as number[]
+    const bad = flat.find((i) => !(i >= 0 && i < n))
+    if (bad !== undefined) {
+      return new Error(`oneHot: class ${bad} is out of bounds for a depth of ${n}`)
+    }
+  }
+  return track(nn.oneHot(np.astype(borrow(indices), np.int32), n))
+}
 const TensorCrossEntropy = (labels: Value, logits: Value) =>
   track(np.mean(np.negative(np.sum(np.multiply(borrow(labels), nn.logSoftmax(borrow(logits))), -1))))
 
@@ -2367,8 +2405,8 @@ const TensorSort = (x: Value) =>
   isScalarTensor(x) ? track(np.reshape(borrow(x), [])) : track(np.sort(borrow(x)))
 const TensorArgSort = (x: Value) =>
   isScalarTensor(x)
-    ? track(np.reshape(np.argsort(np.reshape(borrow(x), [1])), []))
-    : track(np.argsort(borrow(x)))
+    ? track(np.reshape(np.argsort(np.reshape(borrow(x), [1])), []).astype(np.float32))
+    : track(np.argsort(borrow(x)).astype(np.float32))
 const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   const beginList = asNumberList(begin)
   const sizeList = size === undefined ? undefined : asNumberList(size)
@@ -2379,6 +2417,14 @@ const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   return track((borrow(a) as np.Array).slice(...spec))
 }
 const TensorMask = (a: Value, b: Value) => {
+  // Selection is along axis 0 only: every step below (arange over shape[0],
+  // sort+flip, slice the first `count` rows) is defensible at rank 1 and
+  // meaningless above it, where it used to return a silently garbage tensor of
+  // the wrong rank containing rows never selected. A true elementwise mask has
+  // a data-dependent output shape, which Fluent has no op for – so say so.
+  if (shapeOf(b).length > 1) {
+    return new Error(`mask: the mask must be a vector, got a tensor [${shapeOf(b).join(" ")}] – flatten it, or index with \`_\``)
+  }
   const count = asNumber(TensorSum(TensorBoolean(b)))
   const size = shapeOf(a)[0] ?? 0
   const indices = track(np.arange(size).astype(np.float32))
@@ -2389,7 +2435,7 @@ const TensorMask = (a: Value, b: Value) => {
   return TensorGather(a, TensorReverse(valid))
 }
 const TensorFill = (shape: Value, value: Value) => {
-  return track(np.full(asNumberList(shape), asNumber(value)))
+  return track(np.full(asWholeList(shape), asNumber(value)))
 }
 const TensorBoolean = (a: Value) => track(np.astype(borrow(a), np.bool))
 
@@ -2432,16 +2478,16 @@ const TensorTranspose = unaryOp(np.transpose)
 // Move one axis to a new position, keeping the others' relative order (a zero-copy
 // view). The general axis-rotation that `transpose` (full reverse) can't express;
 // `alongAxis` is built on it. Negative positions count from the end.
-const TensorMoveAxis = (a: Value, from: Value, to: Value) => track(np.moveaxis(borrow(a), asNumber(from), asNumber(to)))
+const TensorMoveAxis = (a: Value, from: Value, to: Value) => track(np.moveaxis(borrow(a), asWhole(from), asWhole(to)))
 const TensorRange = (a: Value, b?: Value) => {
   // jax-js arange is int32 and weak-typed floats truncate against it – Fluent
   // tensors are float32 throughout
   if (b === undefined) {
-    return track(np.arange(Math.trunc(asNumber(a))).astype(np.float32))
+    return track(np.arange(Math.trunc(asFinite(a))).astype(np.float32))
   }
 
-  const start = Math.trunc(asNumber(a))
-  const stop = Math.trunc(asNumber(b))
+  const start = Math.trunc(asFinite(a))
+  const stop = Math.trunc(asFinite(b))
   const step = start <= stop ? 1 : -1
   return track(np.arange(start, stop, step).astype(np.float32))
 }
@@ -2449,8 +2495,8 @@ const TensorRange = (a: Value, b?: Value) => {
 // Inclusive range: like `start ..< stop`, but the endpoint is included –
 // `1 ... 5 = [1, 2, 3, 4, 5]`, `5 ... 1 = [5, 4, 3, 2, 1]`.
 const TensorRangeInclusive = (a: Value, b: Value) => {
-  const start = Math.trunc(asNumber(a))
-  const stop = Math.trunc(asNumber(b))
+  const start = Math.trunc(asFinite(a))
+  const stop = Math.trunc(asFinite(b))
   const step = start <= stop ? 1 : -1
   return track(np.arange(start, stop + step, step).astype(np.float32))
 }
@@ -2503,8 +2549,8 @@ const TensorSinc = unaryOp(np.sinc)
 
 // The k largest values and their indices, as [values, indices]
 const TensorTopK = (a: Value, k: Value) => {
-  const [values, indices] = lax.topK(borrow(a), asNumber(k))
-  return track([values, indices])
+  const [values, indices] = lax.topK(borrow(a), asWhole(k))
+  return track([values, indices.astype(np.float32)])
 }
 
 // Einstein summation: einsum("ij,jk->ik", a, b) is a matrix multiply
@@ -2536,7 +2582,10 @@ const TensorLength = (a: Value, b?: Value) => {
   // its phantom leading axis, so `#(5)` is 1 (APL's tally ≢), matching how
   // broadcasting treats absent axes as size 1. An empty tensor (shape [0]) stays 0.
   if (b !== undefined) {
-    return track(np.array(shapeOf(a)[asNumber(b)] ?? 1))
+    // negative axes count from the end, as they do for Σ, sort and moveaxis
+    const shape = shapeOf(a)
+    const axis = asWhole(b)
+    return track(np.array(shape[axis < 0 ? axis + shape.length : axis] ?? 1))
   }
 
   return track(np.array(shapeOf(a)[0] ?? 1))
@@ -2561,7 +2610,7 @@ const readIndexList = (b: Value): { multi: boolean, idxs: number[] } => {
 }
 const wrapIndex = (raw: number, n: number, kind: string): number | Error => {
   const i = Math.trunc(raw) < 0 ? Math.trunc(raw) + n : Math.trunc(raw)
-  return (i < 0 || i >= n) ? new Error(`index ${raw} is out of bounds for a ${kind} of length ${n}`) : i
+  return !(i >= 0 && i < n) ? new Error(`index ${raw} is out of bounds for a ${kind} of length ${n}`) : i
 }
 // A string indexes to a string, a list to a list – `_[i, j]` keeps the container's
 // type, `_i` picks one element. Same negative-from-the-end and bounds rules as tensors.
