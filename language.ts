@@ -2419,11 +2419,6 @@ const TensorArgMin = (a: Value, axis?: Value) =>
   emptyReductionAxis(a, axis) ? new Error("`argmin`: an empty tensor has no minimal index")
     : track((axis === undefined ? np.argmin(promoteBool(a)) : np.argmin(promoteBool(a), asWhole(axis))).astype(np.float32))
 
-const TensorNormalize = (a: Value, p?: Value) => {
-  const ord = p !== undefined ? asNumber(p) : 2
-  return track(np.trueDivide(borrow(a), np.linalg.vectorNorm(borrow(a), { ord })))
-}
-
 const TensorNegate = unaryOp(np.negative)
 const TensorAbsolute = unaryOp(np.absolute)
 const TensorSign = unaryOp(np.sign)
@@ -3161,7 +3156,6 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorReduce,
   TensorArgMax,
   TensorArgMin,
-  TensorNormalize,
 
   TensorNegate,
   TensorAbsolute,
@@ -3238,7 +3232,6 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   ListReduce,
 
   // String operations
-  String,
   StringConcat,
   StringLength,
   StringToCodes,
@@ -3301,6 +3294,8 @@ cascade: doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order; 
 cond: doc(FunctionCond, "cond(a, b, …)", "Eager, variadic cascade: run each thunk in order, first non-Error wins. \`cascade((…))()\` without the wrapper – reads as a multi-way conditional next to guard.", "cond(guard(n = 0, { 1 }), { n × fact(n - 1) })"),
 guard: doc(FunctionGuard, "guard(cond, { value })", "A cascade candidate: yields the value while cond is truthy, an Error otherwise.", "guard(n = 0, { 1 })"),
 when: doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Errors from the thunk stay loud – only the condition gates.", "when(training(), { opt(𝓛) })"),
+
+erf: doc(TensorErrorFunction, "erf(x)", "Gauss error function – the area under a normal curve out to x, saturating at ±1. Smooth and differentiable everywhere.", "erf(1) ≈ 0.8427"),
 
 ; Tensor shape/indexing
 (#): len: length: doc(Length, "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\\"abc\\") = 3"),
@@ -3518,6 +3513,7 @@ argmin: TensorArgMin,
 𝕍: variance: TensorVariance: doc({ x | μ((x - μ(x))^2) }, "𝕍(x)", "Mean squared deviation from the mean, μ((x - μx)²).", "variance([1, 2, 3]) ≈ 0.667"),
 σ: std: TensorStandardDeviation: doc({ x | √(variance(x)) }, "σ(x)", "Standard deviation, √variance – how far x spreads around its mean.", "σ([2, 4, 4, 4, 5, 5, 7, 9]) = 2"),
 norm: l2norm: TensorL2Norm: doc({ x | √(Σ(x × x)) }, "norm(x)", "Euclidean (L2) norm, √(Σ x²) – the length of x as a vector.", "norm([3, 4]) = 5"),
+normalize: TensorNormalize: doc({ x | x ÷ norm(x) }, "normalize(x)", "x scaled to unit length, x ÷ norm(x) – same direction, length 1.", "normalize([3, 4]) = [0.6, 0.8]"),
 
 ; Variables
 (~): var: doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad. For data the loss reads but never trains, use ~~.", "θ: ~([0, 0])"),
@@ -3562,6 +3558,7 @@ adagrad: TensorOptimizationAdaGrad,
 ; Strings
 StringToCodes: doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\\"abc\\") = [97, 98, 99]"),
 CodesToString: doc(CodesToString, "CodesToString(codes)", "A tensor of character codes back to text. Rounds first, so model outputs decode directly.", "CodesToString([104, 105]) = \\"hi\\""),
+String: doc({ x | StringConcat("", x) }, "String(x)", "Any value as text – a number, a tensor's elements, a list, or a string unchanged. The text a value prints as, as a value you can join.", "String(42) = \\"42\\""),
 
 ; Misc
 ($): doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2"),
