@@ -1527,22 +1527,30 @@ const FunctionPower = (fn: Function, n: Value) => {
 
   return (...args: unknown[]) => {
     let value: unknown = args[0] ?? null
+    // The chain releases exactly what its own steps minted, so the count stays
+    // O(1) rather than O(iterations). Ownership, not reachability, is the test:
+    // "reachable from the previous value" also matched arrays that arrived from
+    // the CALLER — a step returning an element of its argument (`{ p | (p_1, …) }`)
+    // had that element freed under the caller's still-live binding. Skipping
+    // i === 0 only ever protected the argument object, never its elements.
+    const mine: Arena = new Set()
     for (let i = 0; i < times; i++) {
       const prev = value
       // each step in its own arena: per-iteration intermediates die immediately,
       // only the chained value is handed forward (like FunctionIterate/⟳)
-      value = arena(() => fn(prev))
-      // release the just-consumed input so the chain holds O(1) live tensors,
-      // not O(iterations). Skip the caller's original arg (i === 0), and keep any
-      // tensor the new value still shares – an identity step like ⊢ returns it.
-      if (i > 0) {
-        const keep: Arena = new Set()
-        collectLiveArrays(value, keep)
-        const consumed: Arena = new Set()
-        collectLiveArrays(prev, consumed)
-        for (const a of consumed) { if (!keep.has(a) && a.refCount > 0) { a.dispose() } }
+      const minted: Arena = new Set()
+      value = arenaInto(minted, () => fn(prev))
+      const keep: Arena = new Set()
+      collectLiveArrays(value, keep)
+      for (const a of mine) {
+        if (!keep.has(a) && a.refCount > 0) { a.dispose(); mine.delete(a) }
       }
+      for (const a of minted) { mine.add(a) }
     }
+    // whatever the chain still owns becomes the enclosing arena's, which is
+    // where plain `arena()` would have handed it
+    const owner = arenaStack[arenaStack.length - 1] ?? currentGeneration?.arena ?? null
+    for (const a of mine) { owner?.add(a) }
     return value
   }
 }
@@ -2079,9 +2087,31 @@ const numericArg = (v: Value): any => {
   return borrow(v)
 }
 
+// Borrowing and applying have to be indivisible. A jax-js op that throws
+// consumes NONE of its argument references, so a borrow taken outside the call
+// is orphaned when the op rejects its arguments — and the arena disposes each
+// array it tracks exactly once, so it can never recover a second count. That
+// leaked on programs that are CORRECT: a cascade candidate declines by
+// throwing (max/min dispatch their arity that way), returns the right answer,
+// and strands a buffer per attempt with no error and no wrong value.
+const applyBorrowed = <T,>(args: any[], run: () => T): T => {
+  try {
+    return run()
+  } catch (e) {
+    for (const a of args) { if (a instanceof np.Array && a.refCount > 0) { a.dispose() } }
+    throw e
+  }
+}
+
 // Wrapper factories: borrow the tensor arguments, track the result.
-const unaryOp = (op: (x: any) => np.Array) => (a: Value) => track(op(numericArg(a)))
-const binaryOp = (op: (x: any, y: any) => np.Array) => (a: Value, b: Value) => track(op(numericArg(a), numericArg(b)))
+const unaryOp = (op: (x: any) => np.Array) => (a: Value) => {
+  const x = numericArg(a)
+  return applyBorrowed([x], () => track(op(x)))
+}
+const binaryOp = (op: (x: any, y: any) => np.Array) => (a: Value, b: Value) => {
+  const x = numericArg(a), y = numericArg(b)
+  return applyBorrowed([x, y], () => track(op(x, y)))
+}
 
 // stack broadcasts its inputs to a common shape, like arithmetic does:
 // stack(x - a, y - b) works even when the pieces only meet by broadcasting.
@@ -2249,7 +2279,10 @@ const TensorMinimum = binaryOp(np.minimum)
 // negated weak constant clamps at zero, so `(x = 1) - y` silently
 // subtracted nothing. Fluent is a float32 language; 0/1 composes.
 const comparisonOp = (op: (x: any, y: any) => np.Array) =>
-  (a: Value, b: Value) => track(np.astype(op(numericArg(a), numericArg(b)), np.float32))
+  (a: Value, b: Value) => {
+    const x = numericArg(a), y = numericArg(b)
+    return applyBorrowed([x, y], () => track(np.astype(op(x, y), np.float32)))
+  }
 
 const TensorLess = comparisonOp(np.less)
 const TensorGreater = comparisonOp(np.greater)
