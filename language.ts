@@ -2463,12 +2463,9 @@ const TensorNegate = unaryOp(np.negative)
 const TensorAbsolute = unaryOp(np.absolute)
 const TensorSign = unaryOp(np.sign)
 // log(x) is the natural logarithm; log(x, b) takes the base b, so 8 log 2 = 3
-const TensorLogarithm = (a: Value, b?: Value) => {
-  if (b === undefined) {
-    return unaryOp(np.log)(a)
-  }
-  return TensorDivide(TensorLogarithm(a), TensorLogarithm(b))
-}
+const TensorNaturalLogarithm = unaryOp(np.log)
+const TensorLogarithm = (a: Value, b?: Value) =>
+  b === undefined ? TensorNaturalLogarithm(a) : TensorDivide(TensorNaturalLogarithm(a), TensorNaturalLogarithm(b))
 const TensorLog1Plus = unaryOp(np.log1p)      // log(1 + x), accurate near 0
 const TensorExponential = unaryOp(np.exp)
 const TensorExpMinus1 = unaryOp(np.expm1)     // exp(x) - 1, accurate near 0
