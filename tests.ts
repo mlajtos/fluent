@@ -451,6 +451,11 @@ describe("math functions", () => {
     expect(value("square(4)")).toBe(16)
     expect(value("cbrt(27)")).toBeCloseTo(3, 4)
     expect(value("log2(8)")).toBe(3)
+    expect(value("log(1)")).toBe(0)
+    expect(value("log(8, 2)")).toBeCloseTo(3, 5)
+    expect(value("8 log 2")).toBeCloseTo(3, 5)          // the base is an optional second argument
+    expect(value("27 √ 3")).toBeCloseTo(3, 4)            // the value first, then the degree, like x ^ n
+    expect(value("√(9)")).toBe(3)
     expect(value("log10(1000)")).toBe(3)
     expect(value("expm1(0)")).toBe(0)
     expect(value("log1p(0)")).toBe(0)

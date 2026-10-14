@@ -2328,11 +2328,12 @@ const TensorPower = (a: Value, b: Value) => {
   }
   return track(np.power(borrow(a), borrow(b)))
 }
+// √x is the square root; x √ n is the n-th root of x – the value first, like x ^ n and x log b
 const TensorRoot = (a: Value, b?: Value) => {
   if (b === undefined) {
     return track(np.sqrt(borrow(a)))
   }
-  return TensorPower(b, TensorReciprocal(a))
+  return TensorPower(a, TensorReciprocal(b))
 }
 // WGSL permits 2.5 ULP of division error, so on WebGPU floor(x/x) can miss
 // and remainder(x, x) comes back as x. A remainder of exactly ±y is
@@ -2461,7 +2462,13 @@ const TensorArgMin = (a: Value, axis?: Value) =>
 const TensorNegate = unaryOp(np.negative)
 const TensorAbsolute = unaryOp(np.absolute)
 const TensorSign = unaryOp(np.sign)
-const TensorLogarithm = unaryOp(np.log)
+// log(x) is the natural logarithm; log(x, b) takes the base b, so 8 log 2 = 3
+const TensorLogarithm = (a: Value, b?: Value) => {
+  if (b === undefined) {
+    return unaryOp(np.log)(a)
+  }
+  return TensorDivide(TensorLogarithm(a), TensorLogarithm(b))
+}
 const TensorLog1Plus = unaryOp(np.log1p)      // log(1 + x), accurate near 0
 const TensorExponential = unaryOp(np.exp)
 const TensorExpMinus1 = unaryOp(np.expm1)     // exp(x) - 1, accurate near 0
@@ -3487,7 +3494,7 @@ ListScan: doc({ list, f, init |
 (/): (÷): div: TensorDivide,
 (%): mod: TensorRemainder,
 (^): pow: TensorPower,
-(√): root: TensorRoot,
+(√): root: doc(TensorRoot, "x √ n", "The square root of x; with n, the n-th root of x.", "27 √ 3 = 3"),
 add: doc(TensorAdd, "x + y", "Element-wise addition; shapes broadcast.", "[1, 2] + 10 = [11, 12]"),
 sub: doc(TensorSubtract, "x - y", "Element-wise subtraction; shapes broadcast.", "[3, 4] - 1 = [2, 3]"),
 mul: doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcast.", "[1, 2] × 3 = [3, 6]"),
@@ -3511,7 +3518,7 @@ sqrt: TensorSquareRoot,
 square: TensorSquare: { x | x × x },
 cbrt: TensorCubeRoot,
 hypot: TensorHypotenuse,
-log: TensorLogarithm,
+log: doc(TensorLogarithm, "log(x, base?)", "The natural logarithm of x; with a base, the logarithm of x in that base.", "8 log 2 = 3"),
 log2: TensorLog2: { x | log(x) ÷ log(2) },
 log10: TensorLog10: { x | log(x) ÷ log(10) },
 log1p: TensorLog1Plus,
