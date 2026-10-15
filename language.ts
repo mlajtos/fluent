@@ -1558,18 +1558,6 @@ const ErrorCreate = (message: Value, cause?: Value): Error =>
     typeof message === "string" || message instanceof String ? String(message) : StringLiteral(message),
     cause == null ? undefined : { cause })
 
-const Describe = (target: Value, doc?: string): Value => {
-  if (doc == null) {
-    if (typeof target === 'function') return getMeta(target).doc ?? null
-    return null
-  }
-  if (typeof target === 'function') {
-    setMeta(target as Function, { doc: String(doc) })
-  }
-  return target
-}
-setMeta(Describe, { noAutoLift: true })
-
 // Attach editor docs to a built-in and return it – authored inline at the
 // binding in the prelude, so a name's docs live next to its definition.
 // Aliases share the function object, so documenting one covers them all.
@@ -1700,10 +1688,6 @@ const asWholeList = (v: Value): number[] => asNumberList(v).map((n) => {
   return Math.round(n)
 })
 
-const Tensor = (values: unknown, shape?: Value) => {
-  const source: any = isTensor(values) || values instanceof FluentVariable ? operand(values) : values
-  return engine.tensor(source, shape == null ? undefined : { shape: asNumberList(shape) })
-}
 const TensorScalar = (value: number) => engine.tensor(value)
 
 // A numeric operand: a string ("a" + "b") or a function is a user mistake here, so
@@ -2281,7 +2265,6 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   FunctionWhen,
   ErrorCreate,
   NoMatch: NoMatchValue,
-  Describe,
   doc,
 
   // Signals
@@ -2294,7 +2277,6 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   SignalOnce,
 
   // Tensor operations
-  Tensor,
   TensorStack,
   TensorUnstack,
   TensorConcat,

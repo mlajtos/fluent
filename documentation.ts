@@ -108,8 +108,8 @@ Button("Reset", { x(0) }),
   - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
   - UI: \`Slider\`, \`Scrubber\`, \`Checkbox\`, \`Button\`, \`Text\`, \`Grid\`, \`Layers\`, \`Point2D\`, \`Trail\`, \`ImageUpload\`
   - live inputs: \`Camera\`, \`Microphone\`, \`MicrophoneSpectrum\`, \`Time\`, \`MousePosition\`
-  - optimizers: \`adam\`, \`adamw\`, \`sgd\` (optional momentum), \`adagrad\`
-  - metadata: \`Describe(fn, "doc")\` attaches a doc string, \`Describe(fn)\` queries it
+  - optimizers: \`sgd\` (optional momentum), \`adam\`, \`adamw\`, \`adagrad\`, \`rmsprop\`, \`lion\`, \`muon\` and more – each built on \`optimizer(init, rule)\`
+  - metadata: \`doc(fn, signature, description, example)\` attaches the card hover shows
 - Ad-hoc operators
   - define custom operators: \`(++): ListConcat, (1, 2) ++ (3, 4)\`
 
