@@ -1779,7 +1779,7 @@ const TensorMinimum = binaryOp(engine.minimum)
 const comparisonOp = (op: (x: any, y: any) => engine.Tensor) =>
   (a: Value, b: Value) => {
     const x = numericArg(a), y = numericArg(b)
-    return engine.astype(op(x, y), engine.float32)
+    return op(x, y)
   }
 
 const TensorLess = comparisonOp(engine.less)
@@ -1791,10 +1791,10 @@ const TensorTangentHyperbolic = unaryOp(engine.tanh)
 const TensorSineInverse = unaryOp(engine.asin)
 const TensorCosineInverse = unaryOp(engine.acos)
 const TensorTangentInverse = unaryOp(engine.atan)
-const TensorSineHyperbolicInverse = unaryOp(engine.arcsinh)
-const TensorCosineHyperbolicInverse = unaryOp(engine.arccosh)
-const TensorTangentHyperbolicInverse = unaryOp(engine.arctanh)
-const TensorArcTangent2 = binaryOp(engine.arctan2)  // arctan2(y, x): angle of (x, y)
+const TensorSineHyperbolicInverse = unaryOp(engine.asinh)
+const TensorCosineHyperbolicInverse = unaryOp(engine.acosh)
+const TensorTangentHyperbolicInverse = unaryOp(engine.atanh)
+const TensorArcTangent2 = binaryOp(engine.atan2)  // arctan2(y, x): angle of (x, y)
 
 // Reductions take an optional axis (scalar or vector tensor) as second
 // argument, and a truthy third argument keeps the reduced axis as size 1 –
@@ -1846,7 +1846,7 @@ const TensorReduce = (tensor: Value, fn: Value, axis?: Value) => {
 }
 
 
-const TensorAbsolute = unaryOp(engine.absolute)
+const TensorAbsolute = unaryOp(engine.abs)
 const TensorSign = unaryOp(engine.sign)
 // log(x) is the natural logarithm; log(x, b) takes the base b, so 8 log 2 = 3
 const TensorNaturalLogarithm = unaryOp(engine.log)
@@ -1877,15 +1877,15 @@ const TensorOneHot = (indices: Value, depth: Value) => {
       return new Error(`oneHot: class ${bad} is out of bounds for a depth of ${n}`)
     }
   }
-  return engine.oneHot(engine.astype(operand(indices), engine.int32), n)
+  return engine.oneHot(engine.trunc(operand(indices)), n)
 }
 
 const TensorSort = (x: Value) =>
   isScalarTensor(x) ? engine.reshape(operand(x), []) : engine.sort(operand(x))
 const TensorArgSort = (x: Value) =>
   isScalarTensor(x)
-    ? engine.reshape(engine.argsort(engine.reshape(operand(x), [1])), []).astype(engine.float32)
-    : engine.argsort(operand(x)).astype(engine.float32)
+    ? engine.reshape(engine.argsort(engine.reshape(operand(x), [1])), [])
+    : engine.argsort(operand(x))
 const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   const beginList = asNumberList(begin)
   const sizeList = size == null ? undefined : asNumberList(size)
@@ -1895,7 +1895,6 @@ const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   })
   return (operand(a) as engine.Tensor).slice(...spec)
 }
-const TensorBoolean = (a: Value) => engine.astype(operand(a), engine.bool)
 
 const TensorGradient = (f: Value) => {
   if (typeof f !== "function") {
@@ -1935,13 +1934,13 @@ const TensorWindow = (a: Value, sizes: Value) => engine.windows(operand(a), asWh
 const TensorRange = (a: Value, b?: Value) => {
   // arange tags its result int32 – Fluent tensors are float32 throughout
   if (b == null) {
-    return engine.arange(Math.trunc(asFinite(a))).astype(engine.float32)
+    return engine.arange(Math.trunc(asFinite(a)))
   }
 
   const start = Math.trunc(asFinite(a))
   const stop = Math.trunc(asFinite(b))
   const step = start <= stop ? 1 : -1
-  return engine.arange(start, stop, step).astype(engine.float32)
+  return engine.arange(start, stop, step)
 }
 
 
@@ -1961,7 +1960,7 @@ const TensorMeshgrid = (...args: Value[]) => engine.meshgrid(args.map(operand))
 // The k largest values and their indices, as [values, indices]
 const TensorTopK = (a: Value, k: Value) => {
   const [values, indices] = engine.topK(operand(a), asWhole(k))
-  return [values, indices.astype(engine.float32)]
+  return [values, indices]
 }
 
 
@@ -2062,8 +2061,8 @@ const TensorTake = (a: Value, b: Value): Value => {
       return new Error(`index ${bad} is out of bounds for an axis of length ${size}`)
     }
   }
-  const raw = engine.astype(operand(b), engine.int32)
-  const wrapped = engine.astype(engine.where(engine.less(raw, 0), engine.add(raw, size), raw), engine.int32)
+  const raw = engine.trunc(operand(b))
+  const wrapped = engine.where(engine.less(raw, 0), engine.add(raw, size), raw)
   return engine.take(operand(a), wrapped, 0)
 }
 // scatterAdd(indices, values, size): a [size, …] of zeros with each row of values added at
@@ -2074,8 +2073,8 @@ const TensorScatterAdd = (indices: Value, values: Value, size: Value) =>
 const TensorDetach = unaryOp(engine.detach)
 
 const TensorWhere = (a: Value, b: Value, c: Value) =>
-  engine.where(engine.astype(operand(a), engine.bool), operand(b), operand(c))
-const TensorIsNaN = (a: Value) => engine.astype(engine.isnan(operand(a)), engine.float32)
+  engine.where(engine.truthy(operand(a)), operand(b), operand(c))
+const TensorIsNaN = (a: Value) => engine.isnan(operand(a))
 
 const TensorVariable = (a: Value) => {
   if (!isTensor(a) && !(a instanceof FluentVariable)) {

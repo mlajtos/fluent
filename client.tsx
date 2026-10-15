@@ -274,7 +274,7 @@ const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): 
 // thread free.
 const toPixels = async (data: engine.Tensor, canvas: HTMLCanvasElement) => {
   const [height = 1, width = 1, channels = 1] = data.shape
-  const scale = data.dtype === engine.int32 || data.dtype === engine.uint32 ? 1 : 255
+  const scale = 255
   const flat = await data.read()
   const image = new ImageData(width, height)
   for (let p = 0, s = 0; p < image.data.length; p += 4, s += channels) {
@@ -316,15 +316,10 @@ const getBlitDevice = (): GPUDevice | null => {
   return blitDevice
 }
 
-// the engine stores every value as f32, whatever its dtype tag
-const WGSL_SCALAR: Record<string, string | undefined> = {
-  float32: "f32", int32: "f32", uint32: "f32", bool: "f32",
-}
-
-const blitShader = (scalar: string, mode: "image" | "heat") => /* wgsl */ `
+const blitShader = (mode: "image" | "heat") => /* wgsl */ `
 struct BlitInfo { width: u32, height: u32, channels: u32, scale: f32 }
 @group(0) @binding(0) var<uniform> info: BlitInfo;
-@group(0) @binding(1) var<storage, read> data: array<${scalar}>;
+@group(0) @binding(1) var<storage, read> data: array<f32>;
 ${mode === "heat" ? `
 @group(0) @binding(2) var<storage, read> bounds: array<f32>;
 @group(0) @binding(3) var<storage, read> lut: array<f32>;
@@ -357,17 +352,16 @@ ${mode === "heat" ? `
 `
 
 const blitPipelines = new Map<string, GPURenderPipeline>()
-const getBlitPipeline = (device: GPUDevice, scalar: string, mode: "image" | "heat"): GPURenderPipeline => {
-  const key = `${mode}:${scalar}`
-  let pipeline = blitPipelines.get(key)
+const getBlitPipeline = (device: GPUDevice, mode: "image" | "heat"): GPURenderPipeline => {
+  let pipeline = blitPipelines.get(mode)
   if (!pipeline) {
-    const module = device.createShaderModule({ code: blitShader(scalar, mode) })
+    const module = device.createShaderModule({ code: blitShader(mode) })
     pipeline = device.createRenderPipeline({
       layout: "auto",
       vertex: { module, entryPoint: "vs" },
       fragment: { module, entryPoint: "fs", targets: [{ format: navigator.gpu.getPreferredCanvasFormat() }] },
     })
-    blitPipelines.set(key, pipeline)
+    blitPipelines.set(mode, pipeline)
   }
   return pipeline
 }
@@ -400,7 +394,7 @@ const getCanvasBlitState = (device: GPUDevice, canvas: HTMLCanvasElement): Canva
 }
 
 const blitToCanvas = (
-  device: GPUDevice, canvas: HTMLCanvasElement, scalar: string, mode: "image" | "heat",
+  device: GPUDevice, canvas: HTMLCanvasElement, mode: "image" | "heat",
   meta: { width: number, height: number, channels: number, scale: number },
   buffers: GPUBuffer[],
 ): boolean => {
@@ -410,7 +404,7 @@ const blitToCanvas = (
   new Uint32Array(metaData, 0, 3).set([meta.width, meta.height, meta.channels])
   new Float32Array(metaData, 12, 1)[0] = meta.scale
   device.queue.writeBuffer(state.meta, 0, metaData)
-  const pipeline = getBlitPipeline(device, scalar, mode)
+  const pipeline = getBlitPipeline(device, mode)
   const bindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
@@ -2105,17 +2099,15 @@ const TensorCanvas = ({ data }: { data: engine.Tensor }) => {
     }
 
     const device = getBlitDevice()
-    const scalar = WGSL_SCALAR[data.dtype]
     const channels = data.shape[2] ?? 1
     // the shader reads base, base+1, base+2 for anything that isn't 1-channel,
     // so a 2-channel tensor read across into the next pixel and past the end of
     // the buffer on the last one. Only 1 and 3 are meaningful here – the CPU
     // path documents the same pair – so let anything else fall through to it.
-    if (device && scalar && (channels === 1 || channels === 3) && getCanvasBlitState(device, canvas)) {
-      const scale = data.dtype === engine.int32 || data.dtype === engine.uint32 ? 1 / 255 : 1
+    if (device && (channels === 1 || channels === 3) && getCanvasBlitState(device, canvas)) {
       data.gpuBuffer().then((buffer) => {
         if (canvasRef.current === canvas) {
-          blitToCanvas(device, canvas, scalar, "image", { width, height, channels, scale }, [buffer])
+          blitToCanvas(device, canvas, "image", { width, height, channels, scale: 1 }, [buffer])
         }
       }).catch((e) => console.warn("blit failed:", e))
       return
@@ -2165,25 +2157,24 @@ const HeatCanvas = ({ data }: { data: engine.Tensor }) => {
     }
 
     const device = getBlitDevice()
-    const scalar = WGSL_SCALAR[data.dtype]
-    if (device && scalar && getCanvasBlitState(device, canvas)) {
+    if (device && getCanvasBlitState(device, canvas)) {
       // [min, max] computed on-device; the shader normalizes and colors
       // through the LUT per pixel – nothing is ever read back
-      const bounds = engine.astype(engine.stack([engine.min(data), engine.max(data)]), engine.float32)
+      const bounds = engine.stack([engine.min(data), engine.max(data)])
       Promise.all([data.gpuBuffer(), bounds.gpuBuffer()]).then(([dataBuffer, boundsBuffer]) => {
         if (canvasRef.current === canvas) {
-          blitToCanvas(device, canvas, scalar, "heat", { width, height, channels: 1, scale: 1 }, [dataBuffer, boundsBuffer, getViridisGpu(device)])
+          blitToCanvas(device, canvas, "heat", { width, height, channels: 1, scale: 1 }, [dataBuffer, boundsBuffer, getViridisGpu(device)])
         }
       }).catch((e) => console.warn("blit failed:", e))
       return
     }
 
     // Apply viridis colormap via lookup table: normalize to [0, 1], scale to
-    // LUT indices, gather colors. Move semantics free the intermediates.
+    // LUT indices, gather colors.
     const min = engine.min(data)
     const range = engine.maximum(engine.subtract(engine.max(data), min), 1e-6)
     const normalized = engine.divide(engine.subtract(data, min), range)
-    const indices = engine.astype(engine.clip(engine.multiply(normalized, 255), 0, 255), engine.int32)
+    const indices = engine.trunc(engine.clip(engine.multiply(normalized, 255), 0, 255))
     const colors = engine.take(VIRIDIS_LUT, engine.reshape(indices, [-1]), 0)
     const image = engine.reshape(colors, [height, width, 3])
 
