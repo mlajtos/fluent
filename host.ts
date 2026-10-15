@@ -628,29 +628,31 @@ const LoadTensorFromImageUrl = (url: Value) => {
     if (!r.ok) { throw new Error(`${r.status} ${u}`) }
     return r.blob()
   }).then((blob) => createImageBitmap(blob))
+  // when the proxy can't help either, the first failure is the one that says why
   load(String(url))
-    .catch(() => load(proxied(String(url))))
+    .catch((first) => load(proxied(String(url))).catch(() => { throw first }))
     .then((bitmap) => {
       if (retired()) { bitmap.close(); return }
       SignalUpdate(image, fromPixels(bitmap))
     })
-    .catch((e) => console.warn("LoadTensorFromImageUrl:", e))
+    .catch((e) => { if (!retired()) { image.value = new Error(`LoadTensorFromImageUrl: ${e?.message ?? e}`) as unknown as engine.Tensor } })
   return image
 }
 
 const LoadSafeTensorFromURL = (rawUrl?: Value) => {
   if (rawUrl == null) { return new Error("loadSafeTensorFromURL: url is required") }
   const url = String(rawUrl)
-  // an empty list until it loads: readers can gate on `#(data()) > 0`
-  const tensors = SignalCreate([] as unknown[])
+  // an empty list until it loads – readers can gate on `#(data()) > 0` – and an Error
+  // if it can't
+  const tensors = SignalCreate<unknown>([])
   const retired = generationRetired()
   cachedFetch(url)
-    .catch(() => cachedFetch(proxied(url)))
+    .catch((first) => cachedFetch(proxied(url)).catch(() => { throw first }))
     .then((bytes) => {
       if (retired()) { return }
       tensors.value = parseSafetensors(bytes)
     })
-    .catch((e) => console.warn("LoadSafeTensorFromURL:", e))
+    .catch((e) => { if (!retired()) { tensors.value = new Error(`LoadSafeTensorFromURL: ${e?.message ?? e}`) } })
   return tensors
 }
 // both resolve later – lifting would re-invoke them (and re-fetch) on every change
