@@ -265,18 +265,12 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
 }
 
 // ---- optimize: simplify → schedule → fuse; result = leaves + FUSED + HOST only -------
-const cache = new Map<string, UOp[]>();
-export const clearOptCache = (): void => cache.clear();
 export function optimizeMany(roots: UOp[]): UOp[] {
-  const key = roots.map((r) => r.id).join(",");
-  const hit = cache.get(key); if (hit) return hit;
   const s = graphRewriteMany(simplifyMany(roots), SCHED_REWRITES);
   const uc = useCounts(s);
   const g = fuseWith(s, uc, schedule(s, uc));
   for (const r of g) for (const u of toposort(r))                              // legality: only leaves and kernels may reach the executor
     if (u.op !== "FUSED" && u.op !== "CONSTANT" && u.op !== "BUFFER" && u.op !== "HOST" && u.shape.length) throw new Error(`optimize: ${u.op} survived to the kernel boundary`);
-  if (cache.size > 256) cache.clear();                                          // keyed by node ids: a repeat of the same graph, never a new one
-  cache.set(key, g);
   return g;
 }
 export const optimize = (root: UOp): UOp => optimizeMany([root])[0]!;

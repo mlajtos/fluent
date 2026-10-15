@@ -22,7 +22,7 @@ export default async function (): Promise<{ fails: number }> {
   };
 
   // ── 1. every MATHS row: CPU == Math.*, GPU == CPU ────────────────────────────────
-  const domain: Record<string, [number, number]> = { acosh: [1.1, 4], asin: [-0.9, 0.9], acos: [-0.9, 0.9], atanh: [-0.9, 0.9], tan: [-1.2, 1.2], log1p: [-0.5, 3] };
+  const domain: Record<string, [number, number]> = { acosh: [1.1, 4], asin: [-0.9, 0.9], acos: [-0.9, 0.9], atanh: [-0.9, 0.9], log1p: [-0.5, 3] };
   const n = 64, xs = buffer("x", [n]), ys = buffer("y", [n]);
   for (const [fn, m] of Object.entries(MATHS)) {
     const [lo, hi] = domain[fn] ?? [-3, 3];
@@ -40,7 +40,7 @@ export default async function (): Promise<{ fails: number }> {
   // ── 2. derivatives of the MATHS rows == finite differences ─────────────────────────
   {
     let worst = 0, worstName = "";
-    for (const fn of ["sin", "cos", "tan", "tanh", "asin", "acos", "atan", "asinh", "acosh", "atanh", "abs", "expm1", "log1p", "cbrt", "pow"]) {
+    for (const fn of ["sin", "cos", "tanh", "asin", "acos", "atan", "asinh", "acosh", "atanh", "abs", "expm1", "log1p", "cbrt", "pow"]) {
       const s = buffer("s", []);
       const at = fn === "acosh" ? 1.7 : fn === "pow" ? 1.3 : 0.37;
       const g = fn === "pow" ? math("pow", s, konst(2.5)) : math(fn, s);

@@ -113,7 +113,6 @@ export const recip = un("RECIPROCAL"); export const exp = un("EXP"); export cons
 export const MATHS: Record<string, { arity: 1 | 2; js: (...a: number[]) => number; wgsl: (...a: string[]) => string }> = {
   sin: { arity: 1, js: Math.sin, wgsl: (x) => `sin(${x})` },
   cos: { arity: 1, js: Math.cos, wgsl: (x) => `cos(${x})` },
-  tan: { arity: 1, js: Math.tan, wgsl: (x) => `tan(${x})` },
   tanh: { arity: 1, js: Math.tanh, wgsl: (x) => `tanh(${x})` },
   asin: { arity: 1, js: Math.asin, wgsl: (x) => `asin(${x})` },
   acos: { arity: 1, js: Math.acos, wgsl: (x) => `acos(${x})` },

@@ -17,7 +17,6 @@ const sq = (a: UOp): UOp => mul(a, a);
 const MATH_JVP: Record<string, (u: UOp, x: UOp) => UOp> = {
   sin: (_u, x) => math("cos", x),
   cos: (_u, x) => neg(math("sin", x)),
-  tan: (u) => add(konst(1), sq(u)),
   tanh: (u) => add(konst(1), neg(sq(u))),
   asin: (_u, x) => recip(sqrt(add(konst(1), neg(sq(x))))),
   acos: (_u, x) => neg(recip(sqrt(add(konst(1), neg(sq(x)))))),

@@ -7,6 +7,7 @@ import { toAST as ohmToAST } from "ohm-js/extras";
 import { signal, Signal, computed, effect } from "@preact/signals-core"
 import dedent from "ts-dedent";
 import * as engine from "./engine/tensor.ts"
+import PRELUDE from "./prelude.fl" with { type: "text" }
 
 // the engine computes on WebGPU where the platform has it, on the CPU everywhere else
 await engine.init()
@@ -1075,7 +1076,7 @@ const FunctionArity = (candidates: Function[]) => {
   const [binary, unary] = candidates
   // tacitToString: a userland-built operator prints as the source that made
   // it (compose2(+, √)), not as this dispatcher's JS internals
-  const dispatch = tacitToString((a: Value, b: Value) => (b === undefined ? unary?.(a) : binary?.(a, b)))
+  const dispatch = tacitToString((a: Value, b: Value) => (b == null ? unary?.(a) : binary?.(a, b)))
   // The dispatcher has no story of its own – its meaning IS its candidates.
   // Synthesize the doc card from theirs, so `+` shows add and abs in one
   // hover. A doc() authored on the dispatcher afterwards still wins.
@@ -1219,7 +1220,7 @@ const FunctionCompose = (f: Value, g: Value) => {
 const FunctionCommute = (f: Value) => {
   if (!isFn(f)) { return new Error("`(⍨ f)`: the operand must be a function") }
   return tacitToString(function (this: CurrentScope, a: Value, b: Value) {
-    return b === undefined ? safeApply(f, [a, a], this) : safeApply(f, [b, a], this)
+    return b == null ? safeApply(f, [a, a], this) : safeApply(f, [b, a], this)
   })
 }
 
@@ -1237,7 +1238,7 @@ const FunctionOver = (g: Value, f: Value) => {
 // the middle tine g combines their results – the train reading order
 const FunctionFork = (f: Value, g: Value, h: Value) => {
   if (!isFn(g)) { return new Error("`Φ(f, g, h)`: the middle tine `g` must be a function") }
-  if (f === undefined || h === undefined) { return new Error("`Φ(f, g, h)`: takes three tines") }
+  if (f == null || h == null) { return new Error("`Φ(f, g, h)`: takes three tines") }
   const [fc, hc] = [constantly(f), constantly(h)]
   return tacitToString(function (this: CurrentScope, ...args: Value[]) {
     return safeApply(g, [safeApply(fc, args, this), safeApply(hc, args, this)], this)
@@ -1250,7 +1251,7 @@ const FunctionBefore = (f: Value, g: Value) => {
   if (!isFn(g)) { return new Error("`(f ⊸ g)`: `g` must be a function") }
   const fc = constantly(f)
   return tacitToString(function (this: CurrentScope, a: Value, b: Value) {
-    return safeApply(g, [safeApply(fc, [a], this), b === undefined ? a : b], this)
+    return safeApply(g, [safeApply(fc, [a], this), b == null ? a : b], this)
   })
 }
 
@@ -1260,7 +1261,7 @@ const FunctionAfter = (f: Value, g: Value) => {
   if (!isFn(f)) { return new Error("`(f ⟜ g)`: `f` must be a function") }
   const gc = constantly(g)
   return tacitToString(function (this: CurrentScope, a: Value, b: Value) {
-    return safeApply(f, [a, safeApply(gc, [b === undefined ? a : b], this)], this)
+    return safeApply(f, [a, safeApply(gc, [b == null ? a : b], this)], this)
   })
 }
 
@@ -1274,13 +1275,20 @@ const FunctionLeft = (...args: Value[]) =>
 // operand a function?" to bind constants the way the native hooks do.
 // Float32 0/1, like a comparison, so it composes with guard and where.
 const FunctionIs = (v: Value) => engine.tensor(isFn(v) ? 1 : 0)
+// what kind of value – 1 or 0, like a comparison – for the prelude's overloads
+const TensorIs = (v: Value) => engine.tensor(isTensor(v) || v instanceof FluentVariable ? 1 : 0)
+const ListIs = (v: Value) => engine.tensor(Array.isArray(v) ? 1 : 0)
+const StringIs = (v: Value) => engine.tensor(typeof v === "string" || v instanceof String ? 1 : 0)
+const ErrorIs = (v: Value) => engine.tensor(v instanceof Error ? 1 : 0)
+// the same value – one variable, one signal, one function – not two equal ones
+const Identical = (a: Value, b: Value) => engine.tensor(a === b ? 1 : 0)
 
 // Async repeat (⟳): runs fn between frames so the UI stays live. The loop
 // belongs to the evaluation that started it – a re-evaluation cancels it.
 // (For synchronous function iteration f(f(f(x))) use ⍣ / FunctionPower.)
 const FunctionIterate = (fn: (index?: engine.Tensor) => void, iterations?: Value) => {
   const live = iterations instanceof Signal || iterations instanceof FluentVariable
-  if (!(typeof fn === "function" && (iterations === undefined || isTensor(iterations) || live))) {
+  if (!(typeof fn === "function" && (iterations == null || isTensor(iterations) || live))) {
     throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` must be a scalar Tensor");
   }
 
@@ -1290,7 +1298,7 @@ const FunctionIterate = (fn: (index?: engine.Tensor) => void, iterations?: Value
   // therefore behaves exactly like the literal, which is the property that
   // makes the two spellings mean one thing.
   const readTarget = (): number => {
-    if (iterations === undefined) { return 1 }
+    if (iterations == null) { return 1 }
     const inner = iterations instanceof Signal ? iterations.value
       : iterations instanceof FluentVariable ? (iterations.version.value, iterations.current)
       : iterations
@@ -1554,10 +1562,10 @@ setMeta(FunctionWhen, { noAutoLift: true })
 const ErrorCreate = (message: Value, cause?: Value): Error =>
   new Error(
     typeof message === "string" || message instanceof String ? String(message) : StringLiteral(message),
-    cause === undefined ? undefined : { cause })
+    cause == null ? undefined : { cause })
 
 const Describe = (target: Value, doc?: string): Value => {
-  if (doc === undefined) {
+  if (doc == null) {
     if (typeof target === 'function') return getMeta(target).doc ?? null
     return null
   }
@@ -1635,7 +1643,7 @@ const ListReduce = (a: any[], fn: (acc: any, value: any) => any, initialValue?: 
     return new Error("'ListReduce': `fn` must be a function")
   }
 
-  if (initialValue === undefined) {
+  if (initialValue == null) {
     return a.reduce(fn)
   }
 
@@ -1700,7 +1708,7 @@ const asWholeList = (v: Value): number[] => asNumberList(v).map((n) => {
 
 const Tensor = (values: unknown, shape?: Value) => {
   const source: any = isTensor(values) || values instanceof FluentVariable ? operand(values) : values
-  return engine.tensor(source, shape === undefined ? undefined : { shape: asNumberList(shape) })
+  return engine.tensor(source, shape == null ? undefined : { shape: asNumberList(shape) })
 }
 const TensorScalar = (value: number) => engine.tensor(value)
 
@@ -1736,20 +1744,20 @@ const broadcastRefs = (values: Value[]): engine.Tensor[] => {
 // stack(a, b, ...) joins along axis 0; stack((a, b, ...), axis) picks the axis
 const TensorStack = (...args: unknown[]) => {
   if (Array.isArray(args[0])) {
-    const axis = args[1] === undefined ? 0 : asNumber(args[1] as Value)
+    const axis = args[1] == null ? 0 : asNumber(args[1] as Value)
     return engine.stack(broadcastRefs(args[0] as Value[]), axis)
   }
   return engine.stack(broadcastRefs(args as Value[]))
 }
 const TensorUnstack = (a: Value, b?: Value) => {
-  const axis = b === undefined ? 0 : asNumber(b)
+  const axis = b == null ? 0 : asNumber(b)
   const array = operand(a) as engine.Tensor
   // the iterator yields slices along the first axis
   return [...(axis === 0 ? array : engine.moveaxis(array, axis, 0))]
 }
 const TensorConcat = (...args: unknown[]) => {
   const listed = Array.isArray(args[0])
-  const axis = listed && args[1] !== undefined ? asNumber(args[1] as Value) : 0
+  const axis = listed && args[1] != null ? asNumber(args[1] as Value) : 0
   const xs = ((listed ? args[0] : args) as Value[]).map(operand) as engine.Tensor[]
   return engine.concatenate(xs, axis)
 }
@@ -1763,7 +1771,7 @@ const TensorTile = (a: Value, reps: Value) => {
 // `dx ⊗((+), 1) dy` crosses the frames while zipping the shared trailing axis.
 // rank can be a scalar or a [rankA, rankB] pair.
 const TensorOuter = function (this: CurrentScope, f: Value, rank?: Value) {
-  const r = rank === undefined ? 0 : requireData(rank) as (number | number[])
+  const r = rank == null ? 0 : requireData(rank) as (number | number[])
   const [rankA, rankB] = Array.isArray(r) ? r : [r, r]
   const scope = this
 
@@ -1785,7 +1793,7 @@ const TensorOuter = function (this: CurrentScope, f: Value, rank?: Value) {
 // matrix, bare `normalize` the whole array. Dyadic `a (f ⍤ k) b` zips matching
 // frames. The frame is mapped by unstack→apply→stack, so ∇ flows through it.
 const TensorRank = function (this: CurrentScope, f: Value, rank?: Value) {
-  const k = rank === undefined ? 0 : asNumber(rank)                            // k ≥ 0 = cell rank (trailing); k < 0 = frame rank (leading), J-style
+  const k = rank == null ? 0 : asNumber(rank)                            // k ≥ 0 = cell rank (trailing); k < 0 = frame rank (leading), J-style
   const scope = this
   const cellsOf = (a: Value): { frame: number[]; cells: Value[] } => {
     const shape = shapeOf(a), split = k >= 0 ? Math.max(0, shape.length - k) : Math.min(shape.length, -k)
@@ -1796,7 +1804,7 @@ const TensorRank = function (this: CurrentScope, f: Value, rank?: Value) {
   return function (a: Value, b?: Value) {
     const A = cellsOf(a)
     let results: Value[], frame = A.frame
-    if (b === undefined) { results = A.cells.map((c) => safeApply(f, [c], scope)) }
+    if (b == null) { results = A.cells.map((c) => safeApply(f, [c], scope)) }
     else {
       const B = cellsOf(b), na = A.cells.length, nb = B.cells.length
       if (na !== nb && na !== 1 && nb !== 1) { return new Error("`(f ⍤ k)`: dyadic rank needs frames that match or broadcast") }
@@ -1842,7 +1850,7 @@ const TensorDivide = binaryOp(engine.divide)
 const TensorPower = binaryOp(engine.power)
 // √x is the square root; x √ n is the n-th root of x – the value first, like x ^ n and x log b
 const TensorRoot = (a: Value, b?: Value) => {
-  if (b === undefined) {
+  if (b == null) {
     return engine.sqrt(operand(a))
   }
   return TensorPower(a, TensorReciprocal(b))
@@ -1925,8 +1933,8 @@ const TensorHypotenuse = binaryOp(engine.hypot)
 // mean(x, -1, 1) is the trace-safe unsqueeze(mean(x, -1), …)
 const withOptionalAxis = (op: (a: any, axis?: number | number[] | null, opts?: { keepdims?: boolean }) => engine.Tensor) =>
   (a: Value, b?: Value, keep?: Value) => {
-    const axis = b === undefined ? null : (Array.isArray(requireData(b)) ? asWholeList(b) : asWhole(b))
-    const opts = keep === undefined ? undefined : { keepdims: asNumber(keep) !== 0 }
+    const axis = b == null ? null : (Array.isArray(requireData(b)) ? asWholeList(b) : asWhole(b))
+    const opts = keep == null ? undefined : { keepdims: asNumber(keep) !== 0 }
     const x = operand(a)
     return op(x, axis, opts)
   }
@@ -1960,7 +1968,7 @@ const TensorReduce = (tensor: Value, fn: Value, axis?: Value) => {
   // thing TensorUnstack does below. The native reducers default to all-axes, so
   // pin axis 0 when none is given, or `reduce +` on a matrix would total it (a
   // custom lambda folds the leading axis, and the two must agree).
-  if (fast) { return fast(tensor, axis === undefined ? LEADING_AXIS : axis) }
+  if (fast) { return fast(tensor, axis == null ? LEADING_AXIS : axis) }
   const parts = TensorUnstack(tensor, axis) as unknown[]
   if (parts.length === 0) {
     // a known op has an identity (Σ[] = 0); a custom fn's is unknown, so an
@@ -1976,7 +1984,7 @@ const TensorReduce = (tensor: Value, fn: Value, axis?: Value) => {
 const emptyReductionAxis = (a: Value, axis?: Value): boolean => {
   const shape = (a instanceof FluentVariable ? a.current : a as any)?.shape
   if (!Array.isArray(shape)) { return false } // not a tensor – let the op handle it
-  if (axis === undefined) { return shape.some((d: number) => d === 0) }
+  if (axis == null) { return shape.some((d: number) => d === 0) }
   const n = asNumber(axis)
   return shape[n < 0 ? shape.length + n : n] === 0
 }
@@ -1984,10 +1992,10 @@ const emptyReductionAxis = (a: Value, axis?: Value): boolean => {
 // TensorRange does – `_` re-casts its index to int32.
 const TensorArgMax = (a: Value, axis?: Value) =>
   emptyReductionAxis(a, axis) ? new Error("`argmax`: an empty tensor has no maximal index")
-    : (axis === undefined ? engine.argmax(operand(a)) : engine.argmax(operand(a), asWhole(axis))).astype(engine.float32)
+    : (axis == null ? engine.argmax(operand(a)) : engine.argmax(operand(a), asWhole(axis))).astype(engine.float32)
 const TensorArgMin = (a: Value, axis?: Value) =>
   emptyReductionAxis(a, axis) ? new Error("`argmin`: an empty tensor has no minimal index")
-    : (axis === undefined ? engine.argmin(operand(a)) : engine.argmin(operand(a), asWhole(axis))).astype(engine.float32)
+    : (axis == null ? engine.argmin(operand(a)) : engine.argmin(operand(a), asWhole(axis))).astype(engine.float32)
 
 const TensorNegate = unaryOp(engine.negative)
 const TensorAbsolute = unaryOp(engine.absolute)
@@ -1995,7 +2003,7 @@ const TensorSign = unaryOp(engine.sign)
 // log(x) is the natural logarithm; log(x, b) takes the base b, so 8 log 2 = 3
 const TensorNaturalLogarithm = unaryOp(engine.log)
 const TensorLogarithm = (a: Value, b?: Value) =>
-  b === undefined ? TensorNaturalLogarithm(a) : TensorDivide(TensorNaturalLogarithm(a), TensorNaturalLogarithm(b))
+  b == null ? TensorNaturalLogarithm(a) : TensorDivide(TensorNaturalLogarithm(a), TensorNaturalLogarithm(b))
 const TensorLog1Plus = unaryOp(engine.log1p)      // log(1 + x), accurate near 0
 const TensorExponential = unaryOp(engine.exp)
 const TensorExpMinus1 = unaryOp(engine.expm1)     // exp(x) - 1, accurate near 0
@@ -2010,7 +2018,7 @@ const TensorErrorFunction = unaryOp(engine.erf)
 const TensorSoftmax = (x: Value, axis?: Value) =>
   isScalarTensor(x)
     ? engine.reshape(engine.softmax(engine.reshape(operand(x), [1]), 0), [])
-    : engine.softmax(operand(x), axis === undefined ? undefined : asWhole(axis))
+    : engine.softmax(operand(x), axis == null ? undefined : asWhole(axis))
 // oneHot of an index outside 0..<depth is an all-zero row: an off-by-one label
 // column, or a -1 "unknown" sentinel, would silently drop out of the loss. Bounds-check
 // the way `_` does one screen down.
@@ -2043,7 +2051,7 @@ const TensorArgSort = (x: Value) =>
     : engine.argsort(operand(x)).astype(engine.float32)
 const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   const beginList = asNumberList(begin)
-  const sizeList = size === undefined ? undefined : asNumberList(size)
+  const sizeList = size == null ? undefined : asNumberList(size)
   const spec = beginList.map((b, i) => {
     const s = sizeList?.[i]
     return (s === undefined || s === -1 ? [b] : [b, b + s]) as [number] | [number, number]
@@ -2100,6 +2108,15 @@ const TensorGradient = (f: Value) => {
   }
 }
 const TensorTranspose = unaryOp(engine.transpose)
+// The views: x's elements renamed, nothing moved or computed. permute puts x's axis
+// axes_i at position i; broadcast stretches size-1 (and missing leading) axes to shape;
+// padAxis adds zeros around one axis; window gives the sliding windows of the trailing
+// axes – out[…, o…, k…] = x[…, o + k…] – one per position.
+const TensorPermute = (a: Value, axes: Value) => engine.transpose(operand(a), asWholeList(axes))
+const TensorBroadcast = (a: Value, shape: Value) => engine.broadcastTo(operand(a), asWholeList(shape))
+const TensorPadAxis = (a: Value, axis: Value, before: Value, after: Value) =>
+  engine.padAxis(operand(a), asWhole(axis), asWhole(before), asWhole(after))
+const TensorWindow = (a: Value, sizes: Value) => engine.windows(operand(a), asWholeList(sizes))
 // Move one axis to a new position, keeping the others' relative order (a zero-copy
 // view). The general axis-rotation that `transpose` (full reverse) can't express;
 // `alongAxis` is built on it. Negative positions count from the end.
@@ -2110,7 +2127,7 @@ const TensorMoveAxis = (a: Value, from: Value, to: Value) => {
 }
 const TensorRange = (a: Value, b?: Value) => {
   // arange tags its result int32 – Fluent tensors are float32 throughout
-  if (b === undefined) {
+  if (b == null) {
     return engine.arange(Math.trunc(asFinite(a))).astype(engine.float32)
   }
 
@@ -2177,7 +2194,7 @@ const TensorEinsum = (subscripts: Value, ...args: Value[]) =>
   engine.einsum(String(subscripts), ...args.map(operand))
 
 const TensorReshape = (a: Value, b?: Value) => {
-  if (b !== undefined) {
+  if (b != null) {
     return engine.reshape(operand(a), asNumberList(b))
   }
 
@@ -2188,10 +2205,10 @@ const TensorReshape = (a: Value, b?: Value) => {
 // shifts along an axis, wrapping around.
 const TensorRoll = (a: Value, shift: Value, axis?: Value) =>
   engine.roll(operand(a), requireData(shift) as number | number[],
-    axis === undefined ? undefined : requireData(axis) as number | number[])
+    axis == null ? undefined : requireData(axis) as number | number[])
 
 const TensorReverse = (a: Value, axis?: Value) =>
-  engine.flip(operand(a), axis === undefined ? undefined : requireData(axis) as number | number[])
+  engine.flip(operand(a), axis == null ? undefined : requireData(axis) as number | number[])
 
 const TensorMatrixMultiply = binaryOp(engine.matmul)
 const TensorDotProduct = binaryOp(engine.dot)
@@ -2202,7 +2219,7 @@ const TensorLength = (a: Value, b?: Value) => {
   // A missing axis has size 1, never NaN: a scalar (shape []) is one item along
   // its phantom leading axis, so `#(5)` is 1 (APL's tally ≢), matching how
   // broadcasting treats absent axes as size 1. An empty tensor (shape [0]) stays 0.
-  if (b !== undefined) {
+  if (b != null) {
     // negative axes count from the end, as they do for Σ, sort and moveaxis
     const shape = shapeOf(a)
     const axis = asWhole(b)
@@ -2258,12 +2275,14 @@ const TensorGather = (a: Value, b: Value): Value => {
   if (typeof a === "string" || a instanceof String) { return stringGather(String(a), b) }
   if (Array.isArray(a)) { return listGather(a as Value[], b) }
   // a scalar is a rank-0 tensor with a single phantom item (#(5) = 1): 5_0 = 5
-  if (isScalarTensor(a)) { a = engine.reshape(operand(a), [1]) }
+  return TensorTake(isScalarTensor(a) ? engine.reshape(operand(a), [1]) : a, b)
+}
+// take(x, indices): the rows of x at indices, any shape of them; a negative index counts
+// from the end. Every index on the host or cheap to compute there is bounds-checked – a
+// gather has no bounds mode, so an out-of-range index would read garbage; an index still
+// on the GPU (an embedding lookup into a minibatch) is trusted data and flows through.
+const TensorTake = (a: Value, b: Value): Value => {
   const size = shapeOf(a)[0] ?? 0
-  // Bounds-check every index on the host or cheap to compute there – a gather has
-  // no bounds mode, so an out-of-range index would read garbage. Literals and
-  // computed indices like `t_(argmax(...))` are validated; an index still on the
-  // GPU (an embedding lookup into a minibatch) is trusted data and flows through.
   const flat = cheapValues(b)
   if (flat !== undefined) {
     // `!(0 <= w < size)` also rejects a NaN index, which slips past `<`/`>=`
@@ -2273,12 +2292,15 @@ const TensorGather = (a: Value, b: Value): Value => {
     }
   }
   const raw = engine.astype(operand(b), engine.int32)
-  // negative indices count from the end: a_(-1) is the last element. The
-  // outer cast makes the dtype strongly int32 – astype keeps weak typing, and
-  // weak int32 promotes to float32 in the where().
   const wrapped = engine.astype(engine.where(engine.less(raw, 0), engine.add(raw, size), raw), engine.int32)
   return engine.take(operand(a), wrapped, 0)
 }
+// scatterAdd(indices, values, size): a [size, …] of zeros with each row of values added at
+// its index – take's transpose
+const TensorScatterAdd = (indices: Value, values: Value, size: Value) =>
+  engine.scatterAdd(operand(indices), operand(values), asWhole(size))
+// detach(x): x, with no derivative – ∇ treats it as a constant
+const TensorDetach = unaryOp(engine.detach)
 
 const TensorWhere = (a: Value, b: Value, c: Value) =>
   engine.where(engine.astype(operand(a), engine.bool), operand(b), operand(c))
@@ -2440,7 +2462,7 @@ const adagradTransform = (learningRate: number, eps = 1e-7): GradientTransformat
 // Arguments after the learning rate: scalars fill the hyperparameters in
 // order, a list picks the variables to train (default: every variable alive)
 const optimizerRest = (rest: Value[]): { nums: number[], vars: FluentVariable[] | undefined } => ({
-  nums: rest.filter((r) => r !== undefined && !Array.isArray(r)).map(asNumber),
+  nums: rest.filter((r) => r != null && !Array.isArray(r)).map(asNumber),
   vars: rest.find((r): r is FluentVariable[] => Array.isArray(r)),
 })
 
@@ -2582,6 +2604,11 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   FunctionRight,
   FunctionLeft,
   FunctionIs,
+  TensorIs,
+  ListIs,
+  StringIs,
+  ErrorIs,
+  Identical,
   FunctionCascade,
   FunctionCond,
   FunctionArity,
@@ -2679,6 +2706,13 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorGradient,
 
   TensorTranspose,
+  TensorPermute,
+  TensorBroadcast,
+  TensorPadAxis,
+  TensorWindow,
+  TensorTake,
+  TensorScatterAdd,
+  TensorDetach,
   TensorMoveAxis,
   TensorRange,
   TensorRangeInclusive,
@@ -2766,369 +2800,7 @@ const setCodeNodePrinter = (printer: (node: SyntaxTreeNode) => Value) => {
 }
 
 // MARK: Prelude
-
-const PRELUDE = `
-SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current scope. Glued to its left operand, \`:\` takes everything to its right – \`a: 1 + 2\` binds 3.", "a: 1 + 2, a × 10 = 30")),
-(:=): doc(TensorAssign, "θ := value", "Assign a new value to a variable (made with ~ or ~~); optimizers do this every step, watch(θ) sees it. Mid-expression, parenthesize the value: θ := (a + b).", "θ: ~([0, 0]), θ := [1, 2]"),
-
-; Functions
-(.): apply: doc(FunctionApply, "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]"),
-(⟳): iter: doc(FunctionIterate, "step ⟳ n", "Run a thunk n times, paced between display frames so the UI stays live – the loop for training and simulation. Async: a re-evaluation cancels it.", "opt: sgd(0.1), { opt(𝓛) } ⟳ 100"),
-(⍣): power: FunctionPower: doc({ f, n | FunctionRepeat(f, n, FunctionInverse) }, "(f ⍣ n)(x)", "Power: f applied n times – f(f(…f(x))). A negative n runs f backwards, through its inverse. A predicate in place of n runs f until predicate(new, old) holds – (f ⍣ ≡) iterates to a fixed point. Dyadic x (f ⍣ n) y iterates f(x, ·), as in APL. Synchronous; for a frame-paced loop use ⟳.", "(double ⍣ 5)(1) = 32, 2 (^ ⍣ -1) 8 = 3, (cos ⍣ ≡)(1) ≈ 0.739"),
-
-; Combinators – glyph, array-language name, mainstream name
-(∘): then: compose: doc(FunctionCompose, "(f ∘ g)", "Then: apply f to the arguments, then g to the result – (f ∘ g)(x, y) = g(f(x, y)). Reading order is evaluation order. The Queer bird – APL's atop, swapped to read left-to-right.", "(+ ∘ √)(9, 16) = 5"),
-(⍨): swap: commute: doc(FunctionCommute, "(⍨ f)", "Commute: flip a binary function's arguments – x (⍨ f) y = f(y, x). With one argument, duplicate it: (⍨ f)(x) = f(x, x). The Cardinal and the Warbler.", "3 (⍨ -) 10 = 7"),
-(⍥): over: doc(FunctionOver, "(g ⍥ f)", "Over: preprocess each argument with g, then combine with f – x (g ⍥ f) y = f(g(x), g(y)). The preprocessor is read first because it runs first. The Psi bird.", "-3 (abs ⍥ =) 3 = 1"),
-Φ: phi: fork: doc(FunctionFork, "Φ(f, g, h)", "Fork: apply the outer tines f and h to the arguments, combine the results with the middle tine g – x Φ(f, g, h) y = g(f(x, y), h(x, y)). A non-function tine is held constant. The Phoenix; dyadically the Pheasant.", "Φ(Σ, ÷, #)([1, 2, 3, 4]) = 2.5"),
-(⊸): before: doc(FunctionBefore, "(f ⊸ g)", "Before: preprocess the left (or only) argument with f, then combine with g – (f ⊸ g)(x, y) = g(f(x), y); (f ⊸ g)(x) = g(f(x), x). A constant binds the left argument. The Violet Starling; dyadically the Zebra Dove.", "(1 ⊸ +)(41) = 42"),
-(⟜): hook: after: doc(FunctionAfter, "(f ⟜ g)", "After: preprocess the right (or only) argument with g, then combine with f – (f ⟜ g)(x, y) = f(x, g(y)); (f ⟜ g)(x) = f(x, g(x)) – the J hook. A constant binds the right argument. The Starling; dyadically the Dove.", "(÷ ⟜ √)(16) = 4"),
-𝕐: fix: recur: FunctionFix: doc({ f | g: { x | f(x(x)) }, g(g) }, "𝕐(f)", "Fixpoint – anonymous recursion. 𝕐(f) is the x with x = f(x): hand f its own recursion handle so a nameless function can call itself. The Y combinator; equivalently (⍨ @)((⍨ @) ∘ f). Named recursion needs nothing – a binding is visible in its own body.", "𝕐({ rec | { n | cascade((guard(n = 0, { 1 }), { n × rec(n - 1) }))() } })(5) = 120"),
-(⊢): right: doc(FunctionRight, "x ⊢ y", "Right: yield the rightmost argument; with one argument, the identity.", "3 ⊢ 5 = 5"),
-(⊣): left: doc(FunctionLeft, "x ⊣ y", "Left: yield the leftmost argument; with one argument, the identity.", "3 ⊣ 5 = 3"),
-isFunction: doc(FunctionIs, "isFunction(v)", "1 if v is a function, else 0 – the question a combinator asks before treating an operand as a constant. Composes like a comparison.", "isFunction(√) = 1, isFunction(5) = 0"),
-
-; Inverse and Under – ∇ gives every smooth function its slope, so Newton's
-; method can run it backwards: no table of inverses, any smooth function.
-FunctionSolve: solve: doc({ g, y, seed |
-  ; back(x, v) carries an output-shaped v back to the inputs it came from –
-  ; the transpose of g at x, by ∇
-  back: { x, v | ∇({ z | Σ(v × g(z)) })(x) },
-  miss: { x | abs(g(x) - y) ÷ (1 + abs(y)) },
-  step: { x |
-    ; the smallest move that makes g land on y: s is g's slope when g works
-    ; element by element, and how often each element is picked when g selects
-    s: ∇(g)(x),
-    ; nothing moves where g doesn't look or is flat (s = 0) – and that zero is
-    ; kept out of the division, so the derivative of the answer stays clean too
-    picked: s ≠ 0,
-    safe: where(picked, s, 1),
-    Δ0: where(picked, back(x, y - g(x)) ÷ (safe × safe), 0),
-    Δ: where(abs(Δ0) < 1e30, Δ0, 0),
-    m: miss(x),
-    ; halve the step wherever it doesn't help, until nothing is left to halve:
-    ; an element must get strictly closer, unless it's already well inside the
-    ; tolerance – and a step off the function (NaN) never helps
-    shrink: { σ |
-      mX: miss(x + (σ × Δ)),
-      worse: back(x, isNaN(mX) ∨ ((m > 1e-6) ∧ (mX ≥ m))) ≠ 0,
-      where(worse, where(σ < 1e-6, 0, σ ÷ 2), σ)
-    },
-    x + ((shrink ⍣ ≡)(Δ × 0 + 1) × Δ)
-  },
-  ; no miss ever grows – staying put is always allowed – so this ends
-  x: (step ⍣ { new, old | max(miss(new)) ≥ max(miss(old)) })(seed),
-  ; an answer is checked, never assumed: no solution near the seed is an Error
-  cond(
-    guard(max(miss(x)) ≤ 1e-4, { x }),
-    { Error("solve: no solution near the seed", seed) }
-  )
-}, "solve(g, y, seed)", "The x nearest seed where g(x) = y – Newton's method, with ∇ supplying the slope. When g works element by element, it runs g backwards (the seed picks the branch). When g picks out part of its input – a gather, a slice, the diagonal – it changes that part of seed and keeps the rest. No solution is an Error, never a wrong number.", "solve(cos, 0, 1) ≈ 1.5708"),
-FunctionInverse: inverse: doc({ g | FunctionArity((
-  { x, y | FunctionInverse({ z | g(x, z) })(y) },
-  { y |
-    ; each element starts from whichever of y, 0 and 1 lands closest to it
-    starts: stack((y, y × 0, y × 0 + 1)),
-    off: abs(g(starts) - y),
-    pick: argmin(where(isNaN(off), 1e30, off), 0),
-    FunctionSolve(g, y, Σ(oneHot(pick, 3) × moveaxis(starts, 0, -1), -1))
-  }
-)) }, "inverse(g)", "g run backwards – the same as g ⍣ -1. Each element starts from whichever of y, 0 and 1 lands closest. Dyadic x inverse(g) y solves g(x, ?) = y.", "inverse({ x | x^3 + x })(10) = 2"),
-FunctionUnder: under: (⍢): doc({ g, f |
-  ; the answer is the point nearest the argument – the right one, dyadically –
-  ; where g lands on f's result; when f changed the shape (it reduced), the
-  ; search starts from the argument's mean instead
-  near: { x, t | cond(guard(shape(g(x)) ≡ shape(t), { x }), { μ(x) + (t × 0) }) },
-  FunctionArity((
-    { a, b | t: f(g(a), g(b)), FunctionSolve(g, t, near(b, t)) },
-    { x | t: f(g(x)), FunctionSolve(g, t, near(x, t)) }
-  ))
-}, "x (g ⍢ f) y", "Under: do f in g's world, then come back. When g transforms values – log, square – it is g⁻¹(f(g(x), g(y))): Pythagoras is + under square, the geometric mean is μ under log. When g picks out a part – a gather, a row, the diagonal – f edits just that part: (diagonal ⍢ (× ⟜ 0)) zeroes the diagonal. One rule for both: the nearest point to the argument where g lands on f's result. Reads left to right: g, then f, then g undone – (g ⍥ f) ∘ (g ⍣ -1).", "3 (square ⍢ +) 4 = 5"),
-(≡): match: doc(Match, "x ≡ y", "Match: 1 if x and y are the same value whole – same shape and every element, numbers within a few units of float rounding – else 0. Where = compares element by element and exactly, ≡ answers once. (f ⍣ ≡) iterates f until nothing changes.", "[1, 2] ≡ [1, 2] = 1, [1, 2] ≡ [1, 3] = 0"),
-
-(@): eval: doc(FunctionEvaluate, "f @ x", "Apply the function on the left to the argument on the right – reads as “f at x”. A list spreads as multiple arguments.", "∇({ x | x^2 }) @ 3 = 6"),
-; Choosing – a candidate answers or declines (returns NoMatch). A choice takes
-; the first answer; a failure (an Error) is an answer too, so it surfaces.
-cascade: doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order with the same arguments; the first that answers wins. A candidate declines by returning NoMatch – guard and try make such candidates. An Error is an answer, not a decline: it stops the cascade and surfaces. When every candidate declines, the cascade declines too, so overload sets nest.", "cascade((guard(n = 0, { 1 }), { n × f(n - 1) }))()"),
-cond: doc(FunctionCond, "cond(a, b, …)", "A multi-way conditional: run each candidate in order, the first that answers wins – cascade((…))() without the wrapper. A candidate that isn’t a thunk is its own answer, so cond(guard(c, { x }), 0) defaults to 0.", "cond(guard(n = 0, { 1 }), { n × fact(n - 1) })"),
-guard: doc(FunctionGuard, "guard(cond, { value })", "A candidate that answers with value while cond holds, and declines otherwise. A broken condition – a typo, an Error – is a failure, never a quiet no.", "guard(n = 0, { 1 })"),
-try: doc(FunctionTry, "try({ value })", "A candidate that declines when value fails: the Error becomes a NoMatch, so cascade and cond move on to the next candidate.", "cond(try({ CodeEvaluate(text) }), 0)"),
-when: doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Not a candidate – whatever the thunk returns, an Error included, is the result.", "when(training(), { opt(𝓛) })"),
-Error: doc(ErrorCreate, "Error(message, cause?)", "A failure, as a value: no answer, and why. The cause can be any value – the Error this one grew from, or what was tried. An Error stops a cascade and surfaces.", "cond(guard(x ≥ 0, { √(x) }), { Error(\\"no real root\\", x) })"),
-; NoMatch (bound natively) is the decline itself: what a candidate returns to
-; say “not my case”. cascade and cond skip it; anywhere else it is an Error.
-
-erf: doc(TensorErrorFunction, "erf(x)", "Gauss error function – the area under a normal curve out to x, saturating at ±1. Smooth and differentiable everywhere.", "erf(1) ≈ 0.8427"),
-
-; Tensor shape/indexing
-(#): len: length: doc(Length, "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\\"abc\\") = 3"),
-(_): gather: doc(TensorGather, "x_i", "Index into a string, list, or tensor. \`x_i\` picks one element; \`x_[i, j]\` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30"),
-(⍴): reshape: doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]"),
-(..<): range: doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the \`<\` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]"),
-(...): rangeInclusive: doc(TensorRangeInclusive, "start ... stop", "Integer range from start through stop, endpoint included.", "1 ... 5 = [1, 2, 3, 4, 5]"),
-shape: TensorShape,
-slice: TensorSlice,
-transpose: TensorTranspose,
-moveaxis: TensorMoveAxis,
-reverse: TensorReverse,
-(⊗): outer: doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]"),
-(⍤): rank: doc(TensorRank, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1,2,3],[4,5,6]]) = [6, 15]"),
-(∙): inner: doc(TensorInner, "a (g ∙ f) b", "Inner product: contract a's last axis with b's first – combine with g, then reduce with f, in the order it reads, like a × b reduce +. \`× ∙ +\` is matrix multiply; swap the ring for others: \`+ ∙ ⌊\` is shortest paths.", "[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]] = [[19,22],[43,50]]"),
-alongAxis: { f, k |
-  lift: (f ⍤ 1),                                              ; f lifted to run on each trailing fibre
-  { x |
-    n: #(shape(x)),                                           ; the rank of x
-    lifted: lift(moveaxis(x, k, n - 1)),                      ; rotate axis k to the trailing cell, run f
-    cascade(
-      (guard(#(shape(lifted)) = n, { moveaxis(lifted, n - 1, k) }),   ; shape-preserving f: rotate the axis home
-       { lifted })                                                     ; reducer: axis k is gone
-    )()
-  }
-},
-doc(alongAxis, "(f alongAxis k)", "Apply f along axis k: f runs on each fibre parallel to axis k, mapping over the rest. Any function, any axis; a reducer drops the axis, a shape-preserving f keeps it.", "(Σ alongAxis 0)([[1,2,3],[4,5,6]]) = [5, 7, 9]"),
-(⌸): alongAxis,                  ; tier 1 — terse glyph (APL's key); alongAxis itself is tier 2, the concise word
-TensorAlongAxis: alongAxis,      ; tier 3 — descriptive [Type][Function], stem matches (cf. rank/TensorRank)
-
-; Shape manipulation
-flat: (⍴ ⟜ [-1]),
-squeeze: { x |
-  s: shape(x),
-  newShape: mask(s, (s ≠ 1)),
-  x ⍴ newShape
-},
-unsqueeze: { x, axis |
-  s: shape(x),
-  newShape: concat(concat(slice(s, 0, axis), [1]), slice(s, axis)),
-  x ⍴ newShape
-},
-
-windows: TensorWindows: doc({ w, arr |
-  starts: (0 ..< (#(arr) - w + 1)),
-  offsets: (0 ..< w),
-  indices: (starts ⊗(+) offsets),
-  arr _ indices
-}, "windows(w, arr)", "The overlapping width-w sliding windows of arr, one per row (step 1).", "windows(2, [1, 2, 3, 4]) = [[1, 2], [2, 3], [3, 4]]"),
-
-chunks: TensorChunks: doc({ w, arr |
-  n: (#(arr) / w),
-  starts: (0 ..< n × w),
-  offsets: (0 ..< w),
-  indices: (starts ⊗(+) offsets),
-  arr _ indices
-}, "chunks(w, arr)", "Split arr into non-overlapping width-w chunks; arr's length should be a multiple of w.", "chunks(2, [1, 2, 3, 4]) = [[1, 2], [3, 4]]"),
-
-(⌺): stencil: TensorStencil: doc({ w, f, arr | (f ⍤ 1)(windows(w, arr)) }, "stencil(w, f, arr)", "Slide a width-w window over arr, reducing each with f – a windowed map. stencil(w, Σ, …) is a moving sum. The glyph is APL's stencil.", "stencil(3, Σ, [1, 2, 3, 4, 5]) = [6, 9, 12]"),
-conv: TensorConvolution,   ; nD convolution: arr conv kernel – a 1D kernel over a vector, a 2D kernel over an image
-(⊛): doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]"),
-
-; List operations – a list is a heterogeneous (a, b, …); these are its verbs,
-; kept prefixed so they never blur into the tensor vocabulary (ListMap vs ⍤).
-List: doc(List, "List(a, b, …)", "Build a list from its arguments – the same list a bare (a, b, …) makes.", "ListLength(List(1, 2, 3)) = 3"),
-ListLength: doc(ListLength, "ListLength(list)", "How many elements a list has.", "ListLength((1, 2, 3)) = 3"),
-ListConcat: doc(ListConcat, "ListConcat(a, b)", "Join two lists end to end.", "ListConcat((1, 2), (3, 4)) = (1, 2, 3, 4)"),
-ListGet: doc(ListGet, "ListGet(list, i)", "The element at index i; a negative i counts from the end.", "ListGet((10, 20, 30), -1) = 30"),
-ListMap: doc(ListMap, "ListMap(list, f)", "Apply f to every element, giving a new list – the list-land counterpart of ⍤.", "ListGet(ListMap((1, 2, 3), { x | x × 10 }), 1) = 20"),
-ListReduce: doc(ListReduce, "ListReduce(list, f, init)", "Fold a list left to right: start at init, then f(acc, element) across the list.", "ListReduce((1, 2, 3), { a, b | a + b }, 0) = 6"),
-ListGather: doc({ a, b |
-  ListMap(b, { i | ListGet(a, i) })
-}, "ListGather(list, indices)", "Pick the elements at the given indices, in that order – a list-land _.", "ListGather((10, 20, 30), (2, 0)) = (30, 10)"),
-ListZip: doc({ a, b |
-  n: TensorMinimum(ListLength(a), ListLength(b)),
-  ListMap(
-    TensorUnstack(TensorRange(0, n)),
-    { i | List(ListGet(a, i), ListGet(b, i)) }
-  )
-}, "ListZip(a, b)", "Pair up elements of a and b, stopping at the shorter length.", "ListZip((1, 2), (3, 4)) = ((1, 3), (2, 4))"),
-ListTake: doc({ list, n |
-  ; take the first n, with n clamped to [0, length]
-  ListMap(TensorUnstack(TensorRange(0, 0 ⌈ n ⌊ ListLength(list))), { i | ListGet(list, i) })
-}, "ListTake(list, n)", "The first n elements, with n clamped to [0, length].", "ListTake((7, 8, 9), 2) = (7, 8)"),
-ListDrop: doc({ list, n |
-  len: ListLength(list),
-  ListMap(TensorUnstack(TensorRange(0 ⌈ n ⌊ len, len)), { i | ListGet(list, i) })
-}, "ListDrop(list, n)", "All but the first n elements, with n clamped to [0, length].", "ListDrop((7, 8, 9), 1) = (8, 9)"),
-ListReverse: doc({ list |
-  n: ListLength(list),
-  ListMap(TensorUnstack(TensorReverse(TensorRange(0, n))), { i | ListGet(list, i) })
-}, "ListReverse(list)", "The list back to front.", "ListReverse((1, 2, 3)) = (3, 2, 1)"),
-ListEnumerate: doc({ list |
-  n: ListLength(list),
-  ListMap(
-    TensorUnstack(TensorRange(0, n)),
-    { i | List(i, ListGet(list, i)) }
-  )
-}, "ListEnumerate(list)", "Pair each element with its index, as (index, element).", "ListEnumerate((7, 8)) = ((0, 7), (1, 8))"),
-ListScan: doc({ list, f, init |
-  ListReduce(
-    list,
-    { acc, val |
-      prev: ListGet(acc, -1),
-      ListConcat(acc, List(f(prev, val)))
-    },
-    List(init)
-  )
-}, "ListScan(list, f, init)", "Like ListReduce, but keep every step – the running fold, starting from init.", "ListScan((1, 2, 3), +, 0) = (0, 1, 3, 6)"),
-
-; Arithmetic
-(/): (÷): div: TensorDivide,
-(%): mod: TensorRemainder,
-(^): pow: TensorPower,
-(√): root: doc(TensorRoot, "x √ n", "The square root of x; with n, the n-th root of x.", "27 √ 3 = 3"),
-add: doc(TensorAdd, "x + y", "Element-wise addition; shapes broadcast.", "[1, 2] + 10 = [11, 12]"),
-sub: doc(TensorSubtract, "x - y", "Element-wise subtraction; shapes broadcast.", "[3, 4] - 1 = [2, 3]"),
-mul: doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcast.", "[1, 2] × 3 = [3, 6]"),
-(+): FunctionArity((TensorAdd, TensorAbsolute)),
-(-): FunctionArity((TensorSubtract, TensorNegate)),
-(*): FunctionArity((TensorMultiply, TensorSign)),
-(×): FunctionArity((TensorMultiply, TensorSign)),
-(·): FunctionArity((TensorMultiply, TensorSign)),
-
-; Math
-π: pi: 3.141592653589793,
-neg: doc(TensorNegate, "neg(x)", "Negate each element.", "neg([1, -2]) = [-1, 2]"),
-abs: doc(TensorAbsolute, "abs(x)", "Absolute value of each element.", "abs([-2, 3]) = [2, 3]"),
-sign: doc(TensorSign, "sign(x)", "The sign of each element: -1, 0, or 1.", "sign([-5, 0, 3]) = [-1, 0, 1]"),
-round: TensorRound,
-trunc: TensorTruncate,
-floor: doc(TensorFloor, "⌊(x)  ·  floor(x)", "Round each element down to the nearest integer.", "⌊(2.7) = 2"),
-ceil: doc(TensorCeil, "⌈(x)  ·  ceil(x)", "Round each element up to the nearest integer.", "⌈(2.3) = 3"),
-reciprocal: TensorReciprocal,
-sqrt: TensorSquareRoot,
-square: TensorSquare: { x | x × x },
-cbrt: TensorCubeRoot,
-hypot: TensorHypotenuse,
-log: doc(TensorLogarithm, "log(x, base?)", "The natural logarithm of x; with a base, the logarithm of x in that base.", "8 log 2 = 3"),
-log2: TensorLog2: { x | log(x) ÷ log(2) },
-log10: TensorLog10: { x | log(x) ÷ log(10) },
-log1p: TensorLog1Plus,
-exp: TensorExponential,
-expm1: TensorExpMinus1,
-clamp: TensorClamp: { x, lo, hi | x ⌈ lo ⌊ hi },
-; written through tanh, not 1 ÷ (1 + exp(-x)): the naive form's reverse rule
-; is Inf ÷ Inf² once exp(-x) overflows float32 (below x ≈ -89), so a saturated
-; unit hands back NaN where the true derivative underflows smoothly to 0. Same
-; values to float32; softplus below is stable for the same reason.
-sigmoid: TensorSigmoid: { x | 0.5 × (1 + tanh(x ÷ 2)) },
-relu: TensorRelu: { x | x ⌈ 0 },
-silu: TensorSilu: { x | x × sigmoid(x) },
-rsqrt: TensorReciprocalSquareRoot: { x | 1 ÷ sqrt(x) },
-softmax: TensorSoftmax,
-oneHot: TensorOneHot,
-crossEntropy: TensorCrossEntropy,
-
-; Trigonometry
-sin: TensorSine,
-cos: TensorCosine,
-tan: TensorTangent: { x | sin(x) ÷ cos(x) },
-asin: arcsin: TensorSineInverse,
-acos: arccos: TensorCosineInverse,
-atan: arctan: TensorTangentInverse,
-atan2: arctan2: TensorArcTangent2,
-sinh: TensorSineHyperbolic: { x | (exp(x) - exp(-x)) ÷ 2 },
-cosh: TensorCosineHyperbolic: { x | (exp(x) + exp(-x)) ÷ 2 },
-tanh: TensorTangentHyperbolic,
-asinh: arcsinh: TensorSineHyperbolicInverse,
-acosh: arccosh: TensorCosineHyperbolicInverse,
-atanh: arctanh: TensorTangentHyperbolicInverse,
-deg2rad: TensorDegreesToRadians: { x | x × (π ÷ 180) },
-rad2deg: TensorRadiansToDegrees: { x | x × (180 ÷ π) },
-
-; Activations (after Trig, so tanh is in scope; sigmoid/relu/silu live up in Math)
-softplus: softRelu: TensorSoftplus: doc({ x | log1p(exp(-abs(x))) + (x ⌈ 0) }, "softplus(x)", "A smooth, always-positive ReLU: log(1 + exp x). Differentiable everywhere.", "softplus([-2, 0, 2]) ≈ [0.13, 0.69, 2.13]"),
-gelu: TensorGelu: doc({ x | 0.5 × x × (1 + tanh(0.7978845608 × (x + (0.044715 × x^3)))) }, "gelu(x)", "Gaussian Error Linear Unit – a smooth ReLU that gates x by a Gaussian. The transformer default.", "gelu([-1, 0, 1]) ≈ [-0.16, 0, 0.84]"),
-mish: TensorMish: doc({ x | x × tanh(softplus(x)) }, "mish(x)", "A self-gated activation, x · tanh(softplus x) – smooth and non-monotonic.", "mish([-1, 0, 1]) ≈ [-0.30, 0, 0.87]"),
-
-; Comparison
-(<): lt: less: doc(TensorLess, "x < y", "Element-wise less-than: 1 where x is below y, else 0; shapes broadcast.", "([1, 2, 3] < 2) = [1, 0, 0]"),
-(>): gt: greater: doc(TensorGreater, "x > y", "Element-wise greater-than: 1 where x is above y, else 0; shapes broadcast.", "([1, 2, 3] > 2) = [0, 0, 1]"),
-(≤): (<=): le: lessEqual: doc(TensorLessEqual, "x ≤ y", "Element-wise less-than-or-equal: 1 where x is at most y, else 0; shapes broadcast.", "([1, 2, 3] ≤ 2) = [1, 1, 0]"),
-(≥): (>=): ge: greaterEqual: doc(TensorGreaterEqual, "x ≥ y", "Element-wise greater-than-or-equal: 1 where x is at least y, else 0; shapes broadcast.", "([1, 2, 3] ≥ 2) = [0, 1, 1]"),
-(=): equal: doc(TensorEqual, "x = y", "Element-wise equality: 1 where the operands are equal, else 0; shapes broadcast.", "([1, 2, 3] = 2) = [0, 1, 0]"),
-(≠): (!=): notEqual: doc(TensorNotEqual, "x ≠ y", "Element-wise inequality: 1 where the operands differ, else 0; shapes broadcast.", "([1, 2, 3] ≠ 2) = [1, 0, 1]"),
-
-; Logical
-(∨): or: doc(TensorOr, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]"),
-(∧): and: doc(TensorAnd, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]"),
-(¬): not: doc(TensorNot, "¬(x)", "Logical not: 1 where x is zero, else 0.", "¬([0, 2]) = [1, 0]"),
-(⊻): xor: doc(TensorXor, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]"),
-(⍲): nand: TensorNand: doc({ a, b | ¬(a ∧ b) }, "x ⍲ y", "Element-wise nand: 0 where both operands are nonzero, else 1. Functionally complete – every gate builds from it.", "[0, 1, 1] ⍲ [1, 1, 0] = [1, 0, 1]"),
-(⍱): nor: TensorNor: doc({ a, b | ¬(a ∨ b) }, "x ⍱ y", "Element-wise nor: 1 where both operands are zero, else 0. Functionally complete, like ⍲.", "[0, 1, 0] ⍱ [0, 1, 1] = [1, 0, 0]"),
-
-; Reductions
-(∇): grad: doc(TensorGradient, "∇(f)", "Gradient of a function: ∇(f)(x) is df/dx at x. Works on any function of smooth numeric ops — reshape and indexing pass through; argmax/round/comparisons read as constant (zero gradient). Nests: ∇(∇(f)) is the second derivative.", "∇({ x | x^2 })(3) = 6"),
-(Σ): sum: doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6"),
-reduce: doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so \`x reduce ⌈\` is max.", "1 ..< 10 reduce + = 45"),
-(Π): prod: TensorProduct,
-(μ): mean: TensorMean,
-
-; Min/max: the WORD reduces (whole tensor, or one axis like sum) – so
-; max(x, axis) works. The GLYPH is APL's ⌈/⌊: ceiling/floor on one tensor,
-; pairwise max/min on two. (max and ⌈ can't be one function – max(x, axis)
-; and pairwise max(a, b) share a shape, so the axis would be eaten as an operand.)
-max: doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor.", "max([3, 1, 2]) = 3"),
-min: doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the whole tensor.", "min([3, 1, 2]) = 1"),
-(⌈): FunctionArity((doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]"), TensorCeil)),
-(⌊): FunctionArity((doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]"), TensorFloor)),
-argmax: TensorArgMax,
-argmin: TensorArgMin,
-
-; Statistics
-𝕍: variance: TensorVariance: doc({ x | μ((x - μ(x))^2) }, "𝕍(x)", "Mean squared deviation from the mean, μ((x - μx)²).", "variance([1, 2, 3]) ≈ 0.667"),
-σ: std: TensorStandardDeviation: doc({ x | √(variance(x)) }, "σ(x)", "Standard deviation, √variance – how far x spreads around its mean.", "σ([2, 4, 4, 4, 5, 5, 7, 9]) = 2"),
-norm: l2norm: TensorL2Norm: doc({ x | √(Σ(x × x)) }, "norm(x)", "Euclidean (L2) norm, √(Σ x²) – the length of x as a vector.", "norm([3, 4]) = 5"),
-normalize: TensorNormalize: doc({ x | x ÷ norm(x) }, "normalize(x)", "x scaled to unit length, x ÷ norm(x) – same direction, length 1.", "normalize([3, 4]) = [0.6, 0.8]"),
-
-; Variables
-(~): var: doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad. For data the loss reads but never trains, use ~~.", "θ: ~([0, 0])"),
-(~~): data: doc(TensorData, "~~(init)", "Make a data slot – every optimizer step reads it fresh, but no gradient flows into it and nothing trains it. Assign with := any time, even to a new shape – training carries on.", "x: ~~([1, 2]), x := [3, 4, 5]"),
-watch: doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w = [8]"),
-
-; Tensor ops
-sort: doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]"),
-(⍋): argsort: doc(TensorArgSort, "argsort(x)", "The indices that sort a vector into ascending order – grade up. x_argsort(x) is x sorted.", "argsort([3, 1, 2]) = [1, 2, 0]"),
-roll: doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]"),
-flip: TensorReverse,
-mask: doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]"),
-where: doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0) = [1, 0, 3]"),
-isNaN: TensorIsNaN,
-𝕀: eye: TensorIdentity: doc({ n | (0 ..< n) ⊗(=) (0 ..< n) }, "𝕀(n)", "The n×n identity matrix – 1 on the diagonal, 0 elsewhere.", "eye(2) = [[1, 0], [0, 1]]"),
-dot: TensorDotProduct,
-matmul: TensorMatrixMultiply,
-fft: TensorFFT,
-meshgrid: TensorMeshgrid,
-pad: TensorPad,
-repeat: TensorRepeat,
-sinc: TensorSinc,
-topk: TensorTopK,
-einsum: TensorEinsum,
-
-; Creation
-(⚄): rand: doc(TensorRandomUniform, "⚄(shape)  ·  rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "⚄([2, 2])"),
-randn: TensorRandomNormal,
-linspace: TensorLinearSpace,
-fill: TensorFill,
-stack: TensorStack,
-unstack: TensorUnstack,
-concat: TensorConcat,
-(⧉): tile: doc(TensorTile, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]"),
-
-; Optimization
-adam: TensorOptimizationAdam,
-adamw: doc(TensorOptimizationAdamW, "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)"),
-sgd: doc(TensorOptimizationSgd, "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)"),
-adagrad: TensorOptimizationAdaGrad,
-
-; Strings
-StringToCodes: doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\\"abc\\") = [97, 98, 99]"),
-CodesToString: doc(CodesToString, "CodesToString(codes)", "A tensor of character codes back to text. Rounds first, so model outputs decode directly.", "CodesToString([104, 105]) = \\"hi\\""),
-String: doc(StringLiteral, "String(x)", "The Fluent source that reproduces a value: CodeEvaluate(String(x)) is x again. A string comes back quoted, a list keeps its parens, a tensor keeps its rank. Exact for data; a signal or ~ round-trips to a new one, and a lambda needs its free names in scope.", "String([1, 2]) = \\"[1, 2]\\""),
-
-; Misc
-($): doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2"),
-; ← is defined here in the prelude, so its doc lives here too
-(←): doc(FunctionNoAutoLift({ s, v | s(v) }), "signal ← value", "Write a value into a signal – same as signal(value), but reads left-to-right. Chains like any spaced operator: parenthesize compound values, s ← (a + b).", "x: $(1), x ← 9, x() = 9"),
-once: doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $(4), once(x) + 1 = 5"),
-`
+// What the language defines in itself lives in prelude.fl, in Fluent.
 
 // Parse the prelude once – createScope runs on every evaluation (each keystroke)
 const PRELUDE_TREE = CodeParse(PRELUDE)

@@ -395,7 +395,7 @@ export const power = (a: Like, b: Like): Tensor => {
   if (Number.isInteger(e) && Math.abs(e) <= 64) { const r = intPow(x, e); return wrap(ir.sameShape(r.shape, x.shape) ? r : ir.broadcastTo(r, x.shape)); }
   return wrap(ir.math("pow", x, y));
 };
-export const sin = m1("sin"), cos = m1("cos"), tan = m1("tan"), tanh = m1("tanh");
+export const sin = m1("sin"), cos = m1("cos"), tanh = m1("tanh");
 export const asin = m1("asin"), acos = m1("acos"), atan = m1("atan"), arcsin = asin, arccos = acos, arctan = atan;
 export const asinh = m1("asinh"), acosh = m1("acosh"), atanh = m1("atanh"), arcsinh = asinh, arccosh = acosh, arctanh = atanh;
 export const floor = m1("floor"), ceil = m1("ceil"), trunc = m1("trunc"), round = m1("round"), sign = m1("sign");
@@ -450,6 +450,13 @@ export function moveaxis(a: Like, source: number | number[], destination: number
   let k = 0; for (let i = 0; i < r; i++) if (order[i] === undefined) order[i] = rest[k++]!;
   return keepType(a, ir.permute(x, order));
 }
+export const padAxis = (a: Like, axis: number, before: number, after: number): Tensor => { const x = nodeOf(a); return keepType(a, ir.pad(x, normAxis(axis, x.shape.length), before, after)); };
+export const windows = (a: Like, sizes: readonly number[]): Tensor => keepType(a, ir.windows(nodeOf(a), sizes));
+export const detach = (a: Like): Tensor => keepType(a, ir.detach(nodeOf(a)));
+export const scatterAdd = (indices: Like, values: Like, size: number): Tensor => {
+  const i = nodeOf(indices), v = nodeOf(values), n = ir.numel(i.shape);
+  return wrap(ir.scatterAdd(ir.reshape(i, [n]), ir.reshape(v, [n, ...v.shape.slice(i.shape.length)]), size));
+};
 export const broadcastTo = (a: Like, shape: readonly number[]): Tensor => { const x = nodeOf(a); return keepType(a, ir.sameShape(x.shape, shape) ? x : ir.broadcastTo(x, shape)); };
 export function concatenate(arrays: readonly Tensor[], axis = 0): Tensor {
   if (!arrays.length) throw new Error("concatenate: needs at least one array");

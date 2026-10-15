@@ -1132,6 +1132,12 @@ describe("metadata arguments are strict", () => {
 })
 
 describe("null is a value", () => {
+  test("◌ is an argument not given, to a native as to a lambda", () => {
+    // a lambda's missing parameter arrives as ◌, so passing it on must mean "not given"
+    expect(value("{ x, k | Σ(x, k) }([1, 2, 3])")).toBe(6)
+    expect(value("{ x, k | Σ(x, k) }([[1, 2], [3, 4]], 0)")).toEqual([4, 6])
+    expect(value("log(8, ◌)")).toBeCloseTo(Math.log(8), 5)
+  })
   // regression: Symbol.resolve used `??`, so a name bound to ◌ (or to the
   // null result of :=) came back as an unbound symbol instead of null
   test("◌ round-trips through a binding", () => {

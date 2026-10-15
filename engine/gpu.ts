@@ -3,7 +3,7 @@
 // decided in the IR — cpu.ts walks the same nodes. Every value is f32.
 
 import type { UOp } from "./ir.ts";
-import { node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM } from "./ir.ts";
+import { node, buffer, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM } from "./ir.ts";
 import { graphRewriteMany } from "./rewrite.ts";
 import { optimizeMany, COST } from "./opt.ts";
 import type { HostData } from "./cpu.ts";
@@ -324,11 +324,8 @@ const withHelpers = (wgsl: string): string =>
   `${wgsl.includes("hashUniform(") ? WGSL_HASH_UNIFORM + "\n" : ""}${/nanf\(|inff\(/.test(wgsl) ? WGSL_SPECIALS + "\n" : ""}${wgsl}`;
 
 // codegen as a rewrite: FUSED → KERNEL (src = inputs; wgsl + dispatch in arg)
-const lowerCache = new Map<string, UOp[]>();
 export function lowerMany(roots: UOp[]): UOp[] {
-  const key = roots.map((r) => r.id).join(",");
-  const hit = lowerCache.get(key); if (hit) return hit;
-  const g = graphRewriteMany(optimizeMany(roots), [(u) => {
+  return graphRewriteMany(optimizeMany(roots), [(u) => {
     if (u.op !== "FUSED") return null;
     const ins = kInputs(u);
     if (ins.length + 1 > MAX_BINDINGS) throw new Error(`gpu: kernel needs ${ins.length + 1} bindings — over the ${MAX_BINDINGS} storage buffers per stage (shape [${u.shape}])`);
@@ -340,10 +337,19 @@ export function lowerMany(roots: UOp[]): UOp[] {
     }
     return node("KERNEL", ins, { wgsl: withHelpers(k.wgsl), dispatch: k.dispatch }, u.shape);
   }]);
-  if (lowerCache.size > 256) lowerCache.clear();
-  lowerCache.set(key, g);
-  return g;
 }
+
+// A plan is built over placeholder leaves, never a run's own: a cached plan holds no data,
+// and every run binds its leaves by position.
+const placeholders = (roots: UOp[], leaves: UOp[]): { roots: UOp[]; slots: UOp[] } => {
+  const slots = leaves.map((l, i) => buffer(`%slot${i}`, l.shape)), memo = new Map<number, UOp>(leaves.map((l, i) => [l.id, slots[i]!]));
+  for (const r of roots) for (const u of toposort(r)) {
+    if (memo.has(u.id)) continue;
+    const src = u.src.map((s) => memo.get(s.id)!);
+    memo.set(u.id, src.every((s, i) => s === u.src[i]) ? u : node(u.op, src, u.arg, u.shape));
+  }
+  return { roots: roots.map((r) => memo.get(r.id)!), slots };
+};
 
 // A plan's identity is its structure: ops, args and shapes in a canonical order, leaves
 // numbered by position — a device buffer or a tensor constant is rebound on every run, so
@@ -482,7 +488,7 @@ export class GPU {
   profile: { label: string; ms: number; wgsl: string }[] | null = null;
   #pending: Promise<void>[] = [];
   async profiled(): Promise<{ label: string; ms: number; wgsl: string }[]> { await Promise.all(this.#pending); this.#pending = []; const p = this.profile ?? []; this.profile = null; return p; }
-  #plans = new Map<string, { lowered: UOp[]; leaves: UOp[] }>();
+  #plans = new Map<string, { lowered: UOp[]; slots: UOp[] }>();
   // Work in flight, one promise per computeSync. A display frame waits behind whatever is
   // queued ahead of it, so a loop that keeps submitting starves the screen: it should wait
   // for `drained(depth)` before its next step.
@@ -495,11 +501,12 @@ export class GPU {
     let plan = this.#plans.get(key);
     if (!plan) {
       if (this.#plans.size > 512) this.#plans.delete(this.#plans.keys().next().value!);
-      plan = { lowered: lowerMany(roots), leaves };
+      const p = placeholders(roots, leaves);
+      plan = { lowered: lowerMany(p.roots), slots: p.slots };
       this.#plans.set(key, plan);
     } else { this.#plans.delete(key); this.#plans.set(key, plan); }               // most recently used last
     const lowered = plan.lowered;
-    const current = new Map(plan.leaves.map((l, i) => [l.id, leaves[i]!]));     // the plan's leaves, bound to this run's
+    const current = new Map(plan.slots.map((s, i) => [s.id, leaves[i]!]));       // the plan's slots, bound to this run's leaves
     dev.pushErrorScope("validation");
     const outputs = new Map<number, GPUBuffer>(), transient: GPUBuffer[] = [];
     const store = new Map<number, GPUBuffer>();
