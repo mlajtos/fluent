@@ -53,7 +53,11 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | `~` | `var` | `TensorVariable` |
 | `:=` | — | `TensorAssign` |
 | `⟳` | `iter` | `FunctionIterate` |
-| `⍣` | — | `FunctionPower` |
+| `⍣` | `power` | `FunctionPower` |
+| `⍢` | `under` | `FunctionUnder` |
+| — | `inverse` | `FunctionInverse` |
+| — | `solve` | `FunctionSolve` |
+| `≡` | `match` | `Match` |
 | `.` | `apply` | `FunctionApply` |
 | `@` | `eval` | `FunctionEvaluate` |
 | `$` | — | `Reactive` |
@@ -83,7 +87,7 @@ The whole thing fits in a handful of files — read it, change it:
 
 | file | what |
 |---|---|
-| [`language.ts`](language.ts) | the language — grammar ([Ohm](https://ohmjs.org)), evaluator, prelude; tensors via [jax-js](https://github.com/ekzhang/jax-js), reactivity via [preact signals](https://preactjs.com/guide/v10/signals/) |
+| [`language.ts`](language.ts) | the language — grammar ([Ohm](https://ohmjs.org)), evaluator, prelude; tensors via Fluent's own engine ([`engine/`](engine)), reactivity via [preact signals](https://preactjs.com/guide/v10/signals/) |
 | [`client.tsx`](client.tsx) | the IDE — components, visualizers, Monaco editor, playground |
 | [`tour.ts`](tour.ts) | the tour — fifteen rooms, written in Fluent itself |
 | [`tests.ts`](tests.ts) | language tests (`bun test ./tests.ts`) |

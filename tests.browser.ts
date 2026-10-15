@@ -215,9 +215,8 @@ opt: sgd(0.1),
 })
 
 test("camera edge-detection demo produces non-flat output", async ({ page }) => {
-  // regression: camera pixels were int32, and jax-js integer arithmetic
-  // truncates (int ÷ 255 = 0, mean stays int) – the whole edge response
-  // silently collapsed to zeros and rendered as a flat heatmap
+  // camera pixels are float32 in 0–1: integer pixels would truncate the edge
+  // response to zeros and render a flat heatmap
   await open(page, `
 cam: Camera(320, 240),
 k: [[0, 1, 0], [1, -4, 1], [0, 1, 0]],
@@ -228,17 +227,26 @@ edges
   await expect(canvas).toBeVisible({ timeout: 20_000 })
   // the fake feed has structure, so the heatmap must span the colormap
   await expect(async () => {
-    const spread = await canvas.evaluate((el: HTMLCanvasElement) => {
-      const ctx = el.getContext("2d")
+    // what the screen shows – the heatmap may be a WebGPU canvas (GPU blit) or a 2-D one
+    const png = (await canvas.screenshot()).toString("base64")
+    const spread = await page.evaluate(async (b64) => {
+      const img = new Image()
+      img.src = `data:image/png;base64,${b64}`
+      await img.decode()
+      const copy = document.createElement("canvas")
+      copy.width = img.width
+      copy.height = img.height
+      const ctx = copy.getContext("2d")
       if (!ctx) { return -1 }
-      const { data } = ctx.getImageData(0, 0, el.width, el.height)
+      ctx.drawImage(img, 0, 0)
+      const { data } = ctx.getImageData(0, 0, copy.width, copy.height)
       let min = 255, max = 0
       for (let i = 0; i < data.length; i += 4) {
         min = Math.min(min, data[i]!)
         max = Math.max(max, data[i]!)
       }
       return max - min
-    })
+    }, png)
     expect(spread).toBeGreaterThan(10)
   }).toPass({ timeout: 15_000 })
 })
@@ -286,9 +294,8 @@ const typeInCell = async (page: Page, anchor: string, code: string) => {
 }
 
 test("a reactive cell: lifts inside CodeEvaluate survive slider drags", async ({ page }) => {
-  // regression: constants captured by a lift created inside another owned
-  // computed were swept by the outer arena ("Referenced tracer Tensor
-  // (disposed) freed" on replay; nested lifts errored immediately)
+  // constants captured by a lift created inside another computed survive replay,
+  // and nested lifts evaluate
   await open(page, `x: $(0.5),\ncode: $("(Slider(x), 0 ... 100*x)"),\nCodeEvaluate(code)`)
   await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
   await page.locator('input[type="range"]').first().fill("0.9")

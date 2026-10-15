@@ -1,10 +1,10 @@
 // End-to-end tests: Fluent source in, evaluated result out.
-// Runs the real pipeline – grammar → AST → evaluator → tensors – on the Wasm
-// backend (language.ts initializes jax-js on import). `bun test` runs this file.
+// Runs the real pipeline – grammar → AST → evaluator → tensors – on the engine's CPU
+// backend (Bun has no WebGPU). `bun test` runs this file.
 
 import { describe, test, expect } from "bun:test"
 import { Signal } from "@preact/signals-core"
-import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, beginTensorWatch, endTensorWatch, liveTensorCount, peakTensorCount, SignalCreate, DefaultEnvironment, type SyntaxTreeNode, type Value } from "./language"
+import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, SignalCreate, DefaultEnvironment, NoMatch, type SyntaxTreeNode, type Value } from "./language"
 import { EXAMPLES } from "./examples"
 import { TOUR_SOURCE } from "./tour"
 
@@ -16,7 +16,7 @@ const value = (source: string): any => {
   let v: any = run(source)
   while (v instanceof Signal) { v = v.value }
   if (v instanceof FluentVariable) { v = v.current }
-  if (v instanceof np.Array) { return v.ref.js() }
+  if (v instanceof np.Array) { return v.js() }
   return v
 }
 
@@ -200,8 +200,7 @@ describe("tensors", () => {
     expect(value("3.14")).toBeCloseTo(3.14, 2)
   })
   test("a literal index out of bounds is an Error, not a silent clamp", () => {
-    // jax-js `take` clamps out-of-range indices; a typo'd `a_2` on a 2-vector
-    // used to return a wrong element instead of erroring
+    // a typo'd `a_2` on a 2-vector errors instead of returning another element
     expect(run("a: [1, 2], a_2")).toBeInstanceOf(Error)
     expect(run("a: [1, 2], a_5")).toBeInstanceOf(Error)
     expect(run("a: [10, 20, 30], a_(-4)")).toBeInstanceOf(Error)
@@ -210,16 +209,14 @@ describe("tensors", () => {
     expect(value("t: [10, 20, 30], t_(argmax([0, 5, 2], 0))")).toBe(20)
   })
   test("a computed (non-literal) index out of bounds is an Error too", () => {
-    // a computed index isn't a seeded literal, so a cache-only check missed it
-    // and jax-js `take` read out-of-bounds memory silently
+    // a computed index is checked too, not only a literal one
     expect(run("t: [10, 20, 30], t_(argmax([0, 0, 5], 0) + 3)")).toBeInstanceOf(Error)
     expect(run("t: [10, 20, 30], t_(0 ÷ 0)")).toBeInstanceOf(Error) // NaN index
     // an in-bounds computed index still returns the right element
     expect(value("t: [10, 20, 30], t_(argmax([0, 5, 2], 0) + 1)")).toBe(30)
   })
-  test("argmax/argmin of an empty tensor is an Error, not jax-js's sentinel index", () => {
-    // np.argmax([]) hands back -2147483648, which only trips the gather bounds
-    // check downstream – error at the source instead
+  test("argmax/argmin of an empty tensor is an Error, not an index", () => {
+    // there is no index to return – error at the source, before any gather
     expect(run("argmax([])")).toBeInstanceOf(Error)
     expect(run("argmin([])")).toBeInstanceOf(Error)
     expect(run("argmax([], 0)")).toBeInstanceOf(Error)
@@ -304,9 +301,9 @@ describe("tensors", () => {
     // the number-lexing fix must not break real float literals
     expect(value("1.5 + 0.25")).toBeCloseTo(1.75, 5)
   })
-  test("new jax-js builtins: fft, meshgrid, einsum, topk, pad, repeat, flip, sinc", () => {
+  test("builtins: fft, meshgrid, einsum, topk, pad, repeat, flip, sinc", () => {
     // fft returns [real; imag] stacked; a period-4 wave peaks at bin 2
-    // (round: jax-js ≥0.1.18 leaves ~1e-16 residuals in the near-zero bins)
+    // (rounded: the near-zero bins carry f32 residuals)
     expect((value("f: fft([0, 1, 0, -1, 0, 1, 0, -1]), √(f_0^2 + f_1^2)") as number[]).map(x => Math.round(x))).toEqual([0, 0, 4, 0, 0])
     // meshgrid and topk return lists of tensors – pull one out with ListGet
     expect(value("ListGet(meshgrid(0 ..< 3, 0 ..< 2), 0)")).toEqual([[0, 1, 2], [0, 1, 2]])
@@ -322,8 +319,6 @@ describe("tensors", () => {
     expect(value("stack(0 ..< 3, 9)")).toEqual([[0, 1, 2], [9, 9, 9]])
   })
   test("comparisons are float 0/1 and compose with arithmetic", () => {
-    // jax-js bools promote through uint32, where weak negatives clamp to
-    // zero and subtraction silently no-ops – Fluent comparisons are APL 0/1
     expect(value("([1, 2, 3] = 1) + 10")).toEqual([11, 10, 10])
     expect(value("f: { x | (x = 1) ⌈ (x × 0) }, b: [1, 2, 3], sum(abs(f(b) - [1, 0, 0]))")).toBe(0)
   })
@@ -341,8 +336,7 @@ describe("tensors", () => {
     expect(value("roll([1, 2, 3, 4], 1)")).toEqual([4, 1, 2, 3])
     expect(value("roll([1, 2, 3, 4], -1)")).toEqual([2, 3, 4, 1])
     expect(value("roll([[1, 2], [3, 4]], 1, 0)")).toEqual([[3, 4], [1, 2]])
-    // regression: two rolls on different axes over a lazy nested-stack base
-    // (jax-js #146 – symbolic-division unsoundness, fixed in 0.1.18)
+    // two rolls on different axes over a lazy nested-stack base
     expect(value("roll(roll([[1, 2, 3], [4, 5, 6], [7, 8, 9]], 1, 0), 1, 1)"))
       .toEqual([[9, 7, 8], [3, 1, 2], [6, 4, 5]])
   })
@@ -375,10 +369,14 @@ describe("tensors", () => {
     expect(value("(Σ ⍤ 1)([[[1,2],[3,4]],[[5,6],[7,8]]])")).toEqual([[3, 7], [11, 15]])   // sum each row
   })
   test("inner product ∙ is matmul, and swaps its ring", () => {
-    expect(value("[[1,2],[3,4]] (+ ∙ ×) [[5,6],[7,8]]")).toEqual([[19, 22], [43, 50]])   // +∙× = matmul
-    expect(value("[1,2,3] (+ ∙ ×) [4,5,6]")).toBe(32)                                     // vectors → dot
-    expect(value("[[0,3,999],[3,0,1],[999,1,0]] (⌊ ∙ +) [[0,3,999],[3,0,1],[999,1,0]]"))  // min-plus, one relaxation
+    expect(value("[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]]")).toEqual([[19, 22], [43, 50]])   // ×∙+ = matmul
+    expect(value("[1,2,3] (× ∙ +) [4,5,6]")).toBe(32)                                     // vectors → dot
+    expect(value("[[0,3,999],[3,0,1],[999,1,0]] (+ ∙ ⌊) [[0,3,999],[3,0,1],[999,1,0]]"))  // min-plus, one relaxation
       .toEqual([[0, 3, 4], [3, 0, 1], [4, 1, 0]])
+  })
+  test("∙ runs in the order it reads: combine first, then reduce", () => {
+    expect(value("[1, 2] (× ∙ +) [3, 4]")).toBe(11)   // 1×3 + 2×4
+    expect(value("[1, 2] (+ ∙ ×) [3, 4]")).toBe(24)   // (1+3) × (2+4)
   })
   test("alongAxis applies any f along a named axis", () => {
     expect(value("(Σ alongAxis 0)([[1,2,3],[4,5,6]])")).toEqual([5, 7, 9])    // reducer down columns
@@ -497,9 +495,11 @@ describe("math functions", () => {
 })
 
 // Contracts any future compilation of reactive recomputes must preserve
-// (a per-application jit was tried and reverted: materializing every
-// computed boundary defeats jax-js's cross-expression lazy fusion)
 describe("reactive recomputes stay dynamic", () => {
+  test("a signal holding a signal reads through to its value", () => {
+    expect(value("a: $(1), b: $(0), b(a), b + 1")).toBe(2)
+    expect(value("a: $(1), b: $(0), b(a), c: b + 1, a(5), c")).toBe(6)
+  })
   test("repeated updates keep recomputing", () => {
     expect(value("x: $(2), y: (x × 3) + 1, x(4), x(5), y")).toBe(16)
   })
@@ -513,9 +513,9 @@ describe("reactive recomputes stay dynamic", () => {
     const scope = createScope()
     const out = evaluateGeneration(() =>
       evaluateSyntaxTreeNode(CodeParse("x: $(0), y: x + randn([4]), y"), scope)) as any
-    const first = JSON.stringify(out.value.ref.js())
+    const first = JSON.stringify(out.value.js())
     ;(scope["x"] as any).value = np.array(new Float32Array([1, NaN])).slice(0)
-    const second = JSON.stringify(out.value.ref.js())
+    const second = JSON.stringify(out.value.js())
     expect(first).not.toBe(second)
   })
   test("variable reads in lambda bodies see fresh assignments", () => {
@@ -579,7 +579,7 @@ describe("differentiation and optimization", () => {
     expect(value("∇(∇({ x | x^3 }))(2)")).toBe(12)
   })
   test("gradient of an elementwise function maps over vectors", () => {
-    // TFJS ∇ semantics: non-scalar outputs pull back a ones cotangent
+    // a non-scalar output pulls back a ones cotangent
     expect(value("∇({ x | x^2 })([1, 2, 3])")).toEqual([2, 4, 6])
   })
   test("sgd fits y = 3x end-to-end", () => {
@@ -689,8 +689,7 @@ describe("data slots (~~)", () => {
     expect(value(program)).toBe(24)
   })
   test(":= with a non-tensor keeps the variable's last good value", () => {
-    // deleting the demo's corpus made load() an Error; := stored it and the
-    // ⟳ drain died on Error.ref – the write must refuse instead
+    // deleting the demo's corpus makes load() an Error; := refuses to store it
     expect(run("x: ~~([1, 2]), x := unbound(3)")).toBeInstanceOf(Error)
     expect(value("x: ~~([1, 2]), r: x := unbound(3), sum(x)")).toBe(3)
   })
@@ -785,10 +784,10 @@ describe("operator arity", () => {
     expect(run("1 + a")).toBeInstanceOf(Error)
     expect(run("a + 1")).toBeInstanceOf(Error)
     expect(run("2 * b")).toBeInstanceOf(Error)
-    // and the message names the culprit, not jax-js's Symbol-coercion throw
+    // and the message names the culprit
     expect((run("1 * x") as Error).message).toContain("unknown name: x")
   })
-  test("a string or function in a numeric op errors by type, not jax-js's opaque throw", () => {
+  test("a string or function in a numeric op errors by type, not an opaque throw", () => {
     const strErr = run('"a" + "b"') as Error
     expect(strErr).toBeInstanceOf(Error)
     expect(strErr.message).toContain("a string")
@@ -842,20 +841,6 @@ describe("backtick code literals", () => {
   })
 })
 
-describe("resource lifetimes", () => {
-  test("watch(θ) releases its held reference when the generation retires", () => {
-    const scope = createScope()
-    const out = evaluateGeneration(() =>
-      evaluateSyntaxTreeNode(CodeParse("θ: ~([2]), w: watch(θ), w"), scope)) as Signal<np.Array>
-    out.value // materialize the watch's internal reference
-    const payload = (scope["θ"] as FluentVariable).current
-    expect(payload.refCount).toBeGreaterThan(1)
-    evaluateGeneration(() => null) // retire the generation above
-    flushRetirements()             // its teardown runs when the renderer flushes
-    expect(payload.refCount).toBe(0)
-  })
-})
-
 describe("apply and evaluate", () => {
   test("@ applies to a bare argument and spreads a list", () => {
     expect(value("double: { x | x × 2 }, double @ 5")).toBe(10)
@@ -903,17 +888,217 @@ describe("errors", () => {
   test("calling a non-function is an Error value", () => {
     expect(run("3(4)")).toBeInstanceOf(Error)
   })
-  test("cascade falls through on Error VALUES; a TraceBailout is never swallowed", () => {
-    // the protocol is return-an-Error-to-skip, not throw-to-skip
-    expect(value("cascade((guard(0, { 1 }), { 2 }))()")).toBe(2)   // guard false → skip
-    expect(value("cascade((guard(1, { 1 }), { 2 }))()")).toBe(1)   // guard true → win
-    // an unbound call is an Error value, so it legitimately falls through –
-    // this is correct behavior, not a swallowed crash
-    expect(value("cascade(({ missing() }, { 42 }))()")).toBe(42)
-    // a candidate that THROWS on an arg-mismatch (not returns an Error) still
-    // falls through to the next – TensorMaximum needs two operands, so on one
-    // it throws and cascade moves on to # (length)
-    expect(value("cascade((TensorMaximum, #))([3, 1, 2])")).toBe(3)
+  test("cascade skips a decline but stops at a failure", () => {
+    // the protocol is return-a-NoMatch-to-skip
+    expect(value("cascade((guard(0, { 1 }), { 2 }))()")).toBe(2)   // guard false → declines
+    expect(value("cascade((guard(1, { 1 }), { 2 }))()")).toBe(1)   // guard true → answers
+    // a candidate that FAILS has answered – with an Error – so a typo surfaces
+    // instead of the next candidate quietly winning
+    const failed = run("cascade(({ missing() }, { 42 }))()")
+    expect(failed).toBeInstanceOf(Error)
+    expect(failed).not.toBeInstanceOf(NoMatch)
+    // a native that THROWS has failed too: TensorMaximum needs two operands
+    expect(run("cascade((TensorMaximum, #))([3, 1, 2])")).toBeInstanceOf(Error)
+    // try is the explicit way to let a failure mean "not this one"
+    expect(value("cascade((try({ missing() }), { 42 }))()")).toBe(42)
+  })
+})
+
+describe("choosing: a candidate answers or declines", () => {
+  test("NoMatch declines; an Error is an answer and surfaces", () => {
+    expect(value("cascade(({ x | NoMatch }, { x | x + 1 }))(1)")).toBe(2)
+    const boom = run(`cond(guard(0, { 1 }), { Error("boom") })`) as Error
+    expect(boom.message).toBe("boom")
+    expect(boom).not.toBeInstanceOf(NoMatch)
+  })
+  test("a matched branch that breaks surfaces – it never falls through to a wrong answer", () => {
+    // the silent-wrong class: a shape error in the chosen branch used to read
+    // as "not me", and the fallback 0 came back looking like a result
+    expect(run("cond(guard(1, { [1, 2] + [1, 2, 3] }), { 0 })")).toBeInstanceOf(Error)
+    expect(run("cond(guard(1, { [1, 2] + [1, 2, 3] }), { 0 })")).not.toBeInstanceOf(NoMatch)
+  })
+  test("an exhausted choice declines, so choices nest", () => {
+    expect(value("cond({ cond(guard(0, { 1 })) }, { 7 })")).toBe(7)
+    expect(value("cascade((cascade((guard(0, { 1 }),)), { 7 }))()")).toBe(7)
+  })
+  test("a candidate that isn't a function is its own answer", () => {
+    expect(value("cond(guard(0, { 1 }), 0)")).toBe(0)
+    expect(value("cond(guard(1, 5), 0)")).toBe(5)
+    expect(value("cond(NoMatch, 3)")).toBe(3)
+    expect(run("cond(guard(typo, { 1 }), 0)")).toBeInstanceOf(Error)
+  })
+  test("try turns a failure into a decline, and passes arguments through", () => {
+    expect(value("cascade((try({ x | x_5 }), { x | -1 }))([1, 2])")).toBe(-1)
+    expect(value("cond(try({ 5 }), 0)")).toBe(5)
+    expect(value("cond(try({ cond(guard(0, { 1 })) }), 9)")).toBe(9)
+    expect(run("try({ missing() })()")).toBeInstanceOf(NoMatch)
+  })
+  test("Error carries a message and any value as its cause", () => {
+    const e = run(`Error("no real root", -4)`) as Error
+    expect(e.message).toBe("no real root")
+    expect((e.cause as np.Array).js()).toBe(-4)
+    expect((run(`Error("outer", Error("inner"))`) as Error).cause).toBeInstanceOf(Error)
+  })
+  test("a NoMatch used as data is a failure", () => {
+    expect(run("NoMatch + 1")).toBeInstanceOf(Error)
+    expect(run("NoMatch + 1")).not.toBeInstanceOf(NoMatch)
+    expect(run("cond({ NoMatch + 1 }, { 0 })")).not.toBeInstanceOf(NoMatch)
+  })
+  test("length's candidates decline what isn't theirs", () => {
+    expect(run("TensorLength((1, 2))")).toBeInstanceOf(NoMatch)
+    expect(run("ListLength([1, 2])")).toBeInstanceOf(NoMatch)
+    expect(run("StringLength(5)")).toBeInstanceOf(NoMatch)
+    expect(run("#(◌)")).toBeInstanceOf(NoMatch)
+  })
+  test("under ∇ a branch reads the value it is at – the derivative is of the branch taken", () => {
+    // used to be an Error ("cannot write state while being differentiated")
+    expect(value("r: { x | cascade((guard(x > 0, { x }), { 0 × x }))() }, ∇(r)(5)")).toBe(1)
+    expect(value("r: { x | cascade((guard(x > 0, { x }), { 0 × x }))() }, ∇(r)(-5)")).toBe(0)
+    expect(value("∇(∇({ x | cond(guard(x > 0, { x^3 }), { x }) }))(2)")).toBe(12)
+    expect(value("θ: ~([5]), r: { x | cond(guard(x > 0, { x }), { 0 × x }) }, opt: sgd(0.1), opt({ Σ(r(θ)^2) }), θ")).toEqual([4])
+  })
+})
+
+describe("an optimizer step that can't be honoured is a value, not a crash", () => {
+  test("a loss that writes a variable", () => {
+    // the eager fallback used to let the write bailout escape and kill the evaluator
+    const e = run("θ: ~([2]), 𝓛: { θ := [3], θ_0 ^ 2 }, opt: adam(0.1), opt(𝓛)") as Error
+    expect(e).toBeInstanceOf(Error)
+    expect(e.message).toContain("cannot change state")
+    expect(value("θ: ~([2]), 𝓛: { θ := [3], θ_0 ^ 2 }, opt: adam(0.1), opt(𝓛), θ")).toEqual([2])
+  })
+  test("a loss that branches on a variable trains", () => {
+    expect(value("θ: ~([2]), 𝓛: { (cond(guard(θ_0 > 0, { θ_0 }), { 0 }) - 6) ^ 2 }, opt: adam(0.1), opt(𝓛), opt(𝓛), θ_0"))
+      .toBeGreaterThan(2)
+  })
+  test("training through an inverse", () => {
+    // Kepler: E − e·sin E = M has no closed form; fit e through the inverse
+    const fit = `
+      orbit: { e, M | E: inverse({ E | E - (e × sin(E)) })(M), cos(E) - e },
+      M: linspace([0, 6], 12), obs: orbit(0.6, M),
+      θ: ~([0.3]), 𝓛: { μ((orbit(θ_0, M) - obs) ^ 2) }, opt: adam(0.05),
+      ({ s | opt(𝓛) } ⍣ 60)(0), θ_0`
+    expect(value(fit)).toBeCloseTo(0.6, 1)
+  }, 30000)
+})
+
+describe("⍣ power: counts, inverses, and fixed points", () => {
+  test("a negative count runs f backwards", () => {
+    expect(value("({ x | x^3 + x } ⍣ -1)(10)")).toBeCloseTo(2, 5)
+    expect(value("(sin ⍣ -2)(0.5)")).toBeCloseTo(Math.asin(Math.asin(0.5)), 5)
+    expect(value("({ x | x × 2 } ⍣ -3)(40)")).toBeCloseTo(5, 5)
+    expect(value("((1 ⊸ +) ⍣ 0)(7)")).toBe(7)
+  })
+  test("dyadic: x (f ⍣ n) y iterates f(x, ·), so −, ÷ and log are + × ^ backwards", () => {
+    expect(value("3 (+ ⍣ 4) 1")).toBe(13)
+    expect(value("2 (+ ⍣ -1) 8")).toBeCloseTo(6, 5)
+    expect(value("2 (× ⍣ -1) 8")).toBeCloseTo(4, 5)
+    expect(value("2 (^ ⍣ -1) 8")).toBeCloseTo(3, 5)
+    expect(value("3 ((⍨ ^) ⍣ -1) 8")).toBeCloseTo(2, 5)
+  })
+  test("≡ matches within float rounding, so a fixed point reached as a 2-cycle still stops", () => {
+    expect(value("1 ≡ 1.0000001")).toBe(1)
+    expect(value("1 ≡ 1.001")).toBe(0)
+    expect(value("[0.7390851, 2] ≡ [0.7390852, 2]")).toBe(1)
+    expect(value("0 ≡ 0.000001")).toBe(0)
+    expect(value("1 = 1.0000001")).toBe(0)   // = stays exact
+  })
+  test("a predicate runs f until predicate(new, old) holds", () => {
+    expect(value("(cos ⍣ ≡)(1)")).toBeCloseTo(0.739085, 5)
+    expect(value("({ x | x + 1 } ⍣ { a, b | a ≥ 100 })(0)")).toBe(100)
+    expect(value("W: [[0, 3, 999, 999], [3, 0, 1, 999], [999, 1, 0, 2], [999, 999, 2, 0]], (({ M | M (+ ∙ ⌊) W }) ⍣ ≡)(W)"))
+      .toEqual([[0, 3, 4, 6], [3, 0, 1, 3], [4, 1, 0, 2], [6, 3, 2, 0]])
+  })
+  test("a predicate that never holds is an Error, not a frozen tab", () => {
+    expect((run("({ x | x + 1 } ⍣ { a, b | 0 })(0)") as Error).message).toContain("didn't hold")
+  })
+  test("the bottom of a valley is the inverse of its slope at zero", () => {
+    expect(value("(∇({ x | (x - 3)^2 + 1 }) ⍣ -1)(0)")).toBeCloseTo(3, 5)
+  })
+  test("∇ flows through ⍣", () => {
+    expect(value("∇({ x | ({ y | y × x } ⍣ 3)(1) })(2)")).toBeCloseTo(12, 4)
+  })
+  test("the loop alone can't run backwards without an inverter", () => {
+    expect(run("FunctionRepeat({ x | x }, -1)")).toBeInstanceOf(Error)
+  })
+})
+
+describe("inverse and ⍢ under", () => {
+  test("solve finds the x near the seed, or says there is none", () => {
+    expect(value("solve(cos, 0, 1)")).toBeCloseTo(Math.PI / 2, 5)
+    const none = run("solve(cos, 0, 0)") as Error
+    expect(none).toBeInstanceOf(Error)
+    expect(none).not.toBeInstanceOf(NoMatch)
+    expect(none.message).toContain("no solution near the seed")
+    expect(value("inverse({ x | x^3 + x })(10)")).toBeCloseTo(2, 5)
+    expect(value("2 inverse(^) 8")).toBeCloseTo(3, 5)
+    expect(value("inverse(log)([1, 2, 3])")).toEqual([Math.E, Math.E ** 2, Math.E ** 3].map((x) => expect.closeTo(x, 4)))
+  })
+  test("a failed seed falls through to another with try", () => {
+    expect(value("cond(try({ solve(cos, 0, 0) }), { solve(cos, 0, 1) })")).toBeCloseTo(Math.PI / 2, 5)
+  })
+  test("inverse starts each element from whichever of y, 0 and 1 lands closest", () => {
+    expect(value("(exp ⍣ -1)(100)")).toBeCloseTo(Math.log(100), 4)            // exp(100) overflows: starts at 1
+    expect(value("(cos ⍣ -1)(0)")).toBeCloseTo(Math.PI / 2, 5)                // cos is flat at 0: starts at 1
+    expect(value("(log ⍣ -1)(-5)")).toBeCloseTo(Math.exp(-5), 6)              // log(-5) is NaN: starts at 1
+    expect(value("(sin ⍣ -1)([0.5, -0.9])")).toEqual([expect.closeTo(Math.asin(0.5), 5), expect.closeTo(Math.asin(-0.9), 5)])
+    expect(run("(square ⍣ -1)(-4)")).toBeInstanceOf(Error)                     // no real root, from anywhere
+  })
+  test("school math is one idea: do it in the right space, then come back", () => {
+    expect(value("3 (square ⍢ +) 4")).toBeCloseTo(5, 5)                         // Pythagoras
+    expect(value("6 (reciprocal ⍢ +) 3")).toBeCloseTo(2, 5)                     // resistors in parallel
+    expect(value("2 (log ⍢ +) 8")).toBeCloseTo(16, 4)                           // the slide rule
+    expect(value("(log ⍢ μ)([1, 2, 4, 8])")).toBeCloseTo(2 * Math.SQRT2, 5)     // geometric mean
+    expect(value("(reciprocal ⍢ μ)([30, 60])")).toBeCloseTo(40, 4)              // there at 30, back at 60
+    expect(value("(square ⍢ μ)([3, 4])")).toBeCloseTo(Math.sqrt(12.5), 5)      // root mean square
+    expect(value("(exp ⍢ Σ)([1, 2, 3])")).toBeCloseTo(Math.log(Math.exp(1) + Math.exp(2) + Math.exp(3)), 4)
+    expect(value("0.5 (atanh ⍢ +) 0.5")).toBeCloseTo(0.8, 5)                   // relativistic velocities
+    expect(value("(log1p ⍢ μ)([0.5, -0.5])")).toBeCloseTo(Math.sqrt(0.75) - 1, 5)
+    expect(value("((1 ⊸ -) ⍢ Π)(1/6 ⧉ 4)")).toBeCloseTo(1 - (5 / 6) ** 4, 5)   // a six in four rolls
+  })
+  test("⍢ keeps each element's branch when f keeps the shape", () => {
+    expect(value("(square ⍢ (× ⟜ 4))([-1, 2])")).toEqual([expect.closeTo(-2, 5), expect.closeTo(4, 5)])
+  })
+  test("⍢ laws: composition, and Under is Over then the inverse", () => {
+    expect(value("2 (log ⍢ (square ⍢ +)) 3")).toBeCloseTo(value("2 ((log ∘ square) ⍢ +) 3"), 4)
+    expect(value("3 ((square ⍥ +) ∘ (square ⍣ -1)) 4")).toBeCloseTo(value("3 (square ⍢ +) 4"), 5)
+  })
+  test("∇ flows through ⍢", () => {
+    expect(value("∇({ x | x (square ⍢ +) 4 })(3)")).toBeCloseTo(0.6, 4)
+    const g = value("∇(log ⍢ μ)([1, 2, 4, 8])") as number[]
+    g.forEach((v, i) => expect(v).toBeCloseTo(2 * Math.SQRT2 / (4 * [1, 2, 4, 8][i]!), 4))
+  })
+  test("the new doc cards read as written", () => {
+    // a quote that slips out of the prelude template literal breaks the card's
+    // string silently – the example then evaluates to garbage, not an error
+    const card = (name: string) => (createScope()[name] as any).__meta__
+    expect(card("Error").example).toBe(`cond(guard(x ≥ 0, { √(x) }), { Error("no real root", x) })`)
+    expect(card("⍢").signature).toBe("x (g ⍢ f) y")
+    expect(card("⍣").example).toContain("2 (^ ⍣ -1) 8 = 3")
+    expect(card("try").signature).toBe("try({ value })")
+    expect(card("solve").signature).toBe("solve(g, y, seed)")
+  })
+  test("⍢ edits the part a selection picks, and keeps the rest", () => {
+    expect(value("({ x | x_[1, 2, 3] } ⍢ sort)([9, 4, 1, 3, 0])")).toEqual([9, 1, 3, 4, 0])
+    expect(value("diagonal: { M | Σ(M × 𝕀(#(M)), 1) }, (diagonal ⍢ (× ⟜ 0))([[1, 2, 3], [4, 5, 6], [7, 8, 9]])"))
+      .toEqual([[0, 2, 3], [4, 0, 6], [7, 8, 0]])
+    expect(value("(reverse ⍢ (+ ⟜ [100, 0, 0]))([1, 2, 3])")).toEqual([1, 2, 103])
+    expect(value("({ M | M_0 } ⍢ normalize)([[3, 4], [1, 1]])")).toEqual([[expect.closeTo(0.6, 5), expect.closeTo(0.8, 5)], [1, 1]])
+    // dyadic: the right argument is what gets edited
+    expect(value("[10, 20, 30] ({ x | x_[0, 2] } ⍢ +) [1, 2, 3]")).toEqual([11, 2, 33])
+  })
+  test("an edit nothing can satisfy is an Error, not an average", () => {
+    expect(run("({ x | x_[0, 0] } ⍢ { v | [5, 7] })([1, 2])")).toBeInstanceOf(Error)
+  })
+  test("∇ flows through an edit", () => {
+    expect(value("∇({ M | Σ((({ x | x_[1, 2] } ⍢ (× ⟜ 10))(M)) × [1, 2, 3, 4]) })([1, 1, 1, 1])")).toEqual([1, 20, 30, 4])
+  })
+  test("≡ answers once for the whole value", () => {
+    expect(value("[1, 2] ≡ [1, 2]")).toBe(1)
+    expect(value("[1, 2] ≡ [1, 3]")).toBe(0)
+    expect(value("[1, 1] ≡ 1")).toBe(0)
+    expect(value(`(1, "a") ≡ (1, "a")`)).toBe(1)
+    expect(value(`"ab" ≡ "ab"`)).toBe(1)
   })
 })
 
@@ -933,9 +1118,11 @@ describe("metadata arguments are strict", () => {
     expect(run("0 ..< nope")).toBeInstanceOf(Error)
     expect(run("linspace(5, 3)")).toBeInstanceOf(Error)   // range must be [start, stop]
   })
-  test("a guard on a typo'd condition is not silently truthy", () => {
-    // the broken guard errors; cascade moves on to the next candidate
-    expect(value("cascade((guard(typo, { 1 }), { 2 }))()")).toBe(2)
+  test("a guard on a typo'd condition is a failure, not a quiet no", () => {
+    // the broken guard is an Error among the candidates – it surfaces
+    const v = run("cascade((guard(typo, { 1 }), { 2 }))()") as Error
+    expect(v).toBeInstanceOf(Error)
+    expect(v.message).toContain("typo")
   })
   test("valid scalar and vector axes still work", () => {
     expect(value("sum([[1, 2], [3, 4]], 0)")).toEqual([4, 6])
@@ -964,46 +1151,33 @@ describe("null is a value", () => {
   })
 })
 
-// Leak watch: count Fluent-tracked tensors still holding a device buffer
-// (via the public .refCount) across generations. jax-js's own buffer table is
-// private, so this Fluent-side signal is the reliable one.
-describe("leak watch", () => {
-  const gen = (code: string) =>
-    evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(code), createScope()))
-
-  test("re-evaluating frees the previous generation's tensors", () => {
-    beginTensorWatch()
-    try {
-      gen("a: (0 ..< 500), Σ(a^2)")           // generation 1 – allocates a range + squares
-      const held = liveTensorCount()
-      expect(held).toBeGreaterThan(0)
-      gen("1 + 1")                            // generation 2 supersedes generation 1
-      flushRetirements()                      // the renderer's post-frame flush
-      expect(liveTensorCount()).toBeLessThan(held)
-    } finally { endTensorWatch() }
+// What crosses time – a variable's value, a signal's, the parameters an optimizer
+// steps – is settled into a leaf. Otherwise every later graph, and every ∇ walk over
+// it, drags the whole history along: a 60-step fit took minutes, a ⟳ demo overflowed.
+describe("values that cross time carry no history", () => {
+  const size = (v: unknown) => np.graphSize((v instanceof FluentVariable ? v.current : v) as np.Array)
+  test("a variable assigned in a loop stays a leaf", () => {
+    const scope = createScope()
+    evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse("θ: ~([1, 2]), ({ s | θ := θ × 2 + 1 } ⍣ 50)(0)"), scope))
+    expect(size(scope["θ"])).toBe(1)
   })
-
-  test("a throwing re-evaluation still frees the previous generation", () => {
-    // regression for the leak-on-error hole: the previous generation must be
-    // retired even when building the next one throws
-    beginTensorWatch()
-    try {
-      gen("a: (0 ..< 500), Σ(a^2)")
-      const held = liveTensorCount()
-      expect(() => evaluateGeneration(() => { throw new Error("boom") })).toThrow("boom")
-      flushRetirements()
-      expect(liveTensorCount()).toBeLessThan(held)
-    } finally { endTensorWatch() }
+  test("a signal written in a loop stays a leaf", () => {
+    const scope = createScope()
+    evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse("s: $([0, 1]), ({ i | s(s() + 1) } ⍣ 50)(0)"), scope))
+    expect(size((scope["s"] as Signal<unknown>).peek())).toBe(1)
   })
-
-  test("⍣ holds O(1) live tensors across iterations, not O(n)", () => {
-    beginTensorWatch()
-    try {
-      // 300 iterations must not retain ~300 live tensors – each step used to
-      // accumulate in a single arena freed only when the whole expression swept
-      gen("((1 ⊸ +) ⍣ 300)(0)")
-      expect(peakTensorCount()).toBeLessThan(30)
-    } finally { endTensorWatch() }
+  test("an optimizer's parameters stay leaves however long it trains", () => {
+    const scope = createScope()
+    evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse("θ: ~([0, 0]), opt: adam(0.1), ({ s | opt({ Σ((θ - [1, 2])^2) }) } ⍣ 30)(0)"), scope))
+    expect(size(scope["θ"])).toBe(1)
+  })
+  test("a computed value is its own: a later assignment doesn't reach it", () => {
+    expect(value("θ: ~(5), s: Σ(θ), θ := 7, s")).toBe(5)
+    expect(value("θ: ~([[1, 2]]), m: moveaxis(θ, 1, 1), θ := [[0, 0]], m")).toEqual([[1, 2]])
+  })
+  test("∇ leaves what its body read untouched", () => {
+    expect(value("θ: ~([1, 2]), c: [3, 4], ∇({ z | Σ(z × c × θ) })([1, 1]), θ")).toEqual([1, 2])
+    expect(value("θ: ~([1, 2]), c: [3, 4], ∇({ z | Σ(z × c × θ) })([1, 1]), c")).toEqual([3, 4])
   })
 })
 
@@ -1082,7 +1256,7 @@ describe("cond (eager variadic cascade)", () => {
     expect(value("fact: { n | cond(guard(n = 0, { 1 }), { n × fact(n - 1) }) }, fact(5)")).toBe(120)
     expect(value("cond(guard(0, { 1 }), { 42 })")).toBe(42)     // guard fails → default
     expect(value("cond(guard(1, { 99 }), { nope })")).toBe(99)  // matched → the unbound else never runs
-    expect(run("cond(guard(0, { 1 }))")).toBeInstanceOf(Error)  // nothing matched
+    expect(run("cond(guard(0, { 1 }))")).toBeInstanceOf(NoMatch)  // nothing answered: cond declines
   })
 })
 
@@ -1100,7 +1274,7 @@ describe("gallery examples smoke suite", () => {
   // too: a spectrum demo indexes fft(mic()) as [real; imag], which only works
   // on a waveform of the length the demo asked for.
   const at = (v: unknown) => { const s = SignalCreate(v as any); return s }
-  const num = (v: Value | undefined, fallback: number) => { try { return Number((v as np.Array).ref.js()) } catch { return fallback } }
+  const num = (v: Value | undefined, fallback: number) => { try { return Number((v as np.Array).js()) } catch { return fallback } }
   const stubs: Record<string, Value> = {}
   for (const k of ["Button", "Checkbox", "Grid", "ImageUpload", "Layers", "Point2D", "Trail",
     "Slider", "Scrubber", "Text", "TextEditor", "Code", "CodeEditor", "Print", "PrettyPrint",
@@ -1111,9 +1285,12 @@ describe("gallery examples smoke suite", () => {
   stubs["MousePosition"] = (() => at(np.zeros([2]))) as Value
   stubs["Time"] = (() => at(np.array(0))) as Value
   stubs["SampleRate"] = (() => np.array(48000)) as Value        // a plain number, not a signal
-  for (const k of ["LoadTensorFromImageUrl", "LoadSafeTensorFromURL", "Fetch"]) {
+  for (const k of ["LoadTensorFromImageUrl", "Fetch"]) {
     stubs[k] = (() => np.zeros([16, 16])) as Value
   }
+  // the real safetensors loader is a signal holding an empty list until its
+  // fetch resolves – headless it never does, so the demos see "still loading"
+  stubs["LoadSafeTensorFromURL"] = (() => at([])) as Value
   extendEnvironment(stubs)
 
   // Force every value the example binds, following signals, variables and
@@ -1130,7 +1307,7 @@ describe("gallery examples smoke suite", () => {
         if (v instanceof Error) { return `${path}: ${v.message}` }
         if (v instanceof Signal) { return walk(v.value, `${path}()`, depth + 1) }
         if (v instanceof FluentVariable) { return walk(v.current, path, depth + 1) }
-        if (v instanceof np.Array) { v.ref.js(); return null }
+        if (v instanceof np.Array) { v.js(); return null }
         if (Array.isArray(v)) {
           for (let i = 0; i < v.length; i++) { const bad = walk(v[i], `${path}[${i}]`, depth + 1); if (bad) { return bad } }
         }
@@ -1153,30 +1330,6 @@ describe("gallery examples smoke suite", () => {
     })
   }
 
-  // The IDE re-evaluates on every keystroke, so anything a demo strands per
-  // evaluation is stranded per keystroke. Assert the live count RETURNS TO
-  // where it was, not merely that it shrank: a relative assertion passes
-  // while almost everything leaks, and this is the shape that caught signals
-  // never freeing their payload (25 of 51 demos leaked a buffer per
-  // evaluation) and ops stranding a reference when they throw.
-  test("no gallery example strands a tensor per evaluation", () => {
-    const leaks: string[] = []
-    for (const [name, src] of Object.entries(EXAMPLES)) {
-      const source = (src as string).trim()
-      beginTensorWatch()
-      try {
-        const counts: number[] = []
-        for (let i = 0; i < 3; i++) {
-          evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope()))
-          flushRetirements()
-          counts.push(liveTensorCount())
-        }
-        // compare the last two: the first evaluation seeds shared constants
-        if (counts[2]! > counts[1]!) { leaks.push(`${name} +${counts[2]! - counts[1]!} [${counts.join(", ")}]`) }
-      } finally { endTensorWatch() }
-    }
-    expect(leaks).toEqual([])
-  })
 })
 
 // A name that resolves to nothing is the shape almost every language change
@@ -1291,7 +1444,7 @@ describe("lifts created inside owned computeds (reactive cells)", () => {
   const cellValue = (v: any): any => {
     let x: any = v
     while (x instanceof Signal) { x = x.value }
-    if (x instanceof np.Array) { return x.ref.js() }
+    if (x instanceof np.Array) { return x.js() }
     return x
   }
 
@@ -1340,7 +1493,8 @@ describe("error messages carry context", () => {
     expect(v).toBeInstanceOf(Error)
     expect(v.message).toContain("no overload matched")
     expect(v.message).toContain("a number")
-    expect((v.cause as Error).message).toContain("Guard condition not met")
+    expect(v).toBeInstanceOf(NoMatch)
+    expect((v.cause as Error).message).toContain("condition doesn't hold")
   })
   test("a failing application inside a cell says which application failed", () => {
     const scope = createScope()

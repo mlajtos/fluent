@@ -104,7 +104,7 @@ nrm: { x | (x - min(x)) ÷ (max(x) - min(x)) },   ; scales an array to 0..1
 )
 `,
   "inner-product": `
-; ∙ Inner product — matrix multiply is just \`+ ∙ ×\`: reduce with +, combine with ×.
+; ∙ Inner product — matrix multiply is just \`× ∙ +\`: multiply, then add up.
 ; Keep the contraction, swap the RING, and the SAME operation becomes something
 ; else. One combinator, every semiring — arithmetic, shortest paths, reachability.
 
@@ -113,18 +113,69 @@ B: [[5, 6], [7, 8]],
 
 ; a weighted graph — 999 stands in for "no edge"
 W: [[0, 3, 999, 999], [3, 0, 1, 999], [999, 1, 0, 2], [999, 999, 2, 0]],
-hop: { M | M (⌊ ∙ +) W },        ; one min-plus relaxation = allow one more edge
+hop: { M | M (+ ∙ ⌊) W },        ; one min-plus relaxation = allow one more edge
 
 (
   Text("# ∙ One product, every semiring"),
-  Text("**A (+ ∙ ×) B** — ordinary matrix multiply (reduce +, combine ×):"),
-  A (+ ∙ ×) B,
+  Text("**A (× ∙ +) B** — ordinary matrix multiply (multiply, then add up):"),
+  A (× ∙ +) B,
   Text("**edge weights** W (999 = no edge):"),
   W,
-  Text("**W (⌊ ∙ +) W** — swap to min-plus: one round of shortest-path relaxation:"),
-  W (⌊ ∙ +) W,
-  Text("**all-pairs shortest paths** — iterate min-plus with ⍣ until it converges:"),
-  (hop ⍣ 3)(W),
+  Text("**W (+ ∙ ⌊) W** — swap to min-plus (add the legs, keep the shortest): one round of relaxation:"),
+  W (+ ∙ ⌊) W,
+  Text("**all-pairs shortest paths** — iterate min-plus with ⍣ until nothing changes:"),
+  (hop ⍣ ≡)(W),
+)
+`,
+  "under": `
+; ⍢ Under – the simple thing, in the right space.
+;   x (g ⍢ f) y  =  g⁻¹(f(g(x), g(y)))
+; Fluent can differentiate any smooth g, so it can also run g backwards:
+; Newton's method, with ∇ supplying the slope. No table of inverses.
+; And when g picks out a part of x, f edits just that part.
+
+dB: { x | 10 ^ (x ÷ 10) },
+logit: { p | log(p ÷ (1 - p)) },
+(∥): reciprocal ⍢ +,
+
+target: $(3),
+row: { name, formula, value | (Text(name), Text(formula), value) },
+M: [[3, 1, 4], [1, 5, 9], [2, 6, 5]],
+diagonal: { m | Σ(m × 𝕀(#(m)), 1) },
+
+(
+  Text("# ⍢ Under – the simple thing, in the right space"),
+  Grid(3)(
+    row("Pythagoras",                 "√(x² + y²)",          3 (square ⍢ +) 4         ),
+    row("resistors in parallel",      "1 ÷ (1/x + 1/y)",     6 ∥ 3                    ),
+    row("the slide rule",             "x · y",               2 (log ⍢ +) 8            ),
+    row("two 10% raises",             "(1+x)(1+y) − 1",      0.1 (log1p ⍢ +) 0.1      ),
+    row("+50% then −50%, on average", "√((1+x)(1+y)) − 1",   (log1p ⍢ μ)([0.5, -0.5]) ),
+    row("there at 30, back at 60",    "harmonic mean",       (reciprocal ⍢ μ)([30, 60])),
+    row("geometric mean",             "ⁿ√(x · y · …)",       (log ⍢ μ)([1, 2, 4, 8])  ),
+    row("root mean square",           "√(mean of x²)",       (square ⍢ μ)([3, 4])     ),
+    row("60 dB + 60 dB",              "10 log(10⁶ + 10⁶)",   60 (dB ⍢ +) 60           ),
+    row("½c ⊕ ½c, relativistically",  "(u + v) ÷ (1 + uv)",  0.5 (atanh ⍢ +) 0.5      ),
+    row("a six in four rolls",        "1 − (1 − p)⁴",        ((1 ⊸ -) ⍢ Π)(1/6 ⧉ 4)   ),
+    row("two 80% witnesses",          "odds multiply",       0.8 (logit ⍢ +) 0.8      ),
+    row("smooth max",                 "log(Σ eˣ)",           (exp ⍢ Σ)([1, 2, 3])     ),
+  ),
+  Text("# ⍣ -1 – run any function backwards"),
+  Grid(3)(
+    row("x³ + x = 10",                "no formula needed",   ({ x | x^3 + x } ⍣ -1)(10)),
+    row("xˣ = 3",                     "Lambert W, normally", ({ x | x^x } ⍣ -1)(3)     ),
+    row("2 + ? = 8, 2 × ? = 8, 2 ^ ? = 8", "−, ÷, log",      [2 (+ ⍣ -1) 8, 2 (× ⍣ -1) 8, 2 (^ ⍣ -1) 8]),
+    row("bottom of (x − 3)² + 1",     "where the slope is 0", (∇({ x | (x - 3)^2 + 1 }) ⍣ -1)(0)),
+    row("press cos until it stops",   "the Dottie number",   (cos ⍣ ≡)(1)              ),
+  ),
+  Grid([2, 5])(Text("**drag the answer, xˣ =**"), Scrubber(target, 0.05)),
+  Grid([2, 5])(Text("**and x follows:**"), ({ x | x^x } ⍣ -1)(target)),
+  Text("# ⍢ on a part – f edits just what g picks"),
+  Grid(3)(
+    row("sort only the middle",       "x_[1, 2, 3]",         ({ x | x_[1, 2, 3] } ⍢ sort)([9, 4, 1, 3, 0])),
+    row("zero the diagonal",          "diagonal",            (diagonal ⍢ (× ⟜ 0))(M)       ),
+    row("scale one row to length 1",  "the first row",       ({ m | m_0 } ⍢ normalize)(M)  ),
+  ),
 )
 `,
   "lerp": `
@@ -456,8 +507,8 @@ opt: adam(0.06),
 { opt(𝓛) } ⟳ 100000,
 
 ; the distance field as a heatmap, recomputed as the anchors move. Read the
-; anchors to CONCRETE tensors first (av/bv/cv) – reading a signal inside the ⊗
-; lambda would lift the trace and leak a tracer.
+; anchors to CONCRETE tensors first (av/bv/cv), so the ⊗ lambda works on plain
+; tensors.
 g: linspace([-2, 2], n),
 field: $({ av: a(), bv: b(), cv: c(),
   Fc: { q | dist(q, av) + dist(q, bv) + dist(q, cv) },

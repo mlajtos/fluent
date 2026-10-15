@@ -6,20 +6,13 @@ import { grammar, type ActionDict } from "ohm-js";
 import { toAST as ohmToAST } from "ohm-js/extras";
 import { signal, Signal, computed, effect } from "@preact/signals-core"
 import dedent from "ts-dedent";
-import { numpy as np, nn, lax, random, tree, vjp as jaxVjp, valueAndGrad, jit as jaxJit, init as initBackends, defaultDevice } from "@jax-js/jax"
-import * as optax from "@jax-js/optax"
+import { numpy as np, nn, lax, random, tree, vjp, valueAndGrad, init, gpuDrained } from "./engine/jax.ts"
+import * as optax from "./engine/optax.ts"
 
-// jax-js compiles kernels per backend – initialize before the first array op.
-// Prefer WebGPU, fall back to Wasm (bun, older browsers), then WebGL.
-const BACKEND_PREFERENCE = ["webgpu", "wasm", "webgl", "cpu"] as const
-const availableBackends = await initBackends()
-defaultDevice(BACKEND_PREFERENCE.find((d) => availableBackends.includes(d)) ?? availableBackends[0])
+// the engine computes on WebGPU where the platform has it, on the CPU everywhere else
+await init()
 
-// np.Array extends an abstract Tracer class; inside grad()/jit() the evaluator
-// sees tracers instead of concrete arrays. Fluent treats both as tensors –
-// only concrete arrays participate in arena ownership below.
-const Tracer = Object.getPrototypeOf(np.Array.prototype).constructor as abstract new () => np.Array
-const isTensor = (v: unknown): v is np.Array => v instanceof Tracer
+const isTensor = (v: unknown): v is np.Array => v instanceof np.Array
 
 
 const OPERATOR_RANGES: Record<string, [string, string]> = {
@@ -194,21 +187,32 @@ type SyntaxTreeNode =
   | { type: "Error", content: string, origin: Origin }
   | { type: "Code", content: { value: SyntaxTreeNode }, origin: Origin }
 
+// 1-based line and column of an offset, as ohm counts them (a carriage return takes no
+// column), found by binary search over the document's line starts – the parser asks
+// twice per node, and a scan from the top made a parse quadratic
+let lineStarts: { text: string, starts: number[] } = { text: "", starts: [0] }
+const lineAndColumn = (text: string, offset: number): { line: number, column: number } => {
+  if (lineStarts.text !== text) {
+    const starts = [0]
+    for (let i = 0; i < text.length; i++) { if (text[i] === "\n") { starts.push(i + 1) } }
+    lineStarts = { text, starts }
+  }
+  const starts = lineStarts.starts
+  let lo = 0, hi = starts.length - 1
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid]! <= offset) { lo = mid } else { hi = mid - 1 } }
+  let column = 1
+  for (let i = starts[lo]!; i < offset; i++) { if (text[i] !== "\r") { column++ } }
+  return { line: lo + 1, column }
+}
+
 function getLocationOrigin(node: any): Origin {
-  const from = node.source.collapsedLeft().getLineAndColumn();
-  const to = node.source.collapsedRight().getLineAndColumn();
+  const document: string = node.source.sourceString
 
   return {
     source: node.source.contents,
-    document: node.source.sourceString,
-    start: {
-      line: from.lineNum,
-      column: from.colNum,
-    },
-    end: {
-      line: to.lineNum,
-      column: to.colNum,
-    }
+    document,
+    start: lineAndColumn(document, node.source.startIdx),
+    end: lineAndColumn(document, node.source.endIdx),
   }
 }
 
@@ -602,8 +606,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "Number") {
-    const value = track(np.array(node.content.value))
-    syncReadCache.set(value, node.content.value)
+    const value = np.array(node.content.value)
     setOrigin(value, node.origin)
     return value
   }
@@ -613,28 +616,10 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     const localEnv = Object.create(env) as CurrentScope
     const values = node.content.value.map((e) => evaluateSyntaxTreeNode(e, localEnv))
     if (values.length === 0) {
-      const value = track(np.array([]))
+      const value = np.array([])
       setOrigin(value, node.origin)
       return value
     }
-
-    // Literal fast path: when every element's JS value is already known
-    // (number literals, scalar bindings, nested literals – all pre-seeded),
-    // build the array straight from data and seed the composite too. The
-    // composite then stays readable inside a jit trace – slice bounds and
-    // reshape shapes like [0, 1] or [1, T] must not demote the compiled
-    // optimizer step – and display reads skip the device round-trip.
-    // (Elements are still lazy symbols here – resolve them first.)
-    try {
-      const resolved = values.map((v) => reify(v, localEnv))
-      if (resolved.every((v) => typeof v === "object" && v !== null && syncReadCache.has(v))) {
-        const data = resolved.map((v) => syncReadCache.get(v as object))
-        const value = track(np.array(data as number[]))
-        syncReadCache.set(value, data)
-        setOrigin(value, node.origin)
-        return value
-      }
-    } catch { /* unbound symbol, ragged or non-numeric – stack instead */ }
 
     const value = safeApply(TensorStack, values, localEnv)
     setOrigin(value, node.origin)
@@ -739,15 +724,14 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
 }
 
 np.Array.prototype.toString = function () {
-  if (this.refCount === 0) { return "Tensor (disposed)" }
   if (this.size <= 32) { return `${getAsSyncList(this)}` }
   return `Tensor [${this.shape.join(" ")}]`
 }
 
-// String coercion (`${x}`, String(x)) goes through Symbol.toPrimitive, which
-// jax-js only defines for scalars – route it through the printer instead.
+// String coercion (`${x}`, String(x)) goes through Symbol.toPrimitive: a scalar asked
+// for a number gives its value, anything else prints.
 ;(np.Array.prototype as any)[Symbol.toPrimitive] = function (hint: string) {
-  if (hint === "number" && this.ndim === 0 && this.refCount > 0) { return this.ref.item() }
+  if (hint === "number" && this.ndim === 0) { return this.item() }
   return this.toString()
 }
 
@@ -789,48 +773,29 @@ const reify = (v: Value, env: CurrentScope): Value => {
   return v
 }
 
-// MARK: Ownership
-// jax-js arrays are reference-counted with move semantics: operations consume
-// their array arguments, `.ref` borrows one. Fluent's convention on top:
-//
-//  - Wrappers BORROW – every op call site takes `.ref`, so arguments stay
-//    owned by whatever holds them (scope, list, signal, arena). A failing
-//    candidate in a cascade can therefore retry with the same arguments.
-//  - Every array a wrapper creates is TRACKED in the active arena. When the
-//    arena closes (one operator application), arrays unreachable from its
-//    result are disposed; survivors bubble up to the enclosing arena, or to
-//    the evaluation generation at the top level. This replaces tf.tidy().
-//  - Long-lived containers (signals, variables) OWN one reference of their
-//    payload and release it on update.
+// MARK: Values
+// A tensor is an engine value: an immutable graph node, computed when something reads it,
+// its buffers owned by the engine. What crosses time – a variable's value, a signal's –
+// is settled into a leaf, so it never drags its history along.
 
-// While a lifted application is being traced by jit (see makeLiftedApply),
-// reads of outside state – signals, variables, the RNG – would be frozen
-// into the compiled program. Reads mark the trace non-replayable (the traced
-// result is still valid this round); writes abort it outright.
-class TraceBailout extends Error {}
-let tracingActive = false
-let traceTouchedState = false
+// A differentiated body can't change state: ∇ would have to undo the write along every
+// direction it takes. A write while differentiating throws this; ∇ and the optimizer
+// turn it into an Error value. It is control flow, so choosing passes it through.
+class StateWrite extends Error {}
+let differentiating = false
 
-// Borrow a value for use in an op: +1 on tensors, unwrap variables. This is
-// the boundary between Fluent's dynamic values and jax-js – ill-typed
-// arguments flow through and the op's validation error becomes an Error value.
-const borrow = (v: any): any => {
-  if (v instanceof FluentVariable) {
-    // a variable holding a tracer is a swapped-in parameter of the ongoing
-    // trace (optimizer step) – only reading a CONCRETE value freezes state
-    return v.current.ref
-  }
-  if (isTensor(v)) { return v.ref }
+// An op's operand: a variable's value or a tensor. An unbound name or a list fails here,
+// with the name or the fix in the message.
+const operand = (v: any): any => {
+  if (v instanceof FluentVariable) { return v.current }
   if (typeof v === "symbol") {
-    // an unbound name reached a numeric op (e.g. `1 * x`): fail with the name,
-    // not jax-js's opaque "Cannot convert a Symbol value to a string". The bare
+    // an unbound name reached a numeric op (e.g. `1 * x`): fail with the name. The bare
     // symbol still flows through as a value elsewhere – only coercion errors.
     throw new Error(`unknown name: ${v.description ?? Symbol.keyFor(v) ?? String(v)}`)
   }
   if (Array.isArray(v)) {
-    // Never silently coerce a list into a tensor: `Σ((1, 2, 3))` used to return
-    // the list unreduced, `(1, 2, 3) + 1` quietly became a tensor. A list is a
-    // structure, not a number bag – write `[1, 2, 3]` for a tensor.
+    // Never silently coerce a list into a tensor: a list is a structure, not a number
+    // bag – write `[1, 2, 3]` for a tensor.
     throw new Error(`expected a tensor, got a list of ${v.length} – write it as a tensor [ … ]`)
   }
   return v
@@ -845,221 +810,48 @@ const shapeOf = (v: Value): number[] =>
 const isScalarTensor = (v: Value): boolean =>
   (isTensor(v) || v instanceof FluentVariable) && shapeOf(v).length === 0
 
-type Arena = Set<np.Array>
-const arenaStack: Arena[] = []
-
-// Leak watch (test/dev-facing, off by default): while a watch is open, track()
-// also records every array Fluent adopts, so liveTensorCount() can report how
-// many still hold a device buffer (refCount > 0). This is the only reliable
-// leak signal we have – jax-js's own buffer table is a hard-private field.
-let tensorWatch: Arena | null = null
-let tensorWatchPeak = 0
-const beginTensorWatch = () => { tensorWatch = new Set(); tensorWatchPeak = 0 }
-const endTensorWatch = () => { tensorWatch = null }
-const liveTensorCount = (): number => {
-  if (!tensorWatch) { return 0 }
-  let n = 0
-  for (const a of tensorWatch) { if (a.refCount > 0) { n++ } else { tensorWatch.delete(a) } }
-  return n
-}
-// Highest concurrent live count seen since beginTensorWatch. Sampled as track()
-// runs, so it catches a transient O(n) spike (e.g. f⍣n retaining every step)
-// that liveTensorCount – read after the arena sweep – would miss.
-const peakTensorCount = (): number => tensorWatchPeak
-
-// Track a freshly created array (or a list holding some) in the active arena –
-// the generation arena when no expression arena is open. Tracers pass through.
-const track = <T>(value: T): T => {
-  const arena = arenaStack[arenaStack.length - 1] ?? currentGeneration?.arena
-  if (arena) { addConcreteArrays(value, arena) }
-  if (tensorWatch) {
-    addConcreteArrays(value, tensorWatch)
-    let live = 0
-    for (const a of tensorWatch) { if (a.refCount > 0) { live++ } }
-    if (live > tensorWatchPeak) { tensorWatchPeak = live }
-  }
-  return value
-}
-
-function addConcreteArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set()): void {
-  if (v instanceof np.Array) { out.add(v); return }
-  if (Array.isArray(v) && !seen.has(v)) {
-    seen.add(v)
-    for (const item of v) { addConcreteArrays(item, out, seen) }
-  }
-}
-
-// Arrays reachable from an arena result survive the sweep. Unlike tf.tidy's
-// walk this descends into plain objects (JSX props) but stops at the reactive
-// graph: a signal's payload is its own to hold and to free.
-// Set by the walk when it meets a closure. A lambda's captured environment is
-// not a property of anything – a tensor the body minted and kept alive only
-// through the function it returned is invisible here. "Unreachable" is then
-// not a conclusion the walk is entitled to draw, so it records that and the
-// arena keeps everything rather than freeing on a guess.
-let walkMetClosure = false
-
-function collectLiveArrays(v: unknown, out: Arena, seen: Set<unknown> = new Set()): void {
-  if (typeof v === "function") { walkMetClosure = true; return }
-  if (v === null || typeof v !== "object") { return }
-  if (seen.has(v)) { return }
-  seen.add(v)
-  if (v instanceof np.Array) { out.add(v); return }
-  if (v instanceof Tracer) { return }
-  if (v instanceof FluentVariable) { out.add(v.raw); return }
-  if (v instanceof Signal) {
-    // A lifted computed reaches its argument tensors only through its
-    // closure, which this walk cannot see – but the lift registry exposes
-    // exactly that edge. Without it, a lift created INSIDE another owned
-    // computed (a CodeEvaluate cell, a $-thunk) has its constants swept at
-    // the end of the outer recompute, and its jit replay later dereferences
-    // disposed arrays ("Referenced tracer Tensor (disposed) freed").
-    const lift = liftRegistry.get(v as Signal<Value>)
-    if (lift) { for (const arg of lift.args) { collectLiveArrays(arg, out, seen) } }
-    return
-  }
-  if (v instanceof Error) { collectLiveArrays(v.cause, out, seen); return }
-  if (Array.isArray(v)) {
-    for (const item of v) { collectLiveArrays(item, out, seen) }
-    return
-  }
-  for (const key of Object.keys(v)) { collectLiveArrays((v as any)[key], out, seen) }
-}
-
-// Run fn under a fresh scratch arena. Arrays it creates and keeps (reachable
-// from the result) are handed to `owner`; the rest are disposed.
-function arenaInto<T>(owner: Arena | null, fn: () => T): T {
-  const scratch: Arena = new Set()
-  arenaStack.push(scratch)
-  let result: T | undefined
-  try {
-    result = fn()
-  } finally {
-    arenaStack.pop()
-    if (scratch.size > 0) {
-      const live: Arena = new Set()
-      walkMetClosure = false
-      collectLiveArrays(result, live)
-      const keepAll = walkMetClosure
-      for (const array of scratch) {
-        if (keepAll || live.has(array)) { owner?.add(array) }
-        else if (array.refCount > 0) { array.dispose() }
-      }
-    }
-  }
-  return result as T
-}
-
-function arena<T>(fn: () => T): T {
-  return arenaInto(arenaStack[arenaStack.length - 1] ?? currentGeneration?.arena ?? null, fn)
-}
-
-// A computed's cached payload is reachable only through its closure, which
-// arenas cannot see – so a computed owns every array its recompute created
-// and kept, disposing the previous batch on recompute and at generation end.
-// (Handing survivors to the generation instead would pin one batch per frame
-// until the next evaluation – exactly what a Time()-driven demo must avoid.)
-const computedOwned = <T,>(fn: () => T): Signal<T> => {
-  let owned: Arena = new Set()
-  const release = () => {
-    for (const array of owned) {
-      if (array.refCount > 0) { array.dispose() }
-    }
-    owned = new Set()
-  }
-  registerDisposable(release)
-  return computed(() => {
-    release()
-    return arenaInto(owned, fn)
-  })
-}
-
-// Trainable variable: the jax-js replacement for tf.Variable. Owns one
-// reference of its current value; assignment takes ownership of the next
-// value and bumps the version signal (drag, optimizer step, :=).
+// Trainable variable: its current value, settled into a leaf; an assignment (drag,
+// optimizer step, :=) settles the new one and bumps the version signal.
 class FluentVariable {
-  // Reading the concrete payload during a trace freezes it into the compiled
-  // program, so EVERY such read has to mark the trace non-replayable. Only
-  // borrow() used to, and the reads that bypass it — getAsSyncList, the
-  // integer-power fast path, the shape/dtype helpers — are exactly the ones
-  // that put a `~` in a structural slot (axis, shift, exponent, shape), where
-  // it was baked in and every later `:=` silently ignored. Making the read
-  // itself the guard means a new structural op cannot forget it.
-  // `raw` is the same field without the guard, for bookkeeping that is not a
-  // read of the value: disposal, the arena walk, and the optimizer swapping
-  // its tracers in and out on every step.
-  #payload!: np.Array
-  // A variable holding a tracer is a swapped-in parameter of the ongoing trace
-  // (an optimizer step): only reading a CONCRETE value freezes state.
-  get current(): np.Array {
-    if (tracingActive && this.#payload instanceof np.Array) { traceTouchedState = true }
-    return this.#payload
-  }
-  set current(next: np.Array) { this.#payload = next }
-  get raw(): np.Array { return this.#payload }
+  current: np.Array
   readonly version = signal(0)
-
-  // takes ownership of `initial`
   constructor(initial: np.Array) {
-    const backed = bufferBackedScalar(initial)
-    if (backed) {
-      if (initial.refCount > 0) { initial.dispose() }
-      initial = backed
-    }
-    this.current = initial
+    this.current = np.settle(initial)
     const registry = this instanceof FluentData ? dataVariables : trainableVariables
     registry.add(this)
-    registerDisposable(() => {
-      registry.delete(this)
-      if (this.raw.refCount > 0) { this.raw.dispose() }
-    })
+    registerDisposable(() => { registry.delete(this) })
   }
-
   get shape() { return this.current.shape }
   get size() { return this.current.size }
-
-  // takes ownership of `next`
   assign(next: np.Array): void {
-    const backed = bufferBackedScalar(next)
-    if (backed) {
-      if (next.refCount > 0) { next.dispose() }
-      next = backed
-    }
-    const previous = this.raw
-    this.current = next
-    if (previous.refCount > 0) { previous.dispose() }
+    this.current = np.settle(next)
     this.version.value++
   }
-
-  toString() { return this.raw.toString() }
+  toString() { return this.current.toString() }
 }
 
-// Optimizers with no explicit variable list train everything alive – the
-// same contract as TFJS's global variable registry.
+// Optimizers with no explicit variable list train every variable alive.
 const trainableVariables = new Set<FluentVariable>()
 
-// Data slot (~~): a mutable tensor the compiled optimizer step receives as a
-// jit ARGUMENT on every call – read fresh, never differentiated, no optimizer
-// state. Gradients flow into ~, never into ~~. Reassigning to a new shape
-// costs one clean retrace; same shape replays the compiled step untouched.
+// Data slot (~~): a mutable tensor the optimizer reads fresh on every step – never
+// differentiated, no optimizer state. Gradients flow into ~, never into ~~.
 class FluentData extends FluentVariable {}
 const dataVariables = new Set<FluentData>()
 
 // MARK: Evaluation generations
-// Each top-level evaluation owns the resources it creates: live sources
-// (Time, Camera, ...), pending ⟳ loops, and the tensors bound into its scope.
-// A new evaluation retires the previous generation – loops stop, sources
-// release their hardware, tensors free their GPU memory.
-type Generation = { disposables: Set<() => void>, arena: Arena }
+// Each top-level evaluation owns the resources it creates: live sources (Time,
+// Camera, ...), pending ⟳ loops, effects. A new evaluation retires the previous
+// generation – loops stop, sources release their hardware.
+type Generation = { disposables: Set<() => void> }
 let currentGeneration: Generation | null = null
 
 const registerDisposable = (dispose: () => void) => {
   currentGeneration?.disposables.add(dispose)
 }
 
-// Generations awaiting retirement. A retired generation's effects and tensors
-// are freed only once the NEW UI has committed and the old islands unmounted –
-// a still-mounted old island could otherwise recompute against a freed tensor.
+// Generations awaiting retirement. A retired generation's effects stop only once the
+// NEW UI has committed and the old islands unmounted – a still-mounted old island
+// could otherwise recompute against a stopped source.
 // The renderer signals that exact moment by calling flushRetirements() from a
 // post-commit effect (replacing a 50 ms timer that only guessed at it); tests
 // and headless callers call it directly.
@@ -1068,11 +860,6 @@ const pendingRetirements = new Set<Generation>()
 const retireGeneration = (g: Generation) => {
   for (const dispose of g.disposables) {
     try { dispose() } catch { /* already gone */ }
-  }
-  // every array the generation's evaluations created and kept lives here –
-  // signals and variables released their own references via disposables
-  for (const array of g.arena) {
-    if (array.refCount > 0) { array.dispose() }
   }
 }
 
@@ -1099,12 +886,12 @@ const scheduleRetirementFlush = () => {
 
 function evaluateGeneration<T>(evaluate: () => T): T {
   const previous = currentGeneration
-  currentGeneration = { disposables: new Set(), arena: new Set() }
+  currentGeneration = { disposables: new Set() }
   try {
     return evaluate()
   } finally {
     // queue the previous generation even if building this one threw, so its
-    // effects, sources, and GPU tensors never leak on an error
+    // effects and sources never leak on an error
     if (previous) {
       pendingRetirements.add(previous)
       scheduleRetirementFlush()
@@ -1112,197 +899,29 @@ function evaluateGeneration<T>(evaluate: () => T): T {
   }
 }
 
-const disposeValueTensors = (value: unknown) => {
-  const arrays: Arena = new Set()
-  collectLiveArrays(value, arrays)
-  for (const array of arrays) {
-    if (array.refCount > 0) { array.dispose() }
-  }
-}
-
-const disposeScopeTensors = (scope: CurrentScope) => {
-  for (const key of Object.getOwnPropertyNames(scope)) {
-    disposeValueTensors(scope[key])
-  }
-}
-
 // Signals may hide inside lists, so e.g. `concat((a, b), axis)` stays
 // reactive when a/b are computed
 const containsSignal = (a: Value): boolean =>
   a instanceof Signal || (Array.isArray(a) && a.some(containsSignal))
+// a signal may hold a signal – a result still on its way (CodesToString) – so a lifted
+// application reads through to the value, and recomputes when either level changes
 const unwrapSignals = (a: any): any =>
-  a instanceof Signal ? a.value : Array.isArray(a) ? a.map(unwrapSignals) : a
+  a instanceof Signal ? unwrapSignals(a.value) : Array.isArray(a) ? a.map(unwrapSignals) : a
 
 // MARK: Lifted apply
-// A signal-driven application re-executes an identical tensor graph on every
-// recompute. Trace it once with jit() – fused kernels instead of per-op
-// dispatch – and replay the compiled program with the current payloads.
-//
-// When an argument is itself a lifted computed, its body is INLINED into the
-// trace instead of being read: the compiled program spans the whole chain
-// down to the true source signals (Time, sliders), jax-js chooses the
-// materialization points, and intermediate computeds never execute unless
-// something displays them. Shared intermediates (diamonds) trace once via a
-// per-trace memo.
-//
-// Anything a trace cannot capture faithfully drops back to the eager
-// evaluator, permanently for this application:
-//  - value-dependent control flow (guard, mask, sort counts – any data read)
-//  - randomness (a replay would freeze the sample)
-//  - signal/variable access inside the body (a replay would freeze the value)
-//  - non-tensor results (JSX, lists) and signals nested inside list arguments
-type Lift = {
-  args: Value[]
-  demoted: () => boolean
-  // trace this lift's body, resolving leaves through `bind`; memoized per trace
-  inline: (bind: (leaf: Signal<Value>) => np.Array) => np.Array
-}
-const liftRegistry = new WeakMap<Signal<Value>, Lift>()
-let currentTraceMemo: Map<Lift, np.Array> | null = null
-
-const makeLiftedApply = (fnValue: Function, argsValue: Value[], env: CurrentScope) => {
-  const hasNestedSignals = argsValue.some((a) => !(a instanceof Signal) && containsSignal(a))
-
-  let compiled: (((...xs: np.Array[]) => np.Array) & { dispose: () => void }) | null = null
-  let leaves: Signal<Value>[] = []
-  let mode: "probe" | "jit" | "eager" = hasNestedSignals ? "eager" : "probe"
-
-  const eagerApply = (unwrapped: any[]): Value => {
-    try {
-      return fnValue.apply(env, unwrapped)
-    } catch (e) {
-      // control flow for an enclosing trace, never an error value
-      if (e instanceof TraceBailout) { throw e }
-      // a bare backend message with no callsite is undebuggable from a cell –
-      // say WHICH application failed, keep the original as the cause
-      const err = e instanceof Error ? e : new Error(String(e))
-      const label = (fnValue as { name?: string }).name || getOrigin(fnValue)?.source || "a function"
-      return new Error(`applying ${label} to (${unwrapped.map(describeArg).join(", ")})`, { cause: err })
-    }
+// An application whose arguments hold signals recomputes with their current values; the
+// engine fuses whatever the chain of lifted computeds builds, at the read. A throw names
+// the application that failed – a bare engine message with no callsite is undebuggable.
+const applyLifted = (fnValue: Function, argsValue: Value[], env: CurrentScope): Value => {
+  const unwrapped = argsValue.map(unwrapSignals)
+  try {
+    return fnValue.apply(env, unwrapped)
+  } catch (e) {
+    if (e instanceof StateWrite) { throw e }
+    const err = e instanceof Error ? e : new Error(String(e))
+    const label = (fnValue as { name?: string }).name || getOrigin(fnValue)?.source || "a function"
+    return new Error(`applying ${label} to (${unwrapped.map(describeArg).join(", ")})`, { cause: err })
   }
-
-  const demote = () => {
-    compiled?.dispose()
-    compiled = null
-    mode = "eager"
-  }
-  registerDisposable(demote)
-
-  // the source signals this lift's chain depends on: walk through inlinable
-  // children, stop at plain signals and demoted (eager) lifts
-  const collectLeaves = (args: Value[], out: Set<Signal<Value>>): void => {
-    for (const arg of args) {
-      if (!(arg instanceof Signal)) { continue }
-      const child = liftRegistry.get(arg)
-      if (child && !child.demoted()) { collectLeaves(child.args, out) }
-      else { out.add(arg) }
-    }
-  }
-
-  // run the body on traced values: leaves resolve through `bind`, inlinable
-  // children splice their own traced bodies in
-  const runTraced = (bind: (leaf: Signal<Value>) => np.Array): np.Array => {
-    const rebuilt = argsValue.map((arg) => {
-      if (!(arg instanceof Signal)) { return arg }
-      const child = liftRegistry.get(arg)
-      if (child && !child.demoted()) { return child.inline(bind) }
-      return bind(arg)
-    })
-    const out = fnValue.apply(env, rebuilt)
-    if (out instanceof Error) { throw out }
-    if (!isTensor(out)) { throw new TraceBailout("non-tensor result") }
-    return out as np.Array
-  }
-
-  const lift: Lift = {
-    args: argsValue,
-    demoted: () => mode === "eager",
-    inline: (bind) => {
-      if (mode === "eager") { throw new TraceBailout("eager child") }
-      const memo = currentTraceMemo!
-      const cached = memo.get(lift)
-      if (cached) { return cached.ref }
-      const traced = runTraced(bind)
-      memo.set(lift, traced)
-      return traced.ref
-    },
-  }
-
-  const recompute = (): Value => {
-    if (mode === "eager") {
-      // reading .value subscribes this computed to its (possibly derived) args
-      return eagerApply(argsValue.map(unwrapSignals))
-    }
-
-    if (mode === "probe") {
-      const found = new Set<Signal<Value>>()
-      collectLeaves(argsValue, found)
-      leaves = [...found]
-    }
-
-    // reading the leaves subscribes this computed to the chain's sources
-    const payloads = leaves.map((s) => s.value)
-    if (!payloads.every((p) => p instanceof np.Array)) {
-      demote()
-      return eagerApply(argsValue.map(unwrapSignals))
-    }
-
-    compiled ??= jaxJit((...params: np.Array[]) => {
-      const bound = new Map(leaves.map((leaf, i) => [leaf, params[i]!]))
-      const previousMemo = currentTraceMemo
-      const memo: Map<Lift, np.Array> = new Map()
-      currentTraceMemo = memo
-      try {
-        const result = runTraced((leaf) => {
-          const param = bound.get(leaf)
-          if (param === undefined) { throw new TraceBailout("unbound leaf") }
-          return param.ref
-        })
-        return result
-      } finally {
-        currentTraceMemo = previousMemo
-        for (const traced of memo.values()) {
-          if (traced.refCount > 0) { traced.dispose() }
-        }
-        for (const param of params) {
-          if (param.refCount > 0) { param.dispose() }
-        }
-      }
-    }) as any
-
-    // a compiled call may retrace at any time (new payload shapes), so the
-    // trace guards are armed on every call – a pure replay never trips them
-    const rngBefore = rngCounter
-    const outerTracing = tracingActive
-    const outerTouched = traceTouchedState
-    tracingActive = true
-    traceTouchedState = false
-    const untraceable = Symbol("untraceable")
-    let traced: Value | typeof untraceable = untraceable
-    try {
-      traced = track(compiled!(...payloads.map((p) => (p as np.Array).ref)))
-      if (traceTouchedState || rngCounter !== rngBefore) {
-        // the trace froze outside state or a random draw – this round's
-        // result is valid, but a replay would not be
-        demote()
-      } else {
-        mode = "jit"
-      }
-    } catch {
-      demote()
-    } finally {
-      tracingActive = outerTracing
-      traceTouchedState = outerTouched || traceTouchedState
-    }
-    // TraceBailout: the body is untraceable – run it for real.
-    // Anything else: eager reruns and surfaces it as an Error value.
-    // This runs OUTSIDE the try, after the flags above are restored: under
-    // `tracingActive` the rerun would hit the very write guard that bailed.
-    if (traced === untraceable) { return eagerApply(argsValue.map(unwrapSignals)) }
-    return traced
-  }
-
-  return { recompute, lift }
 }
 
 function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
@@ -1349,29 +968,16 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
       throw new Error("What are you trying to do with this poor signal?")
     }
 
-    // Auto-lift: wrap in computed() when args contain Signals. The recompute
-    // goes through makeLiftedApply, which jit-compiles traceable bodies and
-    // inlines chains of lifted computeds into a single compiled program.
-    const hasSignalArgs = argsValue.some(containsSignal)
-
-    if (hasSignalArgs && !noAutoLift) {
-      const { recompute, lift } = makeLiftedApply(fnValue, argsValue, env)
-      const lifted = computedOwned(recompute)
-      liftRegistry.set(lifted as Signal<Value>, lift)
-      return lifted
+    // Auto-lift: an application whose arguments contain signals is a computed
+    if (argsValue.some(containsSignal) && !noAutoLift) {
+      return computed(() => applyLifted(fnValue as Function, argsValue, env))
     }
 
-    return arena(() => {
-      return fnValue.apply(env, argsValue)
-    })
+    return fnValue.apply(env, argsValue)
   } catch (e) {
-    // A TraceBailout is control flow, not a value: it says the body cannot be
-    // traced faithfully and must reach the tracer. Returning it as an Error
-    // value (it extends Error) would let cond/cascade read it as "candidate
-    // declines" and compile the losing branch, and would turn a state write
-    // during a trace into a silent no-op. Same line as eagerApply, cascade
-    // and cond.
-    if (e instanceof TraceBailout) { throw e }
+    // a state write while differentiating is control flow, not a value – returned
+    // as an Error, cond/cascade would read it as "candidate declines"
+    if (e instanceof StateWrite) { throw e }
     // inject cause to the caught error from argument errors
     if (e instanceof Error && errorArgs.length > 0) {
       return new Error(e.message, { cause: errorArgs[0] })
@@ -1382,7 +988,52 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
   }
 }
 
-const FunctionCascade = (candidates: Function[]) => {
+// MARK: Choosing
+// Errors are values: an Error is a result that says "there is no answer here".
+// One kind of Error is polite – a NoMatch says "not my case, ask someone else".
+//
+// A CANDIDATE is a function that answers or declines; it declines by returning
+// a NoMatch. guard(c, { v }) declines unless c holds; try({ v }) declines when
+// v fails. cascade and cond take the first candidate that answers. A failure
+// IS an answer: it stops the choice and surfaces, so a matched branch that
+// breaks is never reread as "not me" while a later branch quietly wins. When
+// every candidate declines, the choice itself declines – so choices nest, and
+// an overload set is a candidate in a bigger one.
+class NoMatch extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = "NoMatch"
+  }
+}
+
+// The NoMatch a hand-written candidate returns to decline.
+const NoMatchValue = new NoMatch("no match")
+
+// Run the candidates in order and return the first answer. A candidate that
+// isn't a function is its own result – the same constant-lift the hooks and
+// forks give a non-function operand – so an Error among the candidates (a guard
+// whose condition broke) surfaces, and a NoMatch declines. A throw is a failure
+// like any other: a native candidate declines by RETURNING a NoMatch. A state write
+// while differentiating is control flow and must reach ∇.
+const chooseFirst = (candidates: Value[], args: Value[], scope: CurrentScope, exhausted: (lastDecline: NoMatch | null) => NoMatch): Value => {
+  // the last decline – shown as the cause when nothing answers, so the
+  // message still says WHY the closest candidate said no
+  let lastDecline: NoMatch | null = null
+  for (const candidate of candidates) {
+    let result: Value
+    try {
+      result = typeof candidate === "function" ? candidate.apply(scope, args) : candidate
+    } catch (e) {
+      if (e instanceof StateWrite) { throw e }
+      return e instanceof Error ? e : new Error(String(e))
+    }
+    if (result instanceof NoMatch) { lastDecline = result; continue }
+    return result
+  }
+  return exhausted(lastDecline)
+}
+
+const FunctionCascade = (candidates: Value[]) => {
   // `cascade(f)` instead of `cascade((f, g))` used to leave the loop with
   // nothing to iterate and hand back a silent ◌ — the doc card's own shape is
   // a list, so say what was expected
@@ -1392,69 +1043,21 @@ const FunctionCascade = (candidates: Function[]) => {
   return cascadeOver(candidates)
 }
 
-const cascadeOver = (candidates: Function[]) => tacitToString((a: Value, b: Value) => {
-  const noResultSymbol = Symbol('noResult')
-
-  let result: (Value | typeof noResultSymbol) = noResultSymbol
-  // the most specific rejection – shown as the cause when nothing matches,
-  // so "no overload matched" still says WHY the closest candidate said no
-  let lastRejection: Error | null = null
-
-  let candidateIndex = 0
-
-  while (result === noResultSymbol && candidateIndex < candidates.length) {
-
-    let candidateResult: unknown = noResultSymbol
-
-    try {
-      const fn = candidates[candidateIndex]
-      candidateResult = fn?.(a, b)
-    } catch (e) {
-      // A candidate says "not me" by RETURNING an Error value (handled below).
-      // A *throw* is usually a real op/arg mismatch – jax-js throws when an op
-      // doesn't fit the args, which is a legitimate "try the next candidate"
-      // (max/min dispatch their arity this way). But a TraceBailout is control
-      // flow that must reach the tracer: swallowing it as a non-match would
-      // compile the wrong branch into a jit trace, so let it propagate.
-      if (e instanceof TraceBailout) { throw e }
-      lastRejection = e instanceof Error ? e : new Error(String(e))
-      candidateIndex += 1
-      continue
-    }
-
-    if (candidateResult instanceof Error) {
-      lastRejection = candidateResult
-      candidateIndex += 1
-      continue
-    } else {
-      result = candidateResult as Value
-    }
-  }
-
-  if (result === noResultSymbol) {
-    const shown = a === undefined && b === undefined ? "no arguments"
-      : b === undefined ? describeArg(a)
-      : `${describeArg(a)}, ${describeArg(b)}`
-    return new Error(`no overload matched (${shown})`, lastRejection ? { cause: lastRejection } : undefined)
-  }
-
-  return result
+const cascadeOver = (candidates: Value[]) => tacitToString(function (this: CurrentScope, ...args: Value[]) {
+  return chooseFirst(candidates, args, this, (lastDecline) => {
+    const shown = args.length === 0 ? "no arguments" : args.map(describeArg).join(", ")
+    return new NoMatch(`no overload matched (${shown})`, lastDecline ? { cause: lastDecline } : undefined)
+  })
 })
 
-// Eager, variadic cascade: `cond(a, b, …)` runs each thunk in order and returns
-// the first non-Error result – `cascade((…))()` without the wrapper. Pairs with
-// guard: `cond(n = 0 ? { 1 }, { n × fact(n - 1) })`. Its own loop (not a rebuilt
-// FunctionCascade dispatcher) so recursion doesn't pay a per-call setup cost.
-const FunctionCond = function (this: CurrentScope, ...candidates: Function[]): Value {
-  for (const fn of candidates) {
-    let result: Value
-    // A throw (jax-js op/arg mismatch) or an Error value both mean "not this one";
-    // a TraceBailout is control flow that must reach the tracer.
-    try { result = (fn as Function).apply(this, []) }
-    catch (e) { if (e instanceof TraceBailout) { throw e } continue }
-    if (!(result instanceof Error)) { return result }
-  }
-  return new Error("cond: no branch matched")
+// Eager, variadic cascade: `cond(a, b, …)` runs each candidate in order and
+// returns the first answer – `cascade((…))()` without the wrapper. Pairs with
+// guard: `cond(guard(n = 0, { 1 }), { n × fact(n - 1) })`. Its own entry point
+// (not a rebuilt FunctionCascade dispatcher) so recursion doesn't pay a
+// per-call setup cost.
+const FunctionCond = function (this: CurrentScope, ...candidates: Value[]): Value {
+  return chooseFirst(candidates, [], this, (lastDecline) =>
+    new NoMatch("cond: no branch matched", lastDecline ? { cause: lastDecline } : undefined))
 }
 setMeta(FunctionCond, { noAutoLift: true })
 
@@ -1493,31 +1096,11 @@ const FunctionArity = (candidates: Function[]) => {
   return dispatch
 }
 
-// Synchronous, non-consuming read of a tensor's data as nested JS values.
-// jax-js `.js()` consumes the array, so read through a borrowed reference.
-// Every read crosses the device boundary (on WebGPU: a canvas readback), and
-// arrays are immutable – cache the JS value per array. Number literals are
-// pre-seeded at creation, so `x^2` or `sum(x, 2)` never read the device.
-const syncReadCache = new WeakMap<object, unknown>()
+// A tensor's data as nested JS arrays (a number for a scalar), for control flow and
+// structural arguments – the engine computes it if it isn't yet
 function getAsSyncList(value: unknown) {
   if (value instanceof FluentVariable) { value = value.current }
-  // the cache check must come before the tracer check: inside a jit trace
-  // even literal-built arrays are staged into tracers, but a SEEDED tracer
-  // (number literals, literal tensors, shapes) has a statically known value –
-  // reading it must not abort the trace
-  if (typeof value === "object" && value !== null && syncReadCache.has(value)) {
-    return syncReadCache.get(value)
-  }
-  if (value instanceof np.Array) {
-    const data = value.ref.js()
-    syncReadCache.set(value, data)
-    return data
-  }
-  if (isTensor(value)) {
-    // a non-concrete tracer: the body's control flow depends on data a
-    // compiled replay wouldn't see – abort the trace, stay eager
-    throw new TraceBailout("value read during trace")
-  }
+  if (value instanceof np.Array) { return value.js() }
 }
 
 // MARK: Environment
@@ -1536,48 +1119,69 @@ const CodeEvaluate = function (this: CurrentScope, program: string) {
   return evaluateProgramWithScope(program, this);
 }
 
-// APL-style power operator: FunctionPower(f, n) is { x | f(f(...f(x))) }, n times
-const FunctionPower = (fn: Function, n: Value) => {
-  if (typeof fn !== "function" || !isTensor(n)) {
-    return new Error("`FunctionPower(fn, n)`: `fn` must be a function and `n` must be a scalar Tensor")
+// The loop under ⍣. FunctionRepeat(f, n) is f applied n times; with a
+// predicate p in place of the count, f runs until p(next, previous) holds;
+// with a negative count, invert(f) runs |n| times – the prelude passes its
+// Newton inverse, so this loop never decides how inversion is done. A dyadic
+// call x (f ⍣ n) y iterates f(x, ·) from y, as in APL.
+const REPEAT_UNTIL_BUDGET = 10000
+const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert?: Value) {
+  if (typeof fn !== "function") {
+    return new Error("`(f ⍣ n)`: `f` must be a function")
   }
-
-  const count = getAsSyncList(n)
-  if (typeof count !== "number" || !Number.isFinite(count)) {
-    // a non-scalar (or NaN) count would silently skip the loop and return the
-    // identity function – surface it instead
-    return new Error("`FunctionPower(fn, n)`: `n` must be a finite scalar, got " +
-      (Array.isArray(count) ? `a tensor of shape [${(n as np.Array).shape.join(" ")}]` : String(count)))
-  }
-  // a live slider drives counts through fractional values – round, like linspace
-  const times = Math.max(0, Math.round(count))
-
-  return (...args: unknown[]) => {
-    let value: unknown = args[0] ?? null
-    // The chain releases exactly what its own steps minted, so the count stays
-    // O(1) rather than O(iterations). Ownership, not reachability, is the test:
-    // "reachable from the previous value" also matched arrays that arrived from
-    // the CALLER — a step returning an element of its argument (`{ p | (p_1, …) }`)
-    // had that element freed under the caller's still-live binding. Skipping
-    // i === 0 only ever protected the argument object, never its elements.
-    const mine: Arena = new Set()
-    for (let i = 0; i < times; i++) {
-      const prev = value
-      // each step in its own arena: per-iteration intermediates die immediately,
-      // only the chained value is handed forward (like FunctionIterate/⟳)
-      const minted: Arena = new Set()
-      value = arenaInto(minted, () => fn(prev))
-      const keep: Arena = new Set()
-      collectLiveArrays(value, keep)
-      for (const a of mine) {
-        if (!keep.has(a) && a.refCount > 0) { a.dispose(); mine.delete(a) }
-      }
-      for (const a of minted) { mine.add(a) }
+  const until = typeof n === "function" ? n : null
+  let times = 0
+  if (!until) {
+    if (!isTensor(n)) {
+      return new Error("`(f ⍣ n)`: `n` must be a scalar count or a predicate { new, old | … }")
     }
-    // whatever the chain still owns becomes the enclosing arena's, which is
-    // where plain `arena()` would have handed it
-    const owner = arenaStack[arenaStack.length - 1] ?? currentGeneration?.arena ?? null
-    for (const a of mine) { owner?.add(a) }
+    const count = getAsSyncList(n)
+    if (typeof count !== "number" || !Number.isFinite(count)) {
+      // a non-scalar (or NaN) count would silently skip the loop and return the
+      // identity function – surface it instead
+      return new Error("`(f ⍣ n)`: `n` must be a finite scalar, got " +
+        (Array.isArray(count) ? `a tensor of shape [${(n as np.Array).shape.join(" ")}]` : String(count)))
+    }
+    // a live slider drives counts through fractional values – round, like linspace
+    times = Math.round(count)
+    if (times < 0 && typeof invert !== "function") {
+      return new Error("`FunctionRepeat(f, n, invert)`: a negative count runs f backwards, which needs `invert`")
+    }
+  }
+  const scope = this
+
+  return function (...args: Value[]) {
+    const dyadic = args.length >= 2
+    const left = args[0]
+    const forward: Function = dyadic ? (z: Value) => (fn as Function)(left, z) : fn as Function
+    let step = forward
+    if (times < 0) {
+      const inverse = safeApply(invert as Function, [forward], scope)
+      if (typeof inverse !== "function") { return inverse }
+      step = inverse
+    }
+    let value: Value = (dyadic ? args[1] : args[0]) ?? null
+    for (let i = 0; until ? true : i < Math.abs(times); i++) {
+      if (until && i >= REPEAT_UNTIL_BUDGET) {
+        value = new Error(`\`(f ⍣ p)\`: the predicate didn't hold within ${REPEAT_UNTIL_BUDGET} steps`)
+        break
+      }
+      const prev = value
+      value = step(prev)
+      // a failed step is the answer – iterating an Error only repeats it
+      if (value instanceof Error) { break }
+      if (until) {
+        try {
+          const verdict = (until as Function)(value, prev)
+          if (verdict instanceof Error) { value = verdict; break }
+          if (isTruthy(requireData(verdict))) { break }
+        } catch (e) {
+          if (e instanceof StateWrite) { throw e }
+          value = e instanceof Error ? e : new Error(String(e))
+          break
+        }
+      }
+    }
     return value
   }
 }
@@ -1670,7 +1274,7 @@ const FunctionLeft = (...args: Value[]) =>
 // The K-lift question, exposed: userland combinators need to ask "is this
 // operand a function?" to bind constants the way the native hooks do.
 // Float32 0/1, like a comparison, so it composes with guard and where.
-const FunctionIs = (v: Value) => track(np.array(isFn(v) ? 1 : 0))
+const FunctionIs = (v: Value) => np.array(isFn(v) ? 1 : 0)
 
 // Async repeat (⟳): runs fn between frames so the UI stays live. The loop
 // belongs to the evaluation that started it – a re-evaluation cancels it.
@@ -1760,14 +1364,11 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
     let stepTime = 0
     const end = Math.min(i + batch, maxIterations)
     while (i < end) {
+      // at most two steps on the GPU: the screen's frame waits behind whatever is queued
+      await gpuDrained(2)
+      if (generation !== currentGeneration || cancelled) { return }
       const stepStart = now()
-      // each step gets its own arena: per-iteration garbage dies immediately,
-      // values that persist do so through signal/variable assignments
-      arena(() => {
-        const index = track(np.array(i))
-        fn(index)
-        return null
-      })
+      fn(np.array(i))
       i++
       stepTime += now() - stepStart
       if (stepTime > 25) { break }
@@ -1776,19 +1377,6 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
         // the world may have moved on while we yielded
         if (generation !== currentGeneration) { return }
       }
-    }
-
-    // drain the lazy queue: jax-js never dispatches on its own, so a training
-    // loop whose variables nobody displays would grow an unbounded pending
-    // graph – realize what the batch retained. Defensive: a corrupted
-    // variable must never kill the loop itself.
-    for (const variable of [...trainableVariables, ...dataVariables]) {
-      if (!(variable.raw instanceof np.Array)) { continue }
-      const held = variable.raw.ref
-      held.blockUntilReady().then(
-        () => { if (held.refCount > 0) { held.dispose() } },
-        () => { /* generation retired mid-flight */ },
-      )
     }
 
     schedule()
@@ -1814,79 +1402,35 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
 // loop zero times, silently.
 setMeta(FunctionIterate, { noAutoLift: true })
 
-// jax-js backs every 1-element array with an inline constant (np.array
-// special-cases size === 1 into full()), so kernels consuming it embed the
-// value and recompile whenever it changes. Payloads of signals and variables
-// change on every update – re-back known scalars with a real device buffer
-// (a 2-element upload sliced to a 0-d view) so downstream kernels stay
-// stable and the shader cache hits. Returns an owned array, or null when the
-// value isn't a scalar with a known JS value.
-const alreadyBufferBacked = new WeakSet<object>()
-const bufferBackedScalar = (v: unknown): np.Array | null => {
-  if (!(v instanceof np.Array) || v.ndim !== 0 || alreadyBufferBacked.has(v)) { return null }
-  if (!syncReadCache.has(v)) { return null }
-  const value = syncReadCache.get(v)
-  if (typeof value !== "number") { return null }
-  return TensorScalarLive(value)
-}
+// Fresh scalar for time-varying sources (Time, sliders, scrubbers): held as data, never
+// folded into a kernel – the clock ticking or a slider moving reuses the compiled plan
+const TensorScalarLive = (value: number): np.Array => np.scalar(value)
 
-// Fresh scalar for time-varying sources (Time, sliders, scrubbers): buffer-
-// backed so downstream kernels cache, pre-seeded so display reads are free.
-// Owned by the caller, not arena-tracked. The NaN sentinel keeps the pair
-// from ever being all-equal – jax-js collapses all-equal data (including
-// [0, 0]) back into an inline constant.
-const TensorScalarLive = (value: number): np.Array => {
-  const backed = np.array(new Float32Array([value, NaN])).slice(0)
-  syncReadCache.set(backed, value)
-  alreadyBufferBacked.add(backed)
-  return backed
-}
+// A signal holds data: a tensor stored in it – or in a list in it – is settled into a
+// leaf, so a value written back every tick (⟳ with ←) never drags the previous ticks along
+const heldValue = (v: unknown): unknown =>
+  Array.isArray(v) ? v.map((e) => heldValue(e)) : v instanceof np.Array ? np.settle(v) : v
 
-// Signals own one reference of every tensor in their payload – including a
-// tensor nested in a list – borrowed on write, released on the next write.
-// Reads hand out the payload unowned; wrappers borrow at their call sites.
-// A list is a structure, not a number bag (borrow's no-coercion guard is for
-// numeric ops, not storage), so recurse: keep the list shape, borrow each
-// tensor in it. Owning those refs is what stops the arena from reclaiming them
-// out from under the signal – without it a later read hits a disposed tensor.
-const heldValue = (v: unknown): unknown => (Array.isArray(v) ? v.map((e) => heldValue(e)) : borrow(v))
-const releaseHeld = (v: unknown): void => {
-  if (Array.isArray(v)) { for (const e of v) { releaseHeld(e) } }
-  else if (v instanceof np.Array && v.refCount > 0) { v.dispose() }
-}
-
-// The owning reference taken here is released when the evaluation that created
-// the signal retires – the same contract FluentVariable has. Nothing else can
-// free it: collectLiveArrays cannot see through a Signal, so a signal that
-// registers no disposable strands its payload for the life of the page.
-const SignalCreate = (<T,>(initial: T) => {
-  const s = signal(bufferBackedScalar(initial) ?? heldValue(initial))
-  registerDisposable(() => releaseHeld(s.peek()))
-  return s
-}) as typeof signal
+const SignalCreate = (<T,>(initial: T) => signal(heldValue(initial))) as typeof signal
 
 const SignalRead = <T,>(s: Signal<T>) => {
   if (!(s instanceof Signal)) {
     return new Error(`'SignalRead': ${String(s)} is not a signal`)
   }
-  if (tracingActive) { traceTouchedState = true }
   return s.value
 }
 
 const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
   if (s instanceof Signal) {
-    if (tracingActive) { throw new TraceBailout("signal write during trace") }
-    const previous = s.peek() as unknown
-    s.value = (bufferBackedScalar(v) ?? heldValue(v)) as T
-    releaseHeld(previous)
+    if (differentiating) { throw new StateWrite("a signal write") }
+    s.value = heldValue(v) as T
     return
   }
 
   return new Error(`'SignalUpdate': ${s} is not a signal`)
 }
 
-// user-facing computeds own their cached tensors, like auto-lifted ones
-const SignalComputed = (<T,>(fn: () => T) => computedOwned(fn)) as typeof computed
+const SignalComputed = computed
 
 // effects belong to the evaluation that created them – a re-evaluation must
 // stop them, or stale effects keep firing into disposed variables
@@ -1899,10 +1443,7 @@ setMeta(SignalEffect, { noAutoLift: true })
 
 // Read signal value once without creating reactive dependency
 const SignalOnce = <T,>(s: Signal<T> | T): T => {
-  if (s instanceof Signal) {
-    if (tracingActive) { traceTouchedState = true }
-    return s.peek()
-  }
+  if (s instanceof Signal) { return s.peek() }
   return s
 }
 setMeta(SignalOnce, { noAutoLift: true })
@@ -1945,52 +1486,76 @@ const FunctionNoAutoLift = (fn: Function) => {
 }
 setMeta(FunctionNoAutoLift, { noAutoLift: true })
 
-const FunctionGuard = function (this: CurrentScope, cond: Value, thunk: Function) {
-  // Capture condition value and thunk. Strict read: a typo'd symbol used to
-  // coerce to undefined, which passed every falsy check – the guard silently
-  // held. In a cascade the Error just moves on to the next candidate.
-  const condValue = requireData(cond)
+// Fluent's truth: a number holds when it's nonzero, a tensor when any element
+// is (an all-zero tensor doesn't), and NaN never does. guard, when and the
+// until-form of ⍣ all ask this one question.
+const isTruthy = (data: number | unknown[]): boolean => {
+  const falsy = (v: unknown) => v === 0 || v === false
+  if (Array.isArray(data)) { return !(data.flat(Infinity) as unknown[]).every(falsy) }
+  return !(falsy(data) || Number.isNaN(data))
+}
+
+// guard(cond, { value }) – a candidate that answers with value while cond holds
+// and declines otherwise. The condition is read strictly, at the guard: a
+// typo'd name or an Error there is a failure, not a quiet "no" – the guard
+// itself becomes the Error, and a cascade surfaces it instead of skipping.
+// A body that isn't a thunk is its own value.
+const FunctionGuard = function (this: CurrentScope, cond: Value, body: Value) {
+  const holds = isTruthy(requireData(cond))
   const scope = this
-
-  // Return a function that cascade can call as a candidate
-  return function () {
-    // Check if falsy: 0/false, all-zero tensor, NaN (comparisons are bool dtype)
-    const falsy = (v: unknown) => v === 0 || v === false
-    const isFalsy = falsy(condValue) ||
-      (Array.isArray(condValue) && (condValue.flat(Infinity) as unknown[]).every(falsy)) ||
-      Number.isNaN(condValue)
-
-    if (isFalsy) {
-      return new Error('Guard condition not met')
+  const candidate = function () {
+    if (!holds) {
+      const decline = new NoMatch("guard: the condition doesn't hold")
+      // the guard's own call site, so hovering the decline finds it
+      const origin = getOrigin(candidate)
+      if (origin) { setOrigin(decline, origin) }
+      return decline
     }
-
-    // Condition passed - evaluate thunk
-    if (typeof thunk === 'function') {
-      return thunk.apply(scope)
-    }
-
-    return new Error('FunctionGuard: second argument must be a thunk { value }')
+    return typeof body === "function" ? body.apply(scope) : body
   }
+  return candidate
 }
 setMeta(FunctionGuard, { noAutoLift: true })
 
+// try({ value }) – a candidate that declines when value FAILS: the failure
+// becomes a NoMatch (kept as its cause), so a cascade moves on. The explicit
+// way to say "a failure here just means: not this one". A candidate's
+// arguments pass through, so try(f) joins an overload set as f would.
+const FunctionTry = function (this: CurrentScope, body: Value) {
+  const scope = this
+  return function (...args: Value[]) {
+    let result: Value
+    try {
+      result = typeof body === "function" ? body.apply(scope, args) : body
+    } catch (e) {
+      if (e instanceof StateWrite) { throw e }
+      result = e instanceof Error ? e : new Error(String(e))
+    }
+    return result instanceof Error && !(result instanceof NoMatch)
+      ? new NoMatch("try: it failed", { cause: result })
+      : result
+  }
+}
+setMeta(FunctionTry, { noAutoLift: true })
+
 // when(cond, { … }) – a conditional effect: run the thunk while cond is
-// truthy, yield ◌ otherwise. Unlike a guard inside a cascade, a thunk that
-// ERRORS stays loud – only the condition gates. (Swallowing thunk errors
-// would silently turn a broken training step into a no-op.)
+// truthy, yield ◌ otherwise. Not a candidate: whatever the thunk returns –
+// an Error included – is the result, so a broken training step stays loud.
 const FunctionWhen = function (this: CurrentScope, cond: Value, thunk: Value) {
-  const condValue = requireData(cond)
-  const falsy = (v: unknown) => v === 0 || v === false
-  const isFalsy = falsy(condValue) ||
-    (Array.isArray(condValue) && (condValue.flat(Infinity) as unknown[]).every(falsy)) ||
-    Number.isNaN(condValue)
-  if (isFalsy) { return null }
+  if (!isTruthy(requireData(cond))) { return null }
   if (typeof thunk !== "function") {
     return new Error("`when(cond, { … })`: second argument must be a thunk")
   }
   return (thunk as Function).apply(this)
 }
 setMeta(FunctionWhen, { noAutoLift: true })
+
+// Error(message, cause?) – a failure as a value: no answer, and why. The cause
+// can be any value: the Error this one grew from, or what was tried.
+const ErrorCreate = (message: Value, cause?: Value): Error =>
+  new Error(
+    typeof message === "string" || message instanceof String ? String(message) : StringLiteral(message),
+    cause === undefined ? undefined : { cause })
 
 const Describe = (target: Value, doc?: string): Value => {
   if (doc === undefined) {
@@ -2034,8 +1599,8 @@ const ListLength = (a: unknown[]) => {
   // a JS string also has `.length`, so without this guard the Length cascade
   // answered for strings here — in UTF-16 units — before ever reaching
   // StringLength, and disagreed with StringToCodes about how long one is
-  if (!Array.isArray(a)) { throw new Error(`expected a list, got ${describeArg(a as Value)}`) }
-  return track(np.array(a.length))
+  if (!Array.isArray(a)) { return new NoMatch(`expected a list, got ${describeArg(a as Value)}`) }
+  return np.array(a.length)
 }
 
 const ListGet = (a: any[], b: Value) => {
@@ -2120,8 +1685,8 @@ const asNumberList = (v: Value): number[] => ([] as number[]).concat(requireData
 // dtype and the README teaches scaling a 0..1 slider by arithmetic, so they
 // arrive fractional constantly. Round, the policy linspace and ⍣ already state
 // in their own comments – the alternative is a tensor with a fractional shape,
-// which jax-js builds lazily and then throws on at READ time, outside the
-// evaluator's try, so it takes down the panel instead of becoming an Error.
+// which fails only when it is computed: at read time, outside the evaluator's
+// try, so it would take down the panel instead of becoming an Error.
 // ±Infinity is not a length; asNumber already rejects NaN.
 const asFinite = (v: Value): number => {
   const n = asNumber(v)
@@ -2135,18 +1700,14 @@ const asWholeList = (v: Value): number[] => asNumberList(v).map((n) => {
 })
 
 const Tensor = (values: unknown, shape?: Value) => {
-  const source: any = isTensor(values) || values instanceof FluentVariable ? borrow(values) : values
-  return track(np.array(source, shape === undefined ? undefined : { shape: asNumberList(shape) }))
+  const source: any = isTensor(values) || values instanceof FluentVariable ? operand(values) : values
+  return np.array(source, shape === undefined ? undefined : { shape: asNumberList(shape) })
 }
-const TensorScalar = (value: number) => {
-  const scalar = track(np.array(value))
-  syncReadCache.set(scalar, value)
-  return scalar
-}
+const TensorScalar = (value: number) => np.array(value)
 
-// Numeric-operand borrow: a string ("a" + "b") or a function is a user mistake
-// here, so name the type instead of letting jax-js surface its opaque "Invalid
-// type for full: a". borrow itself stays general – a signal may hold a string.
+// A numeric operand: a string ("a" + "b") or a function is a user mistake here, so
+// name the type instead of an opaque engine message. operand itself stays general – a
+// signal may hold a string.
 const numericArg = (v: Value): any => {
   if (typeof v === "string" || v instanceof String) {
     throw new Error(`a string (${JSON.stringify(String(v))}) is not a tensor – numeric ops like + and × need tensors; use StringConcat to join text`)
@@ -2154,72 +1715,47 @@ const numericArg = (v: Value): any => {
   if (typeof v === "function") {
     throw new Error(`a function is not a tensor – numeric ops like + and × need tensors`)
   }
-  return borrow(v)
+  return operand(v)
 }
 
-// Borrowing and applying have to be indivisible. A jax-js op that throws
-// consumes NONE of its argument references, so a borrow taken outside the call
-// is orphaned when the op rejects its arguments — and the arena disposes each
-// array it tracks exactly once, so it can never recover a second count. That
-// leaked on programs that are CORRECT: a cascade candidate declines by
-// throwing (max/min dispatch their arity that way), returns the right answer,
-// and strands a buffer per attempt with no error and no wrong value.
-const applyBorrowed = <T,>(args: any[], run: () => T): T => {
-  try {
-    return run()
-  } catch (e) {
-    for (const a of args) { if (a instanceof np.Array && a.refCount > 0) { a.dispose() } }
-    throw e
-  }
-}
-
-// Wrapper factories: borrow the tensor arguments, track the result.
-const unaryOp = (op: (x: any) => np.Array) => (a: Value) => {
-  const x = numericArg(a)
-  return applyBorrowed([x], () => track(op(x)))
-}
-const binaryOp = (op: (x: any, y: any) => np.Array) => (a: Value, b: Value) => {
-  const x = numericArg(a), y = numericArg(b)
-  return applyBorrowed([x, y], () => track(op(x, y)))
-}
+const unaryOp = (op: (x: any) => np.Array) => (a: Value) => op(numericArg(a))
+const binaryOp = (op: (x: any, y: any) => np.Array) => (a: Value, b: Value) => op(numericArg(a), numericArg(b))
 
 // stack broadcasts its inputs to a common shape, like arithmetic does:
 // stack(x - a, y - b) works even when the pieces only meet by broadcasting.
-// Returns owned references, ready to be consumed by stack/concatenate.
 const broadcastRefs = (values: Value[]): np.Array[] => {
   const tensors = values.map(v => v instanceof FluentVariable ? v.current : v)
-  if (tensors.length === 0 || !tensors.every(isTensor)) { return tensors.map(borrow) as np.Array[] }
+  if (tensors.length === 0 || !tensors.every(isTensor)) { return tensors.map(operand) as np.Array[] }
   const arrays = tensors as np.Array[]
   const rank = Math.max(...arrays.map(t => t.shape.length))
   const shape = Array.from({ length: rank }, (_, i) =>
     Math.max(...arrays.map(t => t.shape[t.shape.length - rank + i] ?? 1)))
   return arrays.map(t =>
-    t.shape.length === rank && t.shape.every((d, i) => d === shape[i]) ? t.ref : np.broadcastTo(t.ref, shape))
+    t.shape.length === rank && t.shape.every((d, i) => d === shape[i]) ? t : np.broadcastTo(t, shape))
 }
 
 // stack(a, b, ...) joins along axis 0; stack((a, b, ...), axis) picks the axis
 const TensorStack = (...args: unknown[]) => {
   if (Array.isArray(args[0])) {
     const axis = args[1] === undefined ? 0 : asNumber(args[1] as Value)
-    return track(np.stack(broadcastRefs(args[0] as Value[]), axis))
+    return np.stack(broadcastRefs(args[0] as Value[]), axis)
   }
-  return track(np.stack(broadcastRefs(args as Value[])))
+  return np.stack(broadcastRefs(args as Value[]))
 }
 const TensorUnstack = (a: Value, b?: Value) => {
   const axis = b === undefined ? 0 : asNumber(b)
-  const array = borrow(a) as np.Array
-  // the iterator consumes the array and yields slices along the first axis
-  return track([...(axis === 0 ? array : np.moveaxis(array, axis, 0))])
+  const array = operand(a) as np.Array
+  // the iterator yields slices along the first axis
+  return [...(axis === 0 ? array : np.moveaxis(array, axis, 0))]
 }
 const TensorConcat = (...args: unknown[]) => {
-  if (Array.isArray(args[0])) {
-    const axis = args[1] === undefined ? 0 : asNumber(args[1] as Value)
-    return track(np.concatenate((args[0] as Value[]).map(borrow) as np.Array[], axis))
-  }
-  return track(np.concatenate((args as Value[]).map(borrow) as np.Array[]))
+  const listed = Array.isArray(args[0])
+  const axis = listed && args[1] !== undefined ? asNumber(args[1] as Value) : 0
+  const xs = ((listed ? args[0] : args) as Value[]).map(operand) as np.Array[]
+  return np.concatenate(xs, axis)
 }
 const TensorTile = (a: Value, reps: Value) => {
-  return track(np.tile(borrow(a), asNumberList(reps)))
+  return np.tile(operand(a), asNumberList(reps))
 }
 
 // Generalized outer product – J's "table" adverb. `a ⊗(f) b` applies f between
@@ -2239,7 +1775,7 @@ const TensorOuter = function (this: CurrentScope, f: Value, rank?: Value) {
     const cellA = shapeA.slice(split)
     const frameBLength = Math.max(0, shapeOf(b).length - (rankB ?? 0))
     const cellPad = Math.max(0, (rankB ?? 0) - cellA.length)
-    const lifted = track(np.reshape(borrow(a), [...frameA, ...Array(frameBLength + cellPad).fill(1), ...cellA]))
+    const lifted = np.reshape(operand(a), [...frameA, ...Array(frameBLength + cellPad).fill(1), ...cellA])
     return safeApply(f, [lifted, b], scope)
   }
 }
@@ -2248,14 +1784,14 @@ const TensorOuter = function (this: CurrentScope, f: Value, rank?: Value) {
 // each rank-k CELL of its argument and reassembles over the leading FRAME axes,
 // so one function works at every rank: `normalize ⍤ 1` does each row, `⍤ 2` each
 // matrix, bare `normalize` the whole array. Dyadic `a (f ⍤ k) b` zips matching
-// frames. The frame is mapped by unstack→apply→stack (no tracer, so ∇ flows).
+// frames. The frame is mapped by unstack→apply→stack, so ∇ flows through it.
 const TensorRank = function (this: CurrentScope, f: Value, rank?: Value) {
   const k = rank === undefined ? 0 : asNumber(rank)                            // k ≥ 0 = cell rank (trailing); k < 0 = frame rank (leading), J-style
   const scope = this
   const cellsOf = (a: Value): { frame: number[]; cells: Value[] } => {
     const shape = shapeOf(a), split = k >= 0 ? Math.max(0, shape.length - k) : Math.min(shape.length, -k)
     const frame = shape.slice(0, split), cell = shape.slice(split)
-    const flat = track(np.reshape(borrow(a), [frame.reduce((x, y) => x * y, 1), ...cell]))
+    const flat = np.reshape(operand(a), [frame.reduce((x, y) => x * y, 1), ...cell])
     return { frame, cells: TensorUnstack(flat) as Value[] }
   }
   return function (a: Value, b?: Value) {
@@ -2270,26 +1806,27 @@ const TensorRank = function (this: CurrentScope, f: Value, rank?: Value) {
     }
     const err = results.find((r) => r instanceof Error); if (err) { return err }
     const stacked = TensorStack(results)
-    return track(np.reshape(borrow(stacked), [...frame, ...shapeOf(stacked).slice(1)]))
+    return np.reshape(operand(stacked), [...frame, ...shapeOf(stacked).slice(1)])
   }
 }
 
-// Inner product ∙ – the dual of the table ⊗. `a (f ∙ g) b` contracts a's LAST
-// axis with b's FIRST: result = f-reduce over k of g(a[…,k], b[k,…]). Matrix
-// multiply is just `+ ∙ ×`; swap the ring for the rest – `⌊ ∙ +` is min-plus
-// (shortest paths), `∨ ∙ ∧` is boolean reachability. One combinator, any semiring.
-const TensorInner = function (this: CurrentScope, f: Value, g: Value) {
+// Inner product ∙ – the dual of the table ⊗. `a (g ∙ f) b` contracts a's LAST
+// axis with b's FIRST: combine with g, then reduce with f – result = f-reduce
+// over k of g(a[…,k], b[k,…]). Written in the order it runs, like `a × b reduce +`:
+// matrix multiply is `× ∙ +`; swap the ring for the rest – `+ ∙ ⌊` is min-plus
+// (shortest paths), `∧ ∙ ∨` is boolean reachability. One combinator, any semiring.
+const TensorInner = function (this: CurrentScope, g: Value, f: Value) {
   const scope = this
   const gOuter = (u: Value, v: Value): Value => {                              // g between a rank-r u and rank-s v → the [u-frame, v-frame] table
     const su = shapeOf(u), sv = shapeOf(v)
-    const uR = track(np.reshape(borrow(u), [...su, ...Array(sv.length).fill(1)]))
-    const vR = track(np.reshape(borrow(v), [...Array(su.length).fill(1), ...sv]))
+    const uR = np.reshape(operand(u), [...su, ...Array(sv.length).fill(1)])
+    const vR = np.reshape(operand(v), [...Array(su.length).fill(1), ...sv])
     return safeApply(g, [uR, vR], scope)
   }
   return function (a: Value, b: Value) {
-    const aSlices = TensorUnstack(track(np.moveaxis(borrow(a), -1, 0))) as Value[]   // a's contracted axis to the front
+    const aSlices = TensorUnstack(np.moveaxis(operand(a), -1, 0)) as Value[]   // a's contracted axis to the front
     const bSlices = TensorUnstack(b) as Value[]                                      // b's contracted axis is already first
-    if (aSlices.length !== bSlices.length) { return new Error("`(f ∙ g)`: a's last axis and b's first axis must match") }
+    if (aSlices.length !== bSlices.length) { return new Error("`(g ∙ f)`: a's last axis and b's first axis must match") }
     const terms = aSlices.map((u, k) => gOuter(u, bSlices[k]!))
     const err = terms.find((t) => t instanceof Error); if (err) { return err }
     return ListReduce(terms, (acc: Value, t: Value) => safeApply(f, [acc, t], scope))
@@ -2301,37 +1838,13 @@ const TensorSubtract = binaryOp(np.subtract)
 const TensorMultiply = binaryOp(np.multiply)
 const TensorDivide = binaryOp(np.trueDivide)
 
-// Exponentiation by squaring – consumes `base`, exact where exp(e·ln x) is
-// not: 3^2 is 9, (-2)^2 is 4, and x^2 differentiates as x·x.
-const intPow = (base: np.Array, exponent: number): np.Array => {
-  if (exponent === 0) { return np.onesLike(base) }
-  let e = Math.abs(exponent)
-  let square = base
-  let result: np.Array | null = null
-  while (true) {
-    if (e & 1) { result = result === null ? square.ref : np.multiply(result, square.ref) }
-    e >>= 1
-    if (e === 0) { break }
-    square = np.multiply(square.ref, square)
-  }
-  square.dispose()
-  return exponent < 0 ? np.reciprocal(result!) : result!
-}
-
-const TensorPower = (a: Value, b: Value) => {
-  const exponent = b instanceof FluentVariable ? b.current : b
-  if (exponent instanceof np.Array && exponent.ndim === 0) {
-    const e = asNumber(exponent)
-    if (Number.isInteger(e) && Math.abs(e) <= 64) {
-      return track(intPow(borrow(a) as np.Array, e))
-    }
-  }
-  return track(np.power(borrow(a), borrow(b)))
-}
+// a literal integer exponent is exponentiation by squaring in the engine – exact
+// where exp(e·ln x) is not (3^2 is 9, (-2)^2 is 4), and x^2 differentiates as x·x
+const TensorPower = binaryOp(np.power)
 // √x is the square root; x √ n is the n-th root of x – the value first, like x ^ n and x log b
 const TensorRoot = (a: Value, b?: Value) => {
   if (b === undefined) {
-    return track(np.sqrt(borrow(a)))
+    return np.sqrt(operand(a))
   }
   return TensorPower(a, TensorReciprocal(b))
 }
@@ -2339,20 +1852,18 @@ const TensorRoot = (a: Value, b?: Value) => {
 // and remainder(x, x) comes back as x. A remainder of exactly ±y is
 // mathematically impossible – fold it to 0.
 const TensorRemainder = (a: Value, b: Value) => {
-  const r = np.remainder(borrow(a), borrow(b))
-  return track(np.where(np.equal(np.absolute(r.ref), np.absolute(borrow(b))), np.zerosLike(r.ref), r))
+  const r = np.remainder(operand(a), operand(b))
+  return np.where(np.equal(np.absolute(r), np.absolute(operand(b))), np.zerosLike(r), r)
 }
 const TensorMaximum = binaryOp(np.maximum)
 const TensorMinimum = binaryOp(np.minimum)
 
-// Comparisons yield float32 0/1, APL-style. jax-js bools ride a
-// bool → uint32 lattice where a weak scalar promotes UNSIGNED – and a
-// negated weak constant clamps at zero, so `(x = 1) - y` silently
-// subtracted nothing. Fluent is a float32 language; 0/1 composes.
+// Comparisons yield float32 0/1, APL-style: Fluent is a float32 language, and 0/1
+// composes – `(x = 1) - y` is arithmetic, and prints as numbers, not booleans.
 const comparisonOp = (op: (x: any, y: any) => np.Array) =>
   (a: Value, b: Value) => {
     const x = numericArg(a), y = numericArg(b)
-    return applyBorrowed([x, y], () => track(np.astype(op(x, y), np.float32)))
+    return np.astype(op(x, y), np.float32)
   }
 
 const TensorLess = comparisonOp(np.less)
@@ -2362,12 +1873,41 @@ const TensorGreaterEqual = comparisonOp(np.greaterEqual)
 const TensorEqual = comparisonOp(np.equal)
 const TensorNotEqual = comparisonOp(np.notEqual)
 
+// Match ≡ – is it the same value, whole? Tensors match when their shapes and
+// every element agree, lists when their elements match pair by pair, strings
+// when their text does. 1 or 0, like a comparison – but one answer for the
+// whole value, where = answers element by element. It's the question ⍣ asks
+// when it iterates until nothing changes.
+// ≡ is tolerant, as APL's match is: two numbers match within a few units of f32
+// rounding. Iterating to a fixed point, (f ⍣ ≡), can otherwise settle into a cycle
+// of neighbouring floats – cos at the Dottie number alternates between two.
+const MATCH_TOLERANCE = 2 ** -20
+const near = (x: unknown, y: unknown): boolean =>
+  x === y || (typeof x === "number" && typeof y === "number" && Math.abs(x - y) <= MATCH_TOLERANCE * Math.max(Math.abs(x), Math.abs(y)))
+const valuesMatch = (a: Value, b: Value): boolean => {
+  if (a instanceof FluentVariable) { a = a.current }
+  if (b instanceof FluentVariable) { b = b.current }
+  if (isTensor(a) && isTensor(b)) {
+    const sa = (a as np.Array).shape, sb = (b as np.Array).shape
+    if (sa.length !== sb.length || sa.some((d, i) => d !== sb[i])) { return false }
+    const da = [getAsSyncList(a)].flat(Infinity), db = [getAsSyncList(b)].flat(Infinity)
+    return da.every((x, i) => near(x, db[i]))
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((x, i) => valuesMatch(x as Value, b[i] as Value))
+  }
+  const text = (v: Value) => typeof v === "string" || v instanceof String
+  if (text(a) && text(b)) { return String(a) === String(b) }
+  return a === b
+}
+const Match = (a: Value, b: Value) => TensorScalar(valuesMatch(a, b) ? 1 : 0)
+
 // Logical ops share the comparison contract: any nonzero operand counts as
 // true, the result is float32 0/1.
 const TensorOr = comparisonOp(np.logicalOr)
 const TensorAnd = comparisonOp(np.logicalAnd)
 const TensorXor = comparisonOp(np.logicalXor)
-const TensorNot = (a: Value) => track(np.astype(np.logicalNot(borrow(a)), np.float32))
+const TensorNot = (a: Value) => np.astype(np.logicalNot(operand(a)), np.float32)
 
 const TensorSine = unaryOp(np.sin)
 const TensorCosine = unaryOp(np.cos)
@@ -2381,21 +1921,16 @@ const TensorTangentHyperbolicInverse = unaryOp(np.arctanh)
 const TensorArcTangent2 = binaryOp(np.arctan2)  // arctan2(y, x): angle of (x, y)
 const TensorHypotenuse = binaryOp(np.hypot)
 
-// jax-js reduces bool arrays in bool arithmetic (add is `or`, so a bool sum
-// can only be 0 or 1) – promote to float like NumPy, so sum(x > 1) counts
-const promoteBool = (v: any): any => {
-  const tensor = v instanceof FluentVariable ? v.current : v
-  return isTensor(tensor) && tensor.dtype === np.bool ? np.astype(borrow(v), np.float32) : borrow(v)
-}
-
 // Reductions take an optional axis (scalar or vector tensor) as second
 // argument, and a truthy third argument keeps the reduced axis as size 1 –
 // mean(x, -1, 1) is the trace-safe unsqueeze(mean(x, -1), …)
 const withOptionalAxis = (op: (a: any, axis?: number | number[] | null, opts?: { keepdims?: boolean }) => np.Array) =>
-  (a: Value, b?: Value, keep?: Value) =>
-    track(op(promoteBool(a),
-      b === undefined ? null : (Array.isArray(requireData(b)) ? asWholeList(b) : asWhole(b)),
-      keep === undefined ? undefined : { keepdims: asNumber(keep) !== 0 }))
+  (a: Value, b?: Value, keep?: Value) => {
+    const axis = b === undefined ? null : (Array.isArray(requireData(b)) ? asWholeList(b) : asWhole(b))
+    const opts = keep === undefined ? undefined : { keepdims: asNumber(keep) !== 0 }
+    const x = operand(a)
+    return op(x, axis, opts)
+  }
 
 const TensorSum = withOptionalAxis(np.sum)      // TensorReduce(a, +)
 const TensorProduct = withOptionalAxis(np.prod) // TensorReduce(a, ×)
@@ -2410,10 +1945,8 @@ reducerFor.set(TensorMultiply, TensorProduct)
 reducerFor.set(TensorMaximum, TensorMax)
 reducerFor.set(TensorMinimum, TensorMin)
 
-// axis 0 as a reusable value – the default a fold collapses. Seeded in the
-// sync cache so reading it back is never a device round-trip.
+// axis 0 as a reusable value – the default a fold collapses
 const LEADING_AXIS: Value = np.array(0)
-syncReadCache.set(LEADING_AXIS as object, 0)
 
 // Fold a tensor left-to-right with a binary fn, optionally along one axis:
 // `1 ..< 10 reduce +` = 45, `x reduce { a, b | a - b }` = ((x_0-x_1)-x_2)-…
@@ -2439,9 +1972,8 @@ const TensorReduce = (tensor: Value, fn: Value, axis?: Value) => {
 }
 
 // argmax/argmin take a single axis (or none, over the flattened array) and
-// return int32 indices of the extreme element. Over an empty reduction axis
-// there is no index, and jax-js hands back a sentinel int (-2147483648) that
-// silently corrupts a downstream gather – so error at the source instead.
+// return the index of the extreme element. Over an empty reduction axis there
+// is no index – error at the source rather than hand a downstream gather one.
 const emptyReductionAxis = (a: Value, axis?: Value): boolean => {
   const shape = (a instanceof FluentVariable ? a.current : a as any)?.shape
   if (!Array.isArray(shape)) { return false } // not a tensor – let the op handle it
@@ -2449,15 +1981,14 @@ const emptyReductionAxis = (a: Value, axis?: Value): boolean => {
   const n = asNumber(axis)
   return shape[n < 0 ? shape.length + n : n] === 0
 }
-// jax-js's arg-ops return int32, and a weak float constant truncates against an
-// int32 array – `argmax(x) ÷ #(x)` came back a confident 0. Fluent is float32
-// throughout, so cast like TensorRange does; `_` re-casts its index to int32.
+// The arg-ops tag their indices int32; Fluent is float32 throughout, so cast like
+// TensorRange does – `_` re-casts its index to int32.
 const TensorArgMax = (a: Value, axis?: Value) =>
   emptyReductionAxis(a, axis) ? new Error("`argmax`: an empty tensor has no maximal index")
-    : track((axis === undefined ? np.argmax(promoteBool(a)) : np.argmax(promoteBool(a), asWhole(axis))).astype(np.float32))
+    : (axis === undefined ? np.argmax(operand(a)) : np.argmax(operand(a), asWhole(axis))).astype(np.float32)
 const TensorArgMin = (a: Value, axis?: Value) =>
   emptyReductionAxis(a, axis) ? new Error("`argmin`: an empty tensor has no minimal index")
-    : track((axis === undefined ? np.argmin(promoteBool(a)) : np.argmin(promoteBool(a), asWhole(axis))).astype(np.float32))
+    : (axis === undefined ? np.argmin(operand(a)) : np.argmin(operand(a), asWhole(axis))).astype(np.float32)
 
 const TensorNegate = unaryOp(np.negative)
 const TensorAbsolute = unaryOp(np.absolute)
@@ -2479,36 +2010,38 @@ const TensorFloor = unaryOp(np.floor)
 const TensorErrorFunction = unaryOp(lax.erf)
 const TensorSoftmax = (x: Value, axis?: Value) =>
   isScalarTensor(x)
-    ? track(np.reshape(nn.softmax(np.reshape(borrow(x), [1]), 0), []))
-    : track(nn.softmax(borrow(x), axis === undefined ? undefined : asWhole(axis)))
-// oneHot is a gather over eye(depth) with no bounds mode, so indices alias with
-// period depth+1: an off-by-one label column, or a -1 "unknown" sentinel, would
-// produce a confident one-hot for a DIFFERENT class and train the model toward
-// it with no error anywhere. Bounds-check exactly the way `_` does one screen
-// down, tracer bailout included – a live tracer index comes from trusted data
-// and flows through unchecked.
+    ? np.reshape(nn.softmax(np.reshape(operand(x), [1]), 0), [])
+    : nn.softmax(operand(x), axis === undefined ? undefined : asWhole(axis))
+// oneHot of an index outside 0..<depth is an all-zero row: an off-by-one label
+// column, or a -1 "unknown" sentinel, would silently drop out of the loss. Bounds-check
+// the way `_` does one screen down.
+// Index values for a bounds check: read when they are on the host or cheap to compute
+// there; values still on the GPU – a minibatch drawn from a data slot – flow through
+// unchecked as trusted data
+const cheapValues = (v: Value): Float32Array | undefined => {
+  const t = v instanceof FluentVariable ? v.current : v
+  return isTensor(t) ? np.hostValue(t as np.Array) : undefined
+}
 const TensorOneHot = (indices: Value, depth: Value) => {
   const n = asWhole(depth)
-  let idx: unknown
-  try { idx = getAsSyncList(indices) } catch (e) { if (!(e instanceof TraceBailout)) throw e }
-  if (idx !== undefined) {
-    const flat = (Array.isArray(idx) ? idx.flat(Infinity) : [idx]) as number[]
+  const flat = cheapValues(indices)
+  if (flat !== undefined) {
     const bad = flat.find((i) => !(i >= 0 && i < n))
     if (bad !== undefined) {
       return new Error(`oneHot: class ${bad} is out of bounds for a depth of ${n}`)
     }
   }
-  return track(nn.oneHot(np.astype(borrow(indices), np.int32), n))
+  return nn.oneHot(np.astype(operand(indices), np.int32), n)
 }
 const TensorCrossEntropy = (labels: Value, logits: Value) =>
-  track(np.mean(np.negative(np.sum(np.multiply(borrow(labels), nn.logSoftmax(borrow(logits))), -1))))
+  np.mean(np.negative(np.sum(np.multiply(operand(labels), nn.logSoftmax(operand(logits))), -1)))
 
 const TensorSort = (x: Value) =>
-  isScalarTensor(x) ? track(np.reshape(borrow(x), [])) : track(np.sort(borrow(x)))
+  isScalarTensor(x) ? np.reshape(operand(x), []) : np.sort(operand(x))
 const TensorArgSort = (x: Value) =>
   isScalarTensor(x)
-    ? track(np.reshape(np.argsort(np.reshape(borrow(x), [1])), []).astype(np.float32))
-    : track(np.argsort(borrow(x)).astype(np.float32))
+    ? np.reshape(np.argsort(np.reshape(operand(x), [1])), []).astype(np.float32)
+    : np.argsort(operand(x)).astype(np.float32)
 const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   const beginList = asNumberList(begin)
   const sizeList = size === undefined ? undefined : asNumberList(size)
@@ -2516,7 +2049,7 @@ const TensorSlice = (a: Value, begin: Value, size?: Value) => {
     const s = sizeList?.[i]
     return (s === undefined || s === -1 ? [b] : [b, b + s]) as [number] | [number, number]
   })
-  return track((borrow(a) as np.Array).slice(...spec))
+  return (operand(a) as np.Array).slice(...spec)
 }
 const TensorMask = (a: Value, b: Value) => {
   // Selection is along axis 0 only: every step below (arange over shape[0],
@@ -2529,68 +2062,41 @@ const TensorMask = (a: Value, b: Value) => {
   }
   const count = asNumber(TensorSum(TensorBoolean(b)))
   const size = shapeOf(a)[0] ?? 0
-  const indices = track(np.arange(size).astype(np.float32))
-  const holes = track(np.full([size], -1))
+  const indices = np.arange(size).astype(np.float32)
+  const holes = np.full([size], -1)
   const mu = TensorWhere(b, indices, holes)
   const top = TensorReverse(TensorSort(mu))
   const valid = TensorSlice(top, TensorScalar(0), TensorScalar(count))
   return TensorGather(a, TensorReverse(valid))
 }
 const TensorFill = (shape: Value, value: Value) => {
-  return track(np.full(asWholeList(shape), asNumber(value)))
+  return np.full(asWholeList(shape), asNumber(value))
 }
-const TensorBoolean = (a: Value) => track(np.astype(borrow(a), np.bool))
+const TensorBoolean = (a: Value) => np.astype(operand(a), np.bool)
 
 const TensorGradient = (f: Value) => {
   if (typeof f !== "function") {
     return new Error("`grad(f)`: `f` must be a function")
   }
+  // vjp with a ones cotangent: scalar outputs give the classic gradient, elementwise
+  // outputs per-element derivatives – ∇({x | x^2}) works on vectors
   return (x: Value) => {
-    // vjp with a ones cotangent: scalar outputs give the classic gradient,
-    // elementwise outputs get per-element derivatives – ∇({x | x^2}) works
-    // on vectors like it did on TFJS
-    // vjp is traced through Fluent's own wrappers, and those borrow their
-    // arguments without ever consuming them – so each op in `f`'s body leaves
-    // a reference on the primal that nothing will return, and pullback.dispose
-    // hands back only jax-js's own. ∇ borrows like every other operator, so
-    // restore the count the caller had: without this every ∇ strands a buffer,
-    // and a hand-written descent loop strands one per step.
-    const source = x instanceof FluentVariable ? x.current : x
-    const held = isTensor(source) ? source.refCount : 0
-    const primal = borrow(x) as np.Array
-    let pullback: { (cotangents: any): any[], dispose: () => void } | null = null
-    // ∇ is a tracing entry point like makeLiftedApply and the optimizer step,
-    // so it has to arm the same guards. Without this the "write during trace"
-    // check was unreachable under ∇ and a `:=` inside a differentiated body
-    // stored a live JVPTracer in the variable permanently — reading it back
-    // then threw raw JS out of the evaluator.
-    const outerTracing = tracingActive
-    const outerTouched = traceTouchedState
-    tracingActive = true
+    const outer = differentiating
+    differentiating = true
     try {
-      const [out, pb] = jaxVjp((traced: np.Array) => {
+      const [out, pullback] = vjp((traced: np.Array) => {
         const result = (f as Function)(traced)
         const value = result instanceof Signal ? result.peek() : result
         if (value instanceof Error) { throw value }
         if (!isTensor(value)) { throw new Error("`grad(f)`: `f` must return a tensor") }
         return value as np.Array
-      }, [primal])
-      pullback = pb
-      const [dx] = pb(np.onesLike(out))
-      return track(dx)
+      }, [operand(x) as np.Array])
+      return pullback(np.onesLike(out))[0]!
     } catch (e) {
-      // there is no eager fallback for ∇: a write inside a differentiated body
-      // cannot be honoured at all, so say that rather than let the internal
-      // bailout escape as an exception
-      if (e instanceof TraceBailout) {
-        return new Error(`\`grad(f)\`: \`f\` cannot write state while being differentiated (${e.message})`)
-      }
+      if (e instanceof StateWrite) { return new Error(`\`grad(f)\`: \`f\` cannot change state while being differentiated (${e.message})`) }
       throw e
     } finally {
-      tracingActive = outerTracing
-      traceTouchedState = outerTouched
-      pullback?.dispose()
-      if (isTensor(source)) { while (source.refCount > held) { source.dispose() } }
+      differentiating = outer
     }
   }
 }
@@ -2598,18 +2104,21 @@ const TensorTranspose = unaryOp(np.transpose)
 // Move one axis to a new position, keeping the others' relative order (a zero-copy
 // view). The general axis-rotation that `transpose` (full reverse) can't express;
 // `alongAxis` is built on it. Negative positions count from the end.
-const TensorMoveAxis = (a: Value, from: Value, to: Value) => track(np.moveaxis(borrow(a), asWhole(from), asWhole(to)))
+const TensorMoveAxis = (a: Value, from: Value, to: Value) => {
+  const source = asWhole(from), target = asWhole(to)
+  const x = operand(a) as np.Array
+  return np.moveaxis(x, source, target)
+}
 const TensorRange = (a: Value, b?: Value) => {
-  // jax-js arange is int32 and weak-typed floats truncate against it – Fluent
-  // tensors are float32 throughout
+  // arange tags its result int32 – Fluent tensors are float32 throughout
   if (b === undefined) {
-    return track(np.arange(Math.trunc(asFinite(a))).astype(np.float32))
+    return np.arange(Math.trunc(asFinite(a))).astype(np.float32)
   }
 
   const start = Math.trunc(asFinite(a))
   const stop = Math.trunc(asFinite(b))
   const step = start <= stop ? 1 : -1
-  return track(np.arange(start, stop, step).astype(np.float32))
+  return np.arange(start, stop, step).astype(np.float32)
 }
 
 // Inclusive range: like `start ..< stop`, but the endpoint is included –
@@ -2618,7 +2127,7 @@ const TensorRangeInclusive = (a: Value, b: Value) => {
   const start = Math.trunc(asFinite(a))
   const stop = Math.trunc(asFinite(b))
   const step = start <= stop ? 1 : -1
-  return track(np.arange(start, stop + step, step).astype(np.float32))
+  return np.arange(start, stop + step, step).astype(np.float32)
 }
 
 const TensorLinearSpace = (range: Value, steps: Value) => {
@@ -2629,7 +2138,7 @@ const TensorLinearSpace = (range: Value, steps: Value) => {
   const [start, stop] = bounds as [number, number]
   // a count has to be a whole number; a live slider naturally drives it
   // through fractional values (resolution × 90 + 10), so round rather than reject
-  return track(np.linspace(start, stop, Math.max(0, Math.round(asNumber(steps)))))
+  return np.linspace(start, stop, Math.max(0, Math.round(asNumber(steps))))
 }
 
 // Rank-polymorphic convolution: the kernel's rank sets the conv's rank, so the
@@ -2637,8 +2146,8 @@ const TensorLinearSpace = (range: Value, steps: Value) => {
 // Backed by lax.conv – a singleton batch/channel wraps the field (NCHW), zero
 // padded (SAME) so the output keeps the input's shape.
 const TensorConvolution = (arr: Value, kernel: Value) => {
-  const k = borrow(kernel) as np.Array
-  const a = borrow(arr) as np.Array
+  const k = operand(kernel) as np.Array
+  const a = operand(arr) as np.Array
   const ks = k.shape
   const spatial = a.shape
   const out = lax.conv(
@@ -2647,57 +2156,63 @@ const TensorConvolution = (arr: Value, kernel: Value) => {
     spatial.map(() => 1),
     "SAME",
   )
-  return track(np.reshape(out, spatial))
+  return np.reshape(out, spatial)
 }
 
 // Real FFT: a real signal in, the positive-frequency half out. Fluent has no
 // complex dtype, so return the two components stacked as [2, bins] – f_0 is the
 // real part, f_1 the imaginary, magnitude is √(f_0^2 + f_1^2).
 const TensorFFT = (a: Value) => {
-  const { real, imag } = np.fft.rfft(borrow(a))
-  return track(np.stack([real, imag]))
+  const { real, imag } = np.fft.rfft(operand(a))
+  return np.stack([real, imag])
 }
 
 // Coordinate grids: meshgrid(0 ..< w, 0 ..< h) → [X, Y], each broadcast to the full grid
-const TensorMeshgrid = (...args: Value[]) => track(np.meshgrid(args.map(borrow)))
+const TensorMeshgrid = (...args: Value[]) => np.meshgrid(args.map(operand))
 
-const TensorPad = (a: Value, width: Value) => track(np.pad(borrow(a), asNumber(width)))
+const TensorPad = (a: Value, width: Value) => np.pad(operand(a), asNumber(width))
 
-const TensorRepeat = (a: Value, count: Value) => track(np.repeat(borrow(a), asNumber(count)))
+const TensorRepeat = (a: Value, count: Value) => {
+  const n = asNumber(count)
+  const x = operand(a) as np.Array
+  return np.repeat(x, n)
+}
 
 const TensorSinc = unaryOp(np.sinc)
 
 // The k largest values and their indices, as [values, indices]
 const TensorTopK = (a: Value, k: Value) => {
-  const [values, indices] = lax.topK(borrow(a), asWhole(k))
-  return track([values, indices.astype(np.float32)])
+  const [values, indices] = lax.topK(operand(a), asWhole(k))
+  return [values, indices.astype(np.float32)]
 }
 
 // Einstein summation: einsum("ij,jk->ik", a, b) is a matrix multiply
 const TensorEinsum = (subscripts: Value, ...args: Value[]) =>
-  track(np.einsum(String(subscripts), ...args.map(borrow)))
+  np.einsum(String(subscripts), ...args.map(operand))
 
 const TensorReshape = (a: Value, b?: Value) => {
   if (b !== undefined) {
-    return track(np.reshape(borrow(a), asNumberList(b)))
+    return np.reshape(operand(a), asNumberList(b))
   }
 
-  return track(np.array(shapeOf(a)))
+  return np.array(shapeOf(a))
 }
 
 // Toroidal shift – APL's rotate. roll(x, 1) shifts flat; roll(x, s, axis)
 // shifts along an axis, wrapping around.
 const TensorRoll = (a: Value, shift: Value, axis?: Value) =>
-  track(np.roll(borrow(a), requireData(shift) as number | number[],
-    axis === undefined ? undefined : requireData(axis) as number | number[]))
+  np.roll(operand(a), requireData(shift) as number | number[],
+    axis === undefined ? undefined : requireData(axis) as number | number[])
 
 const TensorReverse = (a: Value, axis?: Value) =>
-  track(np.flip(borrow(a), axis === undefined ? undefined : requireData(axis) as number | number[]))
+  np.flip(operand(a), axis === undefined ? undefined : requireData(axis) as number | number[])
 
 const TensorMatrixMultiply = binaryOp(np.matmul)
 const TensorDotProduct = binaryOp(np.dot)
 
 const TensorLength = (a: Value, b?: Value) => {
+  // a list or a string is another candidate's case – decline it
+  if (!isTensor(a) && !(a instanceof FluentVariable)) { return new NoMatch(`expected a tensor, got ${describeArg(a)}`) }
   // A missing axis has size 1, never NaN: a scalar (shape []) is one item along
   // its phantom leading axis, so `#(5)` is 1 (APL's tally ≢), matching how
   // broadcasting treats absent axes as size 1. An empty tensor (shape [0]) stays 0.
@@ -2705,20 +2220,13 @@ const TensorLength = (a: Value, b?: Value) => {
     // negative axes count from the end, as they do for Σ, sort and moveaxis
     const shape = shapeOf(a)
     const axis = asWhole(b)
-    return track(np.array(shape[axis < 0 ? axis + shape.length : axis] ?? 1))
+    return np.array(shape[axis < 0 ? axis + shape.length : axis] ?? 1)
   }
 
-  return track(np.array(shapeOf(a)[0] ?? 1))
+  return np.array(shapeOf(a)[0] ?? 1)
 }
 
-const TensorShape = (a: Value) => {
-  // shapes are static even for tracers – seed the result so shape arithmetic
-  // stays readable during jit traces and never round-trips the device
-  const shape = shapeOf(a)
-  const value = track(np.array(shape))
-  syncReadCache.set(value, shape)
-  return value
-}
+const TensorShape = (a: Value) => np.array(shapeOf(a))
 
 // `_` reads its index arg as a scalar (`_0`) or a list/tensor of indices (`_[0, 1]`).
 const readIndexList = (b: Value): { multi: boolean, idxs: number[] } => {
@@ -2763,55 +2271,44 @@ const TensorGather = (a: Value, b: Value): Value => {
   if (typeof a === "string" || a instanceof String) { return stringGather(String(a), b) }
   if (Array.isArray(a)) { return listGather(a as Value[], b) }
   // a scalar is a rank-0 tensor with a single phantom item (#(5) = 1): 5_0 = 5
-  if (isScalarTensor(a)) { a = track(np.reshape(borrow(a), [1])) }
+  if (isScalarTensor(a)) { a = np.reshape(operand(a), [1]) }
   const size = shapeOf(a)[0] ?? 0
-  // Bounds-check every index we can read without aborting a trace – jax-js
-  // `take` has no bounds mode, so an out-of-range index otherwise reads garbage
-  // (eager) or silently returns 0 (grad path). Seeded literals and concrete
-  // arrays – including a computed eager index like `t_(argmax(...))` – are read
-  // and validated; only a live tracer index (an embedding lookup mid-trace)
-  // bails here, and those come from trusted data, so it flows through unchecked.
-  let idx: unknown
-  try { idx = getAsSyncList(b) } catch (e) { if (!(e instanceof TraceBailout)) throw e }
-  if (idx !== undefined) {
-    const flat = (Array.isArray(idx) ? idx.flat(Infinity) : [idx]) as number[]
+  // Bounds-check every index on the host or cheap to compute there – a gather has
+  // no bounds mode, so an out-of-range index would read garbage. Literals and
+  // computed indices like `t_(argmax(...))` are validated; an index still on the
+  // GPU (an embedding lookup into a minibatch) is trusted data and flows through.
+  const flat = cheapValues(b)
+  if (flat !== undefined) {
     // `!(0 <= w < size)` also rejects a NaN index, which slips past `<`/`>=`
     const bad = flat.find((i) => { const w = i < 0 ? i + size : i; return !(w >= 0 && w < size) })
     if (bad !== undefined) {
       return new Error(`index ${bad} is out of bounds for an axis of length ${size}`)
     }
   }
-  const raw = np.astype(borrow(b), np.int32)
+  const raw = np.astype(operand(b), np.int32)
   // negative indices count from the end: a_(-1) is the last element. The
   // outer cast makes the dtype strongly int32 – astype keeps weak typing, and
   // weak int32 promotes to float32 in the where().
-  const wrapped = np.astype(np.where(np.less(raw.ref, 0), np.add(raw.ref, size), raw), np.int32)
-  const array = borrow(a)
-  if (array instanceof np.Array) {
-    return track(np.take(array, wrapped, 0))
-  }
-  // inside grad(): jax-js gather has no transpose rule yet, so express the
-  // gather as a one-hot contraction, which differentiates
-  const selector = nn.oneHot(wrapped, size)
-  return track(np.tensordot(selector, array, [[selector.ndim - 1], [0]]))
+  const wrapped = np.astype(np.where(np.less(raw, 0), np.add(raw, size), raw), np.int32)
+  return np.take(operand(a), wrapped, 0)
 }
 
 const TensorWhere = (a: Value, b: Value, c: Value) =>
-  track(np.where(np.astype(borrow(a), np.bool), borrow(b), borrow(c)))
-const TensorIsNaN = (a: Value) => track(np.astype(np.isnan(borrow(a)), np.float32))
+  np.where(np.astype(operand(a), np.bool), operand(b), operand(c))
+const TensorIsNaN = (a: Value) => np.astype(np.isnan(operand(a)), np.float32)
 
 const TensorVariable = (a: Value) => {
   if (!isTensor(a) && !(a instanceof FluentVariable)) {
     return new Error("`~(init)`: initial value must be a tensor")
   }
-  return new FluentVariable(borrow(a) as np.Array)
+  return new FluentVariable(operand(a) as np.Array)
 }
 
 const TensorData = (a: Value) => {
   if (!isTensor(a) && !(a instanceof FluentVariable)) {
     return new Error("`~~(init)`: initial value must be a tensor – make one slot per tensor")
   }
-  return new FluentData(borrow(a) as np.Array)
+  return new FluentData(operand(a) as np.Array)
 }
 
 const TensorAssign = (a: Value, b: Value) => {
@@ -2823,8 +2320,8 @@ const TensorAssign = (a: Value, b: Value) => {
     // corrupt the variable: it keeps its last good value, the Error surfaces
     return new Error("`:=`: value must be a tensor", b instanceof Error ? { cause: b } : undefined)
   }
-  if (tracingActive) { throw new TraceBailout("variable write during trace") }
-  a.assign(borrow(b) as np.Array)
+  if (differentiating) { throw new StateWrite("a variable write") }
+  a.assign(operand(b) as np.Array)
   return null
 }
 
@@ -2832,53 +2329,18 @@ const TensorAssign = (a: Value, b: Value) => {
 // that updates on every assignment (drag, optimizer step, :=)
 const TensorWatch = (a: Value): Value => {
   if (!(a instanceof FluentVariable)) { return a }
-  let previous: np.Array | null = null
-  // the reference held between recomputes outlives the last one – release it
-  // with the generation, or watch(θ) used inline (never bound into the scope,
-  // so the teardown walk can't see it) pins θ's final value forever
-  registerDisposable(() => {
-    if (previous && previous.refCount > 0) { previous.dispose() }
-    previous = null
-  })
   return computed(() => {
     a.version.value
-    if (previous && previous.refCount > 0) { previous.dispose() }
-    previous = a.raw.ref
-    return previous
+    return a.current
   })
 }
 
-// Optimizers: optax gradient transformations driven by valueAndGrad. The loss
-// thunk closes over the variables – during tracing each variable temporarily
-// carries its tracer, so reads inside the thunk differentiate.
+// Optimizers: optax gradient transformations driven by valueAndGrad. The loss thunk
+// closes over the variables – during the step each variable carries its traced leaf, so
+// reads inside the thunk differentiate.
 const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: FluentVariable[]) => {
   let state: optax.OptState | null = null
   let stateVars: FluentVariable[] = []
-  // What the compiled step captured. The loss thunk belongs in here: it is the
-  // largest thing the trace closes over, and a different closure means a
-  // different program even when the variables and slots are identical (a
-  // per-batch thunk captures a different batch index). Comparing only the
-  // variables and slots let the first thunk replay forever, so a minibatch
-  // loop trained on batch 0 and reported a convincing loss curve for it.
-  const KEY_SEP = Symbol("slots")
-  let stepKey: unknown[] = []
-  const sameStepKey = (k: unknown[]) => k.length === stepKey.length && k.every((x, i) => x === stepKey[i])
-  registerDisposable(() => {
-    if (state !== null) {
-      tree.dispose(state)
-      state = null
-    }
-  })
-
-  let compiledStep: ((params: np.Array[], data: np.Array[], state: optax.OptState) => [np.Array, np.Array[], optax.OptState]) & { dispose: () => void } | null = null
-  let stepMode: "probe" | "jit" | "eager" = "probe"
-  const demoteStep = () => {
-    compiledStep?.dispose()
-    compiledStep = null
-    stepMode = "eager"
-  }
-  registerDisposable(demoteStep)
-
   return (lossThunk: Value) => {
     if (typeof lossThunk !== "function") {
       return new Error("optimizer expects a loss thunk { ... }")
@@ -2891,33 +2353,14 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
       // silent filtering would train nothing and report nothing – refuse loudly
       return new Error("~~ holds data and can't be trained – pass variables made with ~")
     }
-    // data slots ride into the compiled step as jit arguments: read fresh
-    // every call, never differentiated. A changed slot set invalidates the
-    // captured closure, but not the per-parameter optimizer state.
+    // data slots are read fresh every step, never differentiated
     const slots = [...dataVariables]
-    if (state !== null && (stateVars.length !== vars.length || stateVars.some((v, i) => v !== vars[i]))) {
-      tree.dispose(state)
-      state = null
-      demoteStep()
-      stepMode = "probe"
-    }
-    const key = [lossThunk, ...vars, KEY_SEP, ...slots]
-    if (compiledStep !== null && !sameStepKey(key)) {
-      demoteStep()
-      stepMode = "probe"
-    }
-    if (state === null) {
-      state = transform.init(vars.map(v => v.raw.ref))
+    if (state === null || stateVars.length !== vars.length || stateVars.some((v, i) => v !== vars[i])) {
+      state = tree.map((x: np.Array) => np.settle(x), transform.init(vars.map(v => v.current)) as any) as optax.OptState
       stateVars = vars
     }
-
-    // gradient of the loss thunk: each variable temporarily carries its
-    // parameter and each data slot its argument, so reads inside the thunk
-    // trace. Only the params leaf differentiates – jax's default argnums is 0,
-    // and jax-js stop-gradients the remaining arguments itself.
     const lossFromParams = (params: np.Array[], data: np.Array[]) => {
-      const saved = vars.map(v => v.raw)
-      const savedData = slots.map(s => s.raw)
+      const saved = vars.map(v => v.current), savedData = slots.map(s => s.current)
       vars.forEach((v, i) => { v.current = params[i]! })
       slots.forEach((s, i) => { s.current = data[i]! })
       try {
@@ -2931,89 +2374,53 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
         slots.forEach((s, i) => { s.current = savedData[i]! })
       }
     }
-
-    const eagerStep = (): Value => {
-      const [loss, grads] = valueAndGrad(lossFromParams)(vars.map(v => v.raw.ref), slots.map(s => s.raw.ref))
-      const [updates, nextState] = transform.update(grads as np.Array[], state!, vars.map(v => v.raw.ref))
-      state = nextState
-      const fresh = optax.applyUpdates(vars.map(v => v.raw.ref), updates as np.Array[]) as np.Array[]
-      vars.forEach((v, i) => { v.assign(fresh[i]!) })
-      return track(loss)
-    }
-
-    if (stepMode === "eager") { return eagerStep() }
-
-    // compile the whole step – gradient, transform, apply – as one program,
-    // retraced automatically when parameter or data shapes change
-    if (compiledStep === null) { stepKey = key }
-    compiledStep ??= jaxJit((params: np.Array[], data: np.Array[], optState: optax.OptState) => {
-      const [loss, grads] = valueAndGrad(lossFromParams)(tree.ref(params) as np.Array[], data)
-      const [updates, nextState] = transform.update(grads as np.Array[], optState, tree.ref(params) as np.Array[])
-      const fresh = optax.applyUpdates(params, updates as np.Array[]) as np.Array[]
-      return [loss, fresh, nextState] as [np.Array, np.Array[], optax.OptState]
-    }) as any
-
-    const rngBefore = rngCounter
-    const outerTracing = tracingActive
-    const outerTouched = traceTouchedState
-    tracingActive = true
-    traceTouchedState = false
+    const outer = differentiating
+    differentiating = true
     try {
-      // pass a referenced copy of the state tree: on a failed trace our own
-      // references stay valid and the eager fallback still has its state
-      const [loss, fresh, nextState] = compiledStep!(vars.map(v => v.raw.ref), slots.map(s => s.raw.ref), tree.ref(state!) as optax.OptState)
-      tree.dispose(state!)
-      state = nextState
+      const [loss, grads] = valueAndGrad(lossFromParams)(vars.map(v => v.current), slots.map(s => s.current))
+      const [updates, next] = transform.update(grads as np.Array[], state, vars.map(v => v.current))
+      const fresh = optax.applyUpdates(vars.map(v => v.current), updates as np.Array[]) as np.Array[]
+      // the step's results cross into the next step as data, computed together so they
+      // share the forward and backward pass
+      const leaves: np.Array[] = []
+      tree.map((x: np.Array) => { leaves.push(x) }, next as any)
+      np.materialize([loss as np.Array, ...fresh, ...leaves])
+      state = tree.map((x: np.Array) => np.settle(x), next as any) as optax.OptState
       vars.forEach((v, i) => { v.assign(fresh[i]!) })
-      if (traceTouchedState || rngCounter !== rngBefore) {
-        // the loss froze outside state or a random draw – this step is
-        // valid, but a replay would not be
-        demoteStep()
-      } else {
-        stepMode = "jit"
-      }
-      return track(loss)
+      return loss as np.Array
     } catch (e) {
-      demoteStep()
-      return eagerStep()
+      if (e instanceof StateWrite) { return new Error(`optimizer: the loss cannot change state while it is differentiated (${e.message})`) }
+      throw e
     } finally {
-      tracingActive = outerTracing
-      traceTouchedState = outerTouched || traceTouchedState
+      differentiating = outer
     }
   }
 }
 
-// optax's adam does its bias correction with count.item() – a data read that
-// throws inside a jit trace, silently demoting every adam/adamw step to the
-// eager path. This transform keeps the correction in-graph (count stays a
-// tensor through np.power), so the compiled step survives tracing.
 const adamTransform = (learningRate: number, weightDecay = 0, b1 = 0.9, b2 = 0.999, eps = 1e-8): optax.GradientTransformation => ({
   init: (params) => ({
     count: np.array(0),
-    mu: tree.map((p: np.Array) => np.zerosLike(p), tree.ref(params) as any),
+    mu: tree.map((p: np.Array) => np.zerosLike(p), params as any),
     nu: tree.map((p: np.Array) => np.zerosLike(p), params as any),
   }) as unknown as optax.OptState,
   update: (updates, state, params) => {
     const { count, mu, nu } = state as unknown as { count: np.Array, mu: np.Array[], nu: np.Array[] }
     const nextCount = np.add(count, 1)
-    // tree.map hands leaf ownership to the callback – borrow with .ref only
+    // tree.map hands leaf ownership to the callback – operand with  only
     // what a later map still needs (the adagrad lesson)
-    const newMu = tree.map((g: np.Array, m: np.Array) => np.add(np.multiply(g.ref, 1 - b1), np.multiply(m, b1)), tree.ref(updates) as any, mu as any)
+    const newMu = tree.map((g: np.Array, m: np.Array) => np.add(np.multiply(g, 1 - b1), np.multiply(m, b1)), updates as any, mu as any)
     const newNu = tree.map((g: np.Array, n: np.Array) => np.add(np.multiply(np.square(g), 1 - b2), np.multiply(n, b2)), updates as any, nu as any)
-    const c1 = np.subtract(1, np.power(b1, nextCount.ref))
-    const c2 = np.subtract(1, np.power(b2, nextCount.ref))
+    const c1 = np.subtract(1, np.power(b1, nextCount))
+    const c2 = np.subtract(1, np.power(b2, nextCount))
     const scaled = weightDecay === 0
       ? tree.map((m: np.Array, n: np.Array) =>
-          np.multiply(np.trueDivide(np.trueDivide(m, c1.ref), np.add(np.sqrt(np.trueDivide(n, c2.ref)), eps)), -learningRate),
-          tree.ref(newMu) as any, tree.ref(newNu) as any)
+          np.multiply(np.trueDivide(np.trueDivide(m, c1), np.add(np.sqrt(np.trueDivide(n, c2)), eps)), -learningRate),
+          newMu as any, newNu as any)
       : tree.map((m: np.Array, n: np.Array, p: np.Array) =>
           np.add(
-            np.multiply(np.trueDivide(np.trueDivide(m, c1.ref), np.add(np.sqrt(np.trueDivide(n, c2.ref)), eps)), -learningRate),
+            np.multiply(np.trueDivide(np.trueDivide(m, c1), np.add(np.sqrt(np.trueDivide(n, c2)), eps)), -learningRate),
             np.multiply(p, -learningRate * weightDecay)),
-          tree.ref(newMu) as any, tree.ref(newNu) as any, params as any)
-    if (weightDecay === 0 && params) { tree.dispose(params) }
-    c1.dispose()
-    c2.dispose()
+          newMu as any, newNu as any, params as any)
     return [scaled as any, { count: nextCount, mu: newMu, nu: newNu } as unknown as optax.OptState]
   },
 })
@@ -3022,14 +2429,10 @@ const adamTransform = (learningRate: number, weightDecay = 0, b1 = 0.9, b2 = 0.9
 const adagradTransform = (learningRate: number, eps = 1e-7): optax.GradientTransformation => ({
   init: (params) => tree.map((p: np.Array) => np.zerosLike(p), params as any),
   update: (updates, state, params) => {
-    if (params) { tree.dispose(params) }
-    const accum = tree.map((g: np.Array, s: np.Array) => np.add(np.square(g.ref), s), updates as any, state as any)
-    // tree.map hands leaf OWNERSHIP to the callback – the second map must
-    // consume its tree.ref(accum) copy (sqrt(s), not sqrt(s.ref)), or every
-    // step leaks one reference per accumulator and the state never frees
+    const accum = tree.map((g: np.Array, s: np.Array) => np.add(np.square(g), s), updates as any, state as any)
     const scaled = tree.map(
       (g: np.Array, s: np.Array) => np.multiply(np.trueDivide(g, np.add(np.sqrt(s), eps)), -learningRate),
-      updates as any, tree.ref(accum) as any)
+      updates as any, accum as any)
     return [scaled as any, accum]
   },
 })
@@ -3063,12 +2466,12 @@ const TensorOptimizationAdaGrad = (a: Value, ...rest: Value[]) => {
   return makeOptimizer(adagradTransform(asNumber(a)), vars)
 }
 
-// Stateful convenience RNG: a fresh Threefry key per call, mirroring the feel
-// of TFJS's tf.random* – deterministic per page load, not across reloads.
+// Stateful convenience RNG: a fresh key per call – deterministic per page load, not
+// across reloads.
 let rngCounter = 0
 const nextRngKey = () => random.key(rngCounter++)
-const TensorRandomNormal = (a: Value) => track(random.normal(nextRngKey(), asNumberList(a)))
-const TensorRandomUniform = (a: Value) => track(random.uniform(nextRngKey(), asNumberList(a)))
+const TensorRandomNormal = (a: Value) => random.normal(nextRngKey(), asNumberList(a))
+const TensorRandomUniform = (a: Value) => random.uniform(nextRngKey(), asNumberList(a))
 
 // A value as the Fluent SOURCE that reproduces it, so CodeEvaluate(String(x))
 // gives x back. This is repr, not display: a string comes back quoted, a list
@@ -3110,7 +2513,10 @@ const StringLiteral = (v: Value): string => {
 const StringConcat = (...args: any[]) => "".concat(...args)
 // characters, not UTF-16 units: `#` disagreed with StringToCodes about how
 // long a string is (4 vs 3 for "a🍌b"), and `_` handed back lone surrogates
-const StringLength = (a: string) => track(np.array([...a].length))
+const StringLength = (a: Value) =>
+  typeof a === "string" || a instanceof String
+    ? np.array([...String(a)].length)
+    : new NoMatch(`expected a string, got ${describeArg(a)}`)
 
 // length works on whatever it's handed – a tensor's leading axis, a list's
 // element count, or a string's characters – by trying each in turn.
@@ -3124,19 +2530,28 @@ const StringToCodes = (a: Value) => {
   if (typeof a !== "string" && !(a instanceof String)) {
     return new Error("`StringToCodes(text)`: expected a string")
   }
-  return track(np.array(Float32Array.from(String(a), (c) => c.codePointAt(0)!)))
+  return np.array(Float32Array.from(String(a), (c) => c.codePointAt(0)!))
 }
 
-const CodesToString = (a: Value) => {
-  const data = getAsSyncList(a) // TraceBailout on tracers, like any data read
-  const codes = Array.isArray(data) ? (data as unknown[]).flat(Infinity) : [data]
-  if (!codes.every((v): v is number => typeof v === "number" && Number.isFinite(v))) {
-    return new Error("`CodesToString(codes)`: expected a tensor of character codes")
-  }
+const codesText = (codes: ArrayLike<number>): string | Error => {
   let text = ""
-  for (const code of codes) {
+  for (let i = 0; i < codes.length; i++) {
+    const code = codes[i]!
+    if (!Number.isFinite(code)) { return new Error("`CodesToString(codes)`: expected a tensor of character codes") }
     text += String.fromCodePoint(Math.min(0x10FFFF, Math.max(0, Math.round(code))))
   }
+  return text
+}
+// Text is for showing, so it never makes the page wait: codes still being computed on the
+// GPU give a signal that holds "" until they arrive, then the text – whatever reads it
+// (StringConcat, Text) recomputes then. Codes already at hand give the string itself.
+const CodesToString = (a: Value) => {
+  const t = a instanceof FluentVariable ? a.current : a
+  if (!isTensor(t)) { return new Error("`CodesToString(codes)`: expected a tensor of character codes") }
+  const known = np.hostValue(t)
+  if (known) { return codesText(known) }
+  const text = signal<Value>("")
+  t.data().then((codes) => { text.value = codesText(codes) }, (e) => { text.value = e instanceof Error ? e : new Error(String(e)) })
   return text
 }
 
@@ -3158,7 +2573,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   CodeEvaluate,
 
   FunctionIterate,
-  FunctionPower,
+  FunctionRepeat,
   FunctionCompose,
   FunctionCommute,
   FunctionOver,
@@ -3175,7 +2590,10 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   FunctionApply,
   FunctionNoAutoLift,
   FunctionGuard,
+  FunctionTry,
   FunctionWhen,
+  ErrorCreate,
+  NoMatch: NoMatchValue,
   Describe,
   doc,
 
@@ -3212,6 +2630,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorGreaterEqual,
   TensorEqual,
   TensorNotEqual,
+  Match,
   TensorOr,
   TensorAnd,
   TensorNot,
@@ -3356,7 +2775,7 @@ SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current sco
 ; Functions
 (.): apply: doc(FunctionApply, "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]"),
 (⟳): iter: doc(FunctionIterate, "step ⟳ n", "Run a thunk n times, paced between display frames so the UI stays live – the loop for training and simulation. Async: a re-evaluation cancels it.", "opt: sgd(0.1), { opt(𝓛) } ⟳ 100"),
-(⍣): doc(FunctionPower, "(f ⍣ n)(x)", "Function power: f composed with itself n times – f(f(…f(x))). Synchronous; for a frame-paced loop use ⟳.", "double: { x | x × 2 }, (double ⍣ 5)(1) = 32"),
+(⍣): power: FunctionPower: doc({ f, n | FunctionRepeat(f, n, FunctionInverse) }, "(f ⍣ n)(x)", "Power: f applied n times – f(f(…f(x))). A negative n runs f backwards, through its inverse. A predicate in place of n runs f until predicate(new, old) holds – (f ⍣ ≡) iterates to a fixed point. Dyadic x (f ⍣ n) y iterates f(x, ·), as in APL. Synchronous; for a frame-paced loop use ⟳.", "(double ⍣ 5)(1) = 32, 2 (^ ⍣ -1) 8 = 3, (cos ⍣ ≡)(1) ≈ 0.739"),
 
 ; Combinators – glyph, array-language name, mainstream name
 (∘): then: compose: doc(FunctionCompose, "(f ∘ g)", "Then: apply f to the arguments, then g to the result – (f ∘ g)(x, y) = g(f(x, y)). Reading order is evaluation order. The Queer bird – APL's atop, swapped to read left-to-right.", "(+ ∘ √)(9, 16) = 5"),
@@ -3370,11 +2789,75 @@ SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current sco
 (⊣): left: doc(FunctionLeft, "x ⊣ y", "Left: yield the leftmost argument; with one argument, the identity.", "3 ⊣ 5 = 3"),
 isFunction: doc(FunctionIs, "isFunction(v)", "1 if v is a function, else 0 – the question a combinator asks before treating an operand as a constant. Composes like a comparison.", "isFunction(√) = 1, isFunction(5) = 0"),
 
+; Inverse and Under – ∇ gives every smooth function its slope, so Newton's
+; method can run it backwards: no table of inverses, any smooth function.
+FunctionSolve: solve: doc({ g, y, seed |
+  ; back(x, v) carries an output-shaped v back to the inputs it came from –
+  ; the transpose of g at x, by ∇
+  back: { x, v | ∇({ z | Σ(v × g(z)) })(x) },
+  miss: { x | abs(g(x) - y) ÷ (1 + abs(y)) },
+  step: { x |
+    ; the smallest move that makes g land on y: s is g's slope when g works
+    ; element by element, and how often each element is picked when g selects
+    s: ∇(g)(x),
+    ; nothing moves where g doesn't look or is flat (s = 0) – and that zero is
+    ; kept out of the division, so the derivative of the answer stays clean too
+    picked: s ≠ 0,
+    safe: where(picked, s, 1),
+    Δ0: where(picked, back(x, y - g(x)) ÷ (safe × safe), 0),
+    Δ: where(abs(Δ0) < 1e30, Δ0, 0),
+    m: miss(x),
+    ; halve the step wherever it doesn't help, until nothing is left to halve:
+    ; an element must get strictly closer, unless it's already well inside the
+    ; tolerance – and a step off the function (NaN) never helps
+    shrink: { σ |
+      mX: miss(x + (σ × Δ)),
+      worse: back(x, isNaN(mX) ∨ ((m > 1e-6) ∧ (mX ≥ m))) ≠ 0,
+      where(worse, where(σ < 1e-6, 0, σ ÷ 2), σ)
+    },
+    x + ((shrink ⍣ ≡)(Δ × 0 + 1) × Δ)
+  },
+  ; no miss ever grows – staying put is always allowed – so this ends
+  x: (step ⍣ { new, old | max(miss(new)) ≥ max(miss(old)) })(seed),
+  ; an answer is checked, never assumed: no solution near the seed is an Error
+  cond(
+    guard(max(miss(x)) ≤ 1e-4, { x }),
+    { Error("solve: no solution near the seed", seed) }
+  )
+}, "solve(g, y, seed)", "The x nearest seed where g(x) = y – Newton's method, with ∇ supplying the slope. When g works element by element, it runs g backwards (the seed picks the branch). When g picks out part of its input – a gather, a slice, the diagonal – it changes that part of seed and keeps the rest. No solution is an Error, never a wrong number.", "solve(cos, 0, 1) ≈ 1.5708"),
+FunctionInverse: inverse: doc({ g | FunctionArity((
+  { x, y | FunctionInverse({ z | g(x, z) })(y) },
+  { y |
+    ; each element starts from whichever of y, 0 and 1 lands closest to it
+    starts: stack((y, y × 0, y × 0 + 1)),
+    off: abs(g(starts) - y),
+    pick: argmin(where(isNaN(off), 1e30, off), 0),
+    FunctionSolve(g, y, Σ(oneHot(pick, 3) × moveaxis(starts, 0, -1), -1))
+  }
+)) }, "inverse(g)", "g run backwards – the same as g ⍣ -1. Each element starts from whichever of y, 0 and 1 lands closest. Dyadic x inverse(g) y solves g(x, ?) = y.", "inverse({ x | x^3 + x })(10) = 2"),
+FunctionUnder: under: (⍢): doc({ g, f |
+  ; the answer is the point nearest the argument – the right one, dyadically –
+  ; where g lands on f's result; when f changed the shape (it reduced), the
+  ; search starts from the argument's mean instead
+  near: { x, t | cond(guard(shape(g(x)) ≡ shape(t), { x }), { μ(x) + (t × 0) }) },
+  FunctionArity((
+    { a, b | t: f(g(a), g(b)), FunctionSolve(g, t, near(b, t)) },
+    { x | t: f(g(x)), FunctionSolve(g, t, near(x, t)) }
+  ))
+}, "x (g ⍢ f) y", "Under: do f in g's world, then come back. When g transforms values – log, square – it is g⁻¹(f(g(x), g(y))): Pythagoras is + under square, the geometric mean is μ under log. When g picks out a part – a gather, a row, the diagonal – f edits just that part: (diagonal ⍢ (× ⟜ 0)) zeroes the diagonal. One rule for both: the nearest point to the argument where g lands on f's result. Reads left to right: g, then f, then g undone – (g ⍥ f) ∘ (g ⍣ -1).", "3 (square ⍢ +) 4 = 5"),
+(≡): match: doc(Match, "x ≡ y", "Match: 1 if x and y are the same value whole – same shape and every element, numbers within a few units of float rounding – else 0. Where = compares element by element and exactly, ≡ answers once. (f ⍣ ≡) iterates f until nothing changes.", "[1, 2] ≡ [1, 2] = 1, [1, 2] ≡ [1, 3] = 0"),
+
 (@): eval: doc(FunctionEvaluate, "f @ x", "Apply the function on the left to the argument on the right – reads as “f at x”. A list spreads as multiple arguments.", "∇({ x | x^2 }) @ 3 = 6"),
-cascade: doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order; the first result that isn’t an Error wins. Errors are values in Fluent – falling through is intended, not exceptional.", "cascade((guard(n = 0, { 1 }), { n × f(n - 1) }))()"),
-cond: doc(FunctionCond, "cond(a, b, …)", "Eager, variadic cascade: run each thunk in order, first non-Error wins. \`cascade((…))()\` without the wrapper – reads as a multi-way conditional next to guard.", "cond(guard(n = 0, { 1 }), { n × fact(n - 1) })"),
-guard: doc(FunctionGuard, "guard(cond, { value })", "A cascade candidate: yields the value while cond is truthy, an Error otherwise.", "guard(n = 0, { 1 })"),
-when: doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Errors from the thunk stay loud – only the condition gates.", "when(training(), { opt(𝓛) })"),
+; Choosing – a candidate answers or declines (returns NoMatch). A choice takes
+; the first answer; a failure (an Error) is an answer too, so it surfaces.
+cascade: doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order with the same arguments; the first that answers wins. A candidate declines by returning NoMatch – guard and try make such candidates. An Error is an answer, not a decline: it stops the cascade and surfaces. When every candidate declines, the cascade declines too, so overload sets nest.", "cascade((guard(n = 0, { 1 }), { n × f(n - 1) }))()"),
+cond: doc(FunctionCond, "cond(a, b, …)", "A multi-way conditional: run each candidate in order, the first that answers wins – cascade((…))() without the wrapper. A candidate that isn’t a thunk is its own answer, so cond(guard(c, { x }), 0) defaults to 0.", "cond(guard(n = 0, { 1 }), { n × fact(n - 1) })"),
+guard: doc(FunctionGuard, "guard(cond, { value })", "A candidate that answers with value while cond holds, and declines otherwise. A broken condition – a typo, an Error – is a failure, never a quiet no.", "guard(n = 0, { 1 })"),
+try: doc(FunctionTry, "try({ value })", "A candidate that declines when value fails: the Error becomes a NoMatch, so cascade and cond move on to the next candidate.", "cond(try({ CodeEvaluate(text) }), 0)"),
+when: doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Not a candidate – whatever the thunk returns, an Error included, is the result.", "when(training(), { opt(𝓛) })"),
+Error: doc(ErrorCreate, "Error(message, cause?)", "A failure, as a value: no answer, and why. The cause can be any value – the Error this one grew from, or what was tried. An Error stops a cascade and surfaces.", "cond(guard(x ≥ 0, { √(x) }), { Error(\\"no real root\\", x) })"),
+; NoMatch (bound natively) is the decline itself: what a candidate returns to
+; say “not my case”. cascade and cond skip it; anywhere else it is an Error.
 
 erf: doc(TensorErrorFunction, "erf(x)", "Gauss error function – the area under a normal curve out to x, saturating at ±1. Smooth and differentiable everywhere.", "erf(1) ≈ 0.8427"),
 
@@ -3391,7 +2874,7 @@ moveaxis: TensorMoveAxis,
 reverse: TensorReverse,
 (⊗): outer: doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]"),
 (⍤): rank: doc(TensorRank, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1,2,3],[4,5,6]]) = [6, 15]"),
-(∙): inner: doc(TensorInner, "a (f ∙ g) b", "Inner product: contract a's last axis with b's first, combining with g and reducing with f. \`+ ∙ ×\` is matrix multiply; swap the ring for others.", "[[1,2],[3,4]] (+ ∙ ×) [[5,6],[7,8]] = [[19,22],[43,50]]"),
+(∙): inner: doc(TensorInner, "a (g ∙ f) b", "Inner product: contract a's last axis with b's first – combine with g, then reduce with f, in the order it reads, like a × b reduce +. \`× ∙ +\` is matrix multiply; swap the ring for others: \`+ ∙ ⌊\` is shortest paths.", "[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]] = [[19,22],[43,50]]"),
 alongAxis: { f, k |
   lift: (f ⍤ 1),                                              ; f lifted to run on each trailing fibre
   { x |
@@ -3666,9 +3149,7 @@ export {
   FluentVariable,
   FluentData,
   isTensor,
-  borrow,
-  track,
-  arena,
+  operand,
   TensorScalar,
   TensorScalarLive,
   // parse
@@ -3696,13 +3177,9 @@ export {
   evaluateGeneration,
   flushRetirements,
   registerDisposable,
-  disposeScopeTensors,
-  disposeValueTensors,
-  // leak watch (test/dev)
-  beginTensorWatch,
-  endTensorWatch,
-  liveTensorCount,
-  peakTensorCount,
+  // errors
+  NoMatch,
+  StringLiteral,
   // environment
   DefaultEnvironment,
   extendEnvironment,

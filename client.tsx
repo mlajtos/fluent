@@ -90,11 +90,22 @@ Button("Reset", { x(0) }),
   - watch a trainable variable: \`watch(θ)\` – a signal that updates on every assignment
 - Iteration
   - repeat N times with \`⟳\`: \`step ⟳ 100\` (async, fire-and-forget)
-  - function power with \`⍣\`: \`(double ⍣ 5)(1)\` is \`double(double(...))\` = \`32\`
-- Pattern matching
-  - \`guard(cond, { value })\`: returns a function that yields value if cond is truthy, else Error
-  - use with \`cascade\` for pattern matching: \`cascade((guard(...), { default }))(arg)\`
-  - example: \`fact: { n | cascade((guard(n = 0, { 1 }), { n * fact(n - 1) }))() }\`
+  - power with \`⍣\`: \`(double ⍣ 5)(1)\` is \`double(double(...))\` = \`32\`
+    - a negative count runs a function backwards: \`({ x | x^3 + x } ⍣ -1)(10)\` is \`2\`
+    - dyadic \`x (f ⍣ n) y\` iterates \`f(x, ·)\`: \`2 (^ ⍣ -1) 8\` is \`3\`
+    - a predicate runs until it holds: \`(cos ⍣ ≡)(1)\` is the fixed point \`0.739…\`
+- Inverse and Under – any smooth function runs backwards (Newton's method, slope from \`∇\`)
+  - \`inverse(f)\` is \`f ⍣ -1\`; \`solve(g, y, seed)\` is the x near seed with g(x) = y
+  - under with \`⍢\`: \`x (g ⍢ f) y\` is \`g⁻¹(f(g(x), g(y)))\` – do f in g's world, then come back
+  - \`3 (square ⍢ +) 4\` is \`5\`, \`(log ⍢ μ)(x)\` is the geometric mean, \`6 (reciprocal ⍢ +) 3\` is \`2\`
+  - when g picks out a part, f edits just that part: \`({ x | x_[1, 2, 3] } ⍢ sort)(v)\` sorts only the middle
+- Choosing – a candidate answers or declines
+  - \`guard(cond, { value })\`: a candidate that answers while cond holds, declines (\`NoMatch\`) otherwise
+  - \`cond(a, b, …)\` and \`cascade((a, b, …))(args)\` take the first candidate that answers
+  - an Error is an answer, not a decline: it stops the choice and surfaces
+  - \`try({ value })\`: a candidate that declines when value fails – \`cond(try({ risky() }), 0)\`
+  - \`Error(message, cause?)\` makes a failure; \`NoMatch\` is the decline itself
+  - example: \`fact: { n | cond(guard(n = 0, { 1 }), { n * fact(n - 1) }) }\`
 - Optimization
   - create variable: \`θ: ~([0, 0])\`
   - define loss: \`loss: { sum(θ^2) }\`
@@ -105,6 +116,7 @@ Button("Reset", { x(0) }),
   - tensor creation: \`..<\`/\`...\` (range), \`linspace\`, \`eye\`, \`rand\`, \`randn\`
   - axis variants: \`stack((a, b), axis)\`, \`concat((a, b), axis)\`, \`unstack(x, axis)\`, \`sum(x, axis)\`
   - outer product \`⊗\`: \`a (⊗ f) b\` pairs every cell of a with every cell of b; \`a (f ⊗ k) b\` keeps trailing k axes zipped
+  - inner product \`∙\`: \`a (g ∙ f) b\` combines with g, then reduces with f – \`A (× ∙ +) B\` is matrix multiply, \`W (+ ∙ ⌊) W\` is shortest paths
   - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
   - UI: \`Slider\`, \`Scrubber\`, \`Checkbox\`, \`Button\`, \`Text\`, \`Grid\`, \`Layers\`, \`Point2D\`, \`Trail\`, \`ImageUpload\`
   - live inputs: \`Camera\`, \`Microphone\`, \`MicrophoneSpectrum\`, \`Time\`, \`MousePosition\`
@@ -117,7 +129,7 @@ Button("Reset", { x(0) }),
 - Syntax highlighting
 - Live evaluation with error reporting
 - Automatic visualization of values (tensors, lists, functions)
-- GPU-accelerated tensor operations (via jax-js on WebGPU, with Wasm/WebGL fallback)
+- GPU-accelerated tensor operations (Fluent's own engine on WebGPU, with a CPU fallback)
 - LLM-backed code generation (BYO Anthropic API key)
 - Command palette (Ctrl+P or Ctrl+Shift+P)
 - Auto-completion (Ctrl+Space)
@@ -190,16 +202,16 @@ import { Signal, computed, signal } from "@preact/signals-core"
 import {
   CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate,
   createScope, PRELUDE, DefaultEnvironment, extendEnvironment, setCodeNodePrinter,
-  evaluateGeneration, registerDisposable, disposeScopeTensors, disposeValueTensors,
+  evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, setOrigin, getOrigin,
   SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalOnce,
   identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
-  np, FluentVariable, isTensor, TensorScalarLive,
+  np, FluentVariable, isTensor, TensorScalarLive, StringLiteral,
   type Value, type CurrentScope, type SyntaxTreeNode, type Origin, type FunctionMeta,
 } from "./language"
 import { useSignals, useSignal, useComputed } from '@preact/signals-react/runtime';
 import { ErrorBoundary } from 'react-error-boundary';
-import { useEffect, type JSX, isValidElement, useRef } from "react";
+import { useEffect, type JSX, isValidElement, useRef, useState } from "react";
 import { createRoot } from "react-dom/client"
 import { type BeforeMount, type Monaco, type OnMount, Editor, loader } from '@monaco-editor/react';
 import * as monaco from "monaco-editor";
@@ -211,8 +223,7 @@ import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/com
 import dedent from "ts-dedent";
 import { Base64 } from 'js-base64'
 import { type Annotations } from "plotly.js"
-import { getWebGPUDevice } from "@jax-js/jax"
-import { cachedFetch, safetensors } from "@jax-js/loaders"
+import { getWebGPUDevice } from "./engine/jax.ts"
 import { interpolateViridis } from 'd3-scale-chromatic'
 import { rgb } from 'd3-color'
 
@@ -226,19 +237,16 @@ import { rgb } from 'd3-color'
 // Configure @monaco-editor/react to use local monaco-editor package
 loader.config({ monaco })
 
-// jax-js backends are initialized by language.ts on import (WebGPU → Wasm → WebGL)
+// language.ts starts the engine on import: WebGPU when the browser offers it, else the CPU
 
 // MARK: Pixel I/O
-// jax-js has no tf.browser – bridge ImageData ↔ arrays by hand. Pixels enter
-// the language as float32 in 0–1: Fluent is a float32 language, and jax-js
-// int32 arithmetic truncates (int ÷ 255 is 0, even mean() stays int) – the
-// same trap TensorRange casts arange around. toPixels still accepts int
-// arrays (0–255) for display.
+// ImageData ↔ arrays, by hand. Pixels enter the language as float32 in 0–1:
+// Fluent is a float32 language. toPixels still accepts int-tagged arrays (0–255)
+// for display.
 
 const pixelReader = new OffscreenCanvas(1, 1)
 
-// ImageBitmap / <video> / <img> → [h, w, 3] float32 tensor (0–1), untracked –
-// the caller owns the result
+// ImageBitmap / <video> / <img> → [h, w, 3] float32 tensor (0–1)
 const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): np.Array => {
   const width = (source as HTMLVideoElement).videoWidth || (source as { width: number }).width
   const height = (source as HTMLVideoElement).videoHeight || (source as { height: number }).height
@@ -263,14 +271,12 @@ const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): 
   return np.array(rgbFlat, { shape: [height, width, 3] })
 }
 
-// [h, w] | [h, w, 1] | [h, w, 3] tensor → canvas. Borrows `data`; the
-// reference is taken synchronously, so the buffer outlives later disposal.
-// The async read keeps the main thread free at 60fps (sync reads also
-// disable the wasm backend's worker parallelism).
+// [h, w] | [h, w, 1] | [h, w, 3] tensor → canvas. The async read keeps the main
+// thread free.
 const toPixels = async (data: np.Array, canvas: HTMLCanvasElement) => {
   const [height = 1, width = 1, channels = 1] = data.shape
   const scale = data.dtype === np.int32 || data.dtype === np.uint32 ? 1 : 255
-  const flat = await data.ref.data()
+  const flat = await data.data()
   const image = new ImageData(width, height)
   for (let p = 0, s = 0; p < image.data.length; p += 4, s += channels) {
     image.data[p] = (flat[s] as number) * scale
@@ -281,16 +287,10 @@ const toPixels = async (data: np.Array, canvas: HTMLCanvasElement) => {
   canvas.getContext('2d')?.putImageData(image, 0, 0)
 }
 
-// Hand a freshly created tensor to a signal: the signal becomes sole owner
-const updateWithFresh = (target: Signal<any>, fresh: np.Array) => {
-  SignalUpdate(target, fresh)
-  fresh.dispose()
-}
-
 // A control can be bound to a signal or to a `~` variable, the way Point2D and
 // Trail already accept both. Without this the other controls rendered a fully
 // interactive widget over a variable and every write vanished: SignalUpdate
-// returns an Error for a non-signal and updateWithFresh discards it.
+// returns an Error for a non-signal.
 // Reading a variable subscribes to its version signal, so an assignment from
 // anywhere else (an optimizer step, `:=`) moves the control too.
 type Bindable = Signal<any> | FluentVariable
@@ -299,9 +299,8 @@ const boundValue = (target: Bindable): any => {
   return target?.value
 }
 const writeBound = (target: Bindable, fresh: np.Array) => {
-  // assign() takes ownership; updateWithFresh borrows and drops its copy
   if (target instanceof FluentVariable) { target.assign(fresh) }
-  else { updateWithFresh(target, fresh) }
+  else { SignalUpdate(target, fresh) }
 }
 
 // MARK: GPU blit
@@ -318,8 +317,9 @@ const getBlitDevice = (): GPUDevice | null => {
   return blitDevice
 }
 
+// the engine stores every value as f32, whatever its dtype tag
 const WGSL_SCALAR: Record<string, string | undefined> = {
-  float32: "f32", int32: "i32", uint32: "u32",
+  float32: "f32", int32: "f32", uint32: "f32", bool: "f32",
 }
 
 const blitShader = (scalar: string, mode: "image" | "heat") => /* wgsl */ `
@@ -708,7 +708,7 @@ const ImageUpload = (target: Signal<np.Array>) => {
     if (!file || !file.type.startsWith("image")) { return }
     const bitmap = await createImageBitmap(file)
     if (retired()) { bitmap.close(); return }
-    updateWithFresh(target, fromPixels(bitmap))
+    SignalUpdate(target, fromPixels(bitmap))
   }
 
   return (
@@ -736,9 +736,8 @@ setMeta(ImageUpload, { noAutoLift: true })
 function MousePosition(): Signal<np.Array> {
   const initial = np.array([0.5, 0.5])
   const s = SignalCreate<np.Array>(initial)
-  initial.dispose()
   const onMove = (e: PointerEvent) => {
-    updateWithFresh(s, np.array([e.clientX / window.innerWidth, e.clientY / window.innerHeight]))
+    SignalUpdate(s, np.array([e.clientX / window.innerWidth, e.clientY / window.innerHeight]))
   }
   window.addEventListener("pointermove", onMove)
   const result = computed(() => s.value) as Signal<np.Array> & { dispose: () => void }
@@ -828,9 +827,7 @@ const frameIfAstTree = (el: any) =>
 
 function WrapWithPrintIfNotReactElement(child: any): any {
   if (child instanceof Signal) {
-    // Reactive island: render EAGERLY inside the same computed that reads the
-    // value – a second lazy layer (Print's computed) could otherwise render a
-    // tensor after its producer disposed it.
+    // Reactive island: render inside the same computed that reads the value.
     return computed(() => {
       const value = (child as Signal<unknown>).value
       if (value instanceof Signal) { return WrapWithPrintIfNotReactElement(value) }
@@ -910,7 +907,7 @@ const Point2D = (target: FluentVariable | Signal<np.Array>, range?: np.Array, co
       x0 + (event.clientX - rect.left) / rect.width * spanX,
       y0 + (event.clientY - rect.top) / rect.height * spanY,
     ])
-    if (target instanceof Signal) { updateWithFresh(target, point) }
+    if (target instanceof Signal) { SignalUpdate(target, point) }
     else { target.assign(point) }
   }
 
@@ -1045,19 +1042,17 @@ function LoadTensorFromImageUrl(url: string): Signal<np.Array | null> {
   }
   imgElement.onload = () => {
     if (retired()) { return }
-    updateWithFresh(s, fromPixels(imgElement))
+    SignalUpdate(s, fromPixels(imgElement))
   }
 
   return s
 }
 
 // Shared engine for realtime tensor sources (Camera, Microphone, Time):
-// a read-only signal driven by requestAnimationFrame that disposes stale
-// tensors. `frame` returns a fresh tensor (ownership transfers here), or
-// null to keep the current one. Takes ownership of `initial`.
+// a read-only signal driven by requestAnimationFrame. `frame` returns a fresh
+// tensor, or null to keep the current one.
 function FrameSignal(initial: np.Array, frame: (time: number) => np.Array | null, cleanup?: () => void): Signal<np.Array> & { dispose: () => void } {
   const source = SignalCreate<np.Array>(initial)
-  initial.dispose()
   let active = true
 
   const tick = (time: number) => {
@@ -1065,7 +1060,7 @@ function FrameSignal(initial: np.Array, frame: (time: number) => np.Array | null
 
     const next = frame(time)
     if (next) {
-      updateWithFresh(source, next)
+      SignalUpdate(source, next)
     }
     requestAnimationFrame(tick)
   }
@@ -1183,6 +1178,52 @@ function SampleRate(): np.Array {
 }
 
 
+// A download kept in the origin's private file system (OPFS), so reloads and hot updates
+// don't fetch large weight files again; without OPFS it is a plain fetch.
+const cachedFetch = async (url: string): Promise<Uint8Array> => {
+  const dir = await navigator.storage?.getDirectory?.()
+    .then((root) => root.getDirectoryHandle("fluent-downloads", { create: true }))
+    .catch(() => null)
+  const name = encodeURIComponent(url)
+  if (dir) {
+    try { return new Uint8Array(await (await (await dir.getFileHandle(name)).getFile()).arrayBuffer()) } catch { /* not cached yet */ }
+  }
+  const response = await fetch(url)
+  if (!response.ok) { throw new Error(`${response.status} ${url}`) }
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  if (dir) {
+    try { const w = await (await dir.getFileHandle(name, { create: true })).createWritable(); await w.write(bytes); await w.close() } catch { /* cache is best effort */ }
+  }
+  return bytes
+}
+
+// safetensors: an 8-byte little-endian header length, a JSON header giving each tensor's
+// dtype, shape and byte range, then the raw bytes. Every tensor is read as float32.
+const halfToFloat = (h: number): number => {
+  const e = (h >> 10) & 0x1f, m = h & 0x3ff, sign = h & 0x8000 ? -1 : 1
+  return sign * (e === 0 ? m * 2 ** -24 : e === 31 ? (m ? NaN : Infinity) : (1 + m / 1024) * 2 ** (e - 15))
+}
+const SAFETENSOR_READERS: Record<string, (b: ArrayBuffer, at: number, n: number) => ArrayLike<number | bigint>> = {
+  F32: (b, at, n) => new Float32Array(b.slice(at, at + 4 * n)), F64: (b, at, n) => new Float64Array(b.slice(at, at + 8 * n)),
+  I32: (b, at, n) => new Int32Array(b.slice(at, at + 4 * n)), I64: (b, at, n) => new BigInt64Array(b.slice(at, at + 8 * n)),
+  I16: (b, at, n) => new Int16Array(b.slice(at, at + 2 * n)), I8: (b, at, n) => new Int8Array(b, at, n),
+  U8: (b, at, n) => new Uint8Array(b, at, n), BOOL: (b, at, n) => new Uint8Array(b, at, n),
+  F16: (b, at, n) => Array.from(new Uint16Array(b.slice(at, at + 2 * n)), halfToFloat),
+  BF16: (b, at, n) => Array.from(new Uint16Array(b.slice(at, at + 2 * n)), (h) => new Float32Array(new Uint32Array([h << 16]).buffer)[0]!),
+}
+const parseSafetensors = (bytes: Uint8Array): [string, np.Array][] => {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const headerLength = Number(view.getBigUint64(0, true))
+  const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + headerLength))) as Record<string, { dtype: string, shape: number[], data_offsets: [number, number] }>
+  const body = bytes.slice(8 + headerLength).buffer
+  return Object.entries(header).filter(([key]) => key !== "__metadata__").map(([key, t]) => {
+    const read = SAFETENSOR_READERS[t.dtype]
+    if (!read) { throw new Error(`safetensors: unsupported dtype ${t.dtype} for '${key}'`) }
+    const n = t.shape.reduce((a, b) => a * b, 1)
+    return [key, np.array(Float32Array.from(read(body, t.data_offsets[0], n) as ArrayLike<number>, Number), { shape: t.shape })]
+  })
+}
+
 const LoadSafeTensorFromURL = (rawUrl?: unknown) => {
   if (rawUrl == null) {
     return new Error("loadSafeTensorFromURL: url is required")
@@ -1195,18 +1236,11 @@ const LoadSafeTensorFromURL = (rawUrl?: unknown) => {
   const s = SignalCreate([] as unknown[]);
   const retired = generationRetired()
 
-  // @jax-js/loaders: cachedFetch persists the download in OPFS (so reloads /
-  // HMR don't re-fetch big weight files), safetensors.parse reads every dtype.
   cachedFetch(url)
     .catch(() => cachedFetch(proxied(url)))
     .then(bytes => {
       if (retired()) { return }
-      const { tensors } = safetensors.parse(bytes)
-      // every tensor → a float32 np.array (BigInt64/Uint8/… all coerce via Number)
-      s.value = Object.entries(tensors).map(([key, t]) => {
-        const data = Float32Array.from(t.data as unknown as ArrayLike<number>, Number)
-        return [key, np.array(data, { shape: t.shape })]
-      })
+      s.value = parseSafetensors(bytes)
     })
 
   return s
@@ -1731,27 +1765,16 @@ function PrettyPrintInner(obj: any): JSX.Element {
     // Reactive variable: create computed that re-reads on version change
     if (obj instanceof FluentVariable) {
       const variable = obj
-      let previous: np.Array | null = null
-      // the island holds one reference between renders – release it with the
-      // generation, or every displayed variable pins its final value forever
-      registerDisposable(() => {
-        if (previous && previous.refCount > 0) { previous.dispose() }
-        previous = null
-      })
       const reactiveValue = computed(() => {
         variable.version.value  // subscribe to changes
-        if (previous && previous.refCount > 0) { previous.dispose() }
-        previous = variable.current.ref
-        return previous
+        return variable.current
       })
       return PrettyPrint(reactiveValue)
     }
 
     if (isTensor(obj)) {
       if (obj.ndim === 0) {
-        const color = COLORS.find(rule => rule.token === "number")?.foreground || "FFFFFF";
-        const formattedNumber = (getAsSyncList(obj) as number).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 6, useGrouping: true }).replace(/,/g, "_");
-        return <span style={{ color: `#${color}` }}>{formattedNumber}</span>;
+        return <ScalarView data={obj} />
       }
 
       if (obj.ndim === 1) {
@@ -1809,7 +1832,13 @@ function PrettyPrintInner(obj: any): JSX.Element {
         return errors;
       }
 
-      return <ol className="list-decimal list-inside flex flex-col gap-2 border rounded-lg border-red-700 bg-red-950 overflow-scroll max-h-24">{linearizeError(obj).reverse().map((error, index) => {
+      // an Error's cause can be any value – what was tried, say – and it
+      // reads as the source that reproduces it, ahead of the messages
+      const chain = linearizeError(obj)
+      const payload = chain[chain.length - 1]!.cause
+      const carried = payload === undefined || payload instanceof Error ? null : StringLiteral(payload as Value)
+
+      return <ol className="list-decimal list-inside flex flex-col gap-2 border rounded-lg border-red-700 bg-red-950 overflow-scroll max-h-24">{carried !== null && <li className="list-item px-2 py-0.5 text-red-700">{carried}</li>}{chain.reverse().map((error, index) => {
         return (
           <li key={index}
             className="list-item px-2 py-0.5 text-red-700 cursor-pointer hover:bg-red-700 hover:text-red-200"
@@ -1854,10 +1883,37 @@ function Panel({ children, className, testId }: { children: JSX.Element, classNa
 
 // MARK: Plots
 
+// A tensor's values for a display, without blocking the page: at once when they are on
+// the host or cheap to compute there; otherwise the display keeps its last values while
+// the GPU's answer is read asynchronously, and redraws when it lands. A plot never waits
+// behind a training loop's queued work.
+const useHostValues = (data: np.Array): unknown => {
+  const onHost = np.hostValue(data) !== undefined
+  const [, arrived] = useState(0)
+  const last = useRef<unknown>(null)
+  useEffect(() => {
+    if (onHost) { return }
+    let live = true
+    data.data().then(() => { if (live) { arrived((n) => n + 1) } }, () => { /* the generation retired */ })
+    return () => { live = false }
+  }, [data, onHost])
+  if (onHost) { last.current = getAsSyncList(data) }
+  return last.current
+}
+
+const ScalarView = ({ data }: { data: np.Array }) => {
+  const value = useHostValues(data) as number | null
+  const color = COLORS.find(rule => rule.token === "number")?.foreground || "FFFFFF"
+  if (value === null) { return <span style={{ color: `#${color}`, opacity: 0.5 }}>…</span> }
+  const formatted = value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 6, useGrouping: true }).replace(/,/g, "_")
+  return <span style={{ color: `#${color}` }}>{formatted}</span>
+}
+
 const BarPlot = ({ data }: { data: np.Array }) => {
 
   const annotations: Partial<Annotations>[] = [];
-  const values = getAsSyncList(data) as number[]
+  const values = useHostValues(data) as number[] | null
+  if (values === null) { return <div style={{ width: '100%', height: '12em' }} /> }
 
   if (data.shape.reduce((a, b) => a * b, 1) < 20) {
     // @ts-ignore
@@ -1964,7 +2020,8 @@ const PointPlot = (x: Value, y?: Value) => {
 }
 
 const HeatPlot = ({ data }: { data: np.Array }) => {
-  const z = getAsSyncList(data) as number[][];
+  const z = useHostValues(data) as number[][] | null
+  if (z === null) { return <div style={{ width: '100%', height: '12em' }} /> }
 
   let annotations: Partial<Annotations>[] = [];
 
@@ -2038,7 +2095,7 @@ const TensorCanvas = ({ data }: { data: np.Array }) => {
   const aspect = width / height
 
   useEffect(() => {
-    if (!canvasRef.current || !data || data.refCount === 0) { return }
+    if (!canvasRef.current || !data) { return }
 
     const canvas = canvasRef.current
 
@@ -2057,16 +2114,11 @@ const TensorCanvas = ({ data }: { data: np.Array }) => {
     // path documents the same pair – so let anything else fall through to it.
     if (device && scalar && (channels === 1 || channels === 3) && getCanvasBlitState(device, canvas)) {
       const scale = data.dtype === np.int32 || data.dtype === np.uint32 ? 1 / 255 : 1
-      // gpuBuffer() consumes a reference; an animated source (⟳) disposes
-      // this frame's tensor before the async read resolves, recycling its
-      // buffer mid-render. Hold a reference until submit, then release it.
-      const keep = data.ref
-      data.ref.gpuBuffer().then((buffer) => {
+      data.gpuBuffer().then((buffer) => {
         if (canvasRef.current === canvas) {
           blitToCanvas(device, canvas, scalar, "image", { width, height, channels, scale }, [buffer])
         }
       }).catch((e) => console.warn("blit failed:", e))
-        .finally(() => { if (keep.refCount > 0) { keep.dispose() } })
       return
     }
 
@@ -2104,7 +2156,7 @@ const HeatCanvas = ({ data }: { data: np.Array }) => {
   const aspect = width / height
 
   useEffect(() => {
-    if (!canvasRef.current || !data || data.refCount === 0) { return }
+    if (!canvasRef.current || !data) { return }
 
     const canvas = canvasRef.current
 
@@ -2117,35 +2169,26 @@ const HeatCanvas = ({ data }: { data: np.Array }) => {
     const scalar = WGSL_SCALAR[data.dtype]
     if (device && scalar && getCanvasBlitState(device, canvas)) {
       // [min, max] computed on-device; the shader normalizes and colors
-      // through the LUT per pixel – nothing is ever read back. Both data and
-      // bounds buffers are held across the async read (gpuBuffer consumes a
-      // reference) so an animated source can't recycle them mid-render.
-      const bounds = np.astype(np.stack([np.min(data.ref), np.max(data.ref)]), np.float32)
-      const keepData = data.ref
-      const keepBounds = bounds.ref
-      Promise.all([data.ref.gpuBuffer(), bounds.gpuBuffer()]).then(([dataBuffer, boundsBuffer]) => {
+      // through the LUT per pixel – nothing is ever read back
+      const bounds = np.astype(np.stack([np.min(data), np.max(data)]), np.float32)
+      Promise.all([data.gpuBuffer(), bounds.gpuBuffer()]).then(([dataBuffer, boundsBuffer]) => {
         if (canvasRef.current === canvas) {
           blitToCanvas(device, canvas, scalar, "heat", { width, height, channels: 1, scale: 1 }, [dataBuffer, boundsBuffer, getViridisGpu(device)])
         }
       }).catch((e) => console.warn("blit failed:", e))
-        .finally(() => {
-          if (keepData.refCount > 0) { keepData.dispose() }
-          if (keepBounds.refCount > 0) { keepBounds.dispose() }
-        })
       return
     }
 
     // Apply viridis colormap via lookup table: normalize to [0, 1], scale to
     // LUT indices, gather colors. Move semantics free the intermediates.
-    const min = np.min(data.ref)
-    const range = np.maximum(np.subtract(np.max(data.ref), min.ref), 1e-6)
-    const normalized = np.trueDivide(np.subtract(data.ref, min), range)
+    const min = np.min(data)
+    const range = np.maximum(np.subtract(np.max(data), min), 1e-6)
+    const normalized = np.trueDivide(np.subtract(data, min), range)
     const indices = np.astype(np.clip(np.multiply(normalized, 255), 0, 255), np.int32)
-    const colors = np.take(VIRIDIS_LUT.ref, np.reshape(indices, [-1]), 0)
+    const colors = np.take(VIRIDIS_LUT, np.reshape(indices, [-1]), 0)
     const image = np.reshape(colors, [height, width, 3])
 
     toPixels(image, canvas)
-    image.dispose()
   }, [data])
 
   // small tensors (a 27×32 embedding matrix) capped at their natural width
@@ -2814,7 +2857,7 @@ const editorBeforeMount: BeforeMount = (monaco) => {
     // Comparison & Relations
     ["≠", "not equal", "Not equal", "not equal neq !="],
     ["≈", "approx", "Approximately equal", "approx approximately"],
-    ["≡", "equiv", "Equivalent / Identical", "equiv equivalent identical"],
+    ["≡", "match", "Match – same value, whole", "match equiv equivalent identical same"],
     ["≢", "not equiv", "Not equivalent", "not equiv nequiv"],
     ["≤", "leq", "Less than or equal", "leq less equal <="],
     ["≥", "geq", "Greater than or equal", "geq greater equal >="],
@@ -2859,7 +2902,8 @@ const editorBeforeMount: BeforeMount = (monaco) => {
     ["↓", "down arrow", "Down arrow", "down arrow downarrow"],
     ["↦", "maps to", "Maps to", "maps to mapsto"],
     ["⟳", "loop", "Loop / Repeat", "loop repeat cycle"],
-    ["⍣", "power", "Function power / Iterate", "power iterate repeat star"],
+    ["⍣", "power", "Power / Inverse / Until", "power iterate repeat star inverse until fixpoint"],
+    ["⍢", "under", "Under – do it in g's world", "under dual conjugate"],
     // Number sets
     ["ℕ", "naturals", "Natural numbers", "naturals N natural numbers"],
     ["ℤ", "integers", "Integers", "integers Z integer numbers"],
@@ -3034,17 +3078,7 @@ const GLOBAL_SHORTCUTS: Record<string, { action: string, withShift?: boolean }> 
   KeyP: { action: "editor.action.quickCommand", withShift: true },
 }
 
-// jax-js's WebGPU backend pops error scopes fire-and-forget; when a device or
-// instance is dropped mid-flight (re-evaluation teardown, HMR, GPU reset) the
-// pending pops reject with nothing to catch them, and the dev overlay buries
-// the app under "Instance dropped in popErrorScope". Swallow exactly that
-// teardown noise – everything else stays loud. (Upstream: jax-js.)
-window.addEventListener("unhandledrejection", (e) => {
-  if (String(e.reason).includes("popErrorScope")) { e.preventDefault() }
-})
-
-// Same spirit for the one window error the spec itself calls ignorable:
-// Monaco's automaticLayout inside a same-frame-resized container (an
+// The one window error the spec itself calls ignorable: Monaco's automaticLayout inside a same-frame-resized container (an
 // auto-growing editor cell) reports "ResizeObserver loop completed with
 // undelivered notifications", and the dev overlay would block the page for it.
 window.addEventListener("error", (e) => {
@@ -3100,10 +3134,7 @@ export function Playground() {
   const result = useComputed<Value>(() => {
     return evaluateGeneration(() => {
       const scope = createScope()
-      const value = evaluateSyntaxTreeNode(CodeParse(code.value), scope) ?? null
-      registerDisposable(() => disposeScopeTensors(scope))
-      registerDisposable(() => disposeValueTensors(value))
-      return value
+      return evaluateSyntaxTreeNode(CodeParse(code.value), scope) ?? null
     })
   })
 
