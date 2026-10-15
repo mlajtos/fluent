@@ -6,7 +6,7 @@ import type { UOp } from "./ir.ts";
 import { node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM } from "./ir.ts";
 import { graphRewriteMany } from "./rewrite.ts";
 import { optimizeMany, COST } from "./opt.ts";
-import type { Backend, Tensor } from "./cpu.ts";
+import type { HostData } from "./cpu.ts";
 
 // Dispatches per queue.submit. Submitting each kernel alone costs ~15× in dispatch
 // overhead; one submit per step wedges some drivers and starves the compositor. 16–32 is
@@ -416,22 +416,13 @@ class SyncReader {
   }
 }
 
-// ── the executor: buffers, bind groups, dispatches. Two buffer lifetimes — transient per
-// realize, pooled across residentStep calls — chunked submits, ONE coalesced readback.
-export class GPU implements Backend {
+// ── the executor: plans, buffers, bind groups, dispatches in chunked submits ──────────
+export class GPU {
   readonly name = "gpu";
   #dev: GPUDevice;
   #pipes = new Map<string, GPUComputePipeline>();
-  #res = new Map<string, { buf: GPUBuffer; shape: readonly number[] }>();
-  #pool = new Map<number, GPUBuffer>();
-  #bg = new Map<number, { pipe: GPUComputePipeline; bg: GPUBindGroup; dispatch: number[] }>();
-  #constUp = new Set<number>();
-  #ts: { qs: GPUQuerySet; resolve: GPUBuffer; read: GPUBuffer } | null = null;
-  gpuMs = 0;                                                                    // GPU-timeline time of the last synced run, from timestamp queries
-  constructor(dev: GPUDevice, hasTs: boolean) {
-    this.#dev = dev;
-    if (hasTs) this.#ts = { qs: dev.createQuerySet({ type: "timestamp", count: 2 }), resolve: dev.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }), read: dev.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }) };
-  }
+  #timestamps: boolean;                                                        // the device can time passes (profiling)
+  constructor(dev: GPUDevice, timestamps: boolean) { this.#dev = dev; this.#timestamps = timestamps; }
   static async create(): Promise<GPU | null> {
     const adapter = await (globalThis.navigator as { gpu?: { requestAdapter(): Promise<GPUAdapter | null> } })?.gpu?.requestAdapter();
     if (!adapter) return null;
@@ -514,7 +505,7 @@ export class GPU implements Backend {
     const store = new Map<number, GPUBuffer>();
     const bufOf = (u0: UOp): GPUBuffer => {
       const u = current.get(u0.id) ?? u0;
-      if (u.op === "BUFFER") return resolve(bufName(u)) ?? this.#res.get(bufName(u))?.buf ?? ((): never => { throw new Error(`gpu: unbound leaf '${bufName(u)}'`); })();
+      if (u.op === "BUFFER") return resolve(bufName(u)) ?? ((): never => { throw new Error(`gpu: unbound leaf '${bufName(u)}'`); })();
       if (u.op === "CONSTANT") {
         let b = this.#uploaded.get(u);
         if (!b) {
@@ -544,14 +535,14 @@ export class GPU implements Backend {
     for (const u of kernels) { const w = wave.get(u.id)!; (byWave.get(w) ?? byWave.set(w, []).get(w)!).push(u); }
     let enc = dev.createCommandEncoder(), dispatched = 0;
     const flush = () => { dev.queue.submit([enc.finish()]); enc = dev.createCommandEncoder(); dispatched = 0; };
-    const timed = this.profile && this.#ts && kernels.length ? { qs: dev.createQuerySet({ type: "timestamp", count: Math.min(4096, 2 * kernels.length) }), labels: [] as string[], wgsl: [] as string[] } : null;
+    const timed = this.profile && this.#timestamps && kernels.length ? { qs: dev.createQuerySet({ type: "timestamp", count: Math.min(4096, 2 * kernels.length) }), labels: [] as string[], wgsl: [] as string[] } : null;
     for (const w of [...byWave.keys()].sort((a, b) => a - b)) {
       const hosts = byWave.get(w)!.filter((u) => u.op === "HOST"), ks = byWave.get(w)!.filter((u) => u.op === "KERNEL");
       if (hosts.length) {
         flush();
         for (const h of hosts) {
           const ins = h.src.map((x) => ({ data: this.readSync(bufOf(x), Math.max(numel(x.shape), 1)), shape: x.shape }));
-          dev.queue.writeBuffer(bufOf(h), 0, (h.arg as { fn: (ins: Tensor[]) => Float32Array }).fn(ins) as unknown as GPUAllowSharedBufferSource);
+          dev.queue.writeBuffer(bufOf(h), 0, (h.arg as { fn: (ins: HostData[]) => Float32Array }).fn(ins) as unknown as GPUAllowSharedBufferSource);
         }
       }
       if (!ks.length) continue;
@@ -596,88 +587,7 @@ export class GPU implements Backend {
     return result;
   }
 
-  async #run(lowered: UOp[], inputs: Map<string, Tensor>, pooled: boolean, commit: readonly (readonly [UOp, string])[], read: readonly UOp[]): Promise<Tensor[]> {
-    const dev = this.#dev, U = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
-    dev.pushErrorScope("validation");                                          // a dropped kernel must fail loudly, never return stale zeros
-    const store = pooled ? this.#pool : new Map<number, GPUBuffer>();
-    const bufOf = (u: UOp): GPUBuffer => {
-      if (u.op === "BUFFER") { const r = this.#res.get(bufName(u)); if (r) return r.buf; }
-      let b = store.get(u.id);
-      if (!b) { b = dev.createBuffer({ size: this.#bytes(u), usage: U }); store.set(u.id, b); }
-      return b;
-    };
-    // leaves first (queue-ordered before any pass), then kernels in dependency WAVES:
-    // kernels whose producers are all in earlier waves are independent, so a wave shares
-    // ONE compute pass, and a new pass is the read-after-write barrier between waves
-    const kernels: UOp[] = [], wave = new Map<number, number>(), seen = new Set<number>();
-    for (const g of lowered) for (const u of toposort(g)) {
-      if (seen.has(u.id)) continue; seen.add(u.id);
-      if (u.op === "BUFFER") {
-        if (this.#res.has(bufName(u))) continue;
-        const t = inputs.get(bufName(u)) ?? ((): never => { throw new Error(`gpu: missing input '${bufName(u)}'`); })();
-        dev.queue.writeBuffer(bufOf(u), 0, t.data as unknown as GPUAllowSharedBufferSource); continue;
-      }
-      if (u.op === "CONSTANT") { if (!(pooled && this.#constUp.has(u.id))) { dev.queue.writeBuffer(bufOf(u), 0, u.arg as unknown as GPUAllowSharedBufferSource); if (pooled) this.#constUp.add(u.id); } continue; }
-      if (u.op !== "KERNEL" && u.op !== "HOST") throw new Error(`gpu: ${u.op} at the kernel boundary`);
-      let w = 0; for (const s of u.src) if (s.op === "KERNEL" || s.op === "HOST") w = Math.max(w, wave.get(s.id)! + 1);
-      wave.set(u.id, w); kernels.push(u);
-    }
-    const bgOf = (u: UOp) => {
-      let c = pooled ? this.#bg.get(u.id) : undefined;
-      if (!c) {
-        const a = u.arg as { wgsl: string; dispatch: number[] }, pipe = this.#pipe(a.wgsl);
-        const entries: GPUBindGroupEntry[] = u.src.map((s, i) => ({ binding: i, resource: { buffer: bufOf(s) } }));
-        entries.push({ binding: u.src.length, resource: { buffer: bufOf(u) } });
-        c = { pipe, bg: dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries }), dispatch: a.dispatch };
-        if (pooled) this.#bg.set(u.id, c);
-      }
-      return c;
-    };
-    const byWave = new Map<number, UOp[]>();
-    for (const u of kernels) { const w = wave.get(u.id)!; (byWave.get(w) ?? byWave.set(w, []).get(w)!).push(u); }
-    const waves = [...byWave.keys()].sort((a, b) => a - b);
-    let enc = dev.createCommandEncoder(), dispatched = 0;
-    const flush = (always = false) => { if (dispatched || always) { dev.queue.submit([enc.finish()]); enc = dev.createCommandEncoder(); dispatched = 0; } };
-    const ts = read.length ? this.#ts : null;                                  // GPU time only on the synced path: query 0 = first pass start, query 1 = last pass end
-    let passIdx = 0;
-    for (const w of waves) {
-      // a routine runs on the CPU between waves: submit what it reads, read it back, write its result in queue order
-      const hosts = byWave.get(w)!.filter((u) => u.op === "HOST"), ks = byWave.get(w)!.filter((u) => u.op === "KERNEL");
-      if (hosts.length) {
-        flush(true);
-        for (const h of hosts) {
-          const ins = await this.#readBack(h.src.map((x) => [bufOf(x), x.shape] as const));
-          const out = (h.arg as { fn: (ins: Tensor[]) => Float32Array }).fn(ins);
-          dev.queue.writeBuffer(bufOf(h), 0, out as unknown as GPUAllowSharedBufferSource);
-        }
-      }
-      if (!ks.length) continue;
-      const tw = ts ? { querySet: ts.qs, ...(passIdx === 0 ? { beginningOfPassWriteIndex: 0 } : {}), endOfPassWriteIndex: 1 } : undefined;
-      const p = enc.beginComputePass(tw ? { timestampWrites: tw } : undefined);
-      for (const u of ks) { const c = bgOf(u); p.setPipeline(c.pipe); p.setBindGroup(0, c.bg); p.dispatchWorkgroups(c.dispatch[0]!, c.dispatch[1] ?? 1, c.dispatch[2] ?? 1); dispatched++; }
-      p.end(); passIdx++;
-      if (dispatched >= SUBMIT_CHUNK) flush();
-    }
-    for (const [u, name] of commit) enc.copyBufferToBuffer(bufOf(u), 0, this.#res.get(name)!.buf, 0, this.#bytes(u));   // queue order puts these after every read of the old value
-    const verify = async () => { const e = await dev.popErrorScope(); if (e) throw new Error(`gpu validation: ${e.message}`); };
-    if (!read.length) { dev.queue.submit([enc.finish()]); await verify(); return []; }   // fire-and-forget: the caller syncs when it wants a value
-    const sizes = read.map((g) => Math.max(numel(g.shape), 1)), offs: number[] = [];
-    let total = 0; for (const n of sizes) { offs.push(total); total += n; }
-    const staging = dev.createBuffer({ size: Math.max(total, 1) * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    read.forEach((g, i) => enc.copyBufferToBuffer(bufOf(g), 0, staging, offs[i]! * 4, sizes[i]! * 4));
-    if (ts && passIdx) { enc.resolveQuerySet(ts.qs, 0, 2, ts.resolve, 0); enc.copyBufferToBuffer(ts.resolve, 0, ts.read, 0, 16); }
-    dev.queue.submit([enc.finish()]);
-    await verify();
-    await staging.mapAsync(GPUMapMode.READ);
-    const mapped = staging.getMappedRange();
-    const out = read.map((g, i) => ({ data: new Float32Array(mapped, offs[i]! * 4, sizes[i]!).slice(), shape: g.shape }));
-    staging.unmap(); staging.destroy();
-    if (ts && passIdx) { await ts.read.mapAsync(GPUMapMode.READ); const b = new BigUint64Array(ts.read.getMappedRange().slice(0)); ts.read.unmap(); this.gpuMs = Number(b[1]! - b[0]!) / 1e6; }
-    if (!pooled) { const keep = new Set([...this.#res.values()].map((r) => r.buf)); for (const b of new Set(store.values())) if (!keep.has(b)) b.destroy(); }
-    return out;
-  }
-
-  async #readBack(bufs: readonly (readonly [GPUBuffer, readonly number[]])[]): Promise<Tensor[]> {
+  async #readBack(bufs: readonly (readonly [GPUBuffer, readonly number[]])[]): Promise<HostData[]> {
     const sizes = bufs.map(([, sh]) => Math.max(numel(sh), 1)), offs: number[] = [];
     let total = 0; for (const n of sizes) { offs.push(total); total += n; }
     const staging = this.#dev.createBuffer({ size: Math.max(total, 1) * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -689,32 +599,5 @@ export class GPU implements Backend {
     const out = bufs.map(([, sh], i) => ({ data: new Float32Array(mapped, offs[i]! * 4, sizes[i]!).slice(), shape: sh }));
     staging.unmap(); staging.destroy();
     return out;
-  }
-
-  async realize(root: UOp, inputs = new Map<string, Tensor>()): Promise<Tensor> { return (await this.realizeMany([root], inputs))[0]!; }
-  realizeMany(roots: UOp[], inputs = new Map<string, Tensor>()): Promise<Tensor[]> { const g = lowerMany(roots); return this.#run(g, inputs, false, [], g); }
-  residentSet(name: string, t: Tensor): void {
-    const bytes = Math.max(numel(t.shape), 1) * 4;
-    let r = this.#res.get(name);
-    if (!r || r.buf.size !== bytes) { r?.buf.destroy(); r = { buf: this.#dev.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST }), shape: t.shape.slice() }; this.#res.set(name, r); }
-    r.shape = t.shape.slice();
-    const CH = 64 * 1024 * 1024;                                               // ≤ 256 MB per writeBuffer: one huge write silently under-uploads
-    for (let o = 0; o < t.data.length; o += CH) this.#dev.queue.writeBuffer(r.buf, o * 4, t.data.subarray(o, Math.min(o + CH, t.data.length)) as unknown as GPUAllowSharedBufferSource);
-  }
-  async residentGet(name: string): Promise<Tensor> {
-    const r = this.#res.get(name)!, n = Math.max(numel(r.shape), 1);
-    const s = this.#dev.createBuffer({ size: n * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    const enc = this.#dev.createCommandEncoder();
-    enc.copyBufferToBuffer(r.buf, 0, s, 0, n * 4);
-    this.#dev.queue.submit([enc.finish()]);
-    await s.mapAsync(GPUMapMode.READ);
-    const data = new Float32Array(s.getMappedRange()).slice();
-    s.unmap(); s.destroy();
-    return { data, shape: r.shape };
-  }
-  residentStep(update: Map<string, UOp>, read: UOp[], transient: Map<string, Tensor>): Promise<Tensor[]> {
-    const names = [...update.keys()];
-    const g = lowerMany([...names.map((n) => update.get(n)!), ...read]);
-    return this.#run(g, transient, true, names.map((n, i) => [g[i]!, n] as const), g.slice(names.length));
   }
 }

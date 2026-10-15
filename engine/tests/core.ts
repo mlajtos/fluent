@@ -5,15 +5,16 @@
 import { buffer, konst, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, type UOp } from "../ir.ts";
 import { optimize, optimizeMany } from "../opt.ts";
 import { grad, gradAll } from "../grad.ts";
-import { CPU, type Backend, type Tensor } from "../cpu.ts";
+import { CPU, type HostData } from "../cpu.ts";
+import { realize, realizeMany } from "./realize.ts";
 import { GPU, lowerMany } from "../gpu.ts";
-import { matmul, rmsNorm, softmaxRow, silu, relu, sub, adamStep, provablyEq } from "../nn.ts";
+import { matmul, rmsNorm, softmaxRow, silu, relu, sub, adamStep, provablyEq } from "./vocab.ts";
 
 export default async function (): Promise<{ fails: number }> {
   let seed = 0x9e3779b1;
   const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
   const rv = (n: number, s = 1) => Float32Array.from({ length: n }, () => (rnd() - 0.5) * 2 * s);
-  const T = (d: Float32Array, sh: readonly number[]): Tensor => ({ data: d, shape: sh });
+  const T = (d: Float32Array, sh: readonly number[]): HostData => ({ data: d, shape: sh });
   const rel = (got: ArrayLike<number>, exp: ArrayLike<number>) => {
     let md = 0, on = 0;
     for (let i = 0; i < exp.length; i++) { md = Math.max(md, Math.abs(got[i]! - exp[i]!)); on += exp[i]! ** 2; }
@@ -28,7 +29,7 @@ export default async function (): Promise<{ fails: number }> {
   // ── 1. parity battery: every op family, CPU == GPU ─────────────────────────────
   const M = 3, N = 4;
   const x = buffer("x", [M, N]), y = buffer("y", [M, N]), v = buffer("v", [N]);
-  const ins = () => new Map<string, Tensor>([["x", T(rv(M * N), [M, N])], ["y", T(rv(M * N), [M, N])], ["v", T(rv(N), [N])]]);
+  const ins = () => new Map<string, HostData>([["x", T(rv(M * N), [M, N])], ["y", T(rv(M * N), [M, N])], ["v", T(rv(N), [N])]]);
   const CASES: [string, UOp][] = [
     ["elementwise chain", add(mul(exp(mul(x, konst(0.5))), y), recip(add(mul(x, x), konst(2))))],
     ["relu/where chain (fused ALU)", add(mul(relu(exp(x)), y), konst(1))],
@@ -48,20 +49,20 @@ export default async function (): Promise<{ fails: number }> {
   ];
   for (const [name, g] of CASES) {
     const i1 = ins();
-    const a = await cpu.realize(g, i1);
-    const b = gpu ? await gpu.realize(g, i1) : a;
+    const a = await realize(cpu, g, i1);
+    const b = gpu ? await realize(gpu, g, i1) : a;
     check(`parity: ${name}`, rel(b.data, a.data) < 1e-5, `relΔ ${rel(b.data, a.data).toExponential(1)}`);
   }
   // gather/scatter
   {
     const W = buffer("W", [6, 4]), ids = buffer("ids", [5]);
-    const i2 = new Map<string, Tensor>([["W", T(rv(24), [6, 4])], ["ids", T(new Float32Array([2, 0, 4, 2, 5]), [5])]]);
+    const i2 = new Map<string, HostData>([["W", T(rv(24), [6, 4])], ["ids", T(new Float32Array([2, 0, 4, 2, 5]), [5])]]);
     const g1 = gather(W, ids), s1 = scatterAdd(ids, gather(W, ids), 6);
     for (const [nm, g] of [["gather", g1], ["scatterAdd", s1]] as const) {
-      const a = await cpu.realize(g, i2), b = gpu ? await gpu.realize(g, i2) : a;
+      const a = await realize(cpu, g, i2), b = gpu ? await realize(gpu, g, i2) : a;
       check(`parity: ${nm}`, rel(b.data, a.data) < 1e-5);
     }
-    const tbl = (await cpu.realize(g1, i2)).data;
+    const tbl = (await realize(cpu, g1, i2)).data;
     const Wd = i2.get("W")!.data;
     check("gather values", [0, 1, 2, 3].every((c) => tbl[c] === Wd[2 * 4 + c]));
   }
@@ -70,18 +71,18 @@ export default async function (): Promise<{ fails: number }> {
     const B = 3, m = 4, k = 5, n = 6;
     const A = buffer("A", [B, m, k]), Bb = buffer("B", [B, k, n]), Sh = buffer("S", [k, n]);
     const Ad = rv(B * m * k), Bd = rv(B * k * n), Sd = rv(k * n);
-    const i3 = new Map<string, Tensor>([["A", T(Ad, [B, m, k])], ["B", T(Bd, [B, k, n])], ["S", T(Sd, [k, n])]]);
+    const i3 = new Map<string, HostData>([["A", T(Ad, [B, m, k])], ["B", T(Bd, [B, k, n])], ["S", T(Sd, [k, n])]]);
     const ref = new Float32Array(B * m * n), refS = new Float32Array(B * m * n);
     for (let b = 0; b < B; b++) for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) {
       let s = 0, s2 = 0;
       for (let q = 0; q < k; q++) { s += Ad[b * m * k + i * k + q]! * Bd[b * k * n + q * n + j]!; s2 += Ad[b * m * k + i * k + q]! * Sd[q * n + j]!; }
       ref[b * m * n + i * n + j] = s; refS[b * m * n + i * n + j] = s2;
     }
-    const got = await cpu.realize(matmul(A, Bb), i3), gotS = await cpu.realize(matmul(A, Sh), i3);
+    const got = await realize(cpu, matmul(A, Bb), i3), gotS = await realize(cpu, matmul(A, Sh), i3);
     check("matmul frame [3]", rel(got.data, ref) < 1e-4);
     check("matmul frame, B shared", rel(gotS.data, refS) < 1e-4);
     if (gpu) {
-      const gg = await gpu.realize(matmul(A, Bb), i3);
+      const gg = await realize(gpu, matmul(A, Bb), i3);
       check("matmul frame gpu parity", rel(gg.data, got.data) < 1e-5);
     }
   }
@@ -145,16 +146,16 @@ export default async function (): Promise<{ fails: number }> {
       const p = buffer("p", [4]);
       const lossG = sum(mul(randGraph(p, 4), p));
       const P0 = rv(4);
-      const i4 = () => new Map<string, Tensor>([["p", T(P0.slice(), [4])]]);
-      const g = (await cpu.realize(grad(lossG, p), i4())).data;
+      const i4 = () => new Map<string, HostData>([["p", T(P0.slice(), [4])]]);
+      const g = (await realize(cpu, grad(lossG, p), i4())).data;
       const eps = 1e-3;
       for (let j = 0; j < 4; j++) {
         const up = P0.slice(); up[j]! += eps;
         const dn = P0.slice(); dn[j]! -= eps;
-        const fd = ((await cpu.realize(lossG, new Map([["p", T(up, [4])]]))).data[0]! - (await cpu.realize(lossG, new Map([["p", T(dn, [4])]]))).data[0]!) / (2 * eps);
+        const fd = ((await realize(cpu, lossG, new Map([["p", T(up, [4])]]))).data[0]! - (await realize(cpu, lossG, new Map([["p", T(dn, [4])]]))).data[0]!) / (2 * eps);
         worst = Math.max(worst, Math.abs(g[j]! - fd) / (1 + Math.abs(fd)));
       }
-      if (gpu) { const gg = (await gpu.realize(grad(lossG, p), i4())).data; worstG = Math.max(worstG, rel(gg, g)); }
+      if (gpu) { const gg = (await realize(gpu, grad(lossG, p), i4())).data; worstG = Math.max(worstG, rel(gg, g)); }
     }
     check("∇ == finite-diff on 14 random graphs", worst < 3e-2, `worst ${worst.toExponential(1)}`);
     if (gpu) check("∇ cpu == gpu", worstG < 1e-3, `worst ${worstG.toExponential(1)}`);
@@ -167,16 +168,16 @@ export default async function (): Promise<{ fails: number }> {
       ["gather", (W: UOp) => sum(mul(gather(W, buffer("ids", [3])), konst(2)))],
     ] as const) {
       const W = buffer("W", [4, 3]), loss = lossF(W);
-      const at = (d: Float32Array) => new Map<string, Tensor>([["W", T(d, [4, 3])], ["ids", T(Id, [3])]]);
-      const g = (await cpu.realize(grad(loss, W), at(Wd.slice()))).data;
+      const at = (d: Float32Array) => new Map<string, HostData>([["W", T(d, [4, 3])], ["ids", T(Id, [3])]]);
+      const g = (await realize(cpu, grad(loss, W), at(Wd.slice()))).data;
       const eps = 1e-3, fd = new Float32Array(12);
       for (let j = 0; j < 12; j++) {
         const up = Wd.slice(); up[j]! += eps; const dn = Wd.slice(); dn[j]! -= eps;
-        fd[j] = ((await cpu.realize(loss, at(up))).data[0]! - (await cpu.realize(loss, at(dn))).data[0]!) / (2 * eps);
+        fd[j] = ((await realize(cpu, loss, at(up))).data[0]! - (await realize(cpu, loss, at(dn))).data[0]!) / (2 * eps);
       }
       let w = 0; for (let j = 0; j < 12; j++) w = Math.max(w, Math.abs(g[j]! - fd[j]!) / (1 + Math.abs(fd[j]!)));
       check(`∇ ${nm} == finite-diff`, w < 3e-2, `worst ${w.toExponential(1)}`);
-      if (gpu) { const gg = (await gpu.realize(grad(loss, W), at(Wd.slice()))).data; check(`∇ ${nm} cpu == gpu`, rel(gg, g) < 1e-3); }
+      if (gpu) { const gg = (await realize(gpu, grad(loss, W), at(Wd.slice()))).data; check(`∇ ${nm} cpu == gpu`, rel(gg, g) < 1e-3); }
     }
   }
   { // higher order: f = x³ → ∇²=6x, ∇³=6
@@ -184,12 +185,12 @@ export default async function (): Promise<{ fails: number }> {
     const cube = mul(s, mul(s, s));
     const d2 = grad(grad(cube, s), s), d3 = grad(grad(grad(cube, s), s), s);
     const at = new Map([["s", T(new Float32Array([1.5]), [])]]);
-    check("∇² x³ = 6x", Math.abs((await cpu.realize(d2, at)).data[0]! - 9) < 1e-4);
-    check("∇³ x³ = 6", Math.abs((await cpu.realize(d3, at)).data[0]! - 6) < 1e-4);
+    check("∇² x³ = 6x", Math.abs((await realize(cpu, d2, at)).data[0]! - 9) < 1e-4);
+    check("∇³ x³ = 6", Math.abs((await realize(cpu, d3, at)).data[0]! - 6) < 1e-4);
   }
 
-  // ── 4. training smoke: linear regression via graph-Adam on residentStep ───────────
-  for (const be of [cpu, ...(gpu ? [gpu] : [])] as Backend[]) {
+  // ── 4. training smoke: linear regression via graph-Adam, each step's state fed back in ──
+  for (const be of [cpu, ...(gpu ? [gpu] : [])]) {
     const K = 2, NS = 8;
     const Xd = rv(NS * K), Yd = new Float32Array(NS);
     for (let i = 0; i < NS; i++) Yd[i] = 2 * Xd[i * K]! - 1 * Xd[i * K + 1]!;
@@ -199,17 +200,17 @@ export default async function (): Promise<{ fails: number }> {
     const g = gradAll(loss, [w])[0]!;
     const bc1 = buffer("bc1", []), bc2 = buffer("bc2", []), lr = buffer("lr", []);
     const a = adamStep(w, g, buffer("m_w", [K, 1]), buffer("v_w", [K, 1]), bc1, bc2, lr);
-    const upd = new Map([["w", a.p], ["m_w", a.m], ["v_w", a.v]]);
-    be.residentSet("w", T(new Float32Array(K), [K, 1])); be.residentSet("m_w", T(new Float32Array(K), [K, 1])); be.residentSet("v_w", T(new Float32Array(K), [K, 1]));
+    const state = new Map<string, HostData>([["w", T(new Float32Array(K), [K, 1])], ["m_w", T(new Float32Array(K), [K, 1])], ["v_w", T(new Float32Array(K), [K, 1])]]);
     let l0 = 0, lN = 0;
     for (let it = 1; it <= 200; it++) {
-      const tr = new Map<string, Tensor>([["X", T(Xd, [NS, K])], ["Y", T(Yd, [NS, 1])],
+      const inputs = new Map<string, HostData>([...state, ["X", T(Xd, [NS, K])], ["Y", T(Yd, [NS, 1])],
         ["bc1", T(new Float32Array([1 / (1 - 0.9 ** it)]), [])], ["bc2", T(new Float32Array([1 / (1 - 0.999 ** it)]), [])], ["lr", T(new Float32Array([0.05]), [])]]);
-      const out = await be.residentStep(upd, it === 1 || it === 200 ? [loss] : [], tr);
-      if (it === 1) l0 = out[0]!.data[0]!;
-      if (it === 200) lN = out[0]!.data[0]!;
+      const [p, m, v, l] = await realizeMany(be, [a.p, a.m, a.v, loss], inputs);
+      state.set("w", p!); state.set("m_w", m!); state.set("v_w", v!);
+      if (it === 1) l0 = l!.data[0]!;
+      if (it === 200) lN = l!.data[0]!;
     }
-    const wf = (await be.residentGet("w")).data;
+    const wf = state.get("w")!.data;
     check(`train [${be.name}]: loss ${l0.toFixed(3)} → ${lN.toExponential(1)}, w → [${wf[0]!.toFixed(2)}, ${wf[1]!.toFixed(2)}]`, lN < l0 * 1e-3 && Math.abs(wf[0]! - 2) < 0.05 && Math.abs(wf[1]! + 1) < 0.05);
   }
 

@@ -10,6 +10,7 @@ export type Op =
   | "LESS_THAN" | "WHERE" | "DETACH"                         // mask (∂=0) · route · stop-gradient
   | "MATH"                                                   // arg {fn}: one row of MATHS — sin, floor, pow, …
   | "RANDOM"                                                 // src [seed]: uniform [0,1), a pure function of (seed, index)
+  | "IOTA"                                                   // leaf [n]: element i is i — an index ramp no buffer holds
   | "REDUCE"                                                 // arg {axis, keepdims, op: "ADD"|"MAX"|"MUL"}
   | "BROADCAST" | "PERMUTE" | "RESHAPE" | "SLICE" | "WINDOW" // the view algebra — pure stride maps, never compute
   | "PAD"                                                    // arg {axis, before, after}: zeros around — SLICE's transpose, an index predicate
@@ -162,6 +163,9 @@ export const WGSL_HASH_UNIFORM = `fn hashUniform(seed: u32, i: u32) -> f32 {
   h = h ^ (h >> 16u);
   return f32(h >> 8u) * (1.0 / 16777216.0);
 }`;
+// element i is i: computed where it is read, like a random draw — ranges, one-hot rows and
+// index tables never upload an array
+export const iota = (n: number): UOp => node("IOTA", [], null, [n]);
 // a routine run on realized inputs: its result is data, its derivative none
 export const host = (name: string, srcs: UOp[], shape: readonly number[], fn: (ins: { data: Float32Array; shape: readonly number[] }[]) => Float32Array): UOp =>
   node("HOST", srcs, { name, fn }, shape.slice());

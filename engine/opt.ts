@@ -157,6 +157,7 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
       let e = bcIndex(vm.strides, shape, ix);
       if (vm.offset) e = iadd(e, iconst(vm.offset));
       if (vm.base.op === "RANDOM") return node("RAND", [e, load(addInput(build(vm.base.src[0]!)), iconst(0))], null, []);
+      if (vm.base.op === "IOTA") return ival(e);
       if (vm.base.op === "PAD") return readPad(vm.base, e);
       const b = build(vm.base);
       if (b.op === "FUSED" && chainUse(v) === 1 && slot.get(b.id) === undefined && inputs.length + b.src.length - 2 <= cap) {
@@ -212,7 +213,7 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
     let out: UOp;
     if (u.op === "CONSTANT" || u.op === "BUFFER") out = u;
     else if (u.op === "HOST") out = node("HOST", u.src.map(build), u.arg, u.shape);   // a routine: its inputs materialize, its output is a buffer
-    else if (ELEM.has(u.op) || VIEW.has(u.op) || u.op === "PAD" || u.op === "RANDOM") {   // a map kernel; a view reaching build is a root → a strided copy nest
+    else if (ELEM.has(u.op) || VIEW.has(u.op) || u.op === "PAD" || u.op === "RANDOM" || u.op === "IOTA") {   // a map kernel; a view reaching build is a root → a strided copy nest
       // an UNFOLDABLE reshape (a genuine reinterpret of a non-contiguous view) is still
       // flat-identical to its source: copy the SOURCE region and relabel the shape.
       const top = VIEW.has(u.op) && viewMap(u).base === u ? u.src[0]! : u;

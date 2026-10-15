@@ -206,7 +206,7 @@ import {
   getAsSyncList, getMeta, setMeta, setOrigin, getOrigin,
   SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalOnce,
   identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
-  np, FluentVariable, isTensor, TensorScalarLive, StringLiteral,
+  engine, FluentVariable, isTensor, TensorScalarLive, StringLiteral,
   type Value, type CurrentScope, type SyntaxTreeNode, type Origin, type FunctionMeta,
 } from "./language"
 import { useSignals, useSignal, useComputed } from '@preact/signals-react/runtime';
@@ -223,7 +223,6 @@ import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/com
 import dedent from "ts-dedent";
 import { Base64 } from 'js-base64'
 import { type Annotations } from "plotly.js"
-import { getWebGPUDevice } from "./engine/jax.ts"
 import { interpolateViridis } from 'd3-scale-chromatic'
 import { rgb } from 'd3-color'
 
@@ -247,7 +246,7 @@ loader.config({ monaco })
 const pixelReader = new OffscreenCanvas(1, 1)
 
 // ImageBitmap / <video> / <img> → [h, w, 3] float32 tensor (0–1)
-const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): np.Array => {
+const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): engine.Tensor => {
   const width = (source as HTMLVideoElement).videoWidth || (source as { width: number }).width
   const height = (source as HTMLVideoElement).videoHeight || (source as { height: number }).height
   if (pixelReader.width !== width || pixelReader.height !== height) {
@@ -268,15 +267,15 @@ const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): 
     rgbFlat[j + 1] = data[i + 1]! / 255
     rgbFlat[j + 2] = data[i + 2]! / 255
   }
-  return np.array(rgbFlat, { shape: [height, width, 3] })
+  return engine.tensor(rgbFlat, { shape: [height, width, 3] })
 }
 
 // [h, w] | [h, w, 1] | [h, w, 3] tensor → canvas. The async read keeps the main
 // thread free.
-const toPixels = async (data: np.Array, canvas: HTMLCanvasElement) => {
+const toPixels = async (data: engine.Tensor, canvas: HTMLCanvasElement) => {
   const [height = 1, width = 1, channels = 1] = data.shape
-  const scale = data.dtype === np.int32 || data.dtype === np.uint32 ? 1 : 255
-  const flat = await data.data()
+  const scale = data.dtype === engine.int32 || data.dtype === engine.uint32 ? 1 : 255
+  const flat = await data.read()
   const image = new ImageData(width, height)
   for (let p = 0, s = 0; p < image.data.length; p += 4, s += channels) {
     image.data[p] = (flat[s] as number) * scale
@@ -298,7 +297,7 @@ const boundValue = (target: Bindable): any => {
   if (target instanceof FluentVariable) { target.version.value; return target.current }
   return target?.value
 }
-const writeBound = (target: Bindable, fresh: np.Array) => {
+const writeBound = (target: Bindable, fresh: engine.Tensor) => {
   if (target instanceof FluentVariable) { target.assign(fresh) }
   else { SignalUpdate(target, fresh) }
 }
@@ -312,7 +311,7 @@ const writeBound = (target: Bindable, fresh: np.Array) => {
 let blitDevice: GPUDevice | null | undefined
 const getBlitDevice = (): GPUDevice | null => {
   if (blitDevice === undefined) {
-    try { blitDevice = getWebGPUDevice() } catch { blitDevice = null }
+    try { blitDevice = engine.getWebGPUDevice() } catch { blitDevice = null }
   }
   return blitDevice
 }
@@ -606,7 +605,7 @@ const Text = (value: string | String) => {
 // TextEditor(text) – editable always; TextEditor(text, enabled) – read-only
 // while `enabled` is falsy (readOnly, not disabled: text stays selectable and
 // the same <textarea> reconciles in place, so cursor and scroll survive).
-const TextEditor = (editedValue: Signal<string>, enabled?: Signal<np.Array> | np.Array) => {
+const TextEditor = (editedValue: Signal<string>, enabled?: Signal<engine.Tensor> | engine.Tensor) => {
   return SignalComputed(() => {
     const on = enabled === undefined ||
       (getAsSyncList(enabled instanceof Signal ? enabled.value : enabled) as number) >= 0.5
@@ -647,7 +646,7 @@ const Slider = (editedValue: Bindable) => {
 }
 setMeta(Slider, { noAutoLift: true })
 
-const Scrubber = (editedValue: Bindable, sensitivity?: np.Array) => {
+const Scrubber = (editedValue: Bindable, sensitivity?: engine.Tensor) => {
   const step = sensitivity ? getAsSyncList(sensitivity) as number : 1  // 0=stuck, negative=flipped
   const decimals = Math.max(0, Math.ceil(-Math.log10(Math.abs(step) || 1)))
   const factor = Math.pow(10, decimals)
@@ -702,7 +701,7 @@ setMeta(Checkbox, { noAutoLift: true })
 // Image picker + drop zone: writes the image into `target` as a [h, w, 3]
 // tensor. Drag & drop works even where native file dialogs are unavailable
 // (embedded webviews like VS Code's Simple Browser).
-const ImageUpload = (target: Signal<np.Array>) => {
+const ImageUpload = (target: Signal<engine.Tensor>) => {
   const retired = generationRetired()
   const load = async (file: File | null | undefined) => {
     if (!file || !file.type.startsWith("image")) { return }
@@ -733,20 +732,20 @@ const ImageUpload = (target: Signal<np.Array>) => {
 setMeta(ImageUpload, { noAutoLift: true })
 
 // Mouse position as a [2] tensor signal, normalized to the viewport (0..1)
-function MousePosition(): Signal<np.Array> {
-  const initial = np.array([0.5, 0.5])
-  const s = SignalCreate<np.Array>(initial)
+function MousePosition(): Signal<engine.Tensor> {
+  const initial = engine.tensor([0.5, 0.5])
+  const s = SignalCreate<engine.Tensor>(initial)
   const onMove = (e: PointerEvent) => {
-    SignalUpdate(s, np.array([e.clientX / window.innerWidth, e.clientY / window.innerHeight]))
+    SignalUpdate(s, engine.tensor([e.clientX / window.innerWidth, e.clientY / window.innerHeight]))
   }
   window.addEventListener("pointermove", onMove)
-  const result = computed(() => s.value) as Signal<np.Array> & { dispose: () => void }
+  const result = computed(() => s.value) as Signal<engine.Tensor> & { dispose: () => void }
   result.dispose = () => window.removeEventListener("pointermove", onMove)
   registerDisposable(result.dispose)
   return result
 }
 
-const Grid = (cols: np.Array, rows: np.Array) => {
+const Grid = (cols: engine.Tensor, rows: engine.Tensor) => {
   let gridTemplateColumns = ""
   let gridTemplateRows = ""
 
@@ -881,13 +880,13 @@ const Layers = (...children: any[]) => (
 setMeta(Layers, { noAutoLift: true })
 
 // Shared helpers for components bound to a [2] point in a data range
-const pointMapping = (range?: np.Array) => {
+const pointMapping = (range?: engine.Tensor) => {
   const [[x0, x1], [y0, y1]] = (range
     ? getAsSyncList(range)
     : [[0, 1], [0, 1]]) as [[number, number], [number, number]]
   return { x0, y0, spanX: x1 - x0 || 1, spanY: y1 - y0 || 1 }
 }
-const readPoint = (target: FluentVariable | Signal<np.Array>): [number, number] => {
+const readPoint = (target: FluentVariable | Signal<engine.Tensor>): [number, number] => {
   const value = target instanceof Signal ? target.peek() : target
   return getAsSyncList(value) as [number, number]
 }
@@ -896,14 +895,14 @@ const readPoint = (target: FluentVariable | Signal<np.Array>): [number, number] 
 // range [[x0, x1], [y0, y1]]. Dragging the dot assigns; assignments (e.g. by
 // an optimizer) move the dot. The layer is transparent to pointer events, so
 // several Point2Ds can share one Layers stack.
-const Point2D = (target: FluentVariable | Signal<np.Array>, range?: np.Array, color?: Value) => {
+const Point2D = (target: FluentVariable | Signal<engine.Tensor>, range?: engine.Tensor, color?: Value) => {
   const { x0, y0, spanX, spanY } = pointMapping(range)
   const fill = String(color ?? "white")
   const version: Signal<number> | undefined = target instanceof FluentVariable ? target.version : undefined
 
   const write = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.parentElement!.getBoundingClientRect()
-    const point = np.array([
+    const point = engine.tensor([
       x0 + (event.clientX - rect.left) / rect.width * spanX,
       y0 + (event.clientY - rect.top) / rect.height * spanY,
     ])
@@ -964,7 +963,7 @@ const Point2D = (target: FluentVariable | Signal<np.Array>, range?: np.Array, co
 setMeta(Point2D, { noAutoLift: true })
 
 // The path a point has taken: re-renders on every assignment to the target
-const Trail = (target: FluentVariable | Signal<np.Array>, range?: np.Array, color?: Value) => {
+const Trail = (target: FluentVariable | Signal<engine.Tensor>, range?: engine.Tensor, color?: Value) => {
   const { x0, y0, spanX, spanY } = pointMapping(range)
   const stroke = String(color ?? "white")
   const version: Signal<number> | undefined = target instanceof FluentVariable ? target.version : undefined
@@ -1022,8 +1021,8 @@ const generationRetired = (): (() => boolean) => {
   return () => retired
 }
 
-function LoadTensorFromImageUrl(url: string): Signal<np.Array | null> {
-  const s = SignalCreate<np.Array | null>(null);
+function LoadTensorFromImageUrl(url: string): Signal<engine.Tensor | null> {
+  const s = SignalCreate<engine.Tensor | null>(null);
   const retired = generationRetired()
 
   const imgElement = document.createElement('img');
@@ -1051,8 +1050,8 @@ function LoadTensorFromImageUrl(url: string): Signal<np.Array | null> {
 // Shared engine for realtime tensor sources (Camera, Microphone, Time):
 // a read-only signal driven by requestAnimationFrame. `frame` returns a fresh
 // tensor, or null to keep the current one.
-function FrameSignal(initial: np.Array, frame: (time: number) => np.Array | null, cleanup?: () => void): Signal<np.Array> & { dispose: () => void } {
-  const source = SignalCreate<np.Array>(initial)
+function FrameSignal(initial: engine.Tensor, frame: (time: number) => engine.Tensor | null, cleanup?: () => void): Signal<engine.Tensor> & { dispose: () => void } {
+  const source = SignalCreate<engine.Tensor>(initial)
   let active = true
 
   const tick = (time: number) => {
@@ -1066,7 +1065,7 @@ function FrameSignal(initial: np.Array, frame: (time: number) => np.Array | null
   }
   requestAnimationFrame(tick)
 
-  const result = computed(() => source.value) as Signal<np.Array> & { dispose: () => void }
+  const result = computed(() => source.value) as Signal<engine.Tensor> & { dispose: () => void }
   result.dispose = () => {
     active = false
     cleanup?.()
@@ -1075,7 +1074,7 @@ function FrameSignal(initial: np.Array, frame: (time: number) => np.Array | null
   return result
 }
 
-function Camera(width?: np.Array, height?: np.Array, fps?: np.Array): Signal<np.Array> {
+function Camera(width?: engine.Tensor, height?: engine.Tensor, fps?: engine.Tensor): Signal<engine.Tensor> {
   const w = width ? getAsSyncList(width) as number : 640
   const h = height ? getAsSyncList(height) as number : 480
   const frameInterval = 1000 / (fps ? getAsSyncList(fps) as number : 30)
@@ -1098,7 +1097,7 @@ function Camera(width?: np.Array, height?: np.Array, fps?: np.Array): Signal<np.
 
   let lastTime = 0
   // Initialize with black frame so operations don't fail before camera starts
-  return FrameSignal(np.zeros([h, w, 3]), (time) => {
+  return FrameSignal(engine.zeros([h, w, 3]), (time) => {
     if (time - lastTime < frameInterval || video.readyState !== video.HAVE_ENOUGH_DATA) { return null }
     lastTime = time
     return fromPixels(video)
@@ -1136,35 +1135,35 @@ function AudioAnalyser(fftSize: number, smoothing?: number): { get: () => Analys
   }
 }
 
-function Microphone(bufferSize?: np.Array): Signal<np.Array> {
+function Microphone(bufferSize?: engine.Tensor): Signal<engine.Tensor> {
   const size = bufferSize ? getAsSyncList(bufferSize) as number : 2048
   const audio = AudioAnalyser(size * 2)
   const dataArray = new Float32Array(size)
 
   // Initialize with silence
-  return FrameSignal(np.zeros([size]), () => {
+  return FrameSignal(engine.zeros([size]), () => {
     const analyser = audio.get()
     if (!analyser) { return null }
     analyser.getFloatTimeDomainData(dataArray)
-    return np.array(dataArray.slice())
+    return engine.tensor(dataArray.slice())
   }, audio.cleanup)
 }
 
-function MicrophoneSpectrum(bufferSize?: np.Array): Signal<np.Array> {
+function MicrophoneSpectrum(bufferSize?: engine.Tensor): Signal<engine.Tensor> {
   const size = bufferSize ? getAsSyncList(bufferSize) as number : 1024
   const audio = AudioAnalyser(size * 2, 0.8)
   const dataArray = new Uint8Array(size)
 
   // Initialize with silence; normalized to 0-1 range
-  return FrameSignal(np.zeros([size]), () => {
+  return FrameSignal(engine.zeros([size]), () => {
     const analyser = audio.get()
     if (!analyser) { return null }
     analyser.getByteFrequencyData(dataArray)
-    return np.trueDivide(np.array(Float32Array.from(dataArray)), 255)
+    return engine.divide(engine.tensor(Float32Array.from(dataArray)), 255)
   }, audio.cleanup)
 }
 
-function Time(): Signal<np.Array> {
+function Time(): Signal<engine.Tensor> {
   const startTime = performance.now()
   return FrameSignal(TensorScalarLive(0), () => TensorScalarLive((performance.now() - startTime) / 1000))
 }
@@ -1172,7 +1171,7 @@ function Time(): Signal<np.Array> {
 // The audio hardware's sample rate (Hz) – needed to turn FFT bins into pitches.
 // Created lazily on first use so a non-audio program never spins up an AudioContext.
 let sampleRateContext: AudioContext | null = null
-function SampleRate(): np.Array {
+function SampleRate(): engine.Tensor {
   if (!sampleRateContext) { sampleRateContext = new AudioContext() }
   return TensorScalarLive(sampleRateContext.sampleRate)
 }
@@ -1211,7 +1210,7 @@ const SAFETENSOR_READERS: Record<string, (b: ArrayBuffer, at: number, n: number)
   F16: (b, at, n) => Array.from(new Uint16Array(b.slice(at, at + 2 * n)), halfToFloat),
   BF16: (b, at, n) => Array.from(new Uint16Array(b.slice(at, at + 2 * n)), (h) => new Float32Array(new Uint32Array([h << 16]).buffer)[0]!),
 }
-const parseSafetensors = (bytes: Uint8Array): [string, np.Array][] => {
+const parseSafetensors = (bytes: Uint8Array): [string, engine.Tensor][] => {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const headerLength = Number(view.getBigUint64(0, true))
   const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + headerLength))) as Record<string, { dtype: string, shape: number[], data_offsets: [number, number] }>
@@ -1220,7 +1219,7 @@ const parseSafetensors = (bytes: Uint8Array): [string, np.Array][] => {
     const read = SAFETENSOR_READERS[t.dtype]
     if (!read) { throw new Error(`safetensors: unsupported dtype ${t.dtype} for '${key}'`) }
     const n = t.shape.reduce((a, b) => a * b, 1)
-    return [key, np.array(Float32Array.from(read(body, t.data_offsets[0], n) as ArrayLike<number>, Number), { shape: t.shape })]
+    return [key, engine.tensor(Float32Array.from(read(body, t.data_offsets[0], n) as ArrayLike<number>, Number), { shape: t.shape })]
   })
 }
 
@@ -1887,21 +1886,21 @@ function Panel({ children, className, testId }: { children: JSX.Element, classNa
 // the host or cheap to compute there; otherwise the display keeps its last values while
 // the GPU's answer is read asynchronously, and redraws when it lands. A plot never waits
 // behind a training loop's queued work.
-const useHostValues = (data: np.Array): unknown => {
-  const onHost = np.hostValue(data) !== undefined
+const useHostValues = (data: engine.Tensor): unknown => {
+  const onHost = engine.hostValue(data) !== undefined
   const [, arrived] = useState(0)
   const last = useRef<unknown>(null)
   useEffect(() => {
     if (onHost) { return }
     let live = true
-    data.data().then(() => { if (live) { arrived((n) => n + 1) } }, () => { /* the generation retired */ })
+    data.read().then(() => { if (live) { arrived((n) => n + 1) } }, () => { /* the generation retired */ })
     return () => { live = false }
   }, [data, onHost])
   if (onHost) { last.current = getAsSyncList(data) }
   return last.current
 }
 
-const ScalarView = ({ data }: { data: np.Array }) => {
+const ScalarView = ({ data }: { data: engine.Tensor }) => {
   const value = useHostValues(data) as number | null
   const color = COLORS.find(rule => rule.token === "number")?.foreground || "FFFFFF"
   if (value === null) { return <span style={{ color: `#${color}`, opacity: 0.5 }}>…</span> }
@@ -1909,7 +1908,7 @@ const ScalarView = ({ data }: { data: np.Array }) => {
   return <span style={{ color: `#${color}` }}>{formatted}</span>
 }
 
-const BarPlot = ({ data }: { data: np.Array }) => {
+const BarPlot = ({ data }: { data: engine.Tensor }) => {
 
   const annotations: Partial<Annotations>[] = [];
   const values = useHostValues(data) as number[] | null
@@ -2019,7 +2018,7 @@ const PointPlot = (x: Value, y?: Value) => {
   );
 }
 
-const HeatPlot = ({ data }: { data: np.Array }) => {
+const HeatPlot = ({ data }: { data: engine.Tensor }) => {
   const z = useHostValues(data) as number[][] | null
   if (z === null) { return <div style={{ width: '100%', height: '12em' }} /> }
 
@@ -2087,7 +2086,7 @@ const HeatPlot = ({ data }: { data: np.Array }) => {
 }
 
 // Fast canvas-based tensor renderer for real-time use (Camera, etc.)
-const TensorCanvas = ({ data }: { data: np.Array }) => {
+const TensorCanvas = ({ data }: { data: engine.Tensor }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   const height = data.shape[0] || 100
@@ -2113,7 +2112,7 @@ const TensorCanvas = ({ data }: { data: np.Array }) => {
     // the buffer on the last one. Only 1 and 3 are meaningful here – the CPU
     // path documents the same pair – so let anything else fall through to it.
     if (device && scalar && (channels === 1 || channels === 3) && getCanvasBlitState(device, canvas)) {
-      const scale = data.dtype === np.int32 || data.dtype === np.uint32 ? 1 / 255 : 1
+      const scale = data.dtype === engine.int32 || data.dtype === engine.uint32 ? 1 / 255 : 1
       data.gpuBuffer().then((buffer) => {
         if (canvasRef.current === canvas) {
           blitToCanvas(device, canvas, scalar, "image", { width, height, channels, scale }, [buffer])
@@ -2145,10 +2144,10 @@ const VIRIDIS_DATA = Float32Array.from(
     return [color.r / 255, color.g / 255, color.b / 255]
   }).flat()
 )
-const VIRIDIS_LUT = np.array(VIRIDIS_DATA, { shape: [256, 3] })
+const VIRIDIS_LUT = engine.tensor(VIRIDIS_DATA, { shape: [256, 3] })
 
 // Fast canvas-based heatmap with viridis colormap (GPU-accelerated via LUT)
-const HeatCanvas = ({ data }: { data: np.Array }) => {
+const HeatCanvas = ({ data }: { data: engine.Tensor }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   const height = data.shape[0] || 100
@@ -2170,7 +2169,7 @@ const HeatCanvas = ({ data }: { data: np.Array }) => {
     if (device && scalar && getCanvasBlitState(device, canvas)) {
       // [min, max] computed on-device; the shader normalizes and colors
       // through the LUT per pixel – nothing is ever read back
-      const bounds = np.astype(np.stack([np.min(data), np.max(data)]), np.float32)
+      const bounds = engine.astype(engine.stack([engine.min(data), engine.max(data)]), engine.float32)
       Promise.all([data.gpuBuffer(), bounds.gpuBuffer()]).then(([dataBuffer, boundsBuffer]) => {
         if (canvasRef.current === canvas) {
           blitToCanvas(device, canvas, scalar, "heat", { width, height, channels: 1, scale: 1 }, [dataBuffer, boundsBuffer, getViridisGpu(device)])
@@ -2181,12 +2180,12 @@ const HeatCanvas = ({ data }: { data: np.Array }) => {
 
     // Apply viridis colormap via lookup table: normalize to [0, 1], scale to
     // LUT indices, gather colors. Move semantics free the intermediates.
-    const min = np.min(data)
-    const range = np.maximum(np.subtract(np.max(data), min), 1e-6)
-    const normalized = np.trueDivide(np.subtract(data, min), range)
-    const indices = np.astype(np.clip(np.multiply(normalized, 255), 0, 255), np.int32)
-    const colors = np.take(VIRIDIS_LUT, np.reshape(indices, [-1]), 0)
-    const image = np.reshape(colors, [height, width, 3])
+    const min = engine.min(data)
+    const range = engine.maximum(engine.subtract(engine.max(data), min), 1e-6)
+    const normalized = engine.divide(engine.subtract(data, min), range)
+    const indices = engine.astype(engine.clip(engine.multiply(normalized, 255), 0, 255), engine.int32)
+    const colors = engine.take(VIRIDIS_LUT, engine.reshape(indices, [-1]), 0)
+    const image = engine.reshape(colors, [height, width, 3])
 
     toPixels(image, canvas)
   }, [data])
@@ -3142,7 +3141,7 @@ export function Playground() {
     <>
       <div className="absolute inset-0 z-50 p-2 bg-neutral-900 grid text-white">
         {
-          Grid(np.array(2), np.array(1))(
+          Grid(engine.tensor(2), engine.tensor(1))(
             Print(result),
             CodeEditor(code)
           )

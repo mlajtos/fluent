@@ -6,13 +6,12 @@ import { grammar, type ActionDict } from "ohm-js";
 import { toAST as ohmToAST } from "ohm-js/extras";
 import { signal, Signal, computed, effect } from "@preact/signals-core"
 import dedent from "ts-dedent";
-import { numpy as np, nn, lax, random, tree, vjp, valueAndGrad, init, gpuDrained } from "./engine/jax.ts"
-import * as optax from "./engine/optax.ts"
+import * as engine from "./engine/tensor.ts"
 
 // the engine computes on WebGPU where the platform has it, on the CPU everywhere else
-await init()
+await engine.init()
 
-const isTensor = (v: unknown): v is np.Array => v instanceof np.Array
+const isTensor = (v: unknown): v is engine.Tensor => v instanceof engine.Tensor
 
 
 const OPERATOR_RANGES: Record<string, [string, string]> = {
@@ -543,7 +542,7 @@ const getParseErrors = (program: string): ParseError[] => {
 
 // MARK: Evaluate
 
-type Value = np.Array | FluentVariable | Function | Signal<Value> | Error | string | String | symbol | null | Value[]
+type Value = engine.Tensor | FluentVariable | Function | Signal<Value> | Error | string | String | symbol | null | Value[]
 type CurrentScope = Record<string, Value>
 
 // Unified metadata map on function objects
@@ -606,7 +605,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "Number") {
-    const value = np.array(node.content.value)
+    const value = engine.tensor(node.content.value)
     setOrigin(value, node.origin)
     return value
   }
@@ -616,7 +615,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     const localEnv = Object.create(env) as CurrentScope
     const values = node.content.value.map((e) => evaluateSyntaxTreeNode(e, localEnv))
     if (values.length === 0) {
-      const value = np.array([])
+      const value = engine.tensor([])
       setOrigin(value, node.origin)
       return value
     }
@@ -723,14 +722,14 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   return null
 }
 
-np.Array.prototype.toString = function () {
+engine.Tensor.prototype.toString = function () {
   if (this.size <= 32) { return `${getAsSyncList(this)}` }
   return `Tensor [${this.shape.join(" ")}]`
 }
 
 // String coercion (`${x}`, String(x)) goes through Symbol.toPrimitive: a scalar asked
 // for a number gives its value, anything else prints.
-;(np.Array.prototype as any)[Symbol.toPrimitive] = function (hint: string) {
+;(engine.Tensor.prototype as any)[Symbol.toPrimitive] = function (hint: string) {
   if (hint === "number" && this.ndim === 0) { return this.item() }
   return this.toString()
 }
@@ -802,7 +801,7 @@ const operand = (v: any): any => {
 }
 
 const shapeOf = (v: Value): number[] =>
-  (v instanceof FluentVariable ? v.current : (v as np.Array)).shape
+  (v instanceof FluentVariable ? v.current : (v as engine.Tensor)).shape
 
 // A scalar is a rank-0 tensor holding a single phantom item (#(5) = 1), so
 // index/sort/softmax on it return the rank-0 identity rather than leaking the
@@ -813,18 +812,18 @@ const isScalarTensor = (v: Value): boolean =>
 // Trainable variable: its current value, settled into a leaf; an assignment (drag,
 // optimizer step, :=) settles the new one and bumps the version signal.
 class FluentVariable {
-  current: np.Array
+  current: engine.Tensor
   readonly version = signal(0)
-  constructor(initial: np.Array) {
-    this.current = np.settle(initial)
+  constructor(initial: engine.Tensor) {
+    this.current = engine.settle(initial)
     const registry = this instanceof FluentData ? dataVariables : trainableVariables
     registry.add(this)
     registerDisposable(() => { registry.delete(this) })
   }
   get shape() { return this.current.shape }
   get size() { return this.current.size }
-  assign(next: np.Array): void {
-    this.current = np.settle(next)
+  assign(next: engine.Tensor): void {
+    this.current = engine.settle(next)
     this.version.value++
   }
   toString() { return this.current.toString() }
@@ -1063,7 +1062,7 @@ setMeta(FunctionCond, { noAutoLift: true })
 
 // reduce's fast path: a raw binary op → its native tensor reduction. Filled in
 // once the reductions are defined below; FunctionArity tags its dispatchers too,
-// so `reduce +` and `reduce ⌈` fold via np.sum/np.max instead of slice-by-slice.
+// so `reduce +` and `reduce ⌈` fold via engine.sum/engine.max instead of slice-by-slice.
 const reducerFor = new Map<Function, (x: Value, axis?: Value) => Value>()
 const nativeReducer = new WeakMap<Function, (x: Value, axis?: Value) => Value>()
 
@@ -1090,7 +1089,7 @@ const FunctionArity = (candidates: Function[]) => {
     })
   }
   // if the binary op has a native reduction, `reduce`/fold with this dispatcher
-  // takes the fast path (e.g. `reduce +` → np.sum, `reduce ⌈` → np.max)
+  // takes the fast path (e.g. `reduce +` → engine.sum, `reduce ⌈` → engine.max)
   const nativeReduce = typeof binary === "function" ? reducerFor.get(binary) : undefined
   if (nativeReduce) { nativeReducer.set(dispatch as Function, nativeReduce) }
   return dispatch
@@ -1100,7 +1099,7 @@ const FunctionArity = (candidates: Function[]) => {
 // structural arguments – the engine computes it if it isn't yet
 function getAsSyncList(value: unknown) {
   if (value instanceof FluentVariable) { value = value.current }
-  if (value instanceof np.Array) { return value.js() }
+  if (value instanceof engine.Tensor) { return value.js() }
 }
 
 // MARK: Environment
@@ -1140,7 +1139,7 @@ const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert
       // a non-scalar (or NaN) count would silently skip the loop and return the
       // identity function – surface it instead
       return new Error("`(f ⍣ n)`: `n` must be a finite scalar, got " +
-        (Array.isArray(count) ? `a tensor of shape [${(n as np.Array).shape.join(" ")}]` : String(count)))
+        (Array.isArray(count) ? `a tensor of shape [${(n as engine.Tensor).shape.join(" ")}]` : String(count)))
     }
     // a live slider drives counts through fractional values – round, like linspace
     times = Math.round(count)
@@ -1274,12 +1273,12 @@ const FunctionLeft = (...args: Value[]) =>
 // The K-lift question, exposed: userland combinators need to ask "is this
 // operand a function?" to bind constants the way the native hooks do.
 // Float32 0/1, like a comparison, so it composes with guard and where.
-const FunctionIs = (v: Value) => np.array(isFn(v) ? 1 : 0)
+const FunctionIs = (v: Value) => engine.tensor(isFn(v) ? 1 : 0)
 
 // Async repeat (⟳): runs fn between frames so the UI stays live. The loop
 // belongs to the evaluation that started it – a re-evaluation cancels it.
 // (For synchronous function iteration f(f(f(x))) use ⍣ / FunctionPower.)
-const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => {
+const FunctionIterate = (fn: (index?: engine.Tensor) => void, iterations?: Value) => {
   const live = iterations instanceof Signal || iterations instanceof FluentVariable
   if (!(typeof fn === "function" && (iterations === undefined || isTensor(iterations) || live))) {
     throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` must be a scalar Tensor");
@@ -1365,10 +1364,10 @@ const FunctionIterate = (fn: (index?: np.Array) => void, iterations?: Value) => 
     const end = Math.min(i + batch, maxIterations)
     while (i < end) {
       // at most two steps on the GPU: the screen's frame waits behind whatever is queued
-      await gpuDrained(2)
+      await engine.gpuDrained(2)
       if (generation !== currentGeneration || cancelled) { return }
       const stepStart = now()
-      fn(np.array(i))
+      fn(engine.scalar(i))
       i++
       stepTime += now() - stepStart
       if (stepTime > 25) { break }
@@ -1404,12 +1403,12 @@ setMeta(FunctionIterate, { noAutoLift: true })
 
 // Fresh scalar for time-varying sources (Time, sliders, scrubbers): held as data, never
 // folded into a kernel – the clock ticking or a slider moving reuses the compiled plan
-const TensorScalarLive = (value: number): np.Array => np.scalar(value)
+const TensorScalarLive = (value: number): engine.Tensor => engine.scalar(value)
 
 // A signal holds data: a tensor stored in it – or in a list in it – is settled into a
 // leaf, so a value written back every tick (⟳ with ←) never drags the previous ticks along
 const heldValue = (v: unknown): unknown =>
-  Array.isArray(v) ? v.map((e) => heldValue(e)) : v instanceof np.Array ? np.settle(v) : v
+  Array.isArray(v) ? v.map((e) => heldValue(e)) : v instanceof engine.Tensor ? engine.settle(v) : v
 
 const SignalCreate = (<T,>(initial: T) => signal(heldValue(initial))) as typeof signal
 
@@ -1600,7 +1599,7 @@ const ListLength = (a: unknown[]) => {
   // answered for strings here — in UTF-16 units — before ever reaching
   // StringLength, and disagreed with StringToCodes about how long one is
   if (!Array.isArray(a)) { return new NoMatch(`expected a list, got ${describeArg(a as Value)}`) }
-  return np.array(a.length)
+  return engine.tensor(a.length)
 }
 
 const ListGet = (a: any[], b: Value) => {
@@ -1657,7 +1656,7 @@ const describeArg = (v: Value): string =>
     : Array.isArray(v) ? "a list"
     : typeof v === "string" || v instanceof String ? "a string"
     : typeof v === "function" ? "a function"
-    : v instanceof np.Array ? (v.shape.length === 0 ? "a number" : `a tensor [${v.shape.join(" ")}]`)
+    : v instanceof engine.Tensor ? (v.shape.length === 0 ? "a number" : `a tensor [${v.shape.join(" ")}]`)
     : v instanceof FluentVariable ? "a trainable variable"
     : `a ${typeof v}`
 
@@ -1701,9 +1700,9 @@ const asWholeList = (v: Value): number[] => asNumberList(v).map((n) => {
 
 const Tensor = (values: unknown, shape?: Value) => {
   const source: any = isTensor(values) || values instanceof FluentVariable ? operand(values) : values
-  return np.array(source, shape === undefined ? undefined : { shape: asNumberList(shape) })
+  return engine.tensor(source, shape === undefined ? undefined : { shape: asNumberList(shape) })
 }
-const TensorScalar = (value: number) => np.array(value)
+const TensorScalar = (value: number) => engine.tensor(value)
 
 // A numeric operand: a string ("a" + "b") or a function is a user mistake here, so
 // name the type instead of an opaque engine message. operand itself stays general – a
@@ -1718,44 +1717,44 @@ const numericArg = (v: Value): any => {
   return operand(v)
 }
 
-const unaryOp = (op: (x: any) => np.Array) => (a: Value) => op(numericArg(a))
-const binaryOp = (op: (x: any, y: any) => np.Array) => (a: Value, b: Value) => op(numericArg(a), numericArg(b))
+const unaryOp = (op: (x: any) => engine.Tensor) => (a: Value) => op(numericArg(a))
+const binaryOp = (op: (x: any, y: any) => engine.Tensor) => (a: Value, b: Value) => op(numericArg(a), numericArg(b))
 
 // stack broadcasts its inputs to a common shape, like arithmetic does:
 // stack(x - a, y - b) works even when the pieces only meet by broadcasting.
-const broadcastRefs = (values: Value[]): np.Array[] => {
+const broadcastRefs = (values: Value[]): engine.Tensor[] => {
   const tensors = values.map(v => v instanceof FluentVariable ? v.current : v)
-  if (tensors.length === 0 || !tensors.every(isTensor)) { return tensors.map(operand) as np.Array[] }
-  const arrays = tensors as np.Array[]
+  if (tensors.length === 0 || !tensors.every(isTensor)) { return tensors.map(operand) as engine.Tensor[] }
+  const arrays = tensors as engine.Tensor[]
   const rank = Math.max(...arrays.map(t => t.shape.length))
   const shape = Array.from({ length: rank }, (_, i) =>
     Math.max(...arrays.map(t => t.shape[t.shape.length - rank + i] ?? 1)))
   return arrays.map(t =>
-    t.shape.length === rank && t.shape.every((d, i) => d === shape[i]) ? t : np.broadcastTo(t, shape))
+    t.shape.length === rank && t.shape.every((d, i) => d === shape[i]) ? t : engine.broadcastTo(t, shape))
 }
 
 // stack(a, b, ...) joins along axis 0; stack((a, b, ...), axis) picks the axis
 const TensorStack = (...args: unknown[]) => {
   if (Array.isArray(args[0])) {
     const axis = args[1] === undefined ? 0 : asNumber(args[1] as Value)
-    return np.stack(broadcastRefs(args[0] as Value[]), axis)
+    return engine.stack(broadcastRefs(args[0] as Value[]), axis)
   }
-  return np.stack(broadcastRefs(args as Value[]))
+  return engine.stack(broadcastRefs(args as Value[]))
 }
 const TensorUnstack = (a: Value, b?: Value) => {
   const axis = b === undefined ? 0 : asNumber(b)
-  const array = operand(a) as np.Array
+  const array = operand(a) as engine.Tensor
   // the iterator yields slices along the first axis
-  return [...(axis === 0 ? array : np.moveaxis(array, axis, 0))]
+  return [...(axis === 0 ? array : engine.moveaxis(array, axis, 0))]
 }
 const TensorConcat = (...args: unknown[]) => {
   const listed = Array.isArray(args[0])
   const axis = listed && args[1] !== undefined ? asNumber(args[1] as Value) : 0
-  const xs = ((listed ? args[0] : args) as Value[]).map(operand) as np.Array[]
-  return np.concatenate(xs, axis)
+  const xs = ((listed ? args[0] : args) as Value[]).map(operand) as engine.Tensor[]
+  return engine.concatenate(xs, axis)
 }
 const TensorTile = (a: Value, reps: Value) => {
-  return np.tile(operand(a), asNumberList(reps))
+  return engine.tile(operand(a), asNumberList(reps))
 }
 
 // Generalized outer product – J's "table" adverb. `a ⊗(f) b` applies f between
@@ -1775,7 +1774,7 @@ const TensorOuter = function (this: CurrentScope, f: Value, rank?: Value) {
     const cellA = shapeA.slice(split)
     const frameBLength = Math.max(0, shapeOf(b).length - (rankB ?? 0))
     const cellPad = Math.max(0, (rankB ?? 0) - cellA.length)
-    const lifted = np.reshape(operand(a), [...frameA, ...Array(frameBLength + cellPad).fill(1), ...cellA])
+    const lifted = engine.reshape(operand(a), [...frameA, ...Array(frameBLength + cellPad).fill(1), ...cellA])
     return safeApply(f, [lifted, b], scope)
   }
 }
@@ -1791,7 +1790,7 @@ const TensorRank = function (this: CurrentScope, f: Value, rank?: Value) {
   const cellsOf = (a: Value): { frame: number[]; cells: Value[] } => {
     const shape = shapeOf(a), split = k >= 0 ? Math.max(0, shape.length - k) : Math.min(shape.length, -k)
     const frame = shape.slice(0, split), cell = shape.slice(split)
-    const flat = np.reshape(operand(a), [frame.reduce((x, y) => x * y, 1), ...cell])
+    const flat = engine.reshape(operand(a), [frame.reduce((x, y) => x * y, 1), ...cell])
     return { frame, cells: TensorUnstack(flat) as Value[] }
   }
   return function (a: Value, b?: Value) {
@@ -1806,7 +1805,7 @@ const TensorRank = function (this: CurrentScope, f: Value, rank?: Value) {
     }
     const err = results.find((r) => r instanceof Error); if (err) { return err }
     const stacked = TensorStack(results)
-    return np.reshape(operand(stacked), [...frame, ...shapeOf(stacked).slice(1)])
+    return engine.reshape(operand(stacked), [...frame, ...shapeOf(stacked).slice(1)])
   }
 }
 
@@ -1819,12 +1818,12 @@ const TensorInner = function (this: CurrentScope, g: Value, f: Value) {
   const scope = this
   const gOuter = (u: Value, v: Value): Value => {                              // g between a rank-r u and rank-s v → the [u-frame, v-frame] table
     const su = shapeOf(u), sv = shapeOf(v)
-    const uR = np.reshape(operand(u), [...su, ...Array(sv.length).fill(1)])
-    const vR = np.reshape(operand(v), [...Array(su.length).fill(1), ...sv])
+    const uR = engine.reshape(operand(u), [...su, ...Array(sv.length).fill(1)])
+    const vR = engine.reshape(operand(v), [...Array(su.length).fill(1), ...sv])
     return safeApply(g, [uR, vR], scope)
   }
   return function (a: Value, b: Value) {
-    const aSlices = TensorUnstack(np.moveaxis(operand(a), -1, 0)) as Value[]   // a's contracted axis to the front
+    const aSlices = TensorUnstack(engine.moveaxis(operand(a), -1, 0)) as Value[]   // a's contracted axis to the front
     const bSlices = TensorUnstack(b) as Value[]                                      // b's contracted axis is already first
     if (aSlices.length !== bSlices.length) { return new Error("`(g ∙ f)`: a's last axis and b's first axis must match") }
     const terms = aSlices.map((u, k) => gOuter(u, bSlices[k]!))
@@ -1833,18 +1832,18 @@ const TensorInner = function (this: CurrentScope, g: Value, f: Value) {
   }
 }
 
-const TensorAdd = binaryOp(np.add)
-const TensorSubtract = binaryOp(np.subtract)
-const TensorMultiply = binaryOp(np.multiply)
-const TensorDivide = binaryOp(np.trueDivide)
+const TensorAdd = binaryOp(engine.add)
+const TensorSubtract = binaryOp(engine.subtract)
+const TensorMultiply = binaryOp(engine.multiply)
+const TensorDivide = binaryOp(engine.divide)
 
 // a literal integer exponent is exponentiation by squaring in the engine – exact
 // where exp(e·ln x) is not (3^2 is 9, (-2)^2 is 4), and x^2 differentiates as x·x
-const TensorPower = binaryOp(np.power)
+const TensorPower = binaryOp(engine.power)
 // √x is the square root; x √ n is the n-th root of x – the value first, like x ^ n and x log b
 const TensorRoot = (a: Value, b?: Value) => {
   if (b === undefined) {
-    return np.sqrt(operand(a))
+    return engine.sqrt(operand(a))
   }
   return TensorPower(a, TensorReciprocal(b))
 }
@@ -1852,26 +1851,26 @@ const TensorRoot = (a: Value, b?: Value) => {
 // and remainder(x, x) comes back as x. A remainder of exactly ±y is
 // mathematically impossible – fold it to 0.
 const TensorRemainder = (a: Value, b: Value) => {
-  const r = np.remainder(operand(a), operand(b))
-  return np.where(np.equal(np.absolute(r), np.absolute(operand(b))), np.zerosLike(r), r)
+  const r = engine.remainder(operand(a), operand(b))
+  return engine.where(engine.equal(engine.absolute(r), engine.absolute(operand(b))), 0, r)
 }
-const TensorMaximum = binaryOp(np.maximum)
-const TensorMinimum = binaryOp(np.minimum)
+const TensorMaximum = binaryOp(engine.maximum)
+const TensorMinimum = binaryOp(engine.minimum)
 
 // Comparisons yield float32 0/1, APL-style: Fluent is a float32 language, and 0/1
 // composes – `(x = 1) - y` is arithmetic, and prints as numbers, not booleans.
-const comparisonOp = (op: (x: any, y: any) => np.Array) =>
+const comparisonOp = (op: (x: any, y: any) => engine.Tensor) =>
   (a: Value, b: Value) => {
     const x = numericArg(a), y = numericArg(b)
-    return np.astype(op(x, y), np.float32)
+    return engine.astype(op(x, y), engine.float32)
   }
 
-const TensorLess = comparisonOp(np.less)
-const TensorGreater = comparisonOp(np.greater)
-const TensorLessEqual = comparisonOp(np.lessEqual)
-const TensorGreaterEqual = comparisonOp(np.greaterEqual)
-const TensorEqual = comparisonOp(np.equal)
-const TensorNotEqual = comparisonOp(np.notEqual)
+const TensorLess = comparisonOp(engine.less)
+const TensorGreater = comparisonOp(engine.greater)
+const TensorLessEqual = comparisonOp(engine.lessEqual)
+const TensorGreaterEqual = comparisonOp(engine.greaterEqual)
+const TensorEqual = comparisonOp(engine.equal)
+const TensorNotEqual = comparisonOp(engine.notEqual)
 
 // Match ≡ – is it the same value, whole? Tensors match when their shapes and
 // every element agree, lists when their elements match pair by pair, strings
@@ -1888,7 +1887,7 @@ const valuesMatch = (a: Value, b: Value): boolean => {
   if (a instanceof FluentVariable) { a = a.current }
   if (b instanceof FluentVariable) { b = b.current }
   if (isTensor(a) && isTensor(b)) {
-    const sa = (a as np.Array).shape, sb = (b as np.Array).shape
+    const sa = (a as engine.Tensor).shape, sb = (b as engine.Tensor).shape
     if (sa.length !== sb.length || sa.some((d, i) => d !== sb[i])) { return false }
     const da = [getAsSyncList(a)].flat(Infinity), db = [getAsSyncList(b)].flat(Infinity)
     return da.every((x, i) => near(x, db[i]))
@@ -1904,27 +1903,27 @@ const Match = (a: Value, b: Value) => TensorScalar(valuesMatch(a, b) ? 1 : 0)
 
 // Logical ops share the comparison contract: any nonzero operand counts as
 // true, the result is float32 0/1.
-const TensorOr = comparisonOp(np.logicalOr)
-const TensorAnd = comparisonOp(np.logicalAnd)
-const TensorXor = comparisonOp(np.logicalXor)
-const TensorNot = (a: Value) => np.astype(np.logicalNot(operand(a)), np.float32)
+const TensorOr = comparisonOp(engine.logicalOr)
+const TensorAnd = comparisonOp(engine.logicalAnd)
+const TensorXor = comparisonOp(engine.logicalXor)
+const TensorNot = (a: Value) => engine.astype(engine.logicalNot(operand(a)), engine.float32)
 
-const TensorSine = unaryOp(np.sin)
-const TensorCosine = unaryOp(np.cos)
-const TensorTangentHyperbolic = unaryOp(np.tanh)
-const TensorSineInverse = unaryOp(np.asin)
-const TensorCosineInverse = unaryOp(np.acos)
-const TensorTangentInverse = unaryOp(np.atan)
-const TensorSineHyperbolicInverse = unaryOp(np.arcsinh)
-const TensorCosineHyperbolicInverse = unaryOp(np.arccosh)
-const TensorTangentHyperbolicInverse = unaryOp(np.arctanh)
-const TensorArcTangent2 = binaryOp(np.arctan2)  // arctan2(y, x): angle of (x, y)
-const TensorHypotenuse = binaryOp(np.hypot)
+const TensorSine = unaryOp(engine.sin)
+const TensorCosine = unaryOp(engine.cos)
+const TensorTangentHyperbolic = unaryOp(engine.tanh)
+const TensorSineInverse = unaryOp(engine.asin)
+const TensorCosineInverse = unaryOp(engine.acos)
+const TensorTangentInverse = unaryOp(engine.atan)
+const TensorSineHyperbolicInverse = unaryOp(engine.arcsinh)
+const TensorCosineHyperbolicInverse = unaryOp(engine.arccosh)
+const TensorTangentHyperbolicInverse = unaryOp(engine.arctanh)
+const TensorArcTangent2 = binaryOp(engine.arctan2)  // arctan2(y, x): angle of (x, y)
+const TensorHypotenuse = binaryOp(engine.hypot)
 
 // Reductions take an optional axis (scalar or vector tensor) as second
 // argument, and a truthy third argument keeps the reduced axis as size 1 –
 // mean(x, -1, 1) is the trace-safe unsqueeze(mean(x, -1), …)
-const withOptionalAxis = (op: (a: any, axis?: number | number[] | null, opts?: { keepdims?: boolean }) => np.Array) =>
+const withOptionalAxis = (op: (a: any, axis?: number | number[] | null, opts?: { keepdims?: boolean }) => engine.Tensor) =>
   (a: Value, b?: Value, keep?: Value) => {
     const axis = b === undefined ? null : (Array.isArray(requireData(b)) ? asWholeList(b) : asWhole(b))
     const opts = keep === undefined ? undefined : { keepdims: asNumber(keep) !== 0 }
@@ -1932,21 +1931,21 @@ const withOptionalAxis = (op: (a: any, axis?: number | number[] | null, opts?: {
     return op(x, axis, opts)
   }
 
-const TensorSum = withOptionalAxis(np.sum)      // TensorReduce(a, +)
-const TensorProduct = withOptionalAxis(np.prod) // TensorReduce(a, ×)
-const TensorMean = withOptionalAxis(np.mean)
-const TensorMin = withOptionalAxis(np.min)
-const TensorMax = withOptionalAxis(np.max)
+const TensorSum = withOptionalAxis(engine.sum)      // TensorReduce(a, +)
+const TensorProduct = withOptionalAxis(engine.prod) // TensorReduce(a, ×)
+const TensorMean = withOptionalAxis(engine.mean)
+const TensorMin = withOptionalAxis(engine.min)
+const TensorMax = withOptionalAxis(engine.max)
 
 // The reductions above ARE folds; register the fast native path so that
-// `x reduce +` dispatches to np.sum rather than folding slice by slice.
+// `x reduce +` dispatches to engine.sum rather than folding slice by slice.
 reducerFor.set(TensorAdd, TensorSum)
 reducerFor.set(TensorMultiply, TensorProduct)
 reducerFor.set(TensorMaximum, TensorMax)
 reducerFor.set(TensorMinimum, TensorMin)
 
 // axis 0 as a reusable value – the default a fold collapses
-const LEADING_AXIS: Value = np.array(0)
+const LEADING_AXIS: Value = engine.tensor(0)
 
 // Fold a tensor left-to-right with a binary fn, optionally along one axis:
 // `1 ..< 10 reduce +` = 45, `x reduce { a, b | a - b }` = ((x_0-x_1)-x_2)-…
@@ -1985,33 +1984,33 @@ const emptyReductionAxis = (a: Value, axis?: Value): boolean => {
 // TensorRange does – `_` re-casts its index to int32.
 const TensorArgMax = (a: Value, axis?: Value) =>
   emptyReductionAxis(a, axis) ? new Error("`argmax`: an empty tensor has no maximal index")
-    : (axis === undefined ? np.argmax(operand(a)) : np.argmax(operand(a), asWhole(axis))).astype(np.float32)
+    : (axis === undefined ? engine.argmax(operand(a)) : engine.argmax(operand(a), asWhole(axis))).astype(engine.float32)
 const TensorArgMin = (a: Value, axis?: Value) =>
   emptyReductionAxis(a, axis) ? new Error("`argmin`: an empty tensor has no minimal index")
-    : (axis === undefined ? np.argmin(operand(a)) : np.argmin(operand(a), asWhole(axis))).astype(np.float32)
+    : (axis === undefined ? engine.argmin(operand(a)) : engine.argmin(operand(a), asWhole(axis))).astype(engine.float32)
 
-const TensorNegate = unaryOp(np.negative)
-const TensorAbsolute = unaryOp(np.absolute)
-const TensorSign = unaryOp(np.sign)
+const TensorNegate = unaryOp(engine.negative)
+const TensorAbsolute = unaryOp(engine.absolute)
+const TensorSign = unaryOp(engine.sign)
 // log(x) is the natural logarithm; log(x, b) takes the base b, so 8 log 2 = 3
-const TensorNaturalLogarithm = unaryOp(np.log)
+const TensorNaturalLogarithm = unaryOp(engine.log)
 const TensorLogarithm = (a: Value, b?: Value) =>
   b === undefined ? TensorNaturalLogarithm(a) : TensorDivide(TensorNaturalLogarithm(a), TensorNaturalLogarithm(b))
-const TensorLog1Plus = unaryOp(np.log1p)      // log(1 + x), accurate near 0
-const TensorExponential = unaryOp(np.exp)
-const TensorExpMinus1 = unaryOp(np.expm1)     // exp(x) - 1, accurate near 0
-const TensorReciprocal = unaryOp(np.reciprocal)
-const TensorSquareRoot = unaryOp(np.sqrt)
-const TensorCubeRoot = unaryOp(np.cbrt)
-const TensorRound = unaryOp(np.round)
-const TensorTruncate = unaryOp(np.trunc)      // toward zero, unlike floor
-const TensorCeil = unaryOp(np.ceil)
-const TensorFloor = unaryOp(np.floor)
-const TensorErrorFunction = unaryOp(lax.erf)
+const TensorLog1Plus = unaryOp(engine.log1p)      // log(1 + x), accurate near 0
+const TensorExponential = unaryOp(engine.exp)
+const TensorExpMinus1 = unaryOp(engine.expm1)     // exp(x) - 1, accurate near 0
+const TensorReciprocal = unaryOp(engine.reciprocal)
+const TensorSquareRoot = unaryOp(engine.sqrt)
+const TensorCubeRoot = unaryOp(engine.cbrt)
+const TensorRound = unaryOp(engine.round)
+const TensorTruncate = unaryOp(engine.trunc)      // toward zero, unlike floor
+const TensorCeil = unaryOp(engine.ceil)
+const TensorFloor = unaryOp(engine.floor)
+const TensorErrorFunction = unaryOp(engine.erf)
 const TensorSoftmax = (x: Value, axis?: Value) =>
   isScalarTensor(x)
-    ? np.reshape(nn.softmax(np.reshape(operand(x), [1]), 0), [])
-    : nn.softmax(operand(x), axis === undefined ? undefined : asWhole(axis))
+    ? engine.reshape(engine.softmax(engine.reshape(operand(x), [1]), 0), [])
+    : engine.softmax(operand(x), axis === undefined ? undefined : asWhole(axis))
 // oneHot of an index outside 0..<depth is an all-zero row: an off-by-one label
 // column, or a -1 "unknown" sentinel, would silently drop out of the loss. Bounds-check
 // the way `_` does one screen down.
@@ -2020,7 +2019,7 @@ const TensorSoftmax = (x: Value, axis?: Value) =>
 // unchecked as trusted data
 const cheapValues = (v: Value): Float32Array | undefined => {
   const t = v instanceof FluentVariable ? v.current : v
-  return isTensor(t) ? np.hostValue(t as np.Array) : undefined
+  return isTensor(t) ? engine.hostValue(t as engine.Tensor) : undefined
 }
 const TensorOneHot = (indices: Value, depth: Value) => {
   const n = asWhole(depth)
@@ -2031,17 +2030,17 @@ const TensorOneHot = (indices: Value, depth: Value) => {
       return new Error(`oneHot: class ${bad} is out of bounds for a depth of ${n}`)
     }
   }
-  return nn.oneHot(np.astype(operand(indices), np.int32), n)
+  return engine.oneHot(engine.astype(operand(indices), engine.int32), n)
 }
 const TensorCrossEntropy = (labels: Value, logits: Value) =>
-  np.mean(np.negative(np.sum(np.multiply(operand(labels), nn.logSoftmax(operand(logits))), -1)))
+  engine.mean(engine.negative(engine.sum(engine.multiply(operand(labels), engine.logSoftmax(operand(logits))), -1)))
 
 const TensorSort = (x: Value) =>
-  isScalarTensor(x) ? np.reshape(operand(x), []) : np.sort(operand(x))
+  isScalarTensor(x) ? engine.reshape(operand(x), []) : engine.sort(operand(x))
 const TensorArgSort = (x: Value) =>
   isScalarTensor(x)
-    ? np.reshape(np.argsort(np.reshape(operand(x), [1])), []).astype(np.float32)
-    : np.argsort(operand(x)).astype(np.float32)
+    ? engine.reshape(engine.argsort(engine.reshape(operand(x), [1])), []).astype(engine.float32)
+    : engine.argsort(operand(x)).astype(engine.float32)
 const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   const beginList = asNumberList(begin)
   const sizeList = size === undefined ? undefined : asNumberList(size)
@@ -2049,7 +2048,7 @@ const TensorSlice = (a: Value, begin: Value, size?: Value) => {
     const s = sizeList?.[i]
     return (s === undefined || s === -1 ? [b] : [b, b + s]) as [number] | [number, number]
   })
-  return (operand(a) as np.Array).slice(...spec)
+  return (operand(a) as engine.Tensor).slice(...spec)
 }
 const TensorMask = (a: Value, b: Value) => {
   // Selection is along axis 0 only: every step below (arange over shape[0],
@@ -2062,17 +2061,17 @@ const TensorMask = (a: Value, b: Value) => {
   }
   const count = asNumber(TensorSum(TensorBoolean(b)))
   const size = shapeOf(a)[0] ?? 0
-  const indices = np.arange(size).astype(np.float32)
-  const holes = np.full([size], -1)
+  const indices = engine.arange(size).astype(engine.float32)
+  const holes = engine.full([size], -1)
   const mu = TensorWhere(b, indices, holes)
   const top = TensorReverse(TensorSort(mu))
   const valid = TensorSlice(top, TensorScalar(0), TensorScalar(count))
   return TensorGather(a, TensorReverse(valid))
 }
 const TensorFill = (shape: Value, value: Value) => {
-  return np.full(asWholeList(shape), asNumber(value))
+  return engine.full(asWholeList(shape), asNumber(value))
 }
-const TensorBoolean = (a: Value) => np.astype(operand(a), np.bool)
+const TensorBoolean = (a: Value) => engine.astype(operand(a), engine.bool)
 
 const TensorGradient = (f: Value) => {
   if (typeof f !== "function") {
@@ -2084,14 +2083,14 @@ const TensorGradient = (f: Value) => {
     const outer = differentiating
     differentiating = true
     try {
-      const [out, pullback] = vjp((traced: np.Array) => {
+      const [out, pullback] = engine.vjp((traced: engine.Tensor) => {
         const result = (f as Function)(traced)
         const value = result instanceof Signal ? result.peek() : result
         if (value instanceof Error) { throw value }
         if (!isTensor(value)) { throw new Error("`grad(f)`: `f` must return a tensor") }
-        return value as np.Array
-      }, [operand(x) as np.Array])
-      return pullback(np.onesLike(out))[0]!
+        return value as engine.Tensor
+      }, [operand(x) as engine.Tensor])
+      return pullback(engine.full(out.shape, 1))[0]!
     } catch (e) {
       if (e instanceof StateWrite) { return new Error(`\`grad(f)\`: \`f\` cannot change state while being differentiated (${e.message})`) }
       throw e
@@ -2100,25 +2099,25 @@ const TensorGradient = (f: Value) => {
     }
   }
 }
-const TensorTranspose = unaryOp(np.transpose)
+const TensorTranspose = unaryOp(engine.transpose)
 // Move one axis to a new position, keeping the others' relative order (a zero-copy
 // view). The general axis-rotation that `transpose` (full reverse) can't express;
 // `alongAxis` is built on it. Negative positions count from the end.
 const TensorMoveAxis = (a: Value, from: Value, to: Value) => {
   const source = asWhole(from), target = asWhole(to)
-  const x = operand(a) as np.Array
-  return np.moveaxis(x, source, target)
+  const x = operand(a) as engine.Tensor
+  return engine.moveaxis(x, source, target)
 }
 const TensorRange = (a: Value, b?: Value) => {
   // arange tags its result int32 – Fluent tensors are float32 throughout
   if (b === undefined) {
-    return np.arange(Math.trunc(asFinite(a))).astype(np.float32)
+    return engine.arange(Math.trunc(asFinite(a))).astype(engine.float32)
   }
 
   const start = Math.trunc(asFinite(a))
   const stop = Math.trunc(asFinite(b))
   const step = start <= stop ? 1 : -1
-  return np.arange(start, stop, step).astype(np.float32)
+  return engine.arange(start, stop, step).astype(engine.float32)
 }
 
 // Inclusive range: like `start ..< stop`, but the endpoint is included –
@@ -2127,7 +2126,7 @@ const TensorRangeInclusive = (a: Value, b: Value) => {
   const start = Math.trunc(asFinite(a))
   const stop = Math.trunc(asFinite(b))
   const step = start <= stop ? 1 : -1
-  return np.arange(start, stop + step, step).astype(np.float32)
+  return engine.arange(start, stop + step, step).astype(engine.float32)
 }
 
 const TensorLinearSpace = (range: Value, steps: Value) => {
@@ -2138,77 +2137,64 @@ const TensorLinearSpace = (range: Value, steps: Value) => {
   const [start, stop] = bounds as [number, number]
   // a count has to be a whole number; a live slider naturally drives it
   // through fractional values (resolution × 90 + 10), so round rather than reject
-  return np.linspace(start, stop, Math.max(0, Math.round(asNumber(steps))))
+  return engine.linspace(start, stop, Math.max(0, Math.round(asNumber(steps))))
 }
 
 // Rank-polymorphic convolution: the kernel's rank sets the conv's rank, so the
-// same conv slides a 1-D kernel over a vector or a 2-D kernel over an image.
-// Backed by lax.conv – a singleton batch/channel wraps the field (NCHW), zero
-// padded (SAME) so the output keeps the input's shape.
-const TensorConvolution = (arr: Value, kernel: Value) => {
-  const k = operand(kernel) as np.Array
-  const a = operand(arr) as np.Array
-  const ks = k.shape
-  const spatial = a.shape
-  const out = lax.conv(
-    np.reshape(a, [1, 1, ...spatial]),
-    np.reshape(k, [1, 1, ...ks]),
-    spatial.map(() => 1),
-    "SAME",
-  )
-  return np.reshape(out, spatial)
-}
+// same conv slides a 1-D kernel over a vector or a 2-D kernel over an image,
+// zero padded so the output keeps the input's shape.
+const TensorConvolution = (arr: Value, kernel: Value) => engine.conv(operand(arr), operand(kernel))
 
 // Real FFT: a real signal in, the positive-frequency half out. Fluent has no
 // complex dtype, so return the two components stacked as [2, bins] – f_0 is the
 // real part, f_1 the imaginary, magnitude is √(f_0^2 + f_1^2).
 const TensorFFT = (a: Value) => {
-  const { real, imag } = np.fft.rfft(operand(a))
-  return np.stack([real, imag])
+  const { real, imag } = engine.fft.rfft(operand(a))
+  return engine.stack([real, imag])
 }
 
 // Coordinate grids: meshgrid(0 ..< w, 0 ..< h) → [X, Y], each broadcast to the full grid
-const TensorMeshgrid = (...args: Value[]) => np.meshgrid(args.map(operand))
+const TensorMeshgrid = (...args: Value[]) => engine.meshgrid(args.map(operand))
 
-const TensorPad = (a: Value, width: Value) => np.pad(operand(a), asNumber(width))
+const TensorPad = (a: Value, width: Value) => engine.pad(operand(a), asNumber(width))
 
 const TensorRepeat = (a: Value, count: Value) => {
   const n = asNumber(count)
-  const x = operand(a) as np.Array
-  return np.repeat(x, n)
+  const x = operand(a) as engine.Tensor
+  return engine.repeat(x, n)
 }
 
-const TensorSinc = unaryOp(np.sinc)
+const TensorSinc = unaryOp(engine.sinc)
 
 // The k largest values and their indices, as [values, indices]
 const TensorTopK = (a: Value, k: Value) => {
-  const [values, indices] = lax.topK(operand(a), asWhole(k))
-  return [values, indices.astype(np.float32)]
+  const [values, indices] = engine.topK(operand(a), asWhole(k))
+  return [values, indices.astype(engine.float32)]
 }
 
 // Einstein summation: einsum("ij,jk->ik", a, b) is a matrix multiply
 const TensorEinsum = (subscripts: Value, ...args: Value[]) =>
-  np.einsum(String(subscripts), ...args.map(operand))
+  engine.einsum(String(subscripts), ...args.map(operand))
 
 const TensorReshape = (a: Value, b?: Value) => {
   if (b !== undefined) {
-    return np.reshape(operand(a), asNumberList(b))
+    return engine.reshape(operand(a), asNumberList(b))
   }
 
-  return np.array(shapeOf(a))
+  return engine.tensor(shapeOf(a))
 }
 
 // Toroidal shift – APL's rotate. roll(x, 1) shifts flat; roll(x, s, axis)
 // shifts along an axis, wrapping around.
 const TensorRoll = (a: Value, shift: Value, axis?: Value) =>
-  np.roll(operand(a), requireData(shift) as number | number[],
+  engine.roll(operand(a), requireData(shift) as number | number[],
     axis === undefined ? undefined : requireData(axis) as number | number[])
 
 const TensorReverse = (a: Value, axis?: Value) =>
-  np.flip(operand(a), axis === undefined ? undefined : requireData(axis) as number | number[])
+  engine.flip(operand(a), axis === undefined ? undefined : requireData(axis) as number | number[])
 
-const TensorMatrixMultiply = binaryOp(np.matmul)
-const TensorDotProduct = binaryOp(np.dot)
+const TensorMatrixMultiply = binaryOp(engine.matmul)
+const TensorDotProduct = binaryOp(engine.dot)
 
 const TensorLength = (a: Value, b?: Value) => {
   // a list or a string is another candidate's case – decline it
@@ -2220,13 +2206,14 @@ const TensorLength = (a: Value, b?: Value) => {
     // negative axes count from the end, as they do for Σ, sort and moveaxis
     const shape = shapeOf(a)
     const axis = asWhole(b)
-    return np.array(shape[axis < 0 ? axis + shape.length : axis] ?? 1)
+    return engine.tensor(shape[axis < 0 ? axis + shape.length : axis] ?? 1)
   }
 
-  return np.array(shapeOf(a)[0] ?? 1)
+  return engine.tensor(shapeOf(a)[0] ?? 1)
 }
 
-const TensorShape = (a: Value) => np.array(shapeOf(a))
+const TensorShape = (a: Value) =>
+  isTensor(a) || a instanceof FluentVariable ? engine.tensor(shapeOf(a)) : new Error(`shape: expected a tensor, got ${describeArg(a)}`)
 
 // `_` reads its index arg as a scalar (`_0`) or a list/tensor of indices (`_[0, 1]`).
 const readIndexList = (b: Value): { multi: boolean, idxs: number[] } => {
@@ -2271,7 +2258,7 @@ const TensorGather = (a: Value, b: Value): Value => {
   if (typeof a === "string" || a instanceof String) { return stringGather(String(a), b) }
   if (Array.isArray(a)) { return listGather(a as Value[], b) }
   // a scalar is a rank-0 tensor with a single phantom item (#(5) = 1): 5_0 = 5
-  if (isScalarTensor(a)) { a = np.reshape(operand(a), [1]) }
+  if (isScalarTensor(a)) { a = engine.reshape(operand(a), [1]) }
   const size = shapeOf(a)[0] ?? 0
   // Bounds-check every index on the host or cheap to compute there – a gather has
   // no bounds mode, so an out-of-range index would read garbage. Literals and
@@ -2285,30 +2272,30 @@ const TensorGather = (a: Value, b: Value): Value => {
       return new Error(`index ${bad} is out of bounds for an axis of length ${size}`)
     }
   }
-  const raw = np.astype(operand(b), np.int32)
+  const raw = engine.astype(operand(b), engine.int32)
   // negative indices count from the end: a_(-1) is the last element. The
   // outer cast makes the dtype strongly int32 – astype keeps weak typing, and
   // weak int32 promotes to float32 in the where().
-  const wrapped = np.astype(np.where(np.less(raw, 0), np.add(raw, size), raw), np.int32)
-  return np.take(operand(a), wrapped, 0)
+  const wrapped = engine.astype(engine.where(engine.less(raw, 0), engine.add(raw, size), raw), engine.int32)
+  return engine.take(operand(a), wrapped, 0)
 }
 
 const TensorWhere = (a: Value, b: Value, c: Value) =>
-  np.where(np.astype(operand(a), np.bool), operand(b), operand(c))
-const TensorIsNaN = (a: Value) => np.astype(np.isnan(operand(a)), np.float32)
+  engine.where(engine.astype(operand(a), engine.bool), operand(b), operand(c))
+const TensorIsNaN = (a: Value) => engine.astype(engine.isnan(operand(a)), engine.float32)
 
 const TensorVariable = (a: Value) => {
   if (!isTensor(a) && !(a instanceof FluentVariable)) {
     return new Error("`~(init)`: initial value must be a tensor")
   }
-  return new FluentVariable(operand(a) as np.Array)
+  return new FluentVariable(operand(a) as engine.Tensor)
 }
 
 const TensorData = (a: Value) => {
   if (!isTensor(a) && !(a instanceof FluentVariable)) {
     return new Error("`~~(init)`: initial value must be a tensor – make one slot per tensor")
   }
-  return new FluentData(operand(a) as np.Array)
+  return new FluentData(operand(a) as engine.Tensor)
 }
 
 const TensorAssign = (a: Value, b: Value) => {
@@ -2321,7 +2308,7 @@ const TensorAssign = (a: Value, b: Value) => {
     return new Error("`:=`: value must be a tensor", b instanceof Error ? { cause: b } : undefined)
   }
   if (differentiating) { throw new StateWrite("a variable write") }
-  a.assign(operand(b) as np.Array)
+  a.assign(operand(b) as engine.Tensor)
   return null
 }
 
@@ -2335,11 +2322,11 @@ const TensorWatch = (a: Value): Value => {
   })
 }
 
-// Optimizers: optax gradient transformations driven by valueAndGrad. The loss thunk
-// closes over the variables – during the step each variable carries its traced leaf, so
+// Optimizers: update rules driven by valueAndGrad. The loss thunk closes over the
+// variables – during the step each variable carries its traced leaf, so
 // reads inside the thunk differentiate.
-const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: FluentVariable[]) => {
-  let state: optax.OptState | null = null
+const makeOptimizer = (transform: GradientTransformation, explicitVars?: FluentVariable[]) => {
+  let state: OptState | null = null
   let stateVars: FluentVariable[] = []
   return (lossThunk: Value) => {
     if (typeof lossThunk !== "function") {
@@ -2356,10 +2343,10 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     // data slots are read fresh every step, never differentiated
     const slots = [...dataVariables]
     if (state === null || stateVars.length !== vars.length || stateVars.some((v, i) => v !== vars[i])) {
-      state = tree.map((x: np.Array) => np.settle(x), transform.init(vars.map(v => v.current)) as any) as optax.OptState
+      state = engine.mapTree((x: engine.Tensor) => engine.settle(x), transform.init(vars.map(v => v.current)) as any) as OptState
       stateVars = vars
     }
-    const lossFromParams = (params: np.Array[], data: np.Array[]) => {
+    const lossFromParams = (params: engine.Tensor[], data: engine.Tensor[]) => {
       const saved = vars.map(v => v.current), savedData = slots.map(s => s.current)
       vars.forEach((v, i) => { v.current = params[i]! })
       slots.forEach((s, i) => { s.current = data[i]! })
@@ -2368,7 +2355,7 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
         const value = out instanceof Signal ? out.peek() : out
         if (value instanceof Error) { throw value }
         if (!isTensor(value)) { throw new Error("loss must evaluate to a scalar tensor") }
-        return value as np.Array
+        return value as engine.Tensor
       } finally {
         vars.forEach((v, i) => { v.current = saved[i]! })
         slots.forEach((s, i) => { s.current = savedData[i]! })
@@ -2377,17 +2364,17 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
     const outer = differentiating
     differentiating = true
     try {
-      const [loss, grads] = valueAndGrad(lossFromParams)(vars.map(v => v.current), slots.map(s => s.current))
-      const [updates, next] = transform.update(grads as np.Array[], state, vars.map(v => v.current))
-      const fresh = optax.applyUpdates(vars.map(v => v.current), updates as np.Array[]) as np.Array[]
+      const [loss, grads] = engine.valueAndGrad(lossFromParams)(vars.map(v => v.current), slots.map(s => s.current))
+      const [updates, next] = transform.update(grads as engine.Tensor[], state, vars.map(v => v.current))
+      const fresh = vars.map((v, i) => engine.add(v.current, (updates as engine.Tensor[])[i]!))
       // the step's results cross into the next step as data, computed together so they
       // share the forward and backward pass
-      const leaves: np.Array[] = []
-      tree.map((x: np.Array) => { leaves.push(x) }, next as any)
-      np.materialize([loss as np.Array, ...fresh, ...leaves])
-      state = tree.map((x: np.Array) => np.settle(x), next as any) as optax.OptState
+      const leaves: engine.Tensor[] = []
+      engine.mapTree((x: engine.Tensor) => { leaves.push(x) }, next as any)
+      engine.materialize([loss as engine.Tensor, ...fresh, ...leaves])
+      state = engine.mapTree((x: engine.Tensor) => engine.settle(x), next as any) as OptState
       vars.forEach((v, i) => { v.assign(fresh[i]!) })
-      return loss as np.Array
+      return loss as engine.Tensor
     } catch (e) {
       if (e instanceof StateWrite) { return new Error(`optimizer: the loss cannot change state while it is differentiated (${e.message})`) }
       throw e
@@ -2397,41 +2384,54 @@ const makeOptimizer = (transform: optax.GradientTransformation, explicitVars?: F
   }
 }
 
-const adamTransform = (learningRate: number, weightDecay = 0, b1 = 0.9, b2 = 0.999, eps = 1e-8): optax.GradientTransformation => ({
+// An optimizer's update rule: its state from the parameters, and the step that turns
+// gradients into updates (added to the parameters) and the next state
+type OptState = unknown
+interface GradientTransformation {
+  init(params: engine.Tensor[]): OptState
+  update(grads: engine.Tensor[], state: OptState, params?: engine.Tensor[]): [engine.Tensor[], OptState]
+}
+const sgdTransform = (learningRate: number, momentum?: number): GradientTransformation => ({
+  init: (params) => (momentum ? params.map((p) => engine.multiply(p, 0)) : null),
+  update(grads, state) {
+    if (!momentum) { return [grads.map((g) => engine.multiply(g, -learningRate)), state] }
+    const velocity = grads.map((g, i) => engine.add(engine.multiply((state as engine.Tensor[])[i]!, momentum), g))
+    return [velocity.map((v) => engine.multiply(v, -learningRate)), velocity]
+  },
+})
+const adamTransform = (learningRate: number, weightDecay = 0, b1 = 0.9, b2 = 0.999, eps = 1e-8): GradientTransformation => ({
   init: (params) => ({
-    count: np.array(0),
-    mu: tree.map((p: np.Array) => np.zerosLike(p), params as any),
-    nu: tree.map((p: np.Array) => np.zerosLike(p), params as any),
-  }) as unknown as optax.OptState,
+    count: engine.tensor(0),
+    mu: engine.mapTree((p: engine.Tensor) => engine.zerosLike(p), params as any),
+    nu: engine.mapTree((p: engine.Tensor) => engine.zerosLike(p), params as any),
+  }) as unknown as OptState,
   update: (updates, state, params) => {
-    const { count, mu, nu } = state as unknown as { count: np.Array, mu: np.Array[], nu: np.Array[] }
-    const nextCount = np.add(count, 1)
-    // tree.map hands leaf ownership to the callback – operand with  only
-    // what a later map still needs (the adagrad lesson)
-    const newMu = tree.map((g: np.Array, m: np.Array) => np.add(np.multiply(g, 1 - b1), np.multiply(m, b1)), updates as any, mu as any)
-    const newNu = tree.map((g: np.Array, n: np.Array) => np.add(np.multiply(np.square(g), 1 - b2), np.multiply(n, b2)), updates as any, nu as any)
-    const c1 = np.subtract(1, np.power(b1, nextCount))
-    const c2 = np.subtract(1, np.power(b2, nextCount))
+    const { count, mu, nu } = state as unknown as { count: engine.Tensor, mu: engine.Tensor[], nu: engine.Tensor[] }
+    const nextCount = engine.add(count, 1)
+    const newMu = engine.mapTree((g: engine.Tensor, m: engine.Tensor) => engine.add(engine.multiply(g, 1 - b1), engine.multiply(m, b1)), updates as any, mu as any)
+    const newNu = engine.mapTree((g: engine.Tensor, n: engine.Tensor) => engine.add(engine.multiply(engine.square(g), 1 - b2), engine.multiply(n, b2)), updates as any, nu as any)
+    const c1 = engine.subtract(1, engine.power(b1, nextCount))
+    const c2 = engine.subtract(1, engine.power(b2, nextCount))
     const scaled = weightDecay === 0
-      ? tree.map((m: np.Array, n: np.Array) =>
-          np.multiply(np.trueDivide(np.trueDivide(m, c1), np.add(np.sqrt(np.trueDivide(n, c2)), eps)), -learningRate),
+      ? engine.mapTree((m: engine.Tensor, n: engine.Tensor) =>
+          engine.multiply(engine.divide(engine.divide(m, c1), engine.add(engine.sqrt(engine.divide(n, c2)), eps)), -learningRate),
           newMu as any, newNu as any)
-      : tree.map((m: np.Array, n: np.Array, p: np.Array) =>
-          np.add(
-            np.multiply(np.trueDivide(np.trueDivide(m, c1), np.add(np.sqrt(np.trueDivide(n, c2)), eps)), -learningRate),
-            np.multiply(p, -learningRate * weightDecay)),
+      : engine.mapTree((m: engine.Tensor, n: engine.Tensor, p: engine.Tensor) =>
+          engine.add(
+            engine.multiply(engine.divide(engine.divide(m, c1), engine.add(engine.sqrt(engine.divide(n, c2)), eps)), -learningRate),
+            engine.multiply(p, -learningRate * weightDecay)),
           newMu as any, newNu as any, params as any)
-    return [scaled as any, { count: nextCount, mu: newMu, nu: newNu } as unknown as optax.OptState]
+    return [scaled as any, { count: nextCount, mu: newMu, nu: newNu } as unknown as OptState]
   },
 })
 
-// optax has no adagrad – accumulate squared gradients ourselves
-const adagradTransform = (learningRate: number, eps = 1e-7): optax.GradientTransformation => ({
-  init: (params) => tree.map((p: np.Array) => np.zerosLike(p), params as any),
+// AdaGrad: accumulate squared gradients
+const adagradTransform = (learningRate: number, eps = 1e-7): GradientTransformation => ({
+  init: (params) => engine.mapTree((p: engine.Tensor) => engine.zerosLike(p), params as any),
   update: (updates, state, params) => {
-    const accum = tree.map((g: np.Array, s: np.Array) => np.add(np.square(g), s), updates as any, state as any)
-    const scaled = tree.map(
-      (g: np.Array, s: np.Array) => np.multiply(np.trueDivide(g, np.add(np.sqrt(s), eps)), -learningRate),
+    const accum = engine.mapTree((g: engine.Tensor, s: engine.Tensor) => engine.add(engine.square(g), s), updates as any, state as any)
+    const scaled = engine.mapTree(
+      (g: engine.Tensor, s: engine.Tensor) => engine.multiply(engine.divide(g, engine.add(engine.sqrt(s), eps)), -learningRate),
       updates as any, accum as any)
     return [scaled as any, accum]
   },
@@ -2458,7 +2458,7 @@ const TensorOptimizationAdamW = (a: Value, ...rest: Value[]) => {
 // sgd(lr, momentum?, vars?)
 const TensorOptimizationSgd = (a: Value, ...rest: Value[]) => {
   const { nums: [momentum], vars } = optimizerRest(rest)
-  return makeOptimizer(optax.sgd(asNumber(a), momentum === undefined ? undefined : { momentum }), vars)
+  return makeOptimizer(sgdTransform(asNumber(a), momentum), vars)
 }
 
 const TensorOptimizationAdaGrad = (a: Value, ...rest: Value[]) => {
@@ -2469,9 +2469,8 @@ const TensorOptimizationAdaGrad = (a: Value, ...rest: Value[]) => {
 // Stateful convenience RNG: a fresh key per call – deterministic per page load, not
 // across reloads.
 let rngCounter = 0
-const nextRngKey = () => random.key(rngCounter++)
-const TensorRandomNormal = (a: Value) => random.normal(nextRngKey(), asNumberList(a))
-const TensorRandomUniform = (a: Value) => random.uniform(nextRngKey(), asNumberList(a))
+const TensorRandomNormal = (a: Value) => engine.normal(rngCounter++, asNumberList(a))
+const TensorRandomUniform = (a: Value) => engine.uniform(rngCounter++, asNumberList(a))
 
 // A value as the Fluent SOURCE that reproduces it, so CodeEvaluate(String(x))
 // gives x back. This is repr, not display: a string comes back quoted, a list
@@ -2515,7 +2514,7 @@ const StringConcat = (...args: any[]) => "".concat(...args)
 // long a string is (4 vs 3 for "a🍌b"), and `_` handed back lone surrogates
 const StringLength = (a: Value) =>
   typeof a === "string" || a instanceof String
-    ? np.array([...String(a)].length)
+    ? engine.tensor([...String(a)].length)
     : new NoMatch(`expected a string, got ${describeArg(a)}`)
 
 // length works on whatever it's handed – a tensor's leading axis, a list's
@@ -2530,7 +2529,7 @@ const StringToCodes = (a: Value) => {
   if (typeof a !== "string" && !(a instanceof String)) {
     return new Error("`StringToCodes(text)`: expected a string")
   }
-  return np.array(Float32Array.from(String(a), (c) => c.codePointAt(0)!))
+  return engine.tensor(Float32Array.from(String(a), (c) => c.codePointAt(0)!))
 }
 
 const codesText = (codes: ArrayLike<number>): string | Error => {
@@ -2548,10 +2547,10 @@ const codesText = (codes: ArrayLike<number>): string | Error => {
 const CodesToString = (a: Value) => {
   const t = a instanceof FluentVariable ? a.current : a
   if (!isTensor(t)) { return new Error("`CodesToString(codes)`: expected a tensor of character codes") }
-  const known = np.hostValue(t)
+  const known = engine.hostValue(t)
   if (known) { return codesText(known) }
   const text = signal<Value>("")
-  t.data().then((codes) => { text.value = codesText(codes) }, (e) => { text.value = e instanceof Error ? e : new Error(String(e)) })
+  t.read().then((codes) => { text.value = codesText(codes) }, (e) => { text.value = e instanceof Error ? e : new Error(String(e)) })
   return text
 }
 
@@ -3145,7 +3144,7 @@ const createScope = () => {
 
 export {
   // tensors
-  np,
+  engine,
   FluentVariable,
   FluentData,
   isTensor,

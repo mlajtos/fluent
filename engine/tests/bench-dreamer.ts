@@ -3,7 +3,7 @@
 //   CHROME_ARGS=--enable-webgpu-developer-features bun engine/tests/run.ts engine/tests/bench-dreamer.ts
 import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope } from "../../language.ts";
 import { EXAMPLES } from "../../examples.ts";
-import { engineGpu } from "../jax.ts";
+import { engineGpu } from "../tensor.ts";
 
 export default async function (): Promise<{ fails: number }> {
   const src = EXAMPLES["dreamer"]!, head = src.slice(0, src.indexOf("; --- sampling"));

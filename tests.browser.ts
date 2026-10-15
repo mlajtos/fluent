@@ -200,9 +200,8 @@ test("printing a Fluent lambda still shows its source", async ({ page }) => {
 })
 
 test("README training snippet converges and stays responsive", async ({ page }) => {
-  // the adam twin of this snippet froze the tab for ~52s (exponential
-  // deferred compilation – see jaxjs notes); sgd jits and must stay fluid,
-  // with converged values rendered well within the timeout
+  // training in a ⟳ loop must stay fluid, with converged values rendered well
+  // within the timeout
   await open(page, `
 θ: ~([0, 0]),
 𝓛: { Σ((θ - [0.23, 0.47])^2) },

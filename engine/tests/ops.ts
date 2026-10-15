@@ -4,7 +4,8 @@
 
 import { buffer, konst, add, mul, math, MATHS, random, pad, slice, reshape, reduceAxis, gather, host, sum, windows, broadcastTo, type UOp } from "../ir.ts";
 import { grad } from "../grad.ts";
-import { CPU, type Tensor } from "../cpu.ts";
+import { CPU, type HostData } from "../cpu.ts";
+import { realize } from "./realize.ts";
 import { GPU } from "../gpu.ts";
 
 export default async function (): Promise<{ fails: number }> {
@@ -12,11 +13,11 @@ export default async function (): Promise<{ fails: number }> {
   const check = (name: string, ok: boolean, detail = "") => { if (!ok) fails++; console.log(`  ${ok ? "✓" : "✗"} ${name}${detail ? "  " + detail : ""}`); };
   const cpu = new CPU(), gpu = await GPU.create();
   console.log(`engine op gates (cpu${gpu ? " + gpu" : ""})`);
-  const T = (d: Float32Array, sh: readonly number[]): Tensor => ({ data: d, shape: sh });
+  const T = (d: Float32Array, sh: readonly number[]): HostData => ({ data: d, shape: sh });
   const maxDiff = (a: ArrayLike<number>, b: ArrayLike<number>) => { let m = 0; for (let i = 0; i < a.length; i++) { const x = a[i]!, y = b[i]!; if (x === y || (Number.isNaN(x) && Number.isNaN(y))) continue; if (Number.isNaN(x) || Number.isNaN(y) || !Number.isFinite(x) || !Number.isFinite(y)) return Infinity; m = Math.max(m, Math.abs(x - y) / (1 + Math.abs(y))); } return m; };
-  const both = async (g: UOp, inputs: Map<string, Tensor>) => {
-    const a = (await cpu.realize(g, inputs)).data;
-    const b = gpu ? (await gpu.realize(g, inputs)).data : a;
+  const both = async (g: UOp, inputs: Map<string, HostData>) => {
+    const a = (await realize(cpu, g, inputs)).data;
+    const b = gpu ? (await realize(gpu, g, inputs)).data : a;
     return { a, b };
   };
 
@@ -43,7 +44,7 @@ export default async function (): Promise<{ fails: number }> {
       const s = buffer("s", []);
       const at = fn === "acosh" ? 1.7 : fn === "pow" ? 1.3 : 0.37;
       const g = fn === "pow" ? math("pow", s, konst(2.5)) : math(fn, s);
-      const d = (await cpu.realize(grad(g, s), new Map([["s", T(new Float32Array([at]), [])]]))).data[0]!;
+      const d = (await realize(cpu, grad(g, s), new Map([["s", T(new Float32Array([at]), [])]]))).data[0]!;
       const h = 1e-3, m = MATHS[fn]!;
       const f = (x: number) => (fn === "pow" ? m.js(x, 2.5) : m.js(x));
       const fd = (f(at + h) - f(at - h)) / (2 * h), e = Math.abs(d - fd) / (1 + Math.abs(fd));
@@ -59,9 +60,9 @@ export default async function (): Promise<{ fails: number }> {
     let mean = 0, lo = 1, hi = 0; for (const v of a) { mean += v / a.length; lo = Math.min(lo, v); hi = Math.max(hi, v); }
     check("random: cpu == gpu bit for bit", maxDiff(a, b) === 0);
     check("random: in [0, 1), mean ≈ ½", lo >= 0 && hi < 1 && Math.abs(mean - 0.5) < 0.02, `mean ${mean.toFixed(4)}`);
-    const other = (await cpu.realize(random([4096], 1235), new Map())).data;
+    const other = (await realize(cpu, random([4096], 1235), new Map())).data;
     check("random: another seed, another draw", maxDiff(a, other) > 0.1);
-    const fusedMean = (await cpu.realize(mul(sum(random([4096], 1234)), konst(1 / 4096)), new Map())).data[0]!;
+    const fusedMean = (await realize(cpu, mul(sum(random([4096], 1234)), konst(1 / 4096)), new Map())).data[0]!;
     check("random fuses into its reader (same draw)", Math.abs(fusedMean - mean) < 1e-5);
   }
 
@@ -95,7 +96,7 @@ export default async function (): Promise<{ fails: number }> {
     const inp = new Map([["x", T(xd, [2, 3])]]);
     const pr = await both(reduceAxis(x, 1, false, "MUL"), inp);
     check("Π over an axis (cpu, gpu)", maxDiff(pr.a, [6, -2]) === 0 && maxDiff(pr.b, [6, -2]) === 0);
-    const g = (await cpu.realize(grad(sum(reduceAxis(x, 1, false, "MUL")), x), inp)).data;
+    const g = (await realize(cpu, grad(sum(reduceAxis(x, 1, false, "MUL")), x), inp)).data;
     check("∇Π = Π ÷ x", maxDiff(g, [6, 3, 2, 2, -4, -0.5]) < 1e-6);
   }
 
@@ -127,7 +128,7 @@ export default async function (): Promise<{ fails: number }> {
       const out = new Float32Array(n), h = 1e-3;
       for (let j = 0; j < n; j++) {
         const up = (which === "x" ? xd : kd).slice(), dn = up.slice(); up[j]! += h; dn[j]! -= h;
-        const f = async (d: Float32Array) => (await cpu.realize(loss(X, K), which === "x" ? at(d, kd) : at(xd, d))).data[0]!;
+        const f = async (d: Float32Array) => (await realize(cpu, loss(X, K), which === "x" ? at(d, kd) : at(xd, d))).data[0]!;
         out[j] = ((await f(up)) - (await f(dn))) / (2 * h);
       }
       return out;

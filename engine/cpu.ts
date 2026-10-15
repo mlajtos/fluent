@@ -6,17 +6,7 @@ import type { UOp } from "./ir.ts";
 import { numel, kInputs, bufName, toposort, MATHS, hashUniform } from "./ir.ts";
 import { optimizeMany } from "./opt.ts";
 
-export interface Tensor { data: Float32Array; shape: readonly number[] }
-export interface Backend {
-  readonly name: string;
-  realize(root: UOp, inputs?: Map<string, Tensor>): Promise<Tensor>;
-  realizeMany(roots: UOp[], inputs?: Map<string, Tensor>): Promise<Tensor[]>;
-  residentSet(name: string, t: Tensor): void;
-  residentGet(name: string): Promise<Tensor>;
-  // One compiled step against resident state: realize `read` + `update` graphs (reads see
-  // the OLD state), then commit each update into its named resident buffer, in place.
-  residentStep(update: Map<string, UOp>, read: UOp[], transient: Map<string, Tensor>): Promise<Tensor[]>;
-}
+export interface HostData { data: Float32Array; shape: readonly number[] }
 
 const jsNumber = (v: number): string => (Number.isNaN(v) ? "NaN" : v === Infinity ? "Infinity" : v === -Infinity ? "-Infinity" : Object.is(v, -0) ? "-0" : String(Math.fround(v)));
 
@@ -106,13 +96,9 @@ const compile = (k: UOp): Compiled => {
   return fn;
 };
 
-export class CPU implements Backend {
+export class CPU {
   readonly name = "cpu";
-  #res = new Map<string, Tensor>();
-  peakBytes = 0;                                                              // peak simultaneously-live intermediate bytes of the last realize
-  residentSet(name: string, t: Tensor): void { this.#res.set(name, { data: t.data.slice(), shape: t.shape.slice() }); }
-  residentGet(name: string): Promise<Tensor> { return Promise.resolve(this.#res.get(name)!); }
-  #eval(opt: UOp[], inputs: Map<string, Tensor>): Tensor[] {
+  #eval(opt: UOp[], inputs: Map<string, HostData>): HostData[] {
     // one global evaluation order + last-use, so a freed intermediate is reclaimed the moment
     // its last consumer runs — peak memory becomes max-live, not the sum of all intermediates.
     const order: UOp[] = [], seen = new Set<number>();
@@ -122,30 +108,20 @@ export class CPU implements Backend {
     const keep = new Set(opt.map((r) => r.id));                               // outputs must survive to the end
     const deaths: number[][] = Array.from({ length: order.length }, () => []);
     for (const u of order) { const d = lastUse.get(u.id); if (d !== undefined && !keep.has(u.id)) deaths[d]!.push(u.id); }
-    const memo = new Map<number, Tensor>(), actBytes = new Map<number, number>();
-    let live = 0; this.peakBytes = 0;
+    const memo = new Map<number, HostData>();
     order.forEach((u, i) => {
       if (u.op === "CONSTANT") memo.set(u.id, { data: u.arg as Float32Array, shape: u.shape });
-      else if (u.op === "BUFFER") memo.set(u.id, inputs.get(bufName(u)) ?? this.#res.get(bufName(u)) ?? ((): never => { throw new Error(`cpu: missing input '${bufName(u)}'`); })());
+      else if (u.op === "BUFFER") memo.set(u.id, inputs.get(bufName(u)) ?? ((): never => { throw new Error(`cpu: missing input '${bufName(u)}'`); })());
       else if (u.op === "FUSED" || u.op === "HOST") {
         const n = Math.max(numel(u.shape), 1);
         let out: Float32Array;
         if (u.op === "FUSED") { out = new Float32Array(n); compile(u)(kInputs(u).map((s) => memo.get(s.id)!.data), out); }
-        else out = (u.arg as { fn: (ins: Tensor[]) => Float32Array }).fn(u.src.map((s) => memo.get(s.id)!));
+        else out = (u.arg as { fn: (ins: HostData[]) => Float32Array }).fn(u.src.map((s) => memo.get(s.id)!));
         memo.set(u.id, { data: out, shape: u.shape });
-        const b = n * 4; actBytes.set(u.id, b); live += b; if (live > this.peakBytes) this.peakBytes = live;   // count materialized intermediates
       }
-      for (const id of deaths[i]!) { const b = actBytes.get(id); if (b !== undefined) { live -= b; actBytes.delete(id); } memo.delete(id); }   // free the dead
+      for (const id of deaths[i]!) memo.delete(id);                            // free the dead
     });
     return opt.map((r) => memo.get(r.id)!);
   }
-  realizeSync(roots: UOp[], inputs = new Map<string, Tensor>()): Tensor[] { return this.#eval(optimizeMany(roots), inputs); }
-  realize(root: UOp, inputs = new Map<string, Tensor>()): Promise<Tensor> { return Promise.resolve(this.realizeSync([root], inputs)[0]!); }
-  realizeMany(roots: UOp[], inputs = new Map<string, Tensor>()): Promise<Tensor[]> { return Promise.resolve(this.realizeSync(roots, inputs)); }
-  residentStep(update: Map<string, UOp>, read: UOp[], transient: Map<string, Tensor>): Promise<Tensor[]> {
-    const names = [...update.keys()];
-    const outs = this.#eval(optimizeMany([...names.map((n) => update.get(n)!), ...read]), transient);
-    names.forEach((n, i) => this.#res.set(n, { data: outs[i]!.data.slice(), shape: outs[i]!.shape }));   // commit after everything read the old state
-    return Promise.resolve(outs.slice(names.length));
-  }
+  realizeSync(roots: UOp[], inputs = new Map<string, HostData>()): HostData[] { return this.#eval(optimizeMany(roots), inputs); }
 }

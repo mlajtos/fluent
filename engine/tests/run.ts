@@ -4,12 +4,12 @@
 //   bun engine/tests/run.ts engine/tests/core.ts
 // Each test file default-exports `async () => ({ fails })` and logs with console.log.
 import { chromium } from "playwright"
-import { readdirSync, rmSync } from "node:fs"
+import { readdirSync, readFileSync, rmSync } from "node:fs"
 import { basename, join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 
 const here = import.meta.dir
-const files = (process.argv.length > 2 ? process.argv.slice(2) : readdirSync(here).filter((f) => f.endsWith(".ts") && f !== "run.ts" && !f.endsWith(".bun.ts") && !f.startsWith("bench")).map((f) => join(here, f)))
+const files = (process.argv.length > 2 ? process.argv.slice(2) : readdirSync(here).filter((f) => f.endsWith(".ts") && f !== "run.ts" && !f.endsWith(".bun.ts") && !f.startsWith("bench")).map((f) => join(here, f)).filter((f) => readFileSync(f, "utf8").includes("export default")))   // a gate exports its suite; the rest are helpers
   .map((f) => resolve(f))
 const outdir = join(tmpdir(), `engine-tests-${process.pid}`)
 const built = await Bun.build({ entrypoints: files, outdir, target: "browser", format: "esm", naming: "[name].js" })

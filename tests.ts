@@ -4,7 +4,7 @@
 
 import { describe, test, expect } from "bun:test"
 import { Signal } from "@preact/signals-core"
-import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, np, FluentVariable, setCodeNodePrinter, extendEnvironment, SignalCreate, DefaultEnvironment, NoMatch, type SyntaxTreeNode, type Value } from "./language"
+import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, setCodeNodePrinter, extendEnvironment, SignalCreate, DefaultEnvironment, NoMatch, type SyntaxTreeNode, type Value } from "./language"
 import { EXAMPLES } from "./examples"
 import { TOUR_SOURCE } from "./tour"
 
@@ -16,7 +16,7 @@ const value = (source: string): any => {
   let v: any = run(source)
   while (v instanceof Signal) { v = v.value }
   if (v instanceof FluentVariable) { v = v.current }
-  if (v instanceof np.Array) { return v.js() }
+  if (v instanceof engine.Tensor) { return v.js() }
   return v
 }
 
@@ -236,8 +236,8 @@ describe("tensors", () => {
     expect(run("[] reduce { a, b | a + b }")).toBeInstanceOf(Error)
   })
   test("reduce folds a tensor left-to-right; known ops go native, ⌈/⌊ give max/min", () => {
-    expect(value("1 ..< 10 reduce +")).toBe(45)               // native np.sum
-    expect(value("[1, 2, 3, 4] reduce ×")).toBe(24)          // native np.prod
+    expect(value("1 ..< 10 reduce +")).toBe(45)               // native engine.sum
+    expect(value("[1, 2, 3, 4] reduce ×")).toBe(24)          // native engine.prod
     expect(value("[3, 1, 2] reduce ⌈")).toBe(3)              // ⌈ reduce = max (native)
     expect(value("[3, 1, 2] reduce ⌊")).toBe(1)              // ⌊ reduce = min
     expect(value("reduce([[1, 2], [3, 4]], +, 0)")).toEqual([4, 6]) // along an axis
@@ -514,7 +514,7 @@ describe("reactive recomputes stay dynamic", () => {
     const out = evaluateGeneration(() =>
       evaluateSyntaxTreeNode(CodeParse("x: $(0), y: x + randn([4]), y"), scope)) as any
     const first = JSON.stringify(out.value.js())
-    ;(scope["x"] as any).value = np.array(new Float32Array([1, NaN])).slice(0)
+    ;(scope["x"] as any).value = engine.tensor(new Float32Array([1, NaN])).slice(0)
     const second = JSON.stringify(out.value.js())
     expect(first).not.toBe(second)
   })
@@ -936,7 +936,7 @@ describe("choosing: a candidate answers or declines", () => {
   test("Error carries a message and any value as its cause", () => {
     const e = run(`Error("no real root", -4)`) as Error
     expect(e.message).toBe("no real root")
-    expect((e.cause as np.Array).js()).toBe(-4)
+    expect((e.cause as engine.Tensor).js()).toBe(-4)
     expect((run(`Error("outer", Error("inner"))`) as Error).cause).toBeInstanceOf(Error)
   })
   test("a NoMatch used as data is a failure", () => {
@@ -1155,7 +1155,7 @@ describe("null is a value", () => {
 // steps – is settled into a leaf. Otherwise every later graph, and every ∇ walk over
 // it, drags the whole history along: a 60-step fit took minutes, a ⟳ demo overflowed.
 describe("values that cross time carry no history", () => {
-  const size = (v: unknown) => np.graphSize((v instanceof FluentVariable ? v.current : v) as np.Array)
+  const size = (v: unknown) => engine.graphSize((v instanceof FluentVariable ? v.current : v) as engine.Tensor)
   test("a variable assigned in a loop stays a leaf", () => {
     const scope = createScope()
     evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse("θ: ~([1, 2]), ({ s | θ := θ × 2 + 1 } ⍣ 50)(0)"), scope))
@@ -1274,19 +1274,19 @@ describe("gallery examples smoke suite", () => {
   // too: a spectrum demo indexes fft(mic()) as [real; imag], which only works
   // on a waveform of the length the demo asked for.
   const at = (v: unknown) => { const s = SignalCreate(v as any); return s }
-  const num = (v: Value | undefined, fallback: number) => { try { return Number((v as np.Array).js()) } catch { return fallback } }
+  const num = (v: Value | undefined, fallback: number) => { try { return Number((v as engine.Tensor).js()) } catch { return fallback } }
   const stubs: Record<string, Value> = {}
   for (const k of ["Button", "Checkbox", "Grid", "ImageUpload", "Layers", "Point2D", "Trail",
     "Slider", "Scrubber", "Text", "TextEditor", "Code", "CodeEditor", "Print", "PrettyPrint",
     "CodePrint", "PointPlot"]) stubs[k] = widget as Value
-  stubs["Camera"] = ((w?: Value, h?: Value) => at(np.zeros([num(h, 48), num(w, 64), 3]))) as Value
-  stubs["Microphone"] = ((n?: Value) => at(np.zeros([num(n, 512)]))) as Value
-  stubs["MicrophoneSpectrum"] = ((n?: Value) => at(np.zeros([num(n, 512)]))) as Value
-  stubs["MousePosition"] = (() => at(np.zeros([2]))) as Value
-  stubs["Time"] = (() => at(np.array(0))) as Value
-  stubs["SampleRate"] = (() => np.array(48000)) as Value        // a plain number, not a signal
+  stubs["Camera"] = ((w?: Value, h?: Value) => at(engine.zeros([num(h, 48), num(w, 64), 3]))) as Value
+  stubs["Microphone"] = ((n?: Value) => at(engine.zeros([num(n, 512)]))) as Value
+  stubs["MicrophoneSpectrum"] = ((n?: Value) => at(engine.zeros([num(n, 512)]))) as Value
+  stubs["MousePosition"] = (() => at(engine.zeros([2]))) as Value
+  stubs["Time"] = (() => at(engine.tensor(0))) as Value
+  stubs["SampleRate"] = (() => engine.tensor(48000)) as Value        // a plain number, not a signal
   for (const k of ["LoadTensorFromImageUrl", "Fetch"]) {
-    stubs[k] = (() => np.zeros([16, 16])) as Value
+    stubs[k] = (() => engine.zeros([16, 16])) as Value
   }
   // the real safetensors loader is a signal holding an empty list until its
   // fetch resolves – headless it never does, so the demos see "still loading"
@@ -1307,7 +1307,7 @@ describe("gallery examples smoke suite", () => {
         if (v instanceof Error) { return `${path}: ${v.message}` }
         if (v instanceof Signal) { return walk(v.value, `${path}()`, depth + 1) }
         if (v instanceof FluentVariable) { return walk(v.current, path, depth + 1) }
-        if (v instanceof np.Array) { v.js(); return null }
+        if (v instanceof engine.Tensor) { v.js(); return null }
         if (Array.isArray(v)) {
           for (let i = 0; i < v.length; i++) { const bad = walk(v[i], `${path}[${i}]`, depth + 1); if (bad) { return bad } }
         }
@@ -1444,7 +1444,7 @@ describe("lifts created inside owned computeds (reactive cells)", () => {
   const cellValue = (v: any): any => {
     let x: any = v
     while (x instanceof Signal) { x = x.value }
-    if (x instanceof np.Array) { return x.js() }
+    if (x instanceof engine.Tensor) { return x.js() }
     return x
   }
 
@@ -1455,9 +1455,9 @@ describe("lifts created inside owned computeds (reactive cells)", () => {
     const x = scope["x"] as Signal<Value>
     const r = scope["r"]
     expect(cellValue(r)).toBe(50)
-    x.value = np.array(0.25)
+    x.value = engine.tensor(0.25)
     expect(cellValue(r)).toBe(25)
-    x.value = np.array(0.1)
+    x.value = engine.tensor(0.1)
     expect(cellValue(r)).toBeCloseTo(10)
   })
 
@@ -1468,7 +1468,7 @@ describe("lifts created inside owned computeds (reactive cells)", () => {
     const x = scope["x"] as Signal<Value>
     const r = scope["r"]
     expect(cellValue(r)).toEqual([0, 1, 2, 3])
-    x.value = np.array(0.8)
+    x.value = engine.tensor(0.8)
     expect(cellValue(r)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8])
   })
 
@@ -1482,7 +1482,7 @@ describe("lifts created inside owned computeds (reactive cells)", () => {
     expect(cellValue(r)).toBe(50)
     code.value = "x * 1000" as unknown as Value
     expect(cellValue(r)).toBe(500)
-    x.value = np.array(0.1)
+    x.value = engine.tensor(0.1)
     expect(cellValue(r)).toBeCloseTo(100)
   })
 })
@@ -1501,7 +1501,7 @@ describe("error messages carry context", () => {
     evaluateGeneration(() => evaluateSyntaxTreeNode(
       CodeParse(`x: $(0.5), code: $("x ⍴ [2, 2]"), r: CodeEvaluate(code), r`), scope))
     let v: any = scope["r"]
-    while (v && typeof v === "object" && "value" in v && !(v instanceof np.Array)) { v = v.value }
+    while (v && typeof v === "object" && "value" in v && !(v instanceof engine.Tensor)) { v = v.value }
     expect(v).toBeInstanceOf(Error)
     expect(v.message).toContain("applying TensorReshape")
     expect(v.message).toContain("a tensor [2]")
