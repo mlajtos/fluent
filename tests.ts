@@ -433,8 +433,7 @@ describe("math functions", () => {
     expect(value("sum(softmax([1, 2, 3]))")).toBeCloseTo(1, 5)
   })
   test("reductions keep the reduced axis with a truthy third argument", () => {
-    // mean(x, -1, 1) is the trace-safe unsqueeze(mean(x, -1), …): unsqueeze
-    // reads shapes, which a jit trace can't – keepdims never leaves the graph
+    // mean(x, -1, 1) is unsqueeze(mean(x, -1), …) without a reshape
     expect(value("mean([[1, 2], [3, 4]], -1, 1)")).toEqual([[1.5], [3.5]])
     expect(value("shape(sum([[1, 2], [3, 4]], 0, 1))")).toEqual([1, 2])
   })
@@ -584,7 +583,7 @@ describe("differentiation and optimization", () => {
   })
   test("sgd fits y = 3x end-to-end", () => {
     // the optimizer is created ONCE, outside the loop – recreating a stateful
-    // optimizer per step resets its moments (and recompiles its jit program)
+    // optimizer per step resets its moments
     const program = `
       x: 0 ..< 8,
       y: x × 3,
@@ -623,6 +622,35 @@ describe("differentiation and optimization", () => {
   })
 })
 
+describe("training: ∇ follows what the loss reads", () => {
+  const plain = (v: any): any => Array.isArray(v) ? v.map(plain) : v instanceof FluentVariable ? v.current.js() : v instanceof engine.Tensor ? v.js() : v
+  test("∇(loss)() gives the value, the variables it read, and their gradients", () => {
+    expect(plain(value("θ: ~([1, 2]), φ: ~(3), r: ∇({ Σ(θ × φ) })(), (ListGet(r, 0), ListLength(ListGet(r, 1)), ListGet(ListGet(r, 2), 0), ListGet(ListGet(r, 2), 1))")))
+      .toEqual([9, 2, [3, 3], 3])
+    // a data slot is read like a constant: no gradient for it
+    expect(value("θ: ~(2), x: ~~(5), ListLength(ListGet(∇({ θ × x })(), 1))")).toBe(1)
+  })
+  test(":= takes a list of variables and as many values", () => {
+    expect(plain(value("θ: ~([1]), x: ~~([2]), (θ, x) := ([3], [4]), (θ, x)"))).toEqual([[3], [4]])
+    expect(run("θ: ~([1]), (θ,) := ([1], [2])")).toBeInstanceOf(Error)
+  })
+  test("two optimizers each train only what their loss reads", () => {
+    // adamw decays its own variables – not the other model's
+    const program = `
+      a: ~([0]), b: ~([0]),
+      la: { (a_0 - 1) ^ 2 }, lb: { (b_0 + 1) ^ 2 },
+      oa: adamw(0.1, 0.5), ob: sgd(0.1),
+      ({ s | oa(la), ob(lb) } ⍣ 60)(0),
+      (a_0, b_0)`
+    const [a, b] = plain(value(program)) as number[]
+    expect(a).toBeGreaterThan(0.5)
+    expect(b).toBeCloseTo(-1, 2)
+  })
+  test("a loss that reads no variable is a loud error", () => {
+    expect(run("opt: adam(0.1), opt({ 3 })")).toBeInstanceOf(Error)
+  })
+})
+
 describe("data slots (~~)", () => {
   test("a data slot reads like a variable and is never trained", () => {
     const trained = (final: string) => value(`
@@ -642,8 +670,7 @@ describe("data slots (~~)", () => {
     expect(value("x: data([4]), x_0")).toBe(4)
   })
   test(":= retargets a data slot mid-training and the fit follows", () => {
-    // the compiled step receives the slot as a jit argument – fresh payload
-    // flows in on the next step, optimizer moments intact
+    // the next step reads the slot's new value, optimizer moments intact
     const program = `
       x: ~~([3]),
       θ: ~([0]),
@@ -656,7 +683,7 @@ describe("data slots (~~)", () => {
       θ_0
     `
     expect(value(program)).toBeCloseTo(7, 1)
-  }, 20000) // jit-compiled training loop – slow under CI/load, don't flake on the 5s default
+  }, 20000) // a training loop – slow under CI/load, don't flake on the 5s default
   test(":= to a NEW SHAPE retraces cleanly and training carries on", () => {
     const program = `
       x: ~~([1, 2]),
@@ -1443,10 +1470,8 @@ describe("every name in shipped Fluent source resolves", () => {
 
 describe("lifts created inside owned computeds (reactive cells)", () => {
   // A lift built during another computed's recompute (a CodeEvaluate cell, a
-  // $-thunk) reaches its argument tensors only through its closure. The arena
-  // sweep must see that edge via the lift registry – without it the constants
-  // are reaped at the end of the outer recompute and the lift's jit replay
-  // later dereferences disposed arrays.
+  // $-thunk) reaches its argument tensors only through its closure, and must
+  // still compute when the outer recompute has finished.
   const cellValue = (v: any): any => {
     let x: any = v
     while (x instanceof Signal) { x = x.value }

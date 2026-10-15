@@ -810,33 +810,29 @@ const shapeOf = (v: Value): number[] =>
 const isScalarTensor = (v: Value): boolean =>
   (isTensor(v) || v instanceof FluentVariable) && shapeOf(v).length === 0
 
+// While ∇ follows a loss's reads, reading a ~ variable hands back the value ∇
+// differentiates with respect to – set by gradientOfReads, null otherwise
+let readTracker: ((v: FluentVariable, value: engine.Tensor) => engine.Tensor) | null = null
+
 // Trainable variable: its current value, settled into a leaf; an assignment (drag,
 // optimizer step, :=) settles the new one and bumps the version signal.
 class FluentVariable {
-  current: engine.Tensor
+  #value: engine.Tensor
   readonly version = signal(0)
-  constructor(initial: engine.Tensor) {
-    this.current = engine.settle(initial)
-    const registry = this instanceof FluentData ? dataVariables : trainableVariables
-    registry.add(this)
-    registerDisposable(() => { registry.delete(this) })
-  }
-  get shape() { return this.current.shape }
-  get size() { return this.current.size }
+  constructor(initial: engine.Tensor) { this.#value = engine.settle(initial) }
+  get current(): engine.Tensor { return readTracker && !(this instanceof FluentData) ? readTracker(this, this.#value) : this.#value }
+  get shape() { return this.#value.shape }
+  get size() { return this.#value.size }
   assign(next: engine.Tensor): void {
-    this.current = engine.settle(next)
+    this.#value = engine.settle(next)
     this.version.value++
   }
-  toString() { return this.current.toString() }
+  toString() { return this.#value.toString() }
 }
 
-// Optimizers with no explicit variable list train every variable alive.
-const trainableVariables = new Set<FluentVariable>()
-
-// Data slot (~~): a mutable tensor the optimizer reads fresh on every step – never
-// differentiated, no optimizer state. Gradients flow into ~, never into ~~.
+// Data slot (~~): a mutable tensor read like a constant – no gradient flows into it,
+// so no optimizer trains it. Gradients flow into ~, never into ~~.
 class FluentData extends FluentVariable {}
-const dataVariables = new Set<FluentData>()
 
 // MARK: Evaluation generations
 // Each top-level evaluation owns the resources it creates: live sources (Time,
@@ -1903,6 +1899,7 @@ const TensorGradient = (f: Value) => {
   // vjp with a ones cotangent: scalar outputs give the classic gradient, elementwise
   // outputs per-element derivatives – ∇({x | x^2}) works on vectors
   return (x: Value) => {
+    if (x == null) { return gradientOfReads(f as Function) }
     const outer = differentiating
     differentiating = true
     try {
@@ -1921,6 +1918,36 @@ const TensorGradient = (f: Value) => {
       differentiating = outer
     }
   }
+}
+// ∇(loss)(): with nothing to differentiate with respect to, the derivative is with respect
+// to the variables the loss reads – found by reading them, as a computed signal finds its
+// signals. It comes back with the value, all computed in one pass: (value, variables,
+// gradients). An enclosing ∇ still differentiates through it.
+const gradientOfReads = (loss: Function): Value => {
+  const reads = new Map<FluentVariable, engine.Tensor>()
+  const outer = readTracker, outerDifferentiating = differentiating
+  readTracker = (v, value) => {
+    let t = reads.get(v)
+    if (!t) { t = engine.traced(outer ? outer(v, value) : value); reads.set(v, t) }
+    return t
+  }
+  differentiating = true
+  let value: Value
+  try {
+    const result = loss()
+    value = result instanceof Signal ? result.peek() : result
+  } catch (e) {
+    if (e instanceof StateWrite) { return new Error(`\`∇(loss)()\`: the loss cannot change state while it is differentiated (${e.message})`) }
+    throw e
+  } finally {
+    readTracker = outer
+    differentiating = outerDifferentiating
+  }
+  if (value instanceof Error) { return value }
+  if (!isTensor(value)) { return new Error("`∇(loss)()`: the loss must be a tensor") }
+  const variables = [...reads.keys()], grads = engine.gradients(value as engine.Tensor, [...reads.values()])
+  engine.materialize([value as engine.Tensor, ...grads])
+  return [engine.settle(value as engine.Tensor), variables, grads.map(engine.settle)]
 }
 // The views: x's elements renamed, nothing moved or computed. permute puts x's axis
 // axes_i at position i; broadcast stretches size-1 (and missing leading) axes to shape;
@@ -2090,7 +2117,18 @@ const TensorData = (a: Value) => {
   return new FluentData(operand(a) as engine.Tensor)
 }
 
-const TensorAssign = (a: Value, b: Value) => {
+const TensorAssign = (a: Value, b: Value): Value => {
+  // a list of variables takes a list of as many values, computed together
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || b.length !== a.length) { return new Error("`:=`: a list of variables takes a list of as many values") }
+    const bad = a.findIndex((v, i) => !(v instanceof FluentVariable) || !(isTensor(b[i]) || b[i] instanceof FluentVariable))
+    if (bad >= 0) { return TensorAssign(a[bad] as Value, b[bad] as Value) }
+    if (differentiating) { throw new StateWrite("a variable write") }
+    const values = b.map(operand) as engine.Tensor[]
+    engine.materialize(values)
+    a.forEach((v, i) => { (v as FluentVariable).assign(values[i]!) })
+    return null
+  }
   if (!(a instanceof FluentVariable)) {
     return new Error("`:=`: left side must be a variable created with ~ or ~~")
   }
@@ -2112,150 +2150,6 @@ const TensorWatch = (a: Value): Value => {
     a.version.value
     return a.current
   })
-}
-
-// Optimizers: update rules driven by valueAndGrad. The loss thunk closes over the
-// variables – during the step each variable carries its traced leaf, so
-// reads inside the thunk differentiate.
-const makeOptimizer = (transform: GradientTransformation, explicitVars?: FluentVariable[]) => {
-  let state: OptState | null = null
-  let stateVars: FluentVariable[] = []
-  return (lossThunk: Value) => {
-    if (typeof lossThunk !== "function") {
-      return new Error("optimizer expects a loss thunk { ... }")
-    }
-    const vars = explicitVars ?? [...trainableVariables]
-    if (vars.length === 0) {
-      return new Error("no trainable variables – create one with ~(init)")
-    }
-    if (vars.some((v) => v instanceof FluentData)) {
-      // silent filtering would train nothing and report nothing – refuse loudly
-      return new Error("~~ holds data and can't be trained – pass variables made with ~")
-    }
-    // data slots are read fresh every step, never differentiated
-    const slots = [...dataVariables]
-    if (state === null || stateVars.length !== vars.length || stateVars.some((v, i) => v !== vars[i])) {
-      state = engine.mapTree((x: engine.Tensor) => engine.settle(x), transform.init(vars.map(v => v.current)) as any) as OptState
-      stateVars = vars
-    }
-    const lossFromParams = (params: engine.Tensor[], data: engine.Tensor[]) => {
-      const saved = vars.map(v => v.current), savedData = slots.map(s => s.current)
-      vars.forEach((v, i) => { v.current = params[i]! })
-      slots.forEach((s, i) => { s.current = data[i]! })
-      try {
-        const out = (lossThunk as Function)()
-        const value = out instanceof Signal ? out.peek() : out
-        if (value instanceof Error) { throw value }
-        if (!isTensor(value)) { throw new Error("loss must evaluate to a scalar tensor") }
-        return value as engine.Tensor
-      } finally {
-        vars.forEach((v, i) => { v.current = saved[i]! })
-        slots.forEach((s, i) => { s.current = savedData[i]! })
-      }
-    }
-    const outer = differentiating
-    differentiating = true
-    try {
-      const [loss, grads] = engine.valueAndGrad(lossFromParams)(vars.map(v => v.current), slots.map(s => s.current))
-      const [updates, next] = transform.update(grads as engine.Tensor[], state, vars.map(v => v.current))
-      const fresh = vars.map((v, i) => engine.add(v.current, (updates as engine.Tensor[])[i]!))
-      // the step's results cross into the next step as data, computed together so they
-      // share the forward and backward pass
-      const leaves: engine.Tensor[] = []
-      engine.mapTree((x: engine.Tensor) => { leaves.push(x) }, next as any)
-      engine.materialize([loss as engine.Tensor, ...fresh, ...leaves])
-      state = engine.mapTree((x: engine.Tensor) => engine.settle(x), next as any) as OptState
-      vars.forEach((v, i) => { v.assign(fresh[i]!) })
-      return loss as engine.Tensor
-    } catch (e) {
-      if (e instanceof StateWrite) { return new Error(`optimizer: the loss cannot change state while it is differentiated (${e.message})`) }
-      throw e
-    } finally {
-      differentiating = outer
-    }
-  }
-}
-
-// An optimizer's update rule: its state from the parameters, and the step that turns
-// gradients into updates (added to the parameters) and the next state
-type OptState = unknown
-interface GradientTransformation {
-  init(params: engine.Tensor[]): OptState
-  update(grads: engine.Tensor[], state: OptState, params?: engine.Tensor[]): [engine.Tensor[], OptState]
-}
-const sgdTransform = (learningRate: number, momentum?: number): GradientTransformation => ({
-  init: (params) => (momentum ? params.map((p) => engine.multiply(p, 0)) : null),
-  update(grads, state) {
-    if (!momentum) { return [grads.map((g) => engine.multiply(g, -learningRate)), state] }
-    const velocity = grads.map((g, i) => engine.add(engine.multiply((state as engine.Tensor[])[i]!, momentum), g))
-    return [velocity.map((v) => engine.multiply(v, -learningRate)), velocity]
-  },
-})
-const adamTransform = (learningRate: number, weightDecay = 0, b1 = 0.9, b2 = 0.999, eps = 1e-8): GradientTransformation => ({
-  init: (params) => ({
-    count: engine.tensor(0),
-    mu: engine.mapTree((p: engine.Tensor) => engine.zerosLike(p), params as any),
-    nu: engine.mapTree((p: engine.Tensor) => engine.zerosLike(p), params as any),
-  }) as unknown as OptState,
-  update: (updates, state, params) => {
-    const { count, mu, nu } = state as unknown as { count: engine.Tensor, mu: engine.Tensor[], nu: engine.Tensor[] }
-    const nextCount = engine.add(count, 1)
-    const newMu = engine.mapTree((g: engine.Tensor, m: engine.Tensor) => engine.add(engine.multiply(g, 1 - b1), engine.multiply(m, b1)), updates as any, mu as any)
-    const newNu = engine.mapTree((g: engine.Tensor, n: engine.Tensor) => engine.add(engine.multiply(engine.square(g), 1 - b2), engine.multiply(n, b2)), updates as any, nu as any)
-    const c1 = engine.subtract(1, engine.power(b1, nextCount))
-    const c2 = engine.subtract(1, engine.power(b2, nextCount))
-    const scaled = weightDecay === 0
-      ? engine.mapTree((m: engine.Tensor, n: engine.Tensor) =>
-          engine.multiply(engine.divide(engine.divide(m, c1), engine.add(engine.sqrt(engine.divide(n, c2)), eps)), -learningRate),
-          newMu as any, newNu as any)
-      : engine.mapTree((m: engine.Tensor, n: engine.Tensor, p: engine.Tensor) =>
-          engine.add(
-            engine.multiply(engine.divide(engine.divide(m, c1), engine.add(engine.sqrt(engine.divide(n, c2)), eps)), -learningRate),
-            engine.multiply(p, -learningRate * weightDecay)),
-          newMu as any, newNu as any, params as any)
-    return [scaled as any, { count: nextCount, mu: newMu, nu: newNu } as unknown as OptState]
-  },
-})
-
-// AdaGrad: accumulate squared gradients
-const adagradTransform = (learningRate: number, eps = 1e-7): GradientTransformation => ({
-  init: (params) => engine.mapTree((p: engine.Tensor) => engine.zerosLike(p), params as any),
-  update: (updates, state, params) => {
-    const accum = engine.mapTree((g: engine.Tensor, s: engine.Tensor) => engine.add(engine.square(g), s), updates as any, state as any)
-    const scaled = engine.mapTree(
-      (g: engine.Tensor, s: engine.Tensor) => engine.multiply(engine.divide(g, engine.add(engine.sqrt(s), eps)), -learningRate),
-      updates as any, accum as any)
-    return [scaled as any, accum]
-  },
-})
-
-// Arguments after the learning rate: scalars fill the hyperparameters in
-// order, a list picks the variables to train (default: every variable alive)
-const optimizerRest = (rest: Value[]): { nums: number[], vars: FluentVariable[] | undefined } => ({
-  nums: rest.filter((r) => r != null && !Array.isArray(r)).map(asNumber),
-  vars: rest.find((r): r is FluentVariable[] => Array.isArray(r)),
-})
-
-const TensorOptimizationAdam = (a: Value, ...rest: Value[]) => {
-  const { vars } = optimizerRest(rest)
-  return makeOptimizer(adamTransform(asNumber(a)), vars)
-}
-
-// adamw(lr, weightDecay?, vars?) – Adam with decoupled weight decay
-const TensorOptimizationAdamW = (a: Value, ...rest: Value[]) => {
-  const { nums: [weightDecay], vars } = optimizerRest(rest)
-  return makeOptimizer(adamTransform(asNumber(a), weightDecay ?? 1e-4), vars)
-}
-
-// sgd(lr, momentum?, vars?)
-const TensorOptimizationSgd = (a: Value, ...rest: Value[]) => {
-  const { nums: [momentum], vars } = optimizerRest(rest)
-  return makeOptimizer(sgdTransform(asNumber(a), momentum), vars)
-}
-
-const TensorOptimizationAdaGrad = (a: Value, ...rest: Value[]) => {
-  const { vars } = optimizerRest(rest)
-  return makeOptimizer(adagradTransform(asNumber(a)), vars)
 }
 
 // Stateful convenience RNG: a fresh key per call – deterministic per page load, not
@@ -2474,10 +2368,6 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorData,
   TensorAssign,
   TensorWatch,
-  TensorOptimizationAdam,
-  TensorOptimizationAdamW,
-  TensorOptimizationSgd,
-  TensorOptimizationAdaGrad,
   TensorRandomUniform,
 
   TensorMatrixMultiply,

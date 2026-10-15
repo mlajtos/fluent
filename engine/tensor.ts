@@ -637,14 +637,6 @@ export function conv(field: Like, kernel: Like): Tensor {
 // a draw is a RANDOM leaf, so it fuses into what reads it; a seed is a number
 const mix = (seed: number, salt: number) => (Math.imul((seed ^ Math.imul(salt, 0x27d4eb2f)) >>> 0, 0x165667b1) ^ salt) >>> 0;
 export const uniform = (seed: number, shape: readonly number[]): Tensor => wrap(ir.random(shape, mix(seed, 1)));
-// nested lists and records of tensors, mapped leaf by leaf
-export const mapTree = (fn: (...xs: any[]) => any, t: unknown, ...rest: unknown[]): unknown => {
-  if (t instanceof Tensor) return fn(t, ...rest);
-  if (Array.isArray(t)) return t.map((x, i) => mapTree(fn, x, ...rest.map((r) => (r as unknown[])[i])));
-  if (t && typeof t === "object") return Object.fromEntries(Object.entries(t).map(([k, v]) => [k, mapTree(fn, v, ...rest.map((r) => (r as Record<string, unknown>)[k]))]));
-  return t;
-};
-
 // ── ∇: the engine's transpose ∘ linearize on the graph a function builds ─────────
 // The derivative is with respect to a traced argument – this use of the value, never a
 // copy of it the function closed over – and an outer ∇ still differentiates through it.
@@ -654,18 +646,10 @@ export function vjp<F extends (...xs: any[]) => Tensor>(f: F, primals: Tensor[])
   const seed = (ct: unknown): UOp => (ct instanceof Tensor ? nodeOf(ct) : ir.broadcastTo(ir.konst(Number(ct ?? 1)), out.node.shape));
   return [out, (ct: unknown) => graphVjp(out.node, leaves.map((l) => l.node), seed(ct)).map((n) => new Tensor(n))];
 }
-// valueAndGrad(f)(params, …rest): params is a tree of tensors; the gradients come back in its shape
-export function valueAndGrad(f: (...xs: any[]) => Tensor) {
-  return (params: unknown, ...rest: unknown[]): [Tensor, unknown] => {
-    const leaves: Tensor[] = [];
-    const args = mapTree((p: Tensor) => { const l = traced(p); leaves.push(l); return l; }, params);
-    const loss = f(args, ...rest);
-    const grads = graphVjp(loss.node, leaves.map((l) => l.node), ir.konst(1));
-    let i = 0;
-    return [loss, mapTree(() => new Tensor(grads[i++]!), params)];
-  };
-}
-
+// the gradients of value with respect to traced leaves – a ones cotangent, so a
+// non-scalar value differentiates element by element
+export const gradients = (value: Tensor, wrt: readonly Tensor[]): Tensor[] =>
+  graphVjp(value.node, wrt.map((l) => l.node), ir.broadcastTo(ir.konst(1), value.node.shape)).map((n) => new Tensor(n));
 // ── devices: WebGPU where the platform has it, the CPU everywhere ────────────────
 let gpu: GPU | null = null;
 export async function init(): Promise<void> { gpu ??= await GPU.create(); device = gpu; }

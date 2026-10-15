@@ -356,7 +356,7 @@ mish: TensorMish: doc({ x | x × tanh(softplus(x)) }, "mish(x)", "A self-gated a
 (⍱): nor: TensorNor: doc({ a, b | ¬(a ∨ b) }, "x ⍱ y", "Element-wise nor: 1 where both operands are zero, else 0. Functionally complete, like ⍲.", "[0, 1, 0] ⍱ [0, 1, 1] = [1, 0, 0]"),
 
 ; Reductions
-(∇): grad: doc(TensorGradient, "∇(f)", "Gradient of a function: ∇(f)(x) is df/dx at x. Works on any function of smooth numeric ops — reshape and indexing pass through; argmax/round/comparisons read as constant (zero gradient). Nests: ∇(∇(f)) is the second derivative.", "∇({ x | x^2 })(3) = 6"),
+(∇): grad: doc(TensorGradient, "∇(f)", "Gradient of a function: ∇(f)(x) is df/dx at x. Works on any function of smooth numeric ops — reshape and indexing pass through; argmax/round/comparisons read as constant (zero gradient). Nests: ∇(∇(f)) is the second derivative. With no argument, ∇(loss)() differentiates with respect to the ~ variables loss reads and gives (value, variables, gradients) – what an optimizer steps.", "∇({ x | x^2 })(3) = 6"),
 (Σ): sum: doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6"),
 reduce: doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so `x reduce ⌈` is max.", "1 ..< 10 reduce + = 45"),
 (Π): prod: TensorProduct,
@@ -391,7 +391,7 @@ normalize: TensorNormalize: doc({ x | x ÷ norm(x) }, "normalize(x)", "x scaled 
 
 ; Variables
 (~): var: doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad. For data the loss reads but never trains, use ~~.", "θ: ~([0, 0])"),
-(~~): data: doc(TensorData, "~~(init)", "Make a data slot – every optimizer step reads it fresh, but no gradient flows into it and nothing trains it. Assign with := any time, even to a new shape – training carries on.", "x: ~~([1, 2]), x := [3, 4, 5]"),
+(~~): data: doc(TensorData, "~~(init)", "Make a data slot – read like a constant: no gradient flows into it and nothing trains it. Assign with := any time, even to a new shape – training carries on.", "x: ~~([1, 2]), x := [3, 4, 5]"),
 watch: doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w = [8]"),
 
 ; Tensor ops
@@ -445,10 +445,93 @@ concat: TensorConcat,
 }, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]"),
 
 ; Optimization
-adam: TensorOptimizationAdam,
-adamw: doc(TensorOptimizationAdamW, "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)"),
-sgd: doc(TensorOptimizationSgd, "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)"),
-adagrad: TensorOptimizationAdaGrad,
+; Optimizers. A step differentiates the loss with respect to the variables it reads –
+; ∇(loss)() gives (value, variables, gradients) – and moves each variable against its
+; gradient. A list after the hyperparameters trains just those variables, each one a ~
+; the loss reads. What an optimizer remembers lives in data slots, one set per
+; variable, made when it first sees its variables; := commits the variables and the
+; slots together, in one pass.
+TensorOptimizerStep: { loss, only |
+  r: ∇(loss)(),
+  cond(guard(isError(r), { r }), {
+    vs: ListGet(r, 1), gs: ListGet(r, 2), n: ListLength(vs),
+    reads: { o | ListReduce(ListMap(vs, { v | identical(o, v) }), { p, q | p ⌈ q }, 0) },
+    cond(
+      guard(n = 0, { Error("no trainable variables – the loss reads no ~ variable") }),
+      guard(isList(only), {
+        cond(
+          guard(ListReduce(ListMap(only, { o | 1 - reads(o) }), { p, q | p ⌈ q }, 0), {
+            Error("a listed variable isn't a ~ the loss reads – a ~~ slot holds data, and nothing trains it") }),
+          { keep: mask(0 ..< n, stack(ListMap(vs, { v | ListReduce(ListMap(only, { o | identical(o, v) }), { p, q | p ⌈ q }, 0) }))),
+            (ListGet(r, 0), ListGather(vs, unstack(keep)), ListGather(gs, unstack(keep))) })
+      }),
+      { r })
+  })
+},
+; the slots a step keeps for its variables – made again when the variables change. It
+; takes the signal that holds them, so it must not be lifted: it reads and writes it
+TensorOptimizerSlots: FunctionNoAutoLift({ held, vs, make |
+  h: held(),
+  same: cond(
+    guard(identical(h, ◌), { 0 }),
+    guard(ListLength(ListGet(h, 0)) ≠ ListLength(vs), { 0 }),
+    { ListReduce(ListMap(vs, { v, i | identical(v, ListGet(ListGet(h, 0), i)) }), { p, q | p ∧ q }, 1) }),
+  cond(guard(same, { ListGet(h, 1) }), { fresh: ListMap(vs, { v | make(v) }), held((vs, fresh)), fresh })
+}),
+sgd: doc({ lr, a, b |
+  μ: cond(guard(isTensor(a), { a }), { 0 }),
+  only: cond(guard(isList(a), { a }), { b }),
+  held: $(◌),
+  { loss |
+    s: TensorOptimizerStep(loss, only),
+    cond(guard(isError(s), { s }), {
+      vs: ListGet(s, 1), gs: ListGet(s, 2),
+      cond(
+        guard(μ = 0, { vs := ListMap(vs, { v, i | v + (ListGet(gs, i) × -(lr)) }) }),
+        { ms: TensorOptimizerSlots(held, vs, { v | ~~(fill(shape(v), 0)) }),
+          m1: ListMap(gs, { g, i | (ListGet(ms, i) × μ) + g }),
+          ListConcat(vs, ms) := ListConcat(ListMap(vs, { v, i | v + (ListGet(m1, i) × -(lr)) }), m1) }),
+      ListGet(s, 0) })
+  }
+}, "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)"),
+; Adam, with decoupled weight decay wd (0 for plain Adam): moments m and v per
+; variable, a step count t, bias-corrected
+TensorAdam: { lr, wd, only |
+  held: $(◌),
+  { loss |
+    s: TensorOptimizerStep(loss, only),
+    cond(guard(isError(s), { s }), {
+      vs: ListGet(s, 1), gs: ListGet(s, 2),
+      slots: TensorOptimizerSlots(held, vs, { v | (~~(fill(shape(v), 0)), ~~(fill(shape(v), 0)), ~~(0)) }),
+      at: { j | ListMap(slots, { q | ListGet(q, j) }) },
+      ms: at(0), ns: at(1), ts: at(2),
+      t1: ListGet(ts, 0) + 1,
+      c1: 1 - (0.9 ^ t1), c2: 1 - (0.999 ^ t1),
+      m1: ListMap(gs, { g, i | (g × 0.1) + (ListGet(ms, i) × 0.9) }),
+      n1: ListMap(gs, { g, i | ((g × g) × 0.001) + (ListGet(ns, i) × 0.999) }),
+      step: { v, i |
+        u: ((ListGet(m1, i) ÷ c1) ÷ (√(ListGet(n1, i) ÷ c2) + 1e-8)) × -(lr),
+        v + cond(guard(wd = 0, { u }), { u + (v × -(lr × wd)) })
+      },
+      ListConcat(vs, ms, ns, ts) := ListConcat(ListMap(vs, step), m1, n1, ListMap(vs, { v | t1 })),
+      ListGet(s, 0) })
+  }
+},
+adam: doc({ lr, a | TensorAdam(lr, 0, a) }, "adam(lr, vars?)", "Adam: per-variable step sizes from running averages of the gradient and its square. A trailing list picks the variables to train.", "opt: adam(0.01)"),
+adamw: doc({ lr, a, b | TensorAdam(lr, cond(guard(isTensor(a), { a }), { 1e-4 }), cond(guard(isList(a), { a }), { b })) },
+  "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)"),
+adagrad: doc({ lr, a |
+  held: $(◌),
+  { loss |
+    s: TensorOptimizerStep(loss, a),
+    cond(guard(isError(s), { s }), {
+      vs: ListGet(s, 1), gs: ListGet(s, 2),
+      acc: TensorOptimizerSlots(held, vs, { v | ~~(fill(shape(v), 0)) }),
+      a1: ListMap(gs, { g, i | (g × g) + ListGet(acc, i) }),
+      ListConcat(vs, acc) := ListConcat(ListMap(vs, { v, i | v + ((ListGet(gs, i) ÷ (√(ListGet(a1, i)) + 1e-7)) × -(lr)) }), a1),
+      ListGet(s, 0) })
+  }
+}, "adagrad(lr, vars?)", "AdaGrad: each variable's step shrinks with the gradients it has seen. A trailing list picks the variables to train.", "opt: adagrad(0.5)"),
 
 ; Strings
 StringToCodes: doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\"abc\") = [97, 98, 99]"),
