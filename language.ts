@@ -1762,80 +1762,8 @@ const TensorConcat = (...args: unknown[]) => {
   return engine.concatenate(xs, axis)
 }
 
-// Generalized outer product – J's "table" adverb. `a ⊗(f) b` applies f between
-// every cell of a and every cell of b: result shape [frame(a), frame(b), cell].
-// Cells are the trailing `rank` axes (default 0, scalar cells), so with rank 1
-// `dx ⊗((+), 1) dy` crosses the frames while zipping the shared trailing axis.
-// rank can be a scalar or a [rankA, rankB] pair.
-const TensorOuter = function (this: CurrentScope, f: Value, rank?: Value) {
-  const r = rank == null ? 0 : requireData(rank) as (number | number[])
-  const [rankA, rankB] = Array.isArray(r) ? r : [r, r]
-  const scope = this
 
-  return function (a: Value, b: Value) {
-    const shapeA = shapeOf(a)
-    const split = Math.max(0, shapeA.length - (rankA ?? 0))
-    const frameA = shapeA.slice(0, split)
-    const cellA = shapeA.slice(split)
-    const frameBLength = Math.max(0, shapeOf(b).length - (rankB ?? 0))
-    const cellPad = Math.max(0, (rankB ?? 0) - cellA.length)
-    const lifted = engine.reshape(operand(a), [...frameA, ...Array(frameBLength + cellPad).fill(1), ...cellA])
-    return safeApply(f, [lifted, b], scope)
-  }
-}
 
-// Rank operator ⍤ – Iverson's rank conjunction (J's `"`). `f ⍤ k` applies f to
-// each rank-k CELL of its argument and reassembles over the leading FRAME axes,
-// so one function works at every rank: `normalize ⍤ 1` does each row, `⍤ 2` each
-// matrix, bare `normalize` the whole array. Dyadic `a (f ⍤ k) b` zips matching
-// frames. The frame is mapped by unstack→apply→stack, so ∇ flows through it.
-const TensorRank = function (this: CurrentScope, f: Value, rank?: Value) {
-  const k = rank == null ? 0 : asNumber(rank)                            // k ≥ 0 = cell rank (trailing); k < 0 = frame rank (leading), J-style
-  const scope = this
-  const cellsOf = (a: Value): { frame: number[]; cells: Value[] } => {
-    const shape = shapeOf(a), split = k >= 0 ? Math.max(0, shape.length - k) : Math.min(shape.length, -k)
-    const frame = shape.slice(0, split), cell = shape.slice(split)
-    const flat = engine.reshape(operand(a), [frame.reduce((x, y) => x * y, 1), ...cell])
-    return { frame, cells: TensorUnstack(flat) as Value[] }
-  }
-  return function (a: Value, b?: Value) {
-    const A = cellsOf(a)
-    let results: Value[], frame = A.frame
-    if (b == null) { results = A.cells.map((c) => safeApply(f, [c], scope)) }
-    else {
-      const B = cellsOf(b), na = A.cells.length, nb = B.cells.length
-      if (na !== nb && na !== 1 && nb !== 1) { return new Error("`(f ⍤ k)`: dyadic rank needs frames that match or broadcast") }
-      const N = Math.max(na, nb); frame = na >= nb ? A.frame : B.frame          // a lone cell broadcasts across the other's frame
-      results = Array.from({ length: N }, (_, i) => safeApply(f, [A.cells[na === 1 ? 0 : i]!, B.cells[nb === 1 ? 0 : i]!], scope))
-    }
-    const err = results.find((r) => r instanceof Error); if (err) { return err }
-    const stacked = TensorStack(results)
-    return engine.reshape(operand(stacked), [...frame, ...shapeOf(stacked).slice(1)])
-  }
-}
-
-// Inner product ∙ – the dual of the table ⊗. `a (g ∙ f) b` contracts a's LAST
-// axis with b's FIRST: combine with g, then reduce with f – result = f-reduce
-// over k of g(a[…,k], b[k,…]). Written in the order it runs, like `a × b reduce +`:
-// matrix multiply is `× ∙ +`; swap the ring for the rest – `+ ∙ ⌊` is min-plus
-// (shortest paths), `∧ ∙ ∨` is boolean reachability. One combinator, any semiring.
-const TensorInner = function (this: CurrentScope, g: Value, f: Value) {
-  const scope = this
-  const gOuter = (u: Value, v: Value): Value => {                              // g between a rank-r u and rank-s v → the [u-frame, v-frame] table
-    const su = shapeOf(u), sv = shapeOf(v)
-    const uR = engine.reshape(operand(u), [...su, ...Array(sv.length).fill(1)])
-    const vR = engine.reshape(operand(v), [...Array(su.length).fill(1), ...sv])
-    return safeApply(g, [uR, vR], scope)
-  }
-  return function (a: Value, b: Value) {
-    const aSlices = TensorUnstack(engine.moveaxis(operand(a), -1, 0)) as Value[]   // a's contracted axis to the front
-    const bSlices = TensorUnstack(b) as Value[]                                      // b's contracted axis is already first
-    if (aSlices.length !== bSlices.length) { return new Error("`(g ∙ f)`: a's last axis and b's first axis must match") }
-    const terms = aSlices.map((u, k) => gOuter(u, bSlices[k]!))
-    const err = terms.find((t) => t instanceof Error); if (err) { return err }
-    return ListReduce(terms, (acc: Value, t: Value) => safeApply(f, [acc, t], scope))
-  }
-}
 
 const TensorAdd = binaryOp(engine.add)
 const TensorMultiply = binaryOp(engine.multiply)
@@ -1843,13 +1771,6 @@ const TensorMultiply = binaryOp(engine.multiply)
 // a literal integer exponent is exponentiation by squaring in the engine – exact
 // where exp(e·ln x) is not (3^2 is 9, (-2)^2 is 4), and x^2 differentiates as x·x
 const TensorPower = binaryOp(engine.power)
-// WGSL permits 2.5 ULP of division error, so on WebGPU floor(x/x) can miss
-// and remainder(x, x) comes back as x. A remainder of exactly ±y is
-// mathematically impossible – fold it to 0.
-const TensorRemainder = (a: Value, b: Value) => {
-  const r = engine.remainder(operand(a), operand(b))
-  return engine.where(engine.equal(engine.absolute(r), engine.absolute(operand(b))), 0, r)
-}
 const TensorMaximum = binaryOp(engine.maximum)
 const TensorMinimum = binaryOp(engine.minimum)
 
@@ -1863,38 +1784,6 @@ const comparisonOp = (op: (x: any, y: any) => engine.Tensor) =>
 
 const TensorLess = comparisonOp(engine.less)
 const TensorEqual = comparisonOp(engine.equal)
-
-// Match ≡ – is it the same value, whole? Tensors match when their shapes and
-// every element agree, lists when their elements match pair by pair, strings
-// when their text does. 1 or 0, like a comparison – but one answer for the
-// whole value, where = answers element by element. It's the question ⍣ asks
-// when it iterates until nothing changes.
-// ≡ is tolerant, as APL's match is: two numbers match within a few units of f32
-// rounding. Iterating to a fixed point, (f ⍣ ≡), can otherwise settle into a cycle
-// of neighbouring floats – cos at the Dottie number alternates between two.
-const MATCH_TOLERANCE = 2 ** -20
-const near = (x: unknown, y: unknown): boolean =>
-  x === y || (typeof x === "number" && typeof y === "number" && Math.abs(x - y) <= MATCH_TOLERANCE * Math.max(Math.abs(x), Math.abs(y)))
-const valuesMatch = (a: Value, b: Value): boolean => {
-  if (a instanceof FluentVariable) { a = a.current }
-  if (b instanceof FluentVariable) { b = b.current }
-  if (isTensor(a) && isTensor(b)) {
-    const sa = (a as engine.Tensor).shape, sb = (b as engine.Tensor).shape
-    if (sa.length !== sb.length || sa.some((d, i) => d !== sb[i])) { return false }
-    const da = [getAsSyncList(a)].flat(Infinity), db = [getAsSyncList(b)].flat(Infinity)
-    return da.every((x, i) => near(x, db[i]))
-  }
-  if (Array.isArray(a) && Array.isArray(b)) {
-    return a.length === b.length && a.every((x, i) => valuesMatch(x as Value, b[i] as Value))
-  }
-  const text = (v: Value) => typeof v === "string" || v instanceof String
-  if (text(a) && text(b)) { return String(a) === String(b) }
-  return a === b
-}
-const Match = (a: Value, b: Value) => TensorScalar(valuesMatch(a, b) ? 1 : 0)
-
-// Logical ops share the comparison contract: any nonzero operand counts as
-// true, the result is float32 0/1.
 
 const TensorSine = unaryOp(engine.sin)
 const TensorCosine = unaryOp(engine.cos)
@@ -2006,24 +1895,6 @@ const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   })
   return (operand(a) as engine.Tensor).slice(...spec)
 }
-const TensorMask = (a: Value, b: Value) => {
-  // Selection is along axis 0 only: every step below (arange over shape[0],
-  // sort+flip, slice the first `count` rows) is defensible at rank 1 and
-  // meaningless above it, where it used to return a silently garbage tensor of
-  // the wrong rank containing rows never selected. A true elementwise mask has
-  // a data-dependent output shape, which Fluent has no op for – so say so.
-  if (shapeOf(b).length > 1) {
-    return new Error(`mask: the mask must be a vector, got a tensor [${shapeOf(b).join(" ")}] – flatten it, or index with \`_\``)
-  }
-  const count = asNumber(TensorSum(TensorBoolean(b)))
-  const size = shapeOf(a)[0] ?? 0
-  const indices = engine.arange(size).astype(engine.float32)
-  const holes = engine.full([size], -1)
-  const mu = TensorWhere(b, indices, holes)
-  const top = TensorReverse(TensorSort(mu))
-  const valid = TensorSlice(top, TensorScalar(0), TensorScalar(count))
-  return TensorGather(a, TensorReverse(valid))
-}
 const TensorBoolean = (a: Value) => engine.astype(operand(a), engine.bool)
 
 const TensorGradient = (f: Value) => {
@@ -2103,8 +1974,6 @@ const TensorReshape = (a: Value, b?: Value) => {
 }
 
 
-const TensorReverse = (a: Value, axis?: Value) =>
-  engine.flip(operand(a), axis == null ? undefined : requireData(axis) as number | number[])
 
 
 // The contractions stay native until shape logic written in Fluent is cheap: their
@@ -2543,13 +2412,11 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorMultiply,
 
   TensorPower,
-  TensorRemainder,
   TensorMaximum,
   TensorMinimum,
 
   TensorLess,
   TensorEqual,
-  Match,
   TensorSine,
   TensorCosine,
   TensorSineInverse,
@@ -2602,7 +2469,6 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorGather,
   TensorWhere,
   TensorIsNaN,
-  TensorMask,
   TensorSlice,
 
   TensorVariable,
@@ -2615,12 +2481,9 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorOptimizationAdaGrad,
   TensorRandomUniform,
 
-  TensorOuter,
   TensorMatrixMultiply,
   TensorDotProduct,
   TensorEinsum,
-  TensorRank,
-  TensorInner,
 
   // List operations
   List,

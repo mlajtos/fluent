@@ -79,7 +79,18 @@ FunctionUnder: under: (⍢): doc({ g, f |
     { x | t: f(g(x)), FunctionSolve(g, t, near(x, t)) }
   ))
 }, "x (g ⍢ f) y", "Under: do f in g's world, then come back. When g transforms values – log, square – it is g⁻¹(f(g(x), g(y))): Pythagoras is + under square, the geometric mean is μ under log. When g picks out a part – a gather, a row, the diagonal – f edits just that part: (diagonal ⍢ (× ⟜ 0)) zeroes the diagonal. One rule for both: the nearest point to the argument where g lands on f's result. Reads left to right: g, then f, then g undone – (g ⍥ f) ∘ (g ⍣ -1).", "3 (square ⍢ +) 4 = 5"),
-(≡): match: doc(Match, "x ≡ y", "Match: 1 if x and y are the same value whole – same shape and every element, numbers within a few units of float rounding – else 0. Where = compares element by element and exactly, ≡ answers once. (f ⍣ ≡) iterates f until nothing changes.", "[1, 2] ≡ [1, 2] = 1, [1, 2] ≡ [1, 3] = 0"),
+(≡): match: Match: doc({ a, b |
+  cond(
+    guard(isTensor(a) ∧ isTensor(b), { sa: shape(a), sb: shape(b),
+      cond(guard(#(sa) ≠ #(sb), { 0 }), guard(Σ(sa ≠ sb) > 0, { 0 }),
+        { Σ(¬((a = b) ∨ (abs(a - b) ≤ ((2 ^ -20) × (abs(a) ⌈ abs(b)))))) = 0 }) }),
+    guard(isList(a) ∧ isList(b), {
+      cond(guard(ListLength(a) ≠ ListLength(b), { 0 }),
+        { ListReduce(ListMap(a, { v, i | match(v, ListGet(b, i)) }), { p, q | p ∧ q }, 1) }) }),
+    guard(isString(a) ∧ isString(b), { ca: StringToCodes(a), cb: StringToCodes(b),
+      cond(guard(#(ca) ≠ #(cb), { 0 }), { Σ(ca ≠ cb) = 0 }) }),
+    { identical(a, b) })
+}, "x ≡ y", "Match: 1 if x and y are the same value whole – same shape and every element, numbers within a few units of float rounding – else 0. Where = compares element by element and exactly, ≡ answers once. (f ⍣ ≡) iterates f until nothing changes.", "[1, 2] ≡ [1, 2] = 1, [1, 2] ≡ [1, 3] = 0"),
 
 (@): eval: doc(FunctionEvaluate, "f @ x", "Apply the function on the left to the argument on the right – reads as “f at x”. A list spreads as multiple arguments.", "∇({ x | x^2 }) @ 3 = 6"),
 ; Choosing – a candidate answers or declines (returns NoMatch). A choice takes
@@ -127,9 +138,36 @@ reverse: TensorReverse: { x, k |
   ks: cond(guard(identical(k, ◌), { 0 ..< #(shape(x)) }), { k ⍴ [-1] }),
   ListReduce(unstack(0 ..< #(ks)), { y, j | one(y, ks_j) }, x)
 },
-(⊗): outer: doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]"),
-(⍤): rank: doc(TensorRank, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1,2,3],[4,5,6]]) = [6, 15]"),
-(∙): inner: doc(TensorInner, "a (g ∙ f) b", "Inner product: contract a's last axis with b's first – combine with g, then reduce with f, in the order it reads, like a × b reduce +. `× ∙ +` is matrix multiply; swap the ring for others: `+ ∙ ⌊` is shortest paths.", "[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]] = [[19,22],[43,50]]"),
+(⊗): outer: TensorOuter: doc({ f, rank |
+  r: cond(guard(identical(rank, ◌), { [0, 0] }), { broadcast(rank ⍴ [-1], [2]) }),
+  rA: r_0, rB: r_1,
+  { a, b |
+    sa: shape(a), split: (#(sa) - rA) ⌈ 0, cellA: slice(sa, [split]),
+    extra: ((#(shape(b)) - rB) ⌈ 0) + ((rB - #(cellA)) ⌈ 0),
+    f(a ⍴ concat((slice(sa, [0], [split]), fill([extra], 1), cellA)), b)
+  } }, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]"),
+(⍤): rank: TensorRank: doc({ f, rank |
+  k: cond(guard(identical(rank, ◌), { 0 }), { rank }),
+  cells: { a | s: shape(a), r: #(s), split: cond(guard(k ≥ 0, { (r - k) ⌈ 0 }), { -(k) ⌊ r }),
+    frame: slice(s, [0], [split]), (frame, unstack(a ⍴ concat(([Π(frame)], slice(s, [split]))))) },
+  { a, b |
+    A: cells(a), ca: ListGet(A, 1), na: ListLength(ca),
+    out: cond(
+      guard(identical(b, ◌), { (ListGet(A, 0), ListMap(ca, { c | f(c) })) }),
+      { B: cells(b), cb: ListGet(B, 1), nb: ListLength(cb),
+        cond(guard((na ≠ nb) ∧ (na ≠ 1) ∧ (nb ≠ 1), { Error("`(f ⍤ k)`: dyadic rank needs frames that match or broadcast") }),
+          { (cond(guard(na ≥ nb, { ListGet(A, 0) }), { ListGet(B, 0) }),
+             ListMap(unstack(0 ..< (na ⌈ nb)), { i | f(ListGet(ca, where(na = 1, 0, i)), ListGet(cb, where(nb = 1, 0, i))) })) }) }),
+    cond(guard(isError(out), { out }), {
+      bad: ListReduce(ListMap(ListGet(out, 1), { v | isError(v) }), { p, q | p ⌈ q }, 0),
+      cond(guard(bad, { ListGet(ListGet(out, 1), ListReduce(ListMap(ListGet(out, 1), { v, i | where(isError(v), i, 1e9) }), { p, q | p ⌊ q }, 1e9)) }),
+        { st: stack(ListGet(out, 1)), st ⍴ concat((ListGet(out, 0), slice(shape(st), [1]))) }) })
+  } }, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1,2,3],[4,5,6]]) = [6, 15]"),
+(∙): inner: TensorInner: doc({ g, f | { a, b |
+  sa: shape(a), sb: shape(b), ra: #(sa), rb: #(sb),
+  cond(guard(sa_(-1) ≠ sb_0, { Error("`(g ∙ f)`: a's last axis and b's first axis must match") }), {
+    t: g(a ⍴ concat((sa, fill([rb - 1], 1))), b ⍴ concat((fill([ra - 1], 1), sb))),
+    reduce(t, f, ra - 1) }) } }, "a (g ∙ f) b", "Inner product: contract a's last axis with b's first – combine with g, then reduce with f, in the order it reads, like a × b reduce +. `× ∙ +` is matrix multiply; swap the ring for others: `+ ∙ ⌊` is shortest paths.", "[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]] = [[19,22],[43,50]]"),
 alongAxis: { f, k |
   lift: (f ⍤ 1),                                              ; f lifted to run on each trailing fibre
   { x |
@@ -231,7 +269,7 @@ mul: doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcas
 neg: TensorNegate: doc({ x | x × -1 }, "neg(x)", "Negate each element.", "neg([1, -2]) = [-1, 2]"),
 sub: TensorSubtract: doc({ x, y | x + (y × -1) }, "x - y", "Element-wise subtraction; shapes broadcast.", "[3, 4] - 1 = [2, 3]"),
 (/): (÷): div: TensorDivide: doc({ x, y | x × reciprocal(y) }, "x ÷ y", "Element-wise division; shapes broadcast.", "[3, 4] ÷ 2 = [1.5, 2]"),
-(%): mod: TensorRemainder,
+(%): mod: TensorRemainder: { a, b | m: a - (floor(a ÷ b) × b), where(abs(m) = abs(b), 0, m) },
 (^): pow: TensorPower,
 (√): root: doc(FunctionArity(({ x, n | x ^ (1 ÷ n) }, TensorSquareRoot)), "x √ n", "The square root of x; with n, the n-th root of x.", "27 √ 3 = 3"),
 (+): FunctionArity((TensorAdd, TensorAbsolute)),
@@ -370,7 +408,10 @@ roll: TensorRoll: doc({ x, s, k |
   )
 }, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]"),
 flip: TensorReverse,
-mask: doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]"),
+mask: TensorMask: doc({ x, keep |
+  cond(guard(#(shape(keep)) > 1, { Error(StringConcat("mask: the mask must be a vector, got a tensor ", String(shape(keep)), " – flatten it, or index with `_`")) }), {
+    n: #(x), k: (keep < 0) ⌈ (0 < keep),
+    x _ slice(⍋(where(k, 0 ..< n, n + (0 ..< n))), [0], [Σ(k)]) }) }, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]"),
 where: doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0) = [1, 0, 3]"),
 isNaN: TensorIsNaN,
 𝕀: eye: TensorIdentity: doc({ n | (0 ..< n) ⊗(=) (0 ..< n) }, "𝕀(n)", "The n×n identity matrix – 1 on the diagonal, 0 elsewhere.", "eye(2) = [[1, 0], [0, 1]]"),
