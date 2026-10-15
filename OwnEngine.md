@@ -668,7 +668,7 @@ and engine export: 153 environment names = 38 engine primitives, 35 that must
 stay native (evaluation, reflection, signals, strings, I/O), 67 expressible in
 Fluent today, 11 expressible with one new primitive.
 
-6. **S5 — The primitive core** — *done 2026-10-16*. What landed:
+6. **S5 — The primitive core** — *done 2026-10-15*. What landed:
    - *Folding:* a value that depends only on constants is computed as it is
      built (up to 256 elements), each op as its kernel computes it – a
      property gate checks all 45 ops against the CPU kernels, bit for bit.
@@ -705,7 +705,7 @@ Fluent today, 11 expressible with one new primitive.
      cond, List, concat, meshgrid – stay: a Fluent lambda takes a fixed number
      of arguments (open: a rest-parameter form). So do `_`, reduce and the
      arity dispatchers it is keyed by, and the natives other natives call.
-7. **S6 — Learning in userland** — *done 2026-10-16*. `∇(loss)()`, with no
+7. **S6 — Learning in userland** — *done 2026-10-15*. `∇(loss)()`, with no
    argument, differentiates with respect to the `~` variables the loss reads
    (a variable's read reports itself while ∇ follows the loss) and gives
    (value, variables, gradients), computed in one pass; `:=` on a list of
@@ -719,29 +719,51 @@ Fluent today, 11 expressible with one new primitive.
    training throughput unchanged. Not yet: L-BFGS (a history and a line
    search), Adafactor (factored moments), schedule-free AdamW, LARS, EMA and
    lookahead; Shampoo and SOAP wait for linear algebra (S9, skipped).
-8. **S7 — JankFree: the worker** (JankFree.md §3, on the smaller core).
-   - The evaluator, the engine and the compute GPUDevice run in a worker;
-     the main thread keeps React, Monaco and input. Reads are effects
-     (JankFree's generator trampoline): the synchronous read bridge and the
-     sync realize path are deleted. Signals reach the page as mirrors;
-     widgets travel as descriptions; images and heatmaps draw on a separate
-     display device from small packed readbacks.
-   - Per-step host cost falls with it: state keeps stable leaves (a
-     variable's buffer is rebound, its node stays), so a step rebuilds the
-     same graph and every pass — ∇, fusion, lowering — is found by structure.
-   - Done on the main thread already: a ⟳ step waits until at most two steps
-     are queued on the GPU, displays read asynchronously, `CodesToString` of
-     codes still on the GPU gives a signal that fills when they arrive (a
-     lifted application reads through a signal that holds a signal), the
-     host-work estimate is memoized, a random seed and every value that
-     crosses time are data rather than kernel text, a rank-0 device result
-     has the same shape of leaf as a held host scalar, and the plan key
-     ignores whether a leaf is host data or a device buffer. The looped
-     dreamer trains at 60 fps (360 frames in 6 s, p95 17.6 ms; jax-js: 86
-     frames, p50 67 ms); typing into it drops to ~5 fps, because each
-     keystroke re-evaluates the program — two dreams, 58 transformer passes —
-     on the main thread.
-   - *Gate:* the hitch test in CI — typing and training together hold 60 fps.
+8. **S7 — JankFree: the worker** — *done 2026-10-15*. What landed:
+   - *The split:* the evaluator, the engine and the GPU run in a worker
+     (`worker.ts`, `host.ts`); the page keeps React, Monaco and input, imports
+     the language only to parse, and never touches the engine. Values cross
+     as plain descriptions (`protocol.ts`): a signal or a variable as a live
+     id with its value now, a tensor with its values when the host has them
+     or right after, a widget as a type, plain props and described slots. The
+     widgets and sources are values the program builds in the worker; the
+     page draws them.
+   - *Live values* are reference-counted across the boundary: the worker
+     counts how often it sent an id, the page releases all it received at
+     once when nothing shows it – a release never races a send. A widget's
+     write carries a sequence number the worker answers, and the widget shows
+     its own value until then, so typing and dragging are never echoed back
+     over.
+   - *Flow control:* changes go out once a frame, in one batch, and the next
+     batch waits until the page has drawn the last; a live value waits while
+     its last tensors are still being read. A slow page gets fewer, fresher
+     batches (half-exp's 2,000-bar plot froze the page without this); a
+     hidden tab gets none while training goes on.
+   - *Display:* heatmaps and images are colored in the worker and cross as
+     RGBA; the page puts pixels. The GPU blit, the viridis upload, the
+     main-thread readbacks and `useHostValues` are gone. The camera, the
+     microphone and the pointer stream from the page, newest frame wins; the
+     loaders, OPFS cache and safetensors parsing run in the worker.
+   - *Measured* (typing while training, 6 s): looped dreamer 29–52 → 365–368
+     frames, p95 333–466 → 17.6 ms; dreamer 188–193 → 366–370 frames, p95 82
+     → 18 ms. Training throughput unchanged (looped dreamer 24.5 steps/s
+     either way). The gate is a browser test – the main-thread build draws 30
+     frames and fails it.
+   - *Not done, by measurement:* reads are not effects. The evaluator stays
+     synchronous and the synchronous read bridge stays: it blocks the worker,
+     not the page, and a generator trampoline would slow the evaluator, which
+     is the measured bottleneck. Stable leaves for state (rebinding a
+     variable's buffer under the same node) are not done either.
+   - *Tests:* the Bun suite runs the host's real widgets and sources (only
+     the network loaders are stubbed) and checks the protocol: answered
+     writes, batches gated on drawing, released lives going quiet, and every
+     gallery demo crossing whole with no error in any cell it shows. That
+     check found a shipped error: under's `({ x | x^x } ⍣ -1)(3)` finds no
+     solution (Newton meets x^x where its slope is undefined) – marked as a
+     known failure; how ⍣ -1 seeds is an open decision.
+   - *Size:* the IDE is `client.tsx` 2,304 + `host.ts` 814 + `protocol.ts`
+     99 + `worker.ts` 20 + `documentation.ts` 126 = 3,363 lines, against
+     `client.tsx`'s 3,161.
 9. **S8 — META: rules as values.**
    - `derivative(sin, { x, dx | cos(x) × dx })`: the elementwise and MATH
      JVP rows become prelude values. Each is applied once, at registration, to
