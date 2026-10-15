@@ -7,7 +7,7 @@ import { engineGpu } from "../tensor.ts";
 
 export default async function (): Promise<{ fails: number }> {
   const name = new URLSearchParams(globalThis.location?.search).get("example") ?? "dreamer";
-  const src = EXAMPLES[name]!, head = src.slice(0, src.indexOf("; --- sampling"));
+  const src = (EXAMPLES as Record<string, string>)[name]!, head = src.slice(0, src.indexOf("; --- sampling"));
   const program = `${head}opt: adamw(0.03, 0.001),\n({ opt(loss) }, { 0 })`;
   const [step] = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(program), createScope())) as unknown as [() => unknown];
   const engine = engineGpu();

@@ -32,7 +32,7 @@ const MATH_JVP: Record<string, (u: UOp, x: UOp) => UOp> = {
 
 type Jvp = (u: UOp, d: (UOp | null)[]) => UOp | null;
 export const JVP: Partial<Record<UOp["op"], Jvp>> = {
-  CONSTANT: () => null, BUFFER: () => null, DETACH: () => null, LESS_THAN: () => null, RANDOM: () => null, IOTA: () => null, HOST: () => null,
+  CONSTANT: () => null, BUFFER: () => null, DETACH: () => null, LESS_THAN: () => null, RANDOM: () => null, IOTA: () => null,
   ADD: (_u, [a = null, b = null]) => plus(a, b),
   MULTIPLY: (u, [a = null, b = null]) => plus(scale(u.src[1]!, a), scale(u.src[0]!, b)),   // product rule
   RECIPROCAL: (u, [a = null]) => scale(mul(mul(u, u), konst(-1)), a),          // −u²·da  (u = 1/x)

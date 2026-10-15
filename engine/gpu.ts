@@ -3,9 +3,9 @@
 // decided in the IR — cpu.ts walks the same nodes. Every value is f32.
 
 import type { UOp } from "./ir.ts";
-import { node, buffer, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM } from "./ir.ts";
+import { node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM } from "./ir.ts";
 import { graphRewriteMany } from "./rewrite.ts";
-import { optimizeMany, COST } from "./opt.ts";
+import { optimizeMany, COST, canonical, placeholders } from "./opt.ts";
 import type { HostData } from "./cpu.ts";
 
 // Dispatches per queue.submit. Submitting each kernel alone costs ~15× in dispatch
@@ -339,40 +339,6 @@ export function lowerMany(roots: UOp[]): UOp[] {
   }]);
 }
 
-// A plan is built over placeholder leaves, never a run's own: a cached plan holds no data,
-// and every run binds its leaves by position.
-const placeholders = (roots: UOp[], leaves: UOp[]): { roots: UOp[]; slots: UOp[] } => {
-  const slots = leaves.map((l, i) => buffer(`%slot${i}`, l.shape)), memo = new Map<number, UOp>(leaves.map((l, i) => [l.id, slots[i]!]));
-  for (const r of roots) for (const u of toposort(r)) {
-    if (memo.has(u.id)) continue;
-    const src = u.src.map((s) => memo.get(s.id)!);
-    memo.set(u.id, src.every((s, i) => s === u.src[i]) ? u : node(u.op, src, u.arg, u.shape));
-  }
-  return { roots: roots.map((r) => memo.get(r.id)!), slots };
-};
-
-// A plan's identity is its structure: ops, args and shapes in a canonical order, leaves
-// numbered by position — a device buffer or a tensor constant is rebound on every run, so
-// a training step built afresh each tick finds the plan it compiled on the first. A scalar
-// constant is part of the structure: the printer folds it into the kernel text.
-export function canonical(roots: UOp[]): { key: string; leaves: UOp[] } {
-  const index = new Map<number, number>(), leaves: UOp[] = [], parts: string[] = [];
-  for (const root of roots) {
-    const stack: [UOp, boolean][] = [[root, false]];
-    while (stack.length) {
-      const [u, expanded] = stack.pop()!;
-      if (index.has(u.id)) continue;
-      if (!expanded && u.src.length) { stack.push([u, true]); for (let i = u.src.length - 1; i >= 0; i--) if (!index.has(u.src[i]!.id)) stack.push([u.src[i]!, false]); continue; }
-      let part: string;
-      if (u.op === "BUFFER" || (u.op === "CONSTANT" && u.shape.length)) { part = `L${leaves.length}[${u.shape}]`; leaves.push(u); }
-      else if (u.op === "CONSTANT") part = `C${(u.arg as Float32Array)[0]}`;
-      else if (u.op === "HOST") part = `H${(u.arg as { name: string }).name}[${u.shape}](${u.src.map((x) => index.get(x.id)).join(",")})`;
-      else part = `${u.op}${u.arg === null || u.arg === undefined ? "" : JSON.stringify(u.arg)}[${u.shape}](${u.src.map((x) => index.get(x.id)).join(",")})`;
-      index.set(u.id, parts.length); parts.push(part);
-    }
-  }
-  return { key: `${parts.join(";")}|${roots.map((r) => index.get(r.id)).join(",")}`, leaves };
-}
 
 // ── the synchronous read: WebGPU has none, so a buffer is copied into the texture of a
 // WebGPU canvas, drawn onto a 2-D canvas and read with getImageData (TF.js's trick, which
@@ -526,7 +492,7 @@ export class GPU {
       if (!b) { b = this.#take(this.#bytes(u)); store.set(u.id, b); transient.push(b); }
       return b;
     };
-    for (const r of lowered) if ((r.op === "KERNEL" || r.op === "HOST") && !outputs.has(r.id)) {   // the roots' buffers outlive the call
+    for (const r of lowered) if (r.op === "KERNEL" && !outputs.has(r.id)) {   // the roots' buffers outlive the call
       const b = this.#take(this.#bytes(r));
       outputs.set(r.id, b); store.set(r.id, b);
     }
@@ -534,8 +500,8 @@ export class GPU {
     for (const g of lowered) for (const u of toposort(g)) {
       if (seen.has(u.id)) continue; seen.add(u.id);
       if (u.op === "BUFFER" || u.op === "CONSTANT") { bufOf(u); continue; }
-      if (u.op !== "KERNEL" && u.op !== "HOST") throw new Error(`gpu: ${u.op} at the kernel boundary`);
-      let w = 0; for (const x of u.src) if (x.op === "KERNEL" || x.op === "HOST") w = Math.max(w, wave.get(x.id)! + 1);
+      if (u.op !== "KERNEL") throw new Error(`gpu: ${u.op} at the kernel boundary`);
+      let w = 0; for (const x of u.src) if (x.op === "KERNEL") w = Math.max(w, wave.get(x.id)! + 1);
       wave.set(u.id, w); kernels.push(u);
     }
     const byWave = new Map<number, UOp[]>();
@@ -544,15 +510,7 @@ export class GPU {
     const flush = () => { dev.queue.submit([enc.finish()]); enc = dev.createCommandEncoder(); dispatched = 0; };
     const timed = this.profile && this.#timestamps && kernels.length ? { qs: dev.createQuerySet({ type: "timestamp", count: Math.min(4096, 2 * kernels.length) }), labels: [] as string[], wgsl: [] as string[] } : null;
     for (const w of [...byWave.keys()].sort((a, b) => a - b)) {
-      const hosts = byWave.get(w)!.filter((u) => u.op === "HOST"), ks = byWave.get(w)!.filter((u) => u.op === "KERNEL");
-      if (hosts.length) {
-        flush();
-        for (const h of hosts) {
-          const ins = h.src.map((x) => ({ data: this.readSync(bufOf(x), Math.max(numel(x.shape), 1)), shape: x.shape }));
-          dev.queue.writeBuffer(bufOf(h), 0, (h.arg as { fn: (ins: HostData[]) => Float32Array }).fn(ins) as unknown as GPUAllowSharedBufferSource);
-        }
-      }
-      if (!ks.length) continue;
+      const ks = byWave.get(w)!;
       const tw = (j: number) => (timed ? { timestampWrites: { querySet: timed.qs, beginningOfPassWriteIndex: 2 * (timed.labels.length + j), endOfPassWriteIndex: 2 * (timed.labels.length + j) + 1 } } : undefined);
       let p = enc.beginComputePass(tw(0));
       ks.forEach((u, j) => {

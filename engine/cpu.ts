@@ -1,10 +1,10 @@
-// The CPU backend and reference oracle. After optimize a graph is leaves + FUSED + HOST, so
+// The CPU backend and reference oracle. After optimize a graph is leaves + FUSED, so
 // the CPU prints each kernel as a JavaScript function — the same loop nest the WGSL printer
 // prints — with every value op fround'd so it matches the GPU's f32 arithmetic.
 
 import type { UOp } from "./ir.ts";
 import { numel, kInputs, bufName, toposort, MATHS, hashUniform } from "./ir.ts";
-import { optimizeMany } from "./opt.ts";
+import { optimizeMany, canonical, placeholders } from "./opt.ts";
 
 export interface HostData { data: Float32Array; shape: readonly number[] }
 
@@ -89,16 +89,24 @@ export function printKernel(k: UOp): string {
   const loads = Array.from({ length: nIn }, (_, i) => `const a${i} = ins[${i}];`).join(" ");
   return `(ins, o) => {\n${loads}\nfor (let i = 0; i < ${n}; i++) {\n${c.scopes[0]!.join("\n")}\no[i] = ${body};\n}\n}`;
 }
+const kernelFn = new WeakMap<UOp, Compiled>();                                 // a plan's kernels are printed once
 const compile = (k: UOp): Compiled => {
+  let fn = kernelFn.get(k);
+  if (fn) return fn;
   const src = printKernel(k);
-  let fn = compiled.get(src);
-  if (!fn) { fn = new Function("f", "M", "H", `return ${src}`)(Math.fround, MATH_JS, hashUniform) as Compiled; compiled.set(src, fn); }
+  fn = compiled.get(src);
+  if (!fn) {
+    if (compiled.size > 4096) compiled.clear();
+    fn = new Function("f", "M", "H", `return ${src}`)(Math.fround, MATH_JS, hashUniform) as Compiled;
+    compiled.set(src, fn);
+  }
+  kernelFn.set(k, fn);
   return fn;
 };
 
 export class CPU {
   readonly name = "cpu";
-  #eval(opt: UOp[], inputs: Map<string, HostData>): HostData[] {
+  #eval(opt: UOp[], inputs: Map<string, HostData>, bind: Map<number, UOp>): HostData[] {
     // one global evaluation order + last-use, so a freed intermediate is reclaimed the moment
     // its last consumer runs — peak memory becomes max-live, not the sum of all intermediates.
     const order: UOp[] = [], seen = new Set<number>();
@@ -111,17 +119,30 @@ export class CPU {
     const memo = new Map<number, HostData>();
     order.forEach((u, i) => {
       if (u.op === "CONSTANT") memo.set(u.id, { data: u.arg as Float32Array, shape: u.shape });
-      else if (u.op === "BUFFER") memo.set(u.id, inputs.get(bufName(u)) ?? ((): never => { throw new Error(`cpu: missing input '${bufName(u)}'`); })());
-      else if (u.op === "FUSED" || u.op === "HOST") {
-        const n = Math.max(numel(u.shape), 1);
-        let out: Float32Array;
-        if (u.op === "FUSED") { out = new Float32Array(n); compile(u)(kInputs(u).map((s) => memo.get(s.id)!.data), out); }
-        else out = (u.arg as { fn: (ins: HostData[]) => Float32Array }).fn(u.src.map((s) => memo.get(s.id)!));
+      else if (u.op === "BUFFER") {
+        const l = bind.get(u.id) ?? u;
+        memo.set(u.id, l.op === "CONSTANT" ? { data: l.arg as Float32Array, shape: l.shape } : inputs.get(bufName(l)) ?? ((): never => { throw new Error(`cpu: missing input '${bufName(l)}'`); })());
+      }
+      else if (u.op === "FUSED") {
+        const out = new Float32Array(Math.max(numel(u.shape), 1));
+        compile(u)(kInputs(u).map((s) => memo.get(s.id)!.data), out);
         memo.set(u.id, { data: out, shape: u.shape });
       }
       for (const id of deaths[i]!) memo.delete(id);                            // free the dead
     });
     return opt.map((r) => memo.get(r.id)!);
   }
-  realizeSync(roots: UOp[], inputs = new Map<string, HostData>()): HostData[] { return this.#eval(optimizeMany(roots), inputs); }
+  // a graph seen before, by structure, runs its plan with this run's leaves bound in
+  #plans = new Map<string, { opt: UOp[]; slots: UOp[] }>();
+  realizeSync(roots: UOp[], inputs = new Map<string, HostData>()): HostData[] {
+    const { key, leaves } = canonical(roots);
+    let plan = this.#plans.get(key);
+    if (!plan) {
+      if (this.#plans.size > 512) this.#plans.delete(this.#plans.keys().next().value!);
+      const p = placeholders(roots, leaves);
+      plan = { opt: optimizeMany(p.roots), slots: p.slots };
+      this.#plans.set(key, plan);
+    } else { this.#plans.delete(key); this.#plans.set(key, plan); }
+    return this.#eval(plan.opt, inputs, new Map(plan.slots.map((s, i) => [s.id, leaves[i]!])));
+  }
 }

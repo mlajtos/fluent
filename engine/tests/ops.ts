@@ -1,12 +1,13 @@
 // Gates for the ops beyond the 18 generators: the MATHS table, RANDOM, PAD, the product
-// reduce and HOST routines — CPU == GPU, values == reference, ∇ == finite differences.
+// reduce and the sorting network — CPU == GPU, values == reference, ∇ == finite differences.
 //   bun engine/tests/run.ts engine/tests/ops.ts
 
-import { buffer, konst, add, mul, math, MATHS, random, pad, slice, reshape, reduceAxis, gather, host, sum, windows, broadcastTo, type UOp } from "../ir.ts";
+import { buffer, konst, add, mul, math, MATHS, random, pad, slice, reshape, reduceAxis, gather, sum, windows, broadcastTo, type UOp } from "../ir.ts";
 import { grad } from "../grad.ts";
 import { CPU, type HostData } from "../cpu.ts";
 import { realize } from "./realize.ts";
 import { GPU } from "../gpu.ts";
+import { bitonic, order } from "../tensor.ts";
 
 export default async function (): Promise<{ fails: number }> {
   let fails = 0;
@@ -100,16 +101,17 @@ export default async function (): Promise<{ fails: number }> {
     check("∇Π = Π ÷ x", maxDiff(g, [6, 3, 2, 2, -4, -0.5]) < 1e-6);
   }
 
-  // ── 6. HOST: sort as gather by a routine's argsort — so ∇ sort is ∇ gather ─────────
+  // ── 6. sorting on the device: the bitonic network == the host's stable, NaN-last order ─
   {
-    const x = buffer("x", [6]), xd = Float32Array.from([3, -1, 4, 1, -5, 9]);
-    const argsort = host("argsort", [x], [6], ([t]) => Float32Array.from([...t!.data.keys()].sort((i, j) => t!.data[i]! - t!.data[j]!)));
-    const sorted = gather(reshape(x, [6, 1]), argsort);
-    const inp = new Map([["x", T(xd, [6])]]);
-    const s = await both(reshape(sorted, [6]), inp);
-    check("sort through HOST argsort (cpu, gpu)", maxDiff(s.a, [-5, -1, 1, 3, 4, 9]) === 0 && maxDiff(s.b, [-5, -1, 1, 3, 4, 9]) === 0);
-    const w = Float32Array.from([1, 2, 3, 4, 5, 6]);
-    const gw = await both(grad(sum(mul(reshape(sorted, [6]), buffer("w", [6]))), x), new Map([["x", T(xd, [6])], ["w", T(w, [6])]]));
+    const row = [3, -1, 4, 1, -5, 9, 1, NaN, 2, Infinity, -Infinity, 0, 1], xd = Float32Array.from([...row, ...row.map((v) => -v)]);
+    const x = buffer("x", [2, 13]), inp = new Map([["x", T(xd, [2, 13])]]);
+    for (const desc of [false, true]) {
+      const s = await both(bitonic(x, 2, 13, desc), inp), ref = order(xd, 2, 13, desc);
+      check(`bitonic argsort${desc ? ", descending" : ""} == host order (cpu, gpu)`, maxDiff(s.a, ref) === 0 && maxDiff(s.b, ref) === 0);
+    }
+    const v = buffer("v", [6]), vd = Float32Array.from([3, -1, 4, 1, -5, 9]), w = Float32Array.from([1, 2, 3, 4, 5, 6]);
+    const sorted = reshape(gather(reshape(v, [6, 1]), reshape(bitonic(reshape(v, [1, 6]), 1, 6, false), [6])), [6]);
+    const gw = await both(grad(sum(mul(sorted, buffer("w", [6]))), v), new Map([["v", T(vd, [6])], ["w", T(w, [6])]]));
     check("∇ through sort routes back to the original positions", maxDiff(gw.a, [4, 2, 5, 3, 1, 6]) === 0 && maxDiff(gw.b, [4, 2, 5, 3, 1, 6]) === 0);
   }
 

@@ -15,7 +15,6 @@ export type Op =
   | "BROADCAST" | "PERMUTE" | "RESHAPE" | "SLICE" | "WINDOW" // the view algebra — pure stride maps, never compute
   | "PAD"                                                    // arg {axis, before, after}: zeros around — SLICE's transpose, an index predicate
   | "GATHER" | "SCATTER_ADD"                                 // runtime-indexed rows; each other's transpose
-  | "HOST"                                                   // arg {name, fn}: a routine run on its realized inputs (sort)
   | "FUSED"                                                  // src = [gid, value, ...inputs] — ONE kernel
   | "KERNEL"                                                 // arg {wgsl, dispatch} — printed FUSED; src = inputs
   | "RANGE" | "ICONST" | "IADD" | "IMUL" | "IDIV" | "IMOD"   // index algebra; a RANGE's identity IS the node
@@ -167,9 +166,6 @@ export const WGSL_HASH_UNIFORM = `fn hashUniform(seed: u32, i: u32) -> f32 {
 // element i is i: computed where it is read, like a random draw — ranges, one-hot rows and
 // index tables never upload an array
 export const iota = (n: number): UOp => node("IOTA", [], null, [n]);
-// a routine run on realized inputs: its result is data, its derivative none
-export const host = (name: string, srcs: UOp[], shape: readonly number[], fn: (ins: { data: Float32Array; shape: readonly number[] }[]) => Float32Array): UOp =>
-  node("HOST", srcs, { name, fn }, shape.slice());
 export const where = (c: UOp, a: UOp, b: UOp): UOp => {
   const s = joinShape(joinShape(c.shape, a.shape), b.shape), f = (u: UOp) => sameShape(u.shape, s) ? u : broadcastTo(u, s);
   return node("WHERE", [f(c), f(a), f(b)], null, s);

@@ -9,7 +9,7 @@
 
 import type { UOp, Op } from "./ir.ts";
 import {
-  node, konst, numel, strides, sameShape, permute, broadcastTo, toposort, viewMap, bcIndex,
+  node, konst, buffer, numel, strides, sameShape, permute, broadcastTo, toposort, viewMap, bcIndex,
   range, iconst, iadd, imul, idiv, imod, load, acc, iidx, ival, fused, kInputs, rebuild,
 } from "./ir.ts";
 import { graphRewriteMany, type Rule } from "./rewrite.ts";
@@ -212,7 +212,6 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
     const m = built.get(u.id); if (m) return m;
     let out: UOp;
     if (u.op === "CONSTANT" || u.op === "BUFFER") out = u;
-    else if (u.op === "HOST") out = node("HOST", u.src.map(build), u.arg, u.shape);   // a routine: its inputs materialize, its output is a buffer
     else if (ELEM.has(u.op) || VIEW.has(u.op) || u.op === "PAD" || u.op === "RANDOM" || u.op === "IOTA") {   // a map kernel; a view reaching build is a root → a strided copy nest
       // an UNFOLDABLE reshape (a genuine reinterpret of a non-contiguous view) is still
       // flat-identical to its source: copy the SOURCE region and relabel the shape.
@@ -259,18 +258,54 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
   const seen = new Set<number>();
   for (const r of roots) for (const u of toposort(r)) {
     if (seen.has(u.id)) continue; seen.add(u.id);
-    if (u.op === "REDUCE" || u.op === "GATHER" || u.op === "SCATTER_ADD" || u.op === "HOST" || ELEM.has(u.op)) build(u);
+    if (u.op === "REDUCE" || u.op === "GATHER" || u.op === "SCATTER_ADD" || ELEM.has(u.op)) build(u);
   }
   return roots.map(build);
 }
 
-// ---- optimize: simplify → schedule → fuse; result = leaves + FUSED + HOST only -------
+// ---- optimize: simplify → schedule → fuse; result = leaves + FUSED only --------------
 export function optimizeMany(roots: UOp[]): UOp[] {
   const s = graphRewriteMany(simplifyMany(roots), SCHED_REWRITES);
   const uc = useCounts(s);
   const g = fuseWith(s, uc, schedule(s, uc));
   for (const r of g) for (const u of toposort(r))                              // legality: only leaves and kernels may reach the executor
-    if (u.op !== "FUSED" && u.op !== "CONSTANT" && u.op !== "BUFFER" && u.op !== "HOST" && u.shape.length) throw new Error(`optimize: ${u.op} survived to the kernel boundary`);
+    if (u.op !== "FUSED" && u.op !== "CONSTANT" && u.op !== "BUFFER" && u.shape.length) throw new Error(`optimize: ${u.op} survived to the kernel boundary`);
   return g;
 }
 export const optimize = (root: UOp): UOp => optimizeMany([root])[0]!;
+
+// ---- plans: a graph's compiled form, found again by structure -----------------------
+// A plan's identity is its structure: ops, args and shapes in a canonical order, leaves
+// numbered by position — a device buffer or a tensor constant is rebound on every run, so
+// a training step built afresh each tick finds the plan it compiled on the first. A scalar
+// constant is part of the structure: the printer folds it into the kernel text.
+export function canonical(roots: UOp[]): { key: string; leaves: UOp[] } {
+  const index = new Map<number, number>(), leaves: UOp[] = [], parts: string[] = [];
+  for (const root of roots) {
+    const stack: [UOp, boolean][] = [[root, false]];
+    while (stack.length) {
+      const [u, expanded] = stack.pop()!;
+      if (index.has(u.id)) continue;
+      if (!expanded && u.src.length) { stack.push([u, true]); for (let i = u.src.length - 1; i >= 0; i--) if (!index.has(u.src[i]!.id)) stack.push([u.src[i]!, false]); continue; }
+      let part: string;
+      if (u.op === "BUFFER" || (u.op === "CONSTANT" && u.shape.length)) { part = `L${leaves.length}[${u.shape}]`; leaves.push(u); }
+      else if (u.op === "CONSTANT") part = `C${(u.arg as Float32Array)[0]}`;
+      else part = `${u.op}${u.arg === null || u.arg === undefined ? "" : JSON.stringify(u.arg)}[${u.shape}](${u.src.map((x) => index.get(x.id)).join(",")})`;
+      index.set(u.id, parts.length); parts.push(part);
+    }
+  }
+  return { key: `${parts.join(";")}|${roots.map((r) => index.get(r.id)).join(",")}`, leaves };
+}
+
+// A plan is built over placeholder leaves, never a run's own: a cached plan holds no data,
+// and every run binds its leaves by position.
+export const placeholders = (roots: UOp[], leaves: UOp[]): { roots: UOp[]; slots: UOp[] } => {
+  const slots = leaves.map((l, i) => buffer(`%slot${i}`, l.shape)), memo = new Map<number, UOp>(leaves.map((l, i) => [l.id, slots[i]!]));
+  for (const r of roots) for (const u of toposort(r)) {
+    if (memo.has(u.id)) continue;
+    const src = u.src.map((s) => memo.get(s.id)!);
+    memo.set(u.id, src.every((s, i) => s === u.src[i]) ? u : node(u.op, src, u.arg, u.shape));
+  }
+  return { roots: roots.map((r) => memo.get(r.id)!), slots };
+};
+

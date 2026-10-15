@@ -182,7 +182,7 @@ const nest = (d: ArrayLike<number>, shape: readonly number[], conv: (v: number) 
 // fuses into what reads it – and never a value ∇ differentiates with respect to. Each op
 // computes what its kernel computes: f32 storage rounds every result, a reduction
 // accumulates in order.
-const FOLD = 1 << 10;
+const FOLD = 256;
 const FOLDS = new Set(["ADD", "MULTIPLY", "RECIPROCAL", "EXP", "LOG", "SQRT", "LESS_THAN", "WHERE", "DETACH", "MATH", "RANDOM", "IOTA", "REDUCE",
   "BROADCAST", "PERMUTE", "RESHAPE", "SLICE", "WINDOW", "PAD", "GATHER", "SCATTER_ADD"]);
 const differentiable = new WeakSet<UOp>();
@@ -586,32 +586,70 @@ const lose = (x: UOp, m: UOp) => not(ir.cmplt(m, x));
 export const argmax = (a: Like, axis?: number): Tensor => argExtreme(a, axis, win);
 export const argmin = (a: Like, axis?: number): Tensor => argExtreme(a, axis, lose);
 
-// ── order: a routine finds the permutation; values move through a differentiable gather
-const rowsOf = (t: HostData): [number, number] => { const n = t.shape.at(-1) ?? 1; return [Math.max(t.data.length / Math.max(n, 1), 1), n]; };
-const argsortRows = (desc: boolean) => ([t]: HostData[]): Float32Array => {
-  const [R, n] = rowsOf(t!), out = new Float32Array(R * n);
+// ── order: stable, NaN last; values move through a differentiable gather ─────────
+// Data the host has, or computes cheaply, is sorted there at once. Data on the GPU sorts
+// there, by a bitonic network: log₂m·(log₂m + 1)/2 passes, each pairing every element
+// with a partner and keeping the smaller or the larger – one gather and one select, the
+// partner computed in the kernel – so nothing is read back.
+export function order(d: Float32Array, R: number, n: number, desc: boolean): Float32Array {
+  const out = new Float32Array(R * n);
   for (let r = 0; r < R; r++) {
-    const row = t!.data.subarray(r * n, r * n + n);
-    const order = [...row.keys()].sort((i, j) => { const d = desc ? row[j]! - row[i]! : row[i]! - row[j]!; return d || i - j; });
-    order.forEach((v, i) => { out[r * n + i] = v; });
+    const row = d.subarray(r * n, r * n + n);
+    const idx = Array.from({ length: n }, (_, i) => i).sort((i, j) => {
+      const a = row[i]!, b = row[j]!, na = a !== a, nb = b !== b;
+      if (na !== nb) return na ? 1 : -1;
+      return (na ? 0 : desc ? b - a : a - b) || i - j;                         // equal infinities subtract to NaN: a tie too
+    });
+    idx.forEach((v, i) => { out[r * n + i] = v; });
   }
   return out;
-};
+}
+export function bitonic(x: UOp, R: number, n: number, desc: boolean): UOp {
+  let p = 0;
+  while (1 << p < n) p++;
+  const m = 1 << p, k = ir.konst, rows = (u: UOp) => ir.broadcastTo(u, [R, m]);
+  const mod2 = (v: UOp) => ir.add(v, ir.mul(ir.math("floor", ir.mul(v, k(0.5))), k(-2)));
+  const i = rows(ir.iota(m)), inside = ir.cmplt(i, k(n)), nan = ir.math("isnan", x);
+  // compare by (key, tie): the value, negated to sort descending; a NaN keyed +∞ and tied
+  // after every number, padding after every NaN, equal values in their order
+  const key = ir.where(inside, ir.pad(ir.where(nan, k(Infinity), desc ? ir.mul(x, k(-1)) : x), 1, 0, m - n), k(Infinity));
+  const tie = ir.add(i, ir.mul(ir.where(inside, ir.pad(nan, 1, 0, m - n), k(2)), k(m)));
+  const pair = (a: UOp, b: UOp) => ir.add(ir.pad(ir.reshape(a, [R, m, 1]), 2, 0, 1), ir.pad(ir.reshape(b, [R, m, 1]), 2, 1, 0));
+  const half = (t: UOp, c: number) => ir.reshape(ir.slice(t, 2, c, 1), [R, m]);
+  const base = rows(ir.reshape(ir.mul(ir.iota(R), k(m)), [R, 1]));
+  let T = pair(key, tie);
+  for (let a = 1; a <= p; a++) for (let b = a - 1; b >= 0; b--) {
+    const j = 1 << b, up = ir.cmplt(mod2(ir.math("floor", ir.mul(i, k(1 / (1 << a))))), k(0.5));
+    const q = ir.add(i, ir.mul(k(j), ir.add(k(1), ir.mul(mod2(ir.math("floor", ir.mul(i, k(1 / j)))), k(-2)))));
+    const Tq = ir.reshape(ir.gather(ir.reshape(T, [R * m, 2]), ir.reshape(ir.add(base, q), [R * m])), [R, m, 2]);
+    const before = (x1: UOp, t1: UOp, x2: UOp, t2: UOp) => ir.add(ir.cmplt(x1, x2), ir.mul(ir.math("eq", x1, x2), ir.cmplt(t1, t2)));
+    const [ks, ts, kq, tq] = [half(T, 0), half(T, 1), half(Tq, 0), half(Tq, 1)];
+    const low = ir.math("eq", ir.cmplt(i, q), up);                             // this element keeps the smaller of the pair
+    const take = ir.where(low, before(kq, tq, ks, ts), before(ks, ts, kq, tq));
+    T = ir.where(ir.broadcastTo(ir.reshape(take, [R, m, 1]), [R, m, 2]), Tq, T);
+  }
+  const t = half(T, 1);
+  return ir.slice(ir.add(t, ir.mul(ir.math("floor", ir.mul(t, k(1 / m))), k(-m))), 1, 0, n);   // tie mod m is the index
+}
 const scalarRank = (x: UOp) => (x.shape.length ? x : ir.reshape(x, [1]));
-export const argsort = (a: Like): Tensor => { const x = scalarRank(nodeOf(a)); return wrap(ir.host("argsort", [x], x.shape, argsortRows(false)), int32); };
+export function argsort(a: Like, descending = false): Tensor {
+  const x = scalarRank(nodeOf(a)), n = x.shape.at(-1)!, R = ir.numel(x.shape.slice(0, -1));
+  const host = hostValue(new Tensor(x));
+  if (host) return new Tensor(ir.data(order(host, R, n, descending), x.shape), int32);
+  return new Tensor(ir.reshape(bitonic(ir.reshape(x, [R, n]), R, n, descending), x.shape), int32);
+}
 // gather each row by its own indices: flatten rows, offset each index by its row
 function gatherRows(x: UOp, idx: UOp): UOp {
   const n = x.shape.at(-1)!, k = idx.shape.at(-1)!, R = ir.numel(x.shape) / n;
-  const offsets = ir.data(Float32Array.from({ length: R * k }, (_, i) => Math.floor(i / k) * n), [R * k]);
+  const offsets = ir.reshape(ir.broadcastTo(ir.reshape(ir.mul(ir.iota(R), ir.konst(n)), [R, 1]), [R, k]), [R * k]);
   const flat = ir.add(ir.reshape(idx, [R * k]), offsets);
   return ir.reshape(ir.gather(ir.reshape(x, [R * n, 1]), flat), [...x.shape.slice(0, -1), k]);
 }
-export const sort = (a: Like): Tensor => { const x = scalarRank(nodeOf(a)); return wrap(gatherRows(x, ir.host("argsort", [x], x.shape, argsortRows(false)))); };
+export const sort = (a: Like): Tensor => { const x = scalarRank(nodeOf(a)); return wrap(gatherRows(x, argsort(new Tensor(x)).node)); };
 export function topK(a: Like, k: number): [Tensor, Tensor] {
   const x = scalarRank(nodeOf(a)), n = x.shape.at(-1)!;
-  const all = ir.host("argsort-desc", [x], x.shape, argsortRows(true));
-  const idx = k === n ? all : ir.slice(all, x.shape.length - 1, 0, k);
-  return [wrap(gatherRows(x, idx)), wrap(idx, int32)];
+  const all = argsort(new Tensor(x), true).node, idx = k === n ? all : ir.slice(all, x.shape.length - 1, 0, k);
+  return [wrap(gatherRows(x, idx)), new Tensor(idx, int32)];
 }
 
 // ── contractions ────────────────────────────────────────────────────────────────
