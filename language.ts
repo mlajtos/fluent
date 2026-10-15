@@ -1,6 +1,7 @@
 // MARK: Fluent language core
 // Grammar, evaluator, environment and prelude – no DOM, no React, no Monaco.
-// Imported by the IDE (client.tsx) and by the end-to-end tests (tests.ts).
+// The evaluation worker runs it (host.ts), the page only parses with it (client.tsx), and
+// the end-to-end tests run it headless (tests.ts). Whoever computes starts the engine.
 
 import { grammar, type ActionDict } from "ohm-js";
 import { toAST as ohmToAST } from "ohm-js/extras";
@@ -8,9 +9,6 @@ import { signal, Signal, computed, effect } from "@preact/signals-core"
 import dedent from "ts-dedent";
 import * as engine from "./engine/tensor.ts"
 import PRELUDE from "./prelude.fl" with { type: "text" }
-
-// the engine computes on WebGPU where the platform has it, on the CPU everywhere else
-await engine.init()
 
 const isTensor = (v: unknown): v is engine.Tensor => v instanceof engine.Tensor
 
@@ -2412,21 +2410,26 @@ const extendEnvironment = (extra: Record<string, Value>) => {
 }
 
 // Code literals evaluate through this hook so the IDE can render syntax
-// trees; headless environments get the raw tree node.
-let codeNodePrinter: (node: SyntaxTreeNode) => Value = (node) => node as unknown as Value
-const setCodeNodePrinter = (printer: (node: SyntaxTreeNode) => Value) => {
+// trees; headless environments get the raw tree node. Setting one hands back
+// the one it replaces.
+type CodeNodePrinter = (node: SyntaxTreeNode) => Value
+let codeNodePrinter: CodeNodePrinter = (node) => node as unknown as Value
+const setCodeNodePrinter = (printer: CodeNodePrinter): CodeNodePrinter => {
+  const previous = codeNodePrinter
   codeNodePrinter = printer
+  return previous
 }
 
 // MARK: Prelude
 // What the language defines in itself lives in prelude.fl, in Fluent.
 
-// Parse the prelude once – createScope runs on every evaluation (each keystroke)
-const PRELUDE_TREE = CodeParse(PRELUDE)
+// Parsed once, on first use – createScope runs on every evaluation (each keystroke), and
+// a page that only parses never needs it
+let preludeTree: SyntaxTreeNode | null = null
 
 const createScope = () => {
   const scope = Object.create(DefaultEnvironment)
-  evaluateSyntaxTreeNode(PRELUDE_TREE, scope)
+  evaluateSyntaxTreeNode(preludeTree ??= CodeParse(PRELUDE), scope)
   return scope
 }
 

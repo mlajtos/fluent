@@ -150,6 +150,35 @@ test("camera (fake device) streams into a canvas", async ({ page }) => {
   await expect(panel(page).locator("canvas").first()).toBeVisible({ timeout: 20_000 })
 })
 
+test("typing while a demo trains keeps the page at frame rate", async ({ page }) => {
+  // the program runs in a worker: training, and re-evaluating on every keystroke,
+  // never hold the page's frames (on the main thread this drew 29–52 frames in 6 s)
+  await page.goto("/?example=looped-dreamer")
+  await hideDevOverlay(page)
+  await expect(panel(page)).toContainText("it dreams", { timeout: 20_000 })
+  await page.waitForTimeout(3000)
+  await page.evaluate(() => {
+    const w = window as unknown as { frames_: number[] }
+    w.frames_ = []
+    const tick = (t: number) => { w.frames_.push(t); requestAnimationFrame(tick) }
+    requestAnimationFrame(tick)
+  })
+  await page.locator(".monaco-editor").last().click({ position: { x: 300, y: 600 } })
+  const end = Date.now() + 6000
+  while (Date.now() < end) {
+    await page.keyboard.type("x")
+    await page.waitForTimeout(100)
+    await page.keyboard.press("Backspace")
+    await page.waitForTimeout(100)
+  }
+  const gaps = await page.evaluate(() => {
+    const f = (window as unknown as { frames_: number[] }).frames_
+    return f.slice(1).map((t, i) => t - f[i]!).sort((a, b) => a - b)
+  })
+  expect(gaps.length).toBeGreaterThan(200)
+  expect(gaps[Math.floor(gaps.length * 0.95)]!).toBeLessThan(50)
+})
+
 test("Ctrl/Cmd+O opens the example gallery without editor focus", async ({ page }) => {
   // regression: the binding lived only inside Monaco, so with focus anywhere
   // else the browser dialog won (Safari's file picker) instead of the gallery
@@ -283,9 +312,10 @@ test("Layers: a lower Point2D is draggable, not just the top one", async ({ page
 // type into the Monaco cell whose visible text contains `anchor`:
 // select-all + Backspace first (insert-over-selection trips auto-surround),
 // insertText (keystrokes trip auto-closing brackets), Escape (a lingering
-// suggest widget swallows the next click)
+// suggest widget swallows the next click). Cells live in the output panel –
+// the main editor's source can contain the same text, and it mounts first.
 const typeInCell = async (page: Page, anchor: string, code: string) => {
-  await page.locator(".view-line", { hasText: anchor }).first().click()
+  await panel(page).locator(".view-line", { hasText: anchor }).first().click()
   await page.keyboard.press("ControlOrMeta+KeyA")
   await page.keyboard.press("Backspace")
   await page.keyboard.insertText(code)

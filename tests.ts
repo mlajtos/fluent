@@ -4,9 +4,16 @@
 
 import { describe, test, expect } from "bun:test"
 import { Signal } from "@preact/signals-core"
-import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, setCodeNodePrinter, extendEnvironment, SignalCreate, DefaultEnvironment, NoMatch, type SyntaxTreeNode, type Value } from "./language"
+import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, setCodeNodePrinter, extendEnvironment, SignalCreate, DefaultEnvironment, NoMatch, type Value } from "./language"
+import { startHost } from "./host"
+import type { ToPage, ToWorker } from "./protocol"
 import { EXAMPLES } from "./examples"
 import { TOUR_SOURCE } from "./tour"
+
+// The evaluation host binds the widgets and the live sources, as in the IDE's worker;
+// here the page is this inbox
+const inbox: ToPage[] = []
+const toHost: (message: ToWorker) => void = startHost((message) => { inbox.push(message) })
 
 const run = (source: string) =>
   evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope()))
@@ -875,13 +882,13 @@ describe("backtick code literals", () => {
   test("a throwing code printer degrades to an Error value", () => {
     // regression: a printer bug (e.g. the AST viz choking on an Error node)
     // used to abort the whole evaluation and take the output panel down
-    setCodeNodePrinter(() => { throw new Error("printer exploded") })
+    const previous = setCodeNodePrinter(() => { throw new Error("printer exploded") })
     try {
       const out = run("`1 + 1`")
       expect(out).toBeInstanceOf(Error)
       expect((out as Error).message).toBe("printer exploded")
     } finally {
-      setCodeNodePrinter((node: SyntaxTreeNode) => node as unknown as Value)
+      setCodeNodePrinter(previous)
     }
   })
 })
@@ -1312,37 +1319,20 @@ describe("cond (eager variadic cascade)", () => {
 })
 
 // Every shipped gallery example, run headless, must parse and evaluate without
-// error – a language/prelude change that breaks a demo fails CI here. The IDE
-// components examples reference live only in client.tsx, so we register light
-// stubs: sources hand back a tensor (they feed real math); widgets self-return,
-// so a curried Grid(3)(...) stays callable. (Full-stack behavior – WebGPU,
-// hardware, error panels – is the browser suite's job, added later.)
+// error – a language/prelude change that breaks a demo fails CI here. The widgets
+// and the camera, microphone and pointer are the host's own: a source is a signal
+// of zeros of the shape it asked for until the page streams frames, and nothing
+// streams here. Only the network loaders are stubbed – there is no server to load
+// from. (Full-stack behavior – WebGPU, hardware, panels – is the browser suite's.)
 describe("gallery examples smoke suite", () => {
-  const widget = function widget(): unknown { return widget }
-  // Live sources hand back a SIGNAL of a tensor, not a tensor – a stub that
-  // returned the tensor made `mic()` a call on a tensor, so the demos that
-  // read their source never actually ran here. Shapes match the real thing
-  // too: a spectrum demo indexes fft(mic()) as [real; imag], which only works
-  // on a waveform of the length the demo asked for.
   const at = (v: unknown) => { const s = SignalCreate(v as any); return s }
-  const num = (v: Value | undefined, fallback: number) => { try { return Number((v as engine.Tensor).js()) } catch { return fallback } }
-  const stubs: Record<string, Value> = {}
-  for (const k of ["Button", "Checkbox", "Grid", "ImageUpload", "Layers", "Point2D", "Trail",
-    "Slider", "Scrubber", "Text", "TextEditor", "Code", "CodeEditor", "Print", "PrettyPrint",
-    "CodePrint", "PointPlot"]) stubs[k] = widget as Value
-  stubs["Camera"] = ((w?: Value, h?: Value) => at(engine.zeros([num(h, 48), num(w, 64), 3]))) as Value
-  stubs["Microphone"] = ((n?: Value) => at(engine.zeros([num(n, 512)]))) as Value
-  stubs["MicrophoneSpectrum"] = ((n?: Value) => at(engine.zeros([num(n, 512)]))) as Value
-  stubs["MousePosition"] = (() => at(engine.zeros([2]))) as Value
-  stubs["Time"] = (() => at(engine.tensor(0))) as Value
-  stubs["SampleRate"] = (() => engine.tensor(48000)) as Value        // a plain number, not a signal
-  for (const k of ["LoadTensorFromImageUrl", "Fetch"]) {
-    stubs[k] = (() => engine.zeros([16, 16])) as Value
-  }
-  // the real safetensors loader is a signal holding an empty list until its
-  // fetch resolves – headless it never does, so the demos see "still loading"
-  stubs["LoadSafeTensorFromURL"] = (() => at([])) as Value
-  extendEnvironment(stubs)
+  extendEnvironment({
+    LoadTensorFromImageUrl: (() => at(engine.zeros([16, 16, 3]))) as Value,
+    Fetch: (() => at("")) as Value,
+    // the real safetensors loader is a signal holding an empty list until its fetch
+    // resolves, so the demos see "still loading"
+    LoadSafeTensorFromURL: (() => at([])) as Value,
+  })
 
   // Force every value the example binds, following signals, variables and
   // lists, and read each tensor off the device. The top-level value of a demo
@@ -1466,14 +1456,8 @@ describe("every name in shipped Fluent source resolves", () => {
     return [...used.keys()].filter((n) => !bound.has(n))
   }
 
-  // components and live sources live in client.tsx, which this suite cannot
-  // import – they are real names, just not ones the language knows about
-  const ideNames = new Set(["Grid", "Text", "Center", "Button", "Slider", "Scrubber",
-    "PointPlot", "CodeEditor", "TextEditor", "Checkbox", "Layers", "Point2D", "Trail",
-    "Print", "PrettyPrint", "CodePrint", "Code", "ImageUpload", "Camera", "Microphone",
-    "MicrophoneSpectrum", "Time", "SampleRate", "MousePosition", "Fetch",
-    "LoadTensorFromImageUrl", "LoadSafeTensorFromURL"])
-  const unknown = (source: string) => unresolvedNames(source).filter((n) => !ideNames.has(n))
+  // the host's widgets and sources are in the environment
+  const unknown = unresolvedNames
 
   for (const [name, src] of Object.entries(EXAMPLES)) {
     test(`gallery: ${name}`, () => {
@@ -1564,5 +1548,120 @@ describe("error messages carry context", () => {
   test("a short parse-expectation list stays verbatim", () => {
     const [err] = getParseErrors("(1, 2")
     expect(err!.message).toContain(`expected ")"`)
+  })
+})
+
+// The host speaks to the page in plain data (protocol.ts): values cross as
+// descriptions, live ones as ids the page holds, writes back to, and lets go of.
+describe("the evaluation host", () => {
+  const after = (start: number, kind: ToPage["t"], timeout = 3000): Promise<any> => new Promise((resolve, reject) => {
+    const t0 = Date.now()
+    const poll = () => {
+      const found = inbox.slice(start).find((m) => m.t === kind)
+      if (found) { resolve(found); return }
+      if (Date.now() - t0 > timeout) { reject(new Error(`no "${kind}" message in ${timeout} ms`)); return }
+      setTimeout(poll, 5)
+    }
+    poll()
+  })
+  const evaluate = async (source: string): Promise<any> => {
+    const start = inbox.length
+    toHost({ t: "code", source })
+    return (await after(start, "result")).desc
+  }
+  const numberIn = (d: any): number | undefined => d?.payload?.[0]
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+  test("it starts by listing the environment, with doc cards", () => {
+    const ready = inbox.find((m) => m.t === "ready") as Extract<ToPage, { t: "ready" }>
+    const sum = ready.names.find(([name]) => name === "sum")
+    expect(sum?.[2]?.doc).toContain("Sum of the elements")
+  })
+
+  test("a program's value arrives described, with its values", async () => {
+    const d = await evaluate("1 + 1")
+    expect(d.k).toBe("tensor")
+    expect(numberIn(d)).toBe(2)
+  })
+
+  test("a write is answered, and what depends on it follows", async () => {
+    const d = await evaluate("x: $(0.5), (Slider(x), x ^ 2)")
+    const [slider, squared] = d.items
+    expect(slider.type).toBe("Slider")
+    const target = slider.slots.target
+    expect(target.k).toBe("live")
+    expect(numberIn(target.now)).toBe(0.5)
+    expect(numberIn(squared.now)).toBe(0.25)
+    const start = inbox.length
+    toHost({ t: "set", id: target.id, value: 0.8, seq: 1 })
+    const { lives } = await after(start, "lives")
+    expect(lives.find((l: any) => l.id === target.id)).toMatchObject({ ack: 1 })
+    expect(numberIn(lives.find((l: any) => l.id === squared.id).desc)).toBeCloseTo(0.64)
+    toHost({ t: "drawn" })
+  })
+
+  test("the next batch waits until the page has drawn the last", async () => {
+    const d = await evaluate("x: $(0), (Slider(x), x)")
+    const id = d.items[0].slots.target.id
+    let start = inbox.length
+    toHost({ t: "set", id, value: 0.1, seq: 1 })
+    await after(start, "lives")
+    start = inbox.length
+    toHost({ t: "set", id, value: 0.2, seq: 2 })
+    await pause(100)
+    expect(inbox.slice(start).some((m) => m.t === "lives")).toBe(false)
+    toHost({ t: "drawn" })
+    const { lives } = await after(start, "lives")
+    const update = lives.find((l: any) => l.id === id)
+    expect(update.ack).toBe(2)
+    expect(numberIn(update.desc)).toBeCloseTo(0.2)
+    toHost({ t: "drawn" })
+  })
+
+  test("a live value the page let go of stops sending", async () => {
+    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), x)`)
+    const [button, x] = d.items
+    const go = button.slots.onClick.id
+    let start = inbox.length
+    toHost({ t: "call", id: go })
+    expect(numberIn((await after(start, "lives")).lives[0].desc)).toBe(1)
+    toHost({ t: "drawn" })
+    toHost({ t: "drop", id: x.id, count: 1 })
+    start = inbox.length
+    toHost({ t: "call", id: go })
+    await pause(100)
+    expect(inbox.slice(start).some((m) => m.t === "lives")).toBe(false)
+  })
+
+  // Every shipped demo through the host, as the page gets it: plain data, and no
+  // error in any cell it shows – the smoke suite stops at the top-level value, and a
+  // demo whose cells error inside a Grid passed it.
+  const errorsIn = (d: any, path = ""): string[] => {
+    if (!d || typeof d !== "object") { return [] }
+    if (d.k === "error") { return [`${path}: ${d.chain.map((c: any) => c.message).join(" ← ")}`] }
+    const parts: [string, any][] =
+      d.k === "list" ? d.items.map((x: any, i: number) => [`${path}[${i}]`, x])
+        : d.k === "record" ? d.entries.map(([k, v]: [string, any]) => [`${path}.${k}`, v])
+          : d.k === "ui" ? [
+            ...Object.entries(d.slots).map(([k, v]) => [`${path}.${d.type}.${k}`, v] as [string, any]),
+            ...d.children.map((c: any, i: number) => [`${path}.${d.type}[${i}]`, c] as [string, any]),
+          ]
+            : d.k === "live" ? [[`${path}()`, d.now]] : []
+    return parts.flatMap(([p, x]) => errorsIn(x, p))
+  }
+  // under: `({ x | x^x } ⍣ -1)(3)` finds no solution – Newton from the seed meets x^x
+  // where its slope is undefined (ln 0); how ⍣ -1 picks seeds is an open decision
+  const knownBroken = new Set(["under"])
+  for (const [name, src] of [...Object.entries(EXAMPLES), ["Tour", "Tour"]] as [string, string][]) {
+    (knownBroken.has(name) ? test.failing : test)(`${name} crosses to the page whole`, async () => {
+      const d = await evaluate(src.trim())
+      expect(() => structuredClone(d)).not.toThrow()
+      expect(errorsIn(d)).toEqual([])
+    })
+  }
+  test("every message is plain data", async () => {
+    // and the last demo's loops retire
+    await evaluate("0")
+    for (const m of inbox) { structuredClone(m) }
   })
 })

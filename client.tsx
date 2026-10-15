@@ -6,136 +6,12 @@
 2. install dependencies: `cd fluent && bun install`
 3. start the development server: `bun dev`
 4. open `http://localhost:3000/?code=RG9jdW1lbnRhdGlvbg` in your browser
-5. edit `client.tsx` (this file) to modify the language and IDE
+5. edit `language.ts` and `prelude.fl` to modify the language; the IDE is
+   `host.ts` (the worker: evaluation, widgets, sources) and `client.tsx` (this
+   file: the page, drawing what the worker describes)
 6. share your changes with others
 
 */
-
-// MARK: Documentation
-
-const Documentation = `
-# Fluent
-
-Fluent is a tiny language + IDE for differentiable tensors and reactive UIs. Fluent is for programmers, researchers, and tinkerers who want to combine math, differentiation, and interactivity in a playful way.
-
-## Quickstart
-
-\`\`\`fluent
-; tensors + broadcasting
-a: [1, 2, 3],
-a + 1, ; [2, 3, 4]
-
-; functions + gradient
-square: { x | x^2 },
-square(a), ; [1, 4, 9]
-∇(square)(a), ; [2, 4, 6]
-
-; reactive UI
-x: $(0.5),
-Slider(x),
-square(x),  ; auto-lifts to reactive!
-Button("Reset", { x(0) }),
-\`\`\`
-
-## Features
-
-### Syntax
-- Tensors
-  - multi-dimensional arrays of numbers
-  - scalars: \`1\`, \`3.14\`, \`-42\`, \`1e-7\`
-  - vectors: \`[1, 2, 3]\`, matrices: \`[[1, 2], [3, 4]]\`
-  - auto-broadcasting: \`[1, 2, 3] + 1\` is \`[2, 3, 4]\`
-  - indexing with \`_\`: \`a_0\`, \`a_(i + 1)\`, \`a_(-1)\` (last element)
-    - glued \`_\` binds tight: \`x × θ_0 + θ_1\` needs no parentheses
-  - length with \`#\`: \`#([1, 2, 3])\` is \`3\`
-  - ranges: \`..<\` exclusive (\`1 ..< 5\` is \`[1, 2, 3, 4]\`), \`...\` inclusive (\`1 ... 5\` is \`[1, 2, 3, 4, 5]\`)
-- Lists
-  - ordered collection of heterogeneous values
-  - e.g. \`(1, 2, 3)\`, \`(1, (2, 3), [4])\`, \`()\`, \`(42,)\`
-- Functions
-  - lambda with \`{}\`: \`{ x | x + 1 }\`, \`{ x, y | x * y }\`, \`{ 42 }\`
-  - last expression is the return value: \`{ a: 1, b: 2, a + b }\` returns \`3\`
-  - application: \`add(1, 2)\` or infix \`1 add 2\`
-  - recursion: a binding is visible in its own body, so \`fact: { n | … fact(n - 1) … }\` just works. For an ANONYMOUS function use the prelude's fixpoint: \`fix\` (also \`recur\`, \`𝕐\`)
-- Symbols
-  - letter-based: \`a\`, \`FooBar\`, \`barBaz1\`, \`α\`, \`β\`, \`θ\` – no \`-\`, which is always the subtraction operator
-  - operator-based: \`+\`, \`≠\`, \`!=\`, \`√\`, \`∇\`
-  - assignment with \`:\`: \`a: 23, b: a + 24\`
-- Evaluation order – whitespace IS precedence
-  - spaced operators go left-to-right, NO numeric precedence: \`1 + 2 * 3\` is \`(1 + 2) * 3\` = \`9\`
-  - glued operators bind tighter than spaced ones: \`1 + 2*3\` is \`1 + (2 * 3)\` = \`7\`
-    - \`a*b + c*d\` is \`(a * b) + (c * d)\` – hug what belongs together
-  - operator glued ONLY to its left operand takes everything to its right:
-    - \`a: 1 + 2\` is \`a: (1 + 2)\` – assignment without parentheses
-    - chains right: \`a: b: 1 + 2\` is \`a: (b: (1 + 2))\`
-  - parentheses always override: \`1 + (2 * 3)\` is \`7\`
-  - within a tier, evaluation is left-to-right: \`2*3^2\` is \`(2 * 3) ^ 2\` = \`36\`
-  - \`-\` is never part of a name: \`n-1\` is \`n - 1\` glued, so it binds tighter than a spaced operator
-- Comments
-  - single-line with \`;\`: \`a: 1, ; this is a comment\`
-- Program structure
-  - expressions separated by commas: \`a: 1, b: 2, a + b\`
-  - last expression is the result (automatically displayed)
-
-### Semantics
-- Differentiable programming
-  - gradient with \`∇\`: \`∇({ x | x^2 })(3)\` is \`6\`
-  - higher-order: \`∇(∇({ x | x^3 }))(1)\` is \`6\`
-- Reactive programming
-  - create signal: \`x: $(0.5)\`
-  - read signal: \`x()\`
-  - update signal: \`x(0.7)\` or \`x ← 0.7\`
-  - computed signal: \`y: x + 1\` – auto-lifts to reactive when \`x\` is a signal
-  - explicit computed: \`y: $({ x() + 1 })\` – manual version (rarely needed)
-  - watch a trainable variable: \`watch(θ)\` – a signal that updates on every assignment
-- Iteration
-  - repeat N times with \`⟳\`: \`step ⟳ 100\` (async, fire-and-forget)
-  - power with \`⍣\`: \`(double ⍣ 5)(1)\` is \`double(double(...))\` = \`32\`
-    - a negative count runs a function backwards: \`({ x | x^3 + x } ⍣ -1)(10)\` is \`2\`
-    - dyadic \`x (f ⍣ n) y\` iterates \`f(x, ·)\`: \`2 (^ ⍣ -1) 8\` is \`3\`
-    - a predicate runs until it holds: \`(cos ⍣ ≡)(1)\` is the fixed point \`0.739…\`
-- Inverse and Under – any smooth function runs backwards (Newton's method, slope from \`∇\`)
-  - \`inverse(f)\` is \`f ⍣ -1\`; \`solve(g, y, seed)\` is the x near seed with g(x) = y
-  - under with \`⍢\`: \`x (g ⍢ f) y\` is \`g⁻¹(f(g(x), g(y)))\` – do f in g's world, then come back
-  - \`3 (square ⍢ +) 4\` is \`5\`, \`(log ⍢ μ)(x)\` is the geometric mean, \`6 (reciprocal ⍢ +) 3\` is \`2\`
-  - when g picks out a part, f edits just that part: \`({ x | x_[1, 2, 3] } ⍢ sort)(v)\` sorts only the middle
-- Choosing – a candidate answers or declines
-  - \`guard(cond, { value })\`: a candidate that answers while cond holds, declines (\`NoMatch\`) otherwise
-  - \`cond(a, b, …)\` and \`cascade((a, b, …))(args)\` take the first candidate that answers
-  - an Error is an answer, not a decline: it stops the choice and surfaces
-  - \`try({ value })\`: a candidate that declines when value fails – \`cond(try({ risky() }), 0)\`
-  - \`Error(message, cause?)\` makes a failure; \`NoMatch\` is the decline itself
-  - example: \`fact: { n | cond(guard(n = 0, { 1 }), { n * fact(n - 1) }) }\`
-- Optimization
-  - create variable: \`θ: ~([0, 0])\`
-  - define loss: \`loss: { sum(θ^2) }\`
-  - create optimizer: \`opt: adam(0.01)\`
-  - minimize: \`{ opt(loss) } ⟳ 100\`
-- Built-in functions
-  - tensor math: \`+\`, \`-\`, \`*\`, \`/\`, \`^\`, \`√\`, \`sum\`, \`mean\`, \`max\`, \`min\`, \`sin\`, \`cos\`, \`log\`, \`exp\`, \`dot\`, \`matmul\`, \`transpose\`, \`reshape\`, \`clamp\`, \`sigmoid\`, \`relu\`, \`softmax\`, \`oneHot\`, \`crossEntropy\`, etc.
-  - tensor creation: \`..<\`/\`...\` (range), \`linspace\`, \`eye\`, \`rand\`, \`randn\`
-  - axis variants: \`stack((a, b), axis)\`, \`concat((a, b), axis)\`, \`unstack(x, axis)\`, \`sum(x, axis)\`
-  - outer product \`⊗\`: \`a (⊗ f) b\` pairs every cell of a with every cell of b; \`a (f ⊗ k) b\` keeps trailing k axes zipped
-  - inner product \`∙\`: \`a (g ∙ f) b\` combines with g, then reduces with f – \`A (× ∙ +) B\` is matrix multiply, \`W (+ ∙ ⌊) W\` is shortest paths
-  - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
-  - UI: \`Slider\`, \`Scrubber\`, \`Checkbox\`, \`Button\`, \`Text\`, \`Grid\`, \`Layers\`, \`Point2D\`, \`Trail\`, \`ImageUpload\`
-  - live inputs: \`Camera\`, \`Microphone\`, \`MicrophoneSpectrum\`, \`Time\`, \`MousePosition\`
-  - optimizers: \`adam\`, \`adamw\`, \`sgd\` (optional momentum), \`adagrad\`
-  - metadata: \`Describe(fn, "doc")\` attaches a doc string, \`Describe(fn)\` queries it
-- Ad-hoc operators
-  - define custom operators: \`(++): ListConcat, (1, 2) ++ (3, 4)\`
-
-### IDE
-- Syntax highlighting
-- Live evaluation with error reporting
-- Automatic visualization of values (tensors, lists, functions)
-- GPU-accelerated tensor operations (Fluent's own engine on WebGPU, with a CPU fallback)
-- LLM-backed code generation (BYO Anthropic API key)
-- Command palette (Ctrl+P or Ctrl+Shift+P)
-- Auto-completion (Ctrl+Space)
-- Shareable URL links (Ctrl+S)
-- examples gallery (Ctrl+O; in Safari use Ctrl+Shift+O — plain ⌘O is reserved by the browser)
-`
 
 /*
 
@@ -198,20 +74,16 @@ Button("Reset", { x(0) }),
 
 // MARK: Imports
 
-import { Signal, computed, signal } from "@preact/signals-core"
+import { Signal, signal, computed } from "@preact/signals-core"
 import {
-  CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate,
-  createScope, PRELUDE, DefaultEnvironment, extendEnvironment, setCodeNodePrinter,
-  evaluateGeneration, registerDisposable,
-  getAsSyncList, getMeta, setMeta, setOrigin, getOrigin,
-  SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalOnce,
+  getParseErrors, PRELUDE,
   identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
-  engine, FluentVariable, isTensor, TensorScalarLive, StringLiteral,
-  type Value, type CurrentScope, type SyntaxTreeNode, type Origin, type FunctionMeta,
 } from "./language"
-import { useSignals, useSignal, useComputed } from '@preact/signals-react/runtime';
+import { tensorView, documentHash, type Desc, type Doc, type Payload, type SourceKind, type TensorView, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where } from "./protocol"
+import { Documentation } from "./documentation"
+import { useSignals, useSignal } from '@preact/signals-react/runtime';
 import { ErrorBoundary } from 'react-error-boundary';
-import { useEffect, type JSX, isValidElement, useRef, useState } from "react";
+import { useEffect, type JSX, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client"
 import { type BeforeMount, type Monaco, type OnMount, Editor, loader } from '@monaco-editor/react';
 import * as monaco from "monaco-editor";
@@ -223,9 +95,6 @@ import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/com
 import dedent from "ts-dedent";
 import { Base64 } from 'js-base64'
 import { type Annotations } from "plotly.js"
-import { interpolateViridis } from 'd3-scale-chromatic'
-import { rgb } from 'd3-color'
-
 
 
 // Web Worker setup for monaco-editor
@@ -236,192 +105,271 @@ import { rgb } from 'd3-color'
 // Configure @monaco-editor/react to use local monaco-editor package
 loader.config({ monaco })
 
-// language.ts starts the engine on import: WebGPU when the browser offers it, else the CPU
+// MARK: Worker
+// The program runs in a worker (worker.ts): the engine, the GPU and every value live
+// there. The page draws descriptions of values (protocol.ts), writes back through ids,
+// and streams the camera, the microphone and the pointer in.
 
-// MARK: Pixel I/O
-// ImageData ↔ arrays, by hand. Pixels enter the language as float32 in 0–1:
-// Fluent is a float32 language. toPixels still accepts int-tagged arrays (0–255)
-// for display.
+type Mirror = {
+  // the value now, as the worker last described it
+  desc: Signal<Desc | undefined>,
+  // descriptions held here that mention it
+  refs: number,
+  // times the worker sent it: all of them are given back at once, when nothing here
+  // mentions it any more
+  received: number,
+  // the page's last write, and the last one the worker has answered
+  sent: number,
+  ack: number,
+  // what the page wrote, shown until the worker answers
+  local: Signal<unknown>,
+}
+const mirrors = new Map<number, Mirror>()
+const payloads = new Map<number, Signal<Payload | undefined>>()
+const result = signal<Desc | null>(null)
+const environmentNames = signal(new Map<string, { detail: string, doc: Doc | null }>())
 
-const pixelReader = new OffscreenCanvas(1, 1)
+// A hot update starts a fresh evaluator and stops the old one's sources
+const hot = globalThis as { __fluentWorker?: Worker, __fluentSources?: Map<number, () => void> }
+hot.__fluentWorker?.terminate()
+const pageSources = hot.__fluentSources ??= new Map()
+for (const stop of pageSources.values()) { stop() }
+pageSources.clear()
+const worker = hot.__fluentWorker = new Worker(new URL("fluent.worker.js", document.baseURI), { type: "module" })
+const toWorker = (message: ToWorker, transfer: Transferable[] = []) => worker.postMessage(message, transfer)
 
-// ImageBitmap / <video> / <img> → [h, w, 3] float32 tensor (0–1)
-const fromPixels = (source: ImageBitmap | HTMLVideoElement | HTMLImageElement): engine.Tensor => {
-  const width = (source as HTMLVideoElement).videoWidth || (source as { width: number }).width
-  const height = (source as HTMLVideoElement).videoHeight || (source as { height: number }).height
-  if (pixelReader.width !== width || pixelReader.height !== height) {
-    pixelReader.width = width
-    pixelReader.height = height
+// Every live value and tensor a description mentions is held once more…
+const hold = (d: Desc): void => {
+  switch (d.k) {
+    case "live":
+    case "callback": {
+      let mirror = mirrors.get(d.id)
+      if (!mirror) {
+        mirror = { desc: signal(undefined), refs: 0, received: 0, sent: 0, ack: 0, local: signal(undefined) }
+        mirrors.set(d.id, mirror)
+      }
+      mirror.refs++
+      mirror.received++
+      if (d.k === "live" && d.now) { show(mirror, d.now) }
+      return
+    }
+    case "tensor": { payloads.set(d.id, signal(d.payload)); return }
+    case "list": { d.items.forEach(hold); return }
+    case "record": { d.entries.forEach(([, v]) => hold(v)); return }
+    case "ui": { Object.values(d.slots).forEach(hold); d.children.forEach(hold); return }
   }
-  const context = pixelReader.getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D
-  // one module-level canvas serves every reader, and drawImage composites
-  // source-over – without this an image with alpha shows through to whatever
-  // was decoded last at the same size (a transparent upload read back as the
-  // previous frame, and the camera shares this canvas)
-  context.clearRect(0, 0, width, height)
-  context.drawImage(source, 0, 0)
-  const { data } = context.getImageData(0, 0, width, height)
-  const rgbFlat = new Float32Array(width * height * 3)
-  for (let i = 0, j = 0; i < data.length; i += 4, j += 3) {
-    rgbFlat[j] = data[i]! / 255
-    rgbFlat[j + 1] = data[i + 1]! / 255
-    rgbFlat[j + 2] = data[i + 2]! / 255
+}
+// …and once less when it goes. What nothing mentions, the worker may let go of too.
+const release = (d: Desc): void => {
+  switch (d.k) {
+    case "live":
+    case "callback": {
+      const mirror = mirrors.get(d.id)
+      if (!mirror || --mirror.refs > 0) { return }
+      mirrors.delete(d.id)
+      const now = mirror.desc.peek()
+      if (now) { release(now) }
+      toWorker({ t: "drop", id: d.id, count: mirror.received })
+      return
+    }
+    case "tensor": { payloads.delete(d.id); return }
+    case "list": { d.items.forEach(release); return }
+    case "record": { d.entries.forEach(([, v]) => release(v)); return }
+    case "ui": { Object.values(d.slots).forEach(release); d.children.forEach(release); return }
   }
-  return engine.tensor(rgbFlat, { shape: [height, width, 3] })
+}
+// a mirror holds what its current value mentions
+const show = (mirror: Mirror, desc: Desc) => {
+  hold(desc)
+  const old = mirror.desc.peek()
+  mirror.desc.value = desc
+  if (old) { release(old) }
 }
 
-// [h, w] | [h, w, 1] | [h, w, 3] tensor → canvas. The async read keeps the main
-// thread free.
-const toPixels = async (data: engine.Tensor, canvas: HTMLCanvasElement) => {
-  const [height = 1, width = 1, channels = 1] = data.shape
-  const scale = 255
-  const flat = await data.read()
-  const image = new ImageData(width, height)
-  for (let p = 0, s = 0; p < image.data.length; p += 4, s += channels) {
-    image.data[p] = (flat[s] as number) * scale
-    image.data[p + 1] = (flat[channels < 3 ? s : s + 1] as number) * scale
-    image.data[p + 2] = (flat[channels < 3 ? s : s + 2] as number) * scale
-    image.data[p + 3] = 255
+worker.onmessage = ({ data: m }: MessageEvent<ToPage>) => {
+  switch (m.t) {
+    case "ready": {
+      environmentNames.value = new Map(m.names.map(([name, detail, doc]) => [name, { detail, doc }]))
+      return
+    }
+    case "result": {
+      // the worker let go of everything the last result held
+      mirrors.clear()
+      payloads.clear()
+      hold(m.desc)
+      result.value = m.desc
+      return
+    }
+    case "lives": {
+      for (const { id, desc, ack } of m.lives) {
+        const mirror = mirrors.get(id)
+        // nothing here shows it any more: count what it mentions, and give it all back
+        if (!mirror) { hold(desc); release(desc); continue }
+        mirror.ack = ack
+        show(mirror, desc)
+      }
+      // drawn by the next frame: then the worker may send the next batch
+      requestAnimationFrame(() => toWorker({ t: "drawn" }))
+      return
+    }
+    case "tensor": {
+      const payload = payloads.get(m.id)
+      if (payload) { payload.value = m.payload }
+      return
+    }
+    case "source": { startSource(m.id, m.kind, m.size, m.fps); return }
+    case "stop": { pageSources.get(m.id)?.(); pageSources.delete(m.id); return }
+    case "needSampleRate": { toWorker({ t: "sampleRate", value: sampleRate() }); return }
   }
-  canvas.getContext('2d')?.putImageData(image, 0, 0)
+}
+worker.onerror = (e) => {
+  result.value = { k: "error", chain: [{ message: `The evaluator stopped: ${e.message || "it failed to start"}` }] }
 }
 
-// A control can be bound to a signal or to a `~` variable, the way Point2D and
-// Trail already accept both. Without this the other controls rendered a fully
-// interactive widget over a variable and every write vanished: SignalUpdate
-// returns an Error for a non-signal.
-// Reading a variable subscribes to its version signal, so an assignment from
-// anywhere else (an optimizer step, `:=`) moves the control too.
-type Bindable = Signal<any> | FluentVariable
-const boundValue = (target: Bindable): any => {
-  if (target instanceof FluentVariable) { target.version.value; return target.current }
-  return target?.value
+let writes = 0
+const write = (id: number, value: number | number[] | string | ImageBitmap) => {
+  const mirror = mirrors.get(id)
+  if (!mirror) { return }
+  mirror.sent = ++writes
+  const image = typeof value === "object" && !Array.isArray(value)
+  if (!image) { mirror.local.value = value }
+  toWorker({ t: "set", id, value, seq: mirror.sent }, image ? [value] : [])
 }
-const writeBound = (target: Bindable, fresh: engine.Tensor) => {
-  if (target instanceof FluentVariable) { target.assign(fresh) }
-  else { SignalUpdate(target, fresh) }
+const call = (id: number) => toWorker({ t: "call", id })
+
+// What a description shows now – through live values to their current value. Reading it
+// in a component subscribes the component.
+const resolve = (d: Desc | undefined): Desc | undefined => {
+  for (let i = 0; d?.k === "live" && i < 64; i++) { d = mirrors.get(d.id)?.desc.value }
+  return d
+}
+const payloadOf = (d: Desc | undefined): Payload | undefined => (d?.k === "tensor" ? payloads.get(d.id)?.value : undefined)
+const numberOf = (d: Desc | undefined): number | undefined => {
+  const p = payloadOf(resolve(d))
+  return p instanceof Float32Array ? p[0] : undefined
+}
+const textOf = (d: Desc | undefined): string | undefined => {
+  const r = resolve(d)
+  return r?.k === "string" ? r.v : undefined
 }
 
-// MARK: GPU blit
-// Render tensors straight from their WebGPU buffers: a fullscreen triangle
-// samples the storage buffer per pixel – no readback, no ImageData loop.
-// Heatmaps normalize against a GPU-computed [min, max] pair and color
-// through the viridis LUT, all on-device. Off-WebGPU falls back to toPixels.
-
-let blitDevice: GPUDevice | null | undefined
-const getBlitDevice = (): GPUDevice | null => {
-  if (blitDevice === undefined) {
-    try { blitDevice = engine.getWebGPUDevice() } catch { blitDevice = null }
+// A control bound to a live value shows its own write until the worker has answered it,
+// then the worker's value
+const useBound = (target: Desc | undefined) => {
+  const id = target?.k === "live" ? target.id : undefined
+  const mirror = id === undefined ? undefined : mirrors.get(id)
+  const remote = resolve(target)
+  const local = mirror?.local.value
+  const pending = mirror !== undefined && mirror.ack < mirror.sent
+  return {
+    remote,
+    local: pending ? local : undefined,
+    write: (value: number | number[] | string | ImageBitmap) => { if (id !== undefined) { write(id, value) } },
   }
-  return blitDevice
 }
 
-const blitShader = (mode: "image" | "heat") => /* wgsl */ `
-struct BlitInfo { width: u32, height: u32, channels: u32, scale: f32 }
-@group(0) @binding(0) var<uniform> info: BlitInfo;
-@group(0) @binding(1) var<storage, read> data: array<f32>;
-${mode === "heat" ? `
-@group(0) @binding(2) var<storage, read> bounds: array<f32>;
-@group(0) @binding(3) var<storage, read> lut: array<f32>;
-` : ""}
-
-@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-  var pos = array<vec2f, 3>(vec2f(-1.0, -3.0), vec2f(-1.0, 1.0), vec2f(3.0, 1.0));
-  return vec4f(pos[i], 0.0, 1.0);
-}
-
-@fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f {
-  let base = (u32(p.y) * info.width + u32(p.x)) * info.channels;
-${mode === "heat" ? `
-  let v = f32(data[base]);
-  let t = clamp((v - bounds[0]) / max(bounds[1] - bounds[0], 1e-6), 0.0, 1.0);
-  let i = u32(round(t * 255.0)) * 3u;
-  return vec4f(lut[i], lut[i + 1u], lut[i + 2u], 1.0);
-` : `
-  if (info.channels == 1u) {
-    let v = f32(data[base]) * info.scale;
-    return vec4f(v, v, v, 1.0);
+// The audio hardware's sample rate, read once
+let knownSampleRate: number | null = null
+const sampleRate = (): number => {
+  if (knownSampleRate === null) {
+    const context = new AudioContext()
+    knownSampleRate = context.sampleRate
+    context.close()
   }
-  return vec4f(
-    f32(data[base]) * info.scale,
-    f32(data[base + 1u]) * info.scale,
-    f32(data[base + 2u]) * info.scale,
-    1.0);
-`}
+  return knownSampleRate
 }
-`
 
-const blitPipelines = new Map<string, GPURenderPipeline>()
-const getBlitPipeline = (device: GPUDevice, mode: "image" | "heat"): GPURenderPipeline => {
-  let pipeline = blitPipelines.get(mode)
-  if (!pipeline) {
-    const module = device.createShaderModule({ code: blitShader(mode) })
-    pipeline = device.createRenderPipeline({
-      layout: "auto",
-      vertex: { module, entryPoint: "vs" },
-      fragment: { module, entryPoint: "fs", targets: [{ format: navigator.gpu.getPreferredCanvasFormat() }] },
+// The camera, the microphone, the pointer: the worker asks for a source, and the page
+// streams its frames there – one per display frame at most
+const startSource = (id: number, kind: SourceKind, size: number[], fps = 30) => {
+  let active = true
+  const cleanups: (() => void)[] = []
+  pageSources.set(id, () => { active = false; cleanups.forEach((f) => f()) })
+  const everyFrame = (f: (now: number) => void) => {
+    const tick = (now: number) => {
+      if (!active) { return }
+      f(now)
+      requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  }
+  const send = (frame: { bitmap?: ImageBitmap, samples?: Float32Array }) =>
+    toWorker({ t: "frame", id, ...frame }, frame.bitmap ? [frame.bitmap] : [frame.samples!.buffer as ArrayBuffer])
+
+  if (kind === "pointer") {
+    // normalized to the viewport, 0–1
+    let latest: Float32Array | null = null
+    const onMove = (e: PointerEvent) => { latest = Float32Array.of(e.clientX / window.innerWidth, e.clientY / window.innerHeight) }
+    window.addEventListener("pointermove", onMove)
+    cleanups.push(() => window.removeEventListener("pointermove", onMove))
+    everyFrame(() => {
+      if (!latest) { return }
+      send({ samples: latest })
+      latest = null
     })
-    blitPipelines.set(mode, pipeline)
+    return
   }
-  return pipeline
-}
 
-let viridisGpu: GPUBuffer | null = null
-const getViridisGpu = (device: GPUDevice): GPUBuffer => {
-  if (!viridisGpu) {
-    viridisGpu = device.createBuffer({ size: VIRIDIS_DATA.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST })
-    device.queue.writeBuffer(viridisGpu, 0, VIRIDIS_DATA)
+  if (kind === "camera") {
+    const [width, height] = size
+    const video = document.createElement("video")
+    video.autoplay = true
+    video.playsInline = true
+    let stream: MediaStream | null = null
+    navigator.mediaDevices.getUserMedia({ video: { width, height } }).then((s) => {
+      // permission granted after the source stopped: release the camera at once
+      if (!active) { s.getTracks().forEach((track) => track.stop()); return }
+      stream = s
+      video.srcObject = s
+      video.onloadedmetadata = () => video.play()
+    }).catch((err) => console.error("Camera access denied:", err))
+    cleanups.push(() => {
+      stream?.getTracks().forEach((track) => track.stop())
+      video.srcObject = null
+    })
+    let last = 0, grabbing = false
+    everyFrame((now) => {
+      if (grabbing || now - last < 1000 / fps || video.readyState !== video.HAVE_ENOUGH_DATA) { return }
+      last = now
+      grabbing = true
+      createImageBitmap(video).then((bitmap) => {
+        grabbing = false
+        if (active) { send({ bitmap }) } else { bitmap.close() }
+      }, () => { grabbing = false })
+    })
+    return
   }
-  return viridisGpu
-}
 
-type CanvasBlitState = { context: GPUCanvasContext, meta: GPUBuffer }
-const canvasBlitStates = new WeakMap<HTMLCanvasElement, CanvasBlitState | null>()
-const getCanvasBlitState = (device: GPUDevice, canvas: HTMLCanvasElement): CanvasBlitState | null => {
-  let state = canvasBlitStates.get(canvas)
-  if (state === undefined) {
-    const context = canvas.getContext("webgpu")
-    state = context === null ? null : {
-      context,
-      meta: device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
-    }
-    if (state) {
-      state.context.configure({ device, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: "opaque" })
-    }
-    canvasBlitStates.set(canvas, state)
-  }
-  return state
-}
-
-const blitToCanvas = (
-  device: GPUDevice, canvas: HTMLCanvasElement, mode: "image" | "heat",
-  meta: { width: number, height: number, channels: number, scale: number },
-  buffers: GPUBuffer[],
-): boolean => {
-  const state = getCanvasBlitState(device, canvas)
-  if (!state) { return false }
-  const metaData = new ArrayBuffer(16)
-  new Uint32Array(metaData, 0, 3).set([meta.width, meta.height, meta.channels])
-  new Float32Array(metaData, 12, 1)[0] = meta.scale
-  device.queue.writeBuffer(state.meta, 0, metaData)
-  const pipeline = getBlitPipeline(device, mode)
-  const bindGroup = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: state.meta } },
-      ...buffers.map((buffer, i) => ({ binding: i + 1, resource: { buffer } })),
-    ],
+  // the microphone: its waveform, or its spectrum normalized to 0–1
+  const [n = 1024] = size
+  let stream: MediaStream | null = null
+  let context: AudioContext | null = null
+  let analyser: AnalyserNode | null = null
+  navigator.mediaDevices.getUserMedia({ audio: true }).then((s) => {
+    if (!active) { s.getTracks().forEach((track) => track.stop()); return }
+    stream = s
+    context = new AudioContext()
+    analyser = context.createAnalyser()
+    analyser.fftSize = n * 2
+    if (kind === "spectrum") { analyser.smoothingTimeConstant = 0.8 }
+    context.createMediaStreamSource(s).connect(analyser)
+  }).catch((err) => console.error("Microphone access denied:", err))
+  cleanups.push(() => {
+    stream?.getTracks().forEach((track) => track.stop())
+    context?.close()
   })
-  const encoder = device.createCommandEncoder()
-  const pass = encoder.beginRenderPass({
-    colorAttachments: [{ view: state.context.getCurrentTexture().createView(), loadOp: "clear", storeOp: "store" }],
+  const bytes = new Uint8Array(n)
+  everyFrame(() => {
+    if (!analyser) { return }
+    const samples = new Float32Array(n)
+    if (kind === "microphone") {
+      analyser.getFloatTimeDomainData(samples)
+    } else {
+      analyser.getByteFrequencyData(bytes)
+      for (let i = 0; i < n; i++) { samples[i] = bytes[i]! / 255 }
+    }
+    send({ samples })
   })
-  pass.setPipeline(pipeline)
-  pass.setBindGroup(0, bindGroup)
-  pass.draw(3)
-  pass.end()
-  device.queue.submit([encoder.finish()])
-  return true
 }
 
 // react-plotly is weirdly packaged - need to access default twice
@@ -471,15 +419,6 @@ function getColorForSyntaxTreeNode(code: string) {
 
 const StringSerialize = (s: string) => Base64.encodeURI(s)
 const StringDeserialize = (s: string) => Base64.decode(s)
-
-const Button = (label?: string | Signal<string>, onClick?: () => void) => {
-  return computed(() => {
-    const disabled = (typeof onClick !== "function")
-    const labelValue = (typeof label === "string" || label instanceof String) ? label : label instanceof Signal ? label.value : "Button"
-    return <button className="bg-neutral-900 hover:bg-neutral-800 active:bg-neutral-700 rounded-xl border border-neutral-400 hover:border-neutral-300 active:border-neutral-200 disabled:border-neutral-800 disabled:cursor-not-allowed p-2 overflow-hidden" onClick={onClick} disabled={disabled}>{labelValue}</button>
-  })
-}
-setMeta(Button, { noAutoLift: true })
 
 // Monaco's markdown renderer refuses relative link targets ("?example=lenia")
 // and renders them as plain text. Smuggle them through as an absolute URL on
@@ -557,153 +496,133 @@ const colorizeCodeAsync = async (language: string, value: string) => {
   return e
 }
 
-const NativeDOMElement = ({ fn }: { fn: () => Promise<HTMLElement> }) => {
+// MARK: Widgets
+// What the program's widget values draw as. A widget binds to live values by id: it
+// shows them, and its edits go back to the worker.
+
+type UIDesc = Extract<Desc, { k: "ui" }>
+type TensorDesc = Extract<Desc, { k: "tensor" }>
+
+// Markdown, rendered off the page's critical path: the previous rendering stays until
+// the new one is ready
+const Markdown = ({ text }: { text: string }) => {
   const ref = useRef<HTMLDivElement>(null)
-
   useEffect(() => {
-    let mounted = true
-
-    async function mount() {
-      if (ref.current && mounted) {
-        // Clear existing content first (handles HMR edge cases)
-        ref.current.innerHTML = ''
-        const element = await fn()
-        if (ref.current && mounted) {
-          ref.current.appendChild(element)
-        }
-      }
-    }
-
-    mount()
-
-    return () => {
-      mounted = false
-      if (ref.current) {
-        ref.current.innerHTML = ''
-      }
-    }
-  }, [fn])
-
-  return <div ref={ref}></div>
+    let current = true
+    convertTextToHTML(text).then((element) => {
+      if (current) { ref.current?.replaceChildren(element) }
+    })
+    return () => { current = false }
+  }, [text])
+  return <div className="prose prose-neutral prose-invert"><div ref={ref}></div></div>
 }
 
-const Text = (value: string | String) => {
-  if (typeof value !== "string" && !(value instanceof String)) {
-    return new Error(`Text: expected string, got ${typeof value}`)
-  }
-  const str = String(value)  // normalize to primitive
-  const fn = () => { return convertTextToHTML(str) }
-  return <div className="prose prose-neutral prose-invert"><NativeDOMElement fn={fn} /></div>
+const TextView = ({ d }: { d: UIDesc }) => <Markdown text={String(d.props.text)} />
+
+const ButtonView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  const label = textOf(d.slots.label) ?? "Button"
+  const action = d.slots.onClick?.k === "callback" ? d.slots.onClick.id : undefined
+  return <button className="bg-neutral-900 hover:bg-neutral-800 active:bg-neutral-700 rounded-xl border border-neutral-400 hover:border-neutral-300 active:border-neutral-200 disabled:border-neutral-800 disabled:cursor-not-allowed p-2 overflow-hidden" onClick={action === undefined ? undefined : () => call(action)} disabled={action === undefined}>{label}</button>
 }
 
-// TextEditor(text) – editable always; TextEditor(text, enabled) – read-only
-// while `enabled` is falsy (readOnly, not disabled: text stays selectable and
-// the same <textarea> reconciles in place, so cursor and scroll survive).
-const TextEditor = (editedValue: Signal<string>, enabled?: Signal<engine.Tensor> | engine.Tensor) => {
-  return SignalComputed(() => {
-    const on = enabled === undefined ||
-      (getAsSyncList(enabled instanceof Signal ? enabled.value : enabled) as number) >= 0.5
-    return <div className="grid">
+// read-only while `enabled` is falsy – readOnly, not disabled: the text stays selectable
+// and the same <textarea> reconciles in place, so cursor and scroll survive
+const TextEditorView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  const { remote, local, write } = useBound(d.slots.target)
+  const text = (local as string | undefined) ?? (remote?.k === "string" ? remote.v : "")
+  const on = d.slots.enabled === undefined || (numberOf(d.slots.enabled) ?? 1) >= 0.5
+  return (
+    <div className="grid">
       <textarea
-        value={editedValue.value}
+        value={text}
         readOnly={!on}
         title={on ? undefined : "read-only while training"}
-        onChange={(e) => { if (on) { SignalUpdate(editedValue, e.target.value) } }}
+        onChange={(e) => { if (on) { write(e.target.value) } }}
         className={`block bg-neutral-800 focus:bg-neutral-900 rounded-xl border border-neutral-600 hover:border-neutral-500 focus:border-neutral-300 outline-none p-2 field-sizing-content ${on ? "" : "opacity-50 cursor-not-allowed"}`}
         // @ts-ignore
         style={{ fieldSizing: "content" }}
         rows={1}
       />
     </div>
-  })
+  )
 }
-setMeta(TextEditor, { noAutoLift: true })
 
-const Slider = (editedValue: Bindable) => {
-  return SignalComputed(() => {
-    const valueAsList = getAsSyncList(boundValue(editedValue)) as number
-
-    return (
-      <div className="grid">
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={valueAsList}
-          onChange={(e) => writeBound(editedValue, TensorScalarLive(parseFloat(e.target.value)))}
-          className="bg-neutral-900 focus:bg-neutral-800 rounded-xl border border-neutral-800 hover:border-neutral-700 focus:border-neutral-600 outline-none p-2 w-full h-2 cursor-pointer dark:bg-gray-700 place-self-center"
-        />
-      </div>
-    )
-  })
+const useNumber = (target: Desc | undefined) => {
+  const { remote, local, write } = useBound(target)
+  // the last value seen, while a newer one is read off the GPU
+  const last = useRef(0)
+  const value = (local as number | undefined) ?? numberOf(remote)
+  if (value !== undefined) { last.current = value }
+  return { value: last.current, write }
 }
-setMeta(Slider, { noAutoLift: true })
 
-const Scrubber = (editedValue: Bindable, sensitivity?: engine.Tensor) => {
-  const step = sensitivity ? getAsSyncList(sensitivity) as number : 1  // 0=stuck, negative=flipped
-  const decimals = Math.max(0, Math.ceil(-Math.log10(Math.abs(step) || 1)))
-  const factor = Math.pow(10, decimals)
-  const color = COLORS.find(rule => rule.token === "number")?.foreground ?? "FFFFFF"
-
-  return SignalComputed(() => {
-    const value = getAsSyncList(boundValue(editedValue)) as number
-
-    const handlePointerDown = (e: React.PointerEvent<HTMLSpanElement>) => {
-      e.preventDefault()
-      const startX = e.clientX, startValue = value
-
-      const onMove = (me: PointerEvent) => {
-        const raw = startValue + (me.clientX - startX) * step * 0.1
-        writeBound(editedValue, TensorScalarLive(Math.round(raw * factor) / factor))
-      }
-      const onUp = () => {
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-      }
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp)
-    }
-
-    return (
-      <span
-        style={{ color: `#${color}`, cursor: 'ew-resize', userSelect: 'none' }}
-        onPointerDown={handlePointerDown}
-      >
-        {value.toLocaleString("en-US", { maximumFractionDigits: decimals }).replace(/,/g, "_")}
-      </span>
-    )
-  })
-}
-setMeta(Scrubber, { noAutoLift: true })
-
-const Checkbox = (editedValue: Bindable) => {
-  return SignalComputed(() => {
-    const checked = (getAsSyncList(boundValue(editedValue)) as number) >= 0.5
-    return (
+const SliderView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  const { value, write } = useNumber(d.slots.target)
+  return (
+    <div className="grid">
       <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => writeBound(editedValue, TensorScalarLive(e.target.checked ? 1 : 0))}
-        className="w-5 h-5 accent-white cursor-pointer place-self-start"
+        type="range"
+        min={0}
+        max={1}
+        step={0.01}
+        value={value}
+        onChange={(e) => write(parseFloat(e.target.value))}
+        className="bg-neutral-900 focus:bg-neutral-800 rounded-xl border border-neutral-800 hover:border-neutral-700 focus:border-neutral-600 outline-none p-2 w-full h-2 cursor-pointer dark:bg-gray-700 place-self-center"
       />
-    )
-  })
+    </div>
+  )
 }
-setMeta(Checkbox, { noAutoLift: true })
 
-// Image picker + drop zone: writes the image into `target` as a [h, w, 3]
-// tensor. Drag & drop works even where native file dialogs are unavailable
-// (embedded webviews like VS Code's Simple Browser).
-const ImageUpload = (target: Signal<engine.Tensor>) => {
-  const retired = generationRetired()
+const CheckboxView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  const { value, write } = useNumber(d.slots.target)
+  return (
+    <input
+      type="checkbox"
+      checked={value >= 0.5}
+      onChange={(e) => write(e.target.checked ? 1 : 0)}
+      className="w-5 h-5 accent-white cursor-pointer place-self-start"
+    />
+  )
+}
+
+// a number you drag sideways: `step` per 10 pixels
+const ScrubberView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  const { step, decimals } = d.props as { step: number, decimals: number }
+  const { value, write } = useNumber(d.slots.target)
+  const factor = Math.pow(10, decimals)
+  const handlePointerDown = (e: React.PointerEvent<HTMLSpanElement>) => {
+    e.preventDefault()
+    const startX = e.clientX, startValue = value
+    const onMove = (me: PointerEvent) => {
+      const raw = startValue + (me.clientX - startX) * step * 0.1
+      write(Math.round(raw * factor) / factor)
+    }
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onUp)
+    }
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", onUp)
+  }
+  return (
+    <span style={{ color: `#${tokenColors.number}`, cursor: "ew-resize", userSelect: "none" }} onPointerDown={handlePointerDown}>
+      {value.toLocaleString("en-US", { maximumFractionDigits: decimals }).replace(/,/g, "_")}
+    </span>
+  )
+}
+
+// Drag & drop works even where native file dialogs are unavailable (embedded webviews)
+const ImageUploadView = ({ d }: { d: UIDesc }) => {
+  const { write } = useBound(d.slots.target)
   const load = async (file: File | null | undefined) => {
     if (!file || !file.type.startsWith("image")) { return }
-    const bitmap = await createImageBitmap(file)
-    if (retired()) { bitmap.close(); return }
-    SignalUpdate(target, fromPixels(bitmap))
+    write(await createImageBitmap(file))
   }
-
   return (
     <div
       className="text-sm text-neutral-400 hover:text-neutral-200 border border-dashed border-neutral-600 hover:border-neutral-400 rounded-xl p-3 text-center cursor-pointer select-none"
@@ -723,526 +642,200 @@ const ImageUpload = (target: Signal<engine.Tensor>) => {
     </div>
   )
 }
-setMeta(ImageUpload, { noAutoLift: true })
 
-// Mouse position as a [2] tensor signal, normalized to the viewport (0..1)
-function MousePosition(): Signal<engine.Tensor> {
-  const initial = engine.tensor([0.5, 0.5])
-  const s = SignalCreate<engine.Tensor>(initial)
-  const onMove = (e: PointerEvent) => {
-    SignalUpdate(s, engine.tensor([e.clientX / window.innerWidth, e.clientY / window.innerHeight]))
-  }
-  window.addEventListener("pointermove", onMove)
-  const result = computed(() => s.value) as Signal<engine.Tensor> & { dispose: () => void }
-  result.dispose = () => window.removeEventListener("pointermove", onMove)
-  registerDisposable(result.dispose)
-  return result
+// Lists flatten into cells, and a live list re-renders its cells as it changes
+const flattenCells = (ds: Desc[]): Desc[] => ds.flatMap((d) => {
+  if (d.k === "list") { return flattenCells(d.items) }
+  const now = d.k === "live" ? resolve(d) : undefined
+  return now?.k === "list" ? flattenCells(now.items) : [d]
+})
+
+const GridView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  const { columns, rows } = d.props as { columns: string, rows: string }
+  // Without a row template, rows hug their content (content-start) instead of sharing
+  // the panel's spare height, and auto-rows-max keeps a tall page of cells from being
+  // crushed to slivers when it overflows – the grid scrolls instead.
+  return (
+    <div className={`grid gap-2 overflow-scroll h-full ${rows ? "" : "content-start auto-rows-max"}`} style={{ gridTemplateColumns: columns, gridTemplateRows: rows }}>
+      {flattenCells(d.children).map((cell, i) => <div key={i} className="contents"><Cell d={cell} /></div>)}
+    </div>
+  )
 }
 
-const Grid = (cols: engine.Tensor, rows: engine.Tensor) => {
-  let gridTemplateColumns = ""
-  let gridTemplateRows = ""
-
-  const colsValue = getAsSyncList(cols)
-  switch (cols.ndim) {
-    case 0:
-      gridTemplateColumns = `repeat(${colsValue}, minmax(auto, 1fr))`
-      break;
-
-    case 1:
-      gridTemplateColumns = (colsValue as number[]).map((v) => `minmax(0, ${v}fr)`).join(" ")
-      break;
-    default:
-      break;
-  }
-
-  if (rows !== undefined) {
-    const rowsValue = getAsSyncList(rows)
-
-
-    switch (rows.ndim) {
-      case 0:
-        gridTemplateRows = `repeat(${rowsValue}, minmax(auto, 1fr))`
-        break;
-
-      case 1:
-        gridTemplateRows = (rowsValue as number[]).map((v) => `minmax(0, ${v}fr)`).join(" ")
-        break;
-      default:
-        break;
-    }
-  }
-
-  // noAutoLift: children arrive as signals (Button, TextEditor, ...) and each
-  // renders as its own reactive island – one changing cell doesn't rebuild the grid.
-  // Lists flatten into cells, and a signal holding a list re-renders the cells
-  // dynamically: Grid(3)(tasks) works when tasks is $((...)).
-  const flattenCells = (xs: any[]): any[] => xs.flatMap(x => Array.isArray(x) ? flattenCells(x) : [x])
-  const isListSignal = (a: any) => a instanceof Signal && Array.isArray((a as Signal<unknown>).peek())
-  // Without an explicit row template, rows hug their content (content-start) –
-  // the default align-content: stretch would distribute the panel's spare
-  // height across auto rows, inflating a small table to fill the whole panel.
-  // auto-rows-max is the other half: auto rows default to min-content when
-  // the content overflows the panel, and a scroll container's min-content
-  // height is ~zero – so a tall page of cells would crush its plots and
-  // button rows to slivers instead of letting the grid scroll.
-  // Cell keys are scoped to this Grid instance: two Grids swapped at the same
-  // tree position (tour rooms) must never have their cells reconciled into
-  // each other – a reused island keeps the OLD cell's mounted state (Monaco
-  // instances, plotly draw state) while showing the new cell's value.
-  const gridUid = ++gridInstanceCount
-  const applyChildren = (...args: any[]) => {
-    const buildCells = () => flattenCells(args.map(a => isListSignal(a) ? (a as Signal<unknown>).value : a))
-      .map(WrapWithPrintIfNotReactElement)
-      .map((cell, i) => <div key={`${gridUid}-${i}`} className="contents">{cell}</div>)
-    return (
-      <div className={`grid gap-2 overflow-scroll h-full ${gridTemplateRows ? "" : "content-start auto-rows-max"}`} style={{ gridTemplateColumns, gridTemplateRows }}>
-        {/* @ts-ignore */}
-        {args.some(isListSignal) ? computed(() => <>{buildCells()}</>) : buildCells()}
-      </div>
-    )
-  }
-  setMeta(applyChildren, { noAutoLift: true })
-  return applyChildren
-}
-
-// A quoted-AST cell gets the same framed panel as any printed value: the
-// frame marks the cell, and the panel's full extent carries the origin hover
-// (the bare svg's box is smaller than the cell). Interactive elements
-// (Slider, Button, plots) stay unboxed.
-// no overflow-scroll here: a scroll container contributes no minimum height
-// to grid track sizing, so the row would size to the text cells and clip the
-// tree – the frame must grow with its drawing instead
-const frameIfAstTree = (el: any) =>
-  el?.props?.className?.includes?.("ast-tree")
-    ? <Panel>{el}</Panel>
-    : el
-
-function WrapWithPrintIfNotReactElement(child: any): any {
-  if (child instanceof Signal) {
-    // Reactive island: render inside the same computed that reads the value.
-    return computed(() => {
-      const value = (child as Signal<unknown>).value
-      if (value instanceof Signal) { return WrapWithPrintIfNotReactElement(value) }
-      if (isValidElement(value)) { return <WithOriginHighlight obj={value}>{frameIfAstTree(value)}</WithOriginHighlight> }
-      // the origin wrapper sits OUTSIDE the panel: hovering the box's empty
-      // padding highlights this value's source, instead of bubbling up to
-      // the whole surrounding expression (e.g. an entire Grid)
-      return (
-        <WithOriginHighlight obj={value}>
-          <Panel className="overflow-scroll">
-            <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[value]}>
-              {PrettyPrint(value)}
-            </ErrorBoundary>
-          </Panel>
-        </WithOriginHighlight>
-      )
-    });
-  }
-  if (isValidElement(child)) {
-    return <WithOriginHighlight obj={child}>{frameIfAstTree(child)}</WithOriginHighlight>;
-  } else {
-    return Print(child);
-  }
-}
-
-// Center a child in its cell, both axes – Grid cells default to top-left,
-// which reads wrong for headers and captions: Center(Text("Fluent Tour"))
-const Center = (child: any) => (
+// Grid cells default to top-left, which reads wrong for headers and captions
+const CenterView = ({ d }: { d: UIDesc }) => (
   <div className="grid place-items-center text-center h-full">
-    {WrapWithPrintIfNotReactElement(child)}
+    {d.children[0] && <Cell d={d.children[0]} />}
   </div>
 )
-setMeta(Center, { noAutoLift: true })
 
-// Stack visuals on top of each other: the first child defines the size,
-// the rest overlay it – Layers(surface, Point2D(θ, range))
-const Layers = (...children: any[]) => (
+const LayersView = ({ d }: { d: UIDesc }) => (
   <div className="relative w-fit" data-layers="true">
-    {children.map((child, i) => (
-      // Overlay wrappers must not eat pointer events, or the topmost layer
-      // swallows every click and only its Point2D can be dragged. Interactive
-      // children (a Point2D's dot) re-enable events with pointer-events-auto.
+    {d.children.map((child, i) => (
+      // Overlays must not eat pointer events, or the topmost layer swallows every click;
+      // interactive children (a Point2D's dot) re-enable them with pointer-events-auto
       <div key={i} className={i === 0 ? "" : "absolute inset-0 pointer-events-none"}>
-        {child instanceof Signal
-          ? computed(() => PrettyPrint((child as Signal<unknown>).value)) as unknown as JSX.Element
-          : PrettyPrint(child)}
+        <View d={child} />
       </div>
     ))}
   </div>
 )
-setMeta(Layers, { noAutoLift: true })
 
-// Shared helpers for components bound to a [2] point in a data range
-const pointMapping = (range?: engine.Tensor) => {
-  const [[x0, x1], [y0, y1]] = (range
-    ? getAsSyncList(range)
-    : [[0, 1], [0, 1]]) as [[number, number], [number, number]]
-  return { x0, y0, spanX: x1 - x0 || 1, spanY: y1 - y0 || 1 }
-}
-const readPoint = (target: FluentVariable | Signal<engine.Tensor>): [number, number] => {
-  const value = target instanceof Signal ? target.peek() : target
-  return getAsSyncList(value) as [number, number]
+type PointProps = { x0: number, y0: number, spanX: number, spanY: number, color: string }
+
+const usePoint = (target: Desc | undefined) => {
+  const { remote, local, write } = useBound(target)
+  const last = useRef<number[]>([0, 0])
+  const known = (local as number[] | undefined) ?? (() => { const p = payloadOf(remote); return p ? Array.from(p) : undefined })()
+  if (known && known.length >= 2) { last.current = known }
+  return { point: last.current as [number, number], write }
 }
 
-// Draggable 2D point bound to a [2] variable (or signal), mapped to a data
-// range [[x0, x1], [y0, y1]]. Dragging the dot assigns; assignments (e.g. by
-// an optimizer) move the dot. The layer is transparent to pointer events, so
-// several Point2Ds can share one Layers stack.
-const Point2D = (target: FluentVariable | Signal<engine.Tensor>, range?: engine.Tensor, color?: Value) => {
-  const { x0, y0, spanX, spanY } = pointMapping(range)
-  const fill = String(color ?? "white")
-  const version: Signal<number> | undefined = target instanceof FluentVariable ? target.version : undefined
-
-  const write = (event: React.PointerEvent<HTMLDivElement>) => {
+// A draggable dot; the layer is transparent to pointer events, so several share a stack
+const Point2DView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  const { x0, y0, spanX, spanY, color } = d.props as PointProps
+  const { point: [px, py], write } = usePoint(d.slots.target)
+  const place = (event: React.PointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.parentElement!.getBoundingClientRect()
-    const point = engine.tensor([
+    write([
       x0 + (event.clientX - rect.left) / rect.width * spanX,
       y0 + (event.clientY - rect.top) / rect.height * spanY,
     ])
-    if (target instanceof Signal) { SignalUpdate(target, point) }
-    else { target.assign(point) }
   }
-
-  return SignalComputed(() => {
-    if (version) { version.value }
-    if (target instanceof Signal) { target.value }
-    const [px, py] = readPoint(target)
-
-    return (
-      <div className="absolute inset-0 pointer-events-none touch-none select-none">
-        <div
-          data-point2d="true"
-          className="absolute pointer-events-auto cursor-grab active:cursor-grabbing"
-          style={{
-            left: `${(px - x0) / spanX * 100}%`,
-            top: `${(py - y0) / spanY * 100}%`,
-            transform: "translate(-50%, -50%)",
-            width: 32, height: 32, display: "grid", placeItems: "center",
-          }}
-          onPointerDown={(e) => {
-            // Grab arbitration: stacked points would always give the drag to the
-            // topmost layer – instead, the dot whose center is nearest to the
-            // pointer wins (ties go to the earlier layer)
-            const layersRoot = e.currentTarget.closest('[data-layers]')
-            const dots = layersRoot ? [...layersRoot.querySelectorAll('[data-point2d]')] : []
-            const distanceTo = (el: Element) => {
-              const r = el.getBoundingClientRect()
-              return Math.hypot(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2))
-            }
-            let nearest: Element = e.currentTarget
-            let best = Infinity
-            for (const el of dots) {
-              const d = distanceTo(el)
-              if (d < best) { best = d; nearest = el }  // ties go to the earlier layer
-            }
-            if (nearest !== e.currentTarget) {
-              e.stopPropagation()
-              nearest.dispatchEvent(new PointerEvent("pointerdown", {
-                bubbles: true, clientX: e.clientX, clientY: e.clientY,
-                pointerId: e.pointerId, buttons: e.buttons, isPrimary: true,
-              }))
-              return
-            }
-            e.currentTarget.setPointerCapture(e.pointerId)
-          }}
-          onPointerMove={(e) => { if (e.buttons) { write(e) } }}
-        >
-          <div style={{ width: 12, height: 12, borderRadius: 999, background: fill, border: "2px solid black", boxShadow: "0 0 6px rgba(0,0,0,0.8)" }} />
-        </div>
-      </div>
-    )
-  })
-}
-setMeta(Point2D, { noAutoLift: true })
-
-// The path a point has taken: re-renders on every assignment to the target
-const Trail = (target: FluentVariable | Signal<engine.Tensor>, range?: engine.Tensor, color?: Value) => {
-  const { x0, y0, spanX, spanY } = pointMapping(range)
-  const stroke = String(color ?? "white")
-  const version: Signal<number> | undefined = target instanceof FluentVariable ? target.version : undefined
-  const points: string[] = []
-
-  return SignalComputed(() => {
-    if (version) { version.value }
-    if (target instanceof Signal) { target.value }
-    const [px, py] = readPoint(target)
-    points.push(`${(px - x0) / spanX * 100},${(py - y0) / spanY * 100}`)
-    if (points.length > 500) { points.shift() }
-
-    return (
-      <svg
-        className="absolute inset-0 w-full h-full pointer-events-none"
-        viewBox="0 0 100 100" preserveAspectRatio="none"
+  return (
+    <div className="absolute inset-0 pointer-events-none touch-none select-none">
+      <div
+        data-point2d="true"
+        className="absolute pointer-events-auto cursor-grab active:cursor-grabbing"
+        style={{
+          left: `${(px - x0) / spanX * 100}%`,
+          top: `${(py - y0) / spanY * 100}%`,
+          transform: "translate(-50%, -50%)",
+          width: 32, height: 32, display: "grid", placeItems: "center",
+        }}
+        onPointerDown={(e) => {
+          // Grab arbitration: the dot whose center is nearest the pointer wins, not the
+          // topmost layer (ties go to the earlier layer)
+          const layersRoot = e.currentTarget.closest("[data-layers]")
+          const dots = layersRoot ? [...layersRoot.querySelectorAll("[data-point2d]")] : []
+          const distanceTo = (el: Element) => {
+            const r = el.getBoundingClientRect()
+            return Math.hypot(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2))
+          }
+          let nearest: Element = e.currentTarget
+          let best = Infinity
+          for (const el of dots) {
+            const distance = distanceTo(el)
+            if (distance < best) { best = distance; nearest = el }
+          }
+          if (nearest !== e.currentTarget) {
+            e.stopPropagation()
+            nearest.dispatchEvent(new PointerEvent("pointerdown", {
+              bubbles: true, clientX: e.clientX, clientY: e.clientY,
+              pointerId: e.pointerId, buttons: e.buttons, isPrimary: true,
+            }))
+            return
+          }
+          e.currentTarget.setPointerCapture(e.pointerId)
+        }}
+        onPointerMove={(e) => { if (e.buttons) { place(e) } }}
       >
-        <polyline
-          points={points.join(" ")}
-          fill="none" stroke={stroke} strokeOpacity={0.75} strokeWidth={1.5}
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
-    )
-  })
-}
-setMeta(Trail, { noAutoLift: true })
-
-const Fetch = (url: string) => {
-  const s = SignalCreate<Value>(null)
-
-  fetch(url)
-    .then(response => response.text())
-    .then(data => {
-      s.value = data
-    })
-    .catch(error => {
-      s.value = new Error(`Error fetching data: ${error.message}`)
-    });
-
-  return s
+        <div style={{ width: 12, height: 12, borderRadius: 999, background: color, border: "2px solid black", boxShadow: "0 0 6px rgba(0,0,0,0.8)" }} />
+      </div>
+    </div>
+  )
 }
 
-
-// CORS fallback: retry blocked cross-origin loads through the dev server
-const proxied = (url: string) => `/proxy?url=${encodeURIComponent(url)}`
-
-// Async sources resolve after an arbitrary delay; if the evaluation that
-// created them has been retired by then (every keystroke re-evaluates), the
-// result must be dropped – tensors written into a dead signal are never
-// disposed, and a camera stream nobody stops stays on.
-const generationRetired = (): (() => boolean) => {
-  let retired = false
-  registerDisposable(() => { retired = true })
-  return () => retired
-}
-
-function LoadTensorFromImageUrl(url: string): Signal<engine.Tensor | null> {
-  const s = SignalCreate<engine.Tensor | null>(null);
-  const retired = generationRetired()
-
-  const imgElement = document.createElement('img');
-  imgElement.crossOrigin = "anonymous";
-  imgElement.src = url;
-
-  // `img.src` reads back as the RESOLVED absolute URL, so testing it against
-  // the relative "/proxy?url=" prefix was never true and every failure
-  // re-assigned the same src forever (~1300 req/s, one loop per evaluation
-  // since onerror had no retired() guard). Retry through the proxy once.
-  let triedProxy = false
-  imgElement.onerror = () => {
-    if (retired() || triedProxy) { return }
-    triedProxy = true
-    imgElement.src = proxied(url)
+// The path a point has taken: the last 500 places it was shown at
+const TrailView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  const { x0, y0, spanX, spanY, color } = d.props as PointProps
+  const { point: [px, py] } = usePoint(d.slots.target)
+  const points = useRef<string[]>([])
+  const here = `${(px - x0) / spanX * 100},${(py - y0) / spanY * 100}`
+  if (points.current[points.current.length - 1] !== here) {
+    points.current.push(here)
+    if (points.current.length > 500) { points.current.shift() }
   }
-  imgElement.onload = () => {
-    if (retired()) { return }
-    SignalUpdate(s, fromPixels(imgElement))
-  }
-
-  return s
+  return (
+    <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
+      <polyline
+        points={points.current.join(" ")}
+        fill="none" stroke={color} strokeOpacity={0.75} strokeWidth={1.5}
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  )
 }
 
-// Shared engine for realtime tensor sources (Camera, Microphone, Time):
-// a read-only signal driven by requestAnimationFrame. `frame` returns a fresh
-// tensor, or null to keep the current one.
-function FrameSignal(initial: engine.Tensor, frame: (time: number) => engine.Tensor | null, cleanup?: () => void): Signal<engine.Tensor> & { dispose: () => void } {
-  const source = SignalCreate<engine.Tensor>(initial)
-  let active = true
-
-  const tick = (time: number) => {
-    if (!active) return
-
-    const next = frame(time)
-    if (next) {
-      SignalUpdate(source, next)
-    }
-    requestAnimationFrame(tick)
-  }
-  requestAnimationFrame(tick)
-
-  const result = computed(() => source.value) as Signal<engine.Tensor> & { dispose: () => void }
-  result.dispose = () => {
-    active = false
-    cleanup?.()
-  }
-  registerDisposable(result.dispose)
-  return result
+const PointPlotView = ({ d }: { d: UIDesc }) => {
+  const { xs, ys } = d.props as { xs: number[], ys: number[] }
+  return (
+    <Plot
+      data={[{
+        x: xs,
+        y: ys,
+        type: "scatter",
+        mode: "lines+markers",
+        line: { color: "#666", width: 1 },
+        marker: { color: ys, colorscale: "Viridis", size: 9, line: { color: "black", width: 1 } },
+      }]}
+      layout={{
+        paper_bgcolor: "transparent",
+        plot_bgcolor: "transparent",
+        font: { color: "#D4D4D4" },
+        xaxis: { gridcolor: "#444444", zeroline: false, automargin: true },
+        yaxis: { gridcolor: "#444444", zeroline: false, automargin: true },
+        margin: { pad: 6, t: 6, l: 0, r: 6, b: 0 },
+      }}
+      config={{ staticPlot: true, responsive: false }}
+      style={{ width: "100%", height: "12em" }}
+    />
+  )
 }
 
-function Camera(width?: engine.Tensor, height?: engine.Tensor, fps?: engine.Tensor): Signal<engine.Tensor> {
-  const w = width ? getAsSyncList(width) as number : 640
-  const h = height ? getAsSyncList(height) as number : 480
-  const frameInterval = 1000 / (fps ? getAsSyncList(fps) as number : 30)
-
-  const video = document.createElement('video')
-  video.autoplay = true
-  video.playsInline = true
-
-  const retired = generationRetired()
-  let stream: MediaStream | null = null
-  navigator.mediaDevices.getUserMedia({ video: { width: w, height: h } }).then(s => {
-    // permission granted after the evaluation was retired – the cleanup
-    // already ran with stream = null, so stop the tracks here or the camera
-    // light stays on until the tab closes
-    if (retired()) { s.getTracks().forEach(track => track.stop()); return }
-    stream = s
-    video.srcObject = s
-    video.onloadedmetadata = () => video.play()
-  }).catch(err => console.error('Camera access denied:', err))
-
-  let lastTime = 0
-  // Initialize with black frame so operations don't fail before camera starts
-  return FrameSignal(engine.zeros([h, w, 3]), (time) => {
-    if (time - lastTime < frameInterval || video.readyState !== video.HAVE_ENOUGH_DATA) { return null }
-    lastTime = time
-    return fromPixels(video)
-  }, () => {
-    stream?.getTracks().forEach(track => track.stop())
-    video.srcObject = null
-  })
+const CodeWidgetView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  const { remote, local, write } = useBound(d.slots.source)
+  return <CodeView value={(local as string | undefined) ?? (remote?.k === "string" ? remote.v : "")} onChange={write} />
 }
 
-// Shared getUserMedia/AnalyserNode setup for Microphone and MicrophoneSpectrum
-function AudioAnalyser(fftSize: number, smoothing?: number): { get: () => AnalyserNode | null, cleanup: () => void } {
-  const retired = generationRetired()
-  let stream: MediaStream | null = null
-  let audioContext: AudioContext | null = null
-  let analyser: AnalyserNode | null = null
-
-  navigator.mediaDevices.getUserMedia({ audio: true }).then(s => {
-    // permission granted after the evaluation was retired – cleanup already
-    // ran with stream = null, so release the microphone here
-    if (retired()) { s.getTracks().forEach(track => track.stop()); return }
-    stream = s
-    audioContext = new AudioContext()
-    analyser = audioContext.createAnalyser()
-    analyser.fftSize = fftSize
-    if (smoothing !== undefined) { analyser.smoothingTimeConstant = smoothing }
-    audioContext.createMediaStreamSource(s).connect(analyser)
-  }).catch(err => console.error('Microphone access denied:', err))
-
-  return {
-    get: () => analyser,
-    cleanup: () => {
-      stream?.getTracks().forEach(track => track.stop())
-      audioContext?.close()
-    }
-  }
+const CodeEditorWidgetView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  const { remote, local, write } = useBound(d.slots.source)
+  return <CodeEditorView value={(local as string | undefined) ?? (remote?.k === "string" ? remote.v : "")} onChange={write} auto={d.props.auto === true} />
 }
 
-function Microphone(bufferSize?: engine.Tensor): Signal<engine.Tensor> {
-  const size = bufferSize ? getAsSyncList(bufferSize) as number : 2048
-  const audio = AudioAnalyser(size * 2)
-  const dataArray = new Float32Array(size)
-
-  // Initialize with silence
-  return FrameSignal(engine.zeros([size]), () => {
-    const analyser = audio.get()
-    if (!analyser) { return null }
-    analyser.getFloatTimeDomainData(dataArray)
-    return engine.tensor(dataArray.slice())
-  }, audio.cleanup)
+const PrintView = ({ d }: { d: UIDesc }) => {
+  const child = d.children[0] ?? { k: "null" }
+  return (
+    <WithOrigin o={child.o}>
+      <Panel className="overflow-scroll" testId="print-panel">
+        <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[child]}>
+          <View d={child} />
+        </ErrorBoundary>
+      </Panel>
+    </WithOrigin>
+  )
 }
 
-function MicrophoneSpectrum(bufferSize?: engine.Tensor): Signal<engine.Tensor> {
-  const size = bufferSize ? getAsSyncList(bufferSize) as number : 1024
-  const audio = AudioAnalyser(size * 2, 0.8)
-  const dataArray = new Uint8Array(size)
+const PrettyPrintView = ({ d }: { d: UIDesc }) => <View d={d.children[0] ?? { k: "null" }} />
 
-  // Initialize with silence; normalized to 0-1 range
-  return FrameSignal(engine.zeros([size]), () => {
-    const analyser = audio.get()
-    if (!analyser) { return null }
-    analyser.getByteFrequencyData(dataArray)
-    return engine.divide(engine.tensor(Float32Array.from(dataArray)), 255)
-  }, audio.cleanup)
+const WIDGETS: Record<string, (p: { d: UIDesc }) => JSX.Element> = {
+  Text: TextView, Button: ButtonView, TextEditor: TextEditorView, Slider: SliderView, Checkbox: CheckboxView,
+  Scrubber: ScrubberView, ImageUpload: ImageUploadView, Grid: GridView, Center: CenterView, Layers: LayersView,
+  Point2D: Point2DView, Trail: TrailView, PointPlot: PointPlotView, Code: CodeWidgetView,
+  CodeEditor: CodeEditorWidgetView, Print: PrintView, PrettyPrint: PrettyPrintView,
 }
 
-function Time(): Signal<engine.Tensor> {
-  const startTime = performance.now()
-  return FrameSignal(TensorScalarLive(0), () => TensorScalarLive((performance.now() - startTime) / 1000))
+// a widget is keyed by its identity: a different widget at the same place never inherits
+// another's mounted state (an editor, a plot)
+const WidgetView = ({ d }: { d: UIDesc }) => {
+  const Widget = WIDGETS[d.type]
+  return Widget ? <Widget key={d.uid} d={d} /> : <div className="text-violet-500">{d.type}</div>
 }
-
-// The audio hardware's sample rate (Hz) – needed to turn FFT bins into pitches.
-// Created lazily on first use so a non-audio program never spins up an AudioContext.
-let sampleRateContext: AudioContext | null = null
-function SampleRate(): engine.Tensor {
-  if (!sampleRateContext) { sampleRateContext = new AudioContext() }
-  return TensorScalarLive(sampleRateContext.sampleRate)
-}
-
-
-// A download kept in the origin's private file system (OPFS), so reloads and hot updates
-// don't fetch large weight files again; without OPFS it is a plain fetch.
-const cachedFetch = async (url: string): Promise<Uint8Array> => {
-  const dir = await navigator.storage?.getDirectory?.()
-    .then((root) => root.getDirectoryHandle("fluent-downloads", { create: true }))
-    .catch(() => null)
-  const name = encodeURIComponent(url)
-  if (dir) {
-    try { return new Uint8Array(await (await (await dir.getFileHandle(name)).getFile()).arrayBuffer()) } catch { /* not cached yet */ }
-  }
-  const response = await fetch(url)
-  if (!response.ok) { throw new Error(`${response.status} ${url}`) }
-  const bytes = new Uint8Array(await response.arrayBuffer())
-  if (dir) {
-    try { const w = await (await dir.getFileHandle(name, { create: true })).createWritable(); await w.write(bytes); await w.close() } catch { /* cache is best effort */ }
-  }
-  return bytes
-}
-
-// safetensors: an 8-byte little-endian header length, a JSON header giving each tensor's
-// dtype, shape and byte range, then the raw bytes. Every tensor is read as float32.
-const halfToFloat = (h: number): number => {
-  const e = (h >> 10) & 0x1f, m = h & 0x3ff, sign = h & 0x8000 ? -1 : 1
-  return sign * (e === 0 ? m * 2 ** -24 : e === 31 ? (m ? NaN : Infinity) : (1 + m / 1024) * 2 ** (e - 15))
-}
-const SAFETENSOR_READERS: Record<string, (b: ArrayBuffer, at: number, n: number) => ArrayLike<number | bigint>> = {
-  F32: (b, at, n) => new Float32Array(b.slice(at, at + 4 * n)), F64: (b, at, n) => new Float64Array(b.slice(at, at + 8 * n)),
-  I32: (b, at, n) => new Int32Array(b.slice(at, at + 4 * n)), I64: (b, at, n) => new BigInt64Array(b.slice(at, at + 8 * n)),
-  I16: (b, at, n) => new Int16Array(b.slice(at, at + 2 * n)), I8: (b, at, n) => new Int8Array(b, at, n),
-  U8: (b, at, n) => new Uint8Array(b, at, n), BOOL: (b, at, n) => new Uint8Array(b, at, n),
-  F16: (b, at, n) => Array.from(new Uint16Array(b.slice(at, at + 2 * n)), halfToFloat),
-  BF16: (b, at, n) => Array.from(new Uint16Array(b.slice(at, at + 2 * n)), (h) => new Float32Array(new Uint32Array([h << 16]).buffer)[0]!),
-}
-const parseSafetensors = (bytes: Uint8Array): [string, engine.Tensor][] => {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  const headerLength = Number(view.getBigUint64(0, true))
-  const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + headerLength))) as Record<string, { dtype: string, shape: number[], data_offsets: [number, number] }>
-  const body = bytes.slice(8 + headerLength).buffer
-  return Object.entries(header).filter(([key]) => key !== "__metadata__").map(([key, t]) => {
-    const read = SAFETENSOR_READERS[t.dtype]
-    if (!read) { throw new Error(`safetensors: unsupported dtype ${t.dtype} for '${key}'`) }
-    const n = t.shape.reduce((a, b) => a * b, 1)
-    return [key, engine.tensor(Float32Array.from(read(body, t.data_offsets[0], n) as ArrayLike<number>, Number), { shape: t.shape })]
-  })
-}
-
-const LoadSafeTensorFromURL = (rawUrl?: unknown) => {
-  if (rawUrl == null) {
-    return new Error("loadSafeTensorFromURL: url is required")
-  }
-  // Fluent strings are String objects, not primitives – coerce before use
-  const url = String(rawUrl)
-  // Start as an empty list, not a string: readers can gate on `#(data()) > 0`
-  // without ListGet/indexing throwing on the loading placeholder (a throw
-  // re-mounts the component → re-evaluates the program → re-fetches in a loop).
-  const s = SignalCreate([] as unknown[]);
-  const retired = generationRetired()
-
-  cachedFetch(url)
-    .catch(() => cachedFetch(proxied(url)))
-    .then(bytes => {
-      if (retired()) { return }
-      s.value = parseSafetensors(bytes)
-    })
-
-  return s
-}
-// returns a signal that resolves async – lifting would re-invoke it (re-fetch)
-// on every render, so keep it out of the reactive graph
-setMeta(LoadSafeTensorFromURL, { noAutoLift: true })
-setMeta(LoadTensorFromImageUrl, { noAutoLift: true })
-
 
 // Layout constants
 const TREE = {
@@ -1257,7 +850,7 @@ const ROW_HEIGHT = NODE_HEIGHT + TREE.gap.row
 
 // Simple types for layout
 type GridNode = {
-  label: string, row: number, col: number, width: number, origin: Origin,
+  label: string, row: number, col: number, width: number, origin: Where,
   children: GridNode[], parent: GridNode | null,
 }
 type GridEdge = { parentRow: number, parentCol: number, childRow: number, childCol: number }
@@ -1268,11 +861,9 @@ const hoverSubtree = signal<Set<string> | null>(null)
 
 // Reference to main editor for global shortcuts and as a highlight fallback
 let mainEditorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null
-let codeEditorInstanceCount = 0
-let gridInstanceCount = 0
 
 // Every mounted CodeEditor (the main panel AND embedded cells – tour rooms,
-// REPL). An origin carries the document it indexes into, so a hover routes
+// REPL). An origin names the document it indexes into, so a hover routes
 // to the editor whose text IS that document instead of always painting the
 // main editor. Disposed editors are pruned lazily on lookup – Editor has no
 // unmount callback to hook.
@@ -1280,13 +871,13 @@ const editorRegistry = new Set<editor.IStandaloneCodeEditor>()
 const hoverCollections = new WeakMap<editor.IStandaloneCodeEditor, editor.IEditorDecorationsCollection>()
 let hoverTarget: editor.IStandaloneCodeEditor | null = null
 
-const editorForDocument = (document: string | undefined): editor.IStandaloneCodeEditor | null => {
-  // an origin without a document predates this routing – keep the old target
-  if (document === undefined) { return mainEditorRef?.editor ?? null }
+const editorForDocument = (document: number): editor.IStandaloneCodeEditor | null => {
+  // an origin without a document is the main program's
+  if (document === 0) { return mainEditorRef?.editor ?? null }
   for (const ed of editorRegistry) {
     const model = ed.getModel()
     if (!model) { editorRegistry.delete(ed); continue }
-    if (model.getValue() === document) { return ed }
+    if (documentHash(model.getValue()) === document) { return ed }
   }
   // the document is known but no editor shows it (e.g. a value from an
   // already-edited cell) – better no highlight than the right range in the
@@ -1294,8 +885,8 @@ const editorForDocument = (document: string | undefined): editor.IStandaloneCode
   return null
 }
 
-const setHoverHighlight = (origin: Origin | null) => {
-  const target = origin ? editorForDocument(origin.document) : null
+const setHoverHighlight = (origin: Where | null) => {
+  const target = origin ? editorForDocument(origin.d) : null
   if (hoverTarget && hoverTarget !== target) {
     hoverCollections.get(hoverTarget)?.set([])
   }
@@ -1310,10 +901,10 @@ const setHoverHighlight = (origin: Origin | null) => {
 
   collection.set([{
     range: {
-      startLineNumber: origin.start.line,
-      startColumn: origin.start.column,
-      endLineNumber: origin.end.line,
-      endColumn: origin.end.column,
+      startLineNumber: origin.s[0],
+      startColumn: origin.s[1],
+      endLineNumber: origin.e[0],
+      endColumn: origin.e[1],
     },
     options: {
       className: 'ast-hover-highlight',
@@ -1328,8 +919,13 @@ function nodeWidth(label: string): number {
 
 let treeInstance = 0
 
-function Tree(tree: SyntaxTreeNode & { type: "Program" }): JSX.Element {
-  const { nodes, edges } = layoutGrid(tree)
+// a quoted program, drawn as one tree per statement – laid out once, re-tinted on hover
+function TreeView({ roots }: { roots: SyntaxTree[] }): JSX.Element {
+  return useMemo(() => drawTree(roots), [roots])
+}
+
+function drawTree(roots: SyntaxTree[]): JSX.Element {
+  const { nodes, edges } = layoutGrid(roots)
   if (nodes.length === 0) return <svg />
 
   // Compute column widths (max node width per column)
@@ -1451,7 +1047,7 @@ function TreeEdge({ x1, y1, x2, y2, trunkX, active }: { x1: number, y1: number, 
   )
 }
 
-function TreeNode({ x, y, label, width, origin, active, onEnter }: { x: number, y: number, label: string, width: number, origin: Origin, active: boolean, onEnter: () => void }): JSX.Element {
+function TreeNode({ x, y, label, width, origin, active, onEnter }: { x: number, y: number, label: string, width: number, origin: Where, active: boolean, onEnter: () => void }): JSX.Element {
   return (
     <g transform={`translate(${x - width / 2}, ${y - NODE_HEIGHT / 2})`}>
       <rect
@@ -1478,59 +1074,16 @@ function TreeNode({ x, y, label, width, origin, active, onEnter }: { x: number, 
   )
 }
 
-// Grid layout: assigns (row, col) positions to AST nodes
-function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNode[], edges: GridEdge[] } {
+// Grid layout: assigns (row, col) positions to tree nodes
+function layoutGrid(roots: SyntaxTree[]): { nodes: GridNode[], edges: GridEdge[] } {
   const nodes: GridNode[] = []
   const edges: GridEdge[] = []
   const used = new Set<string>()
 
-  function getLabel(node: SyntaxTreeNode): string {
-    switch (node.type) {
-      case 'Symbol': return node.content.value
-      case 'Number': return node.content.value.toString()
-      case 'Operation':
-        // computed operator (e.g. a (+ & -) b) shows as an explicit apply node
-        if (node.content.operator.type === 'Operation') { return '.' }
-        return getLabel(node.content.operator)
-      case 'Tensor': return '[]'
-      case 'Lambda': return '{}'
-      case 'List': return '()'
-      case 'String': return `"${node.content.value}"`
-      case 'Code': return '``'
-      case 'Error': return '⚠'
-      default: throw new Error(`Unknown type ${node.type}`)
-    }
-  }
-
-  function getChildren(node: SyntaxTreeNode): SyntaxTreeNode[] {
-    switch (node.type) {
-      case 'Program': return node.content
-      case 'Operation':
-        // computed operator: explicit apply – (a,b) . (+ & -)
-        if (node.content.operator.type === 'Operation') {
-          return [node.content.args, node.content.operator]
-        }
-        return node.content.args.content.value
-      case 'Tensor': return node.content.value
-      case 'Lambda':
-        return [
-          { type: 'List', content: { value: node.content.args }, origin: node.origin },
-          ...(node.content.expr as SyntaxTreeNode & { type: "Program" }).content
-        ]
-      case 'List': return node.content.value
-      case 'Symbol':
-      case 'Number':
-      case 'String':
-      case 'Code':
-      case 'Error': return []
-      default: throw new Error(`Unknown type ${(node as SyntaxTreeNode).type}`)
-    }
-  }
-
   // A node sits on the same row as its first child, so the leftmost spine of
   // every subtree is horizontal. spineLength = how many columns it spans.
-  function spineLength(node: SyntaxTreeNode): number {
-    const children = getChildren(node)
+  function spineLength(node: SyntaxTree): number {
+    const children = node.children
     return children.length === 0 ? 1 : 1 + spineLength(children[0]!)
   }
 
@@ -1543,13 +1096,13 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
   // may pack into any free row except one where another same-column parent's
   // trunk already passes; that reservation is what keeps unrelated trunks from
   // overlapping, while still letting non-conflicting subtrees interleave tightly.
-  function layout(node: SyntaxTreeNode, minRow: number, col: number, parent: GridNode | null): { node: GridNode, maxRow: number } {
+  function layout(node: SyntaxTree, minRow: number, col: number, parent: GridNode | null): { node: GridNode, maxRow: number } {
     const spine = spineLength(node)
     // the spine follows first children, so every spine node but the last leaf
     // owns a trunk – track which spine positions to test against reserved trunks
     const spineHasTrunk: boolean[] = []
-    for (let s: SyntaxTreeNode = node, i = 0; i < spine; i++) {
-      const kids = getChildren(s)
+    for (let s: SyntaxTree = node, i = 0; i < spine; i++) {
+      const kids = s.children
       spineHasTrunk.push(kids.length > 0)
       s = kids[0]!
     }
@@ -1563,12 +1116,12 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
     let row = minRow
     while (!fitsAt(row)) row++
 
-    const label = getLabel(node)
-    const self: GridNode = { label, row, col, width: nodeWidth(label), origin: node.origin, children: [], parent }
+    const label = node.label
+    const self: GridNode = { label, row, col, width: nodeWidth(label), origin: node.o, children: [], parent }
     nodes.push(self)
     used.add(`${row},${col}`)
 
-    const children = getChildren(node)
+    const children = node.children
     let maxRow = row
     let childMin = row
     let lastChildRow = row
@@ -1587,7 +1140,7 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
   }
 
   let row = 1
-  for (const stmt of tree.content) {
+  for (const stmt of roots) {
     row = layout(stmt, row, 1, null).maxRow + 1
   }
 
@@ -1632,239 +1185,11 @@ function layoutGrid(tree: SyntaxTreeNode & { type: "Program" }): { nodes: GridNo
   return { nodes, edges }
 }
 
-// MARK: Runtime
-
-// MARK: PrettyPrint
+// MARK: Values
+// How a value's description draws: text, lists, records, errors, functions, trees,
+// tensors – and live values, each its own reactive island.
 
 const frameStyle = "rounded-xl border border-neutral-800 hover:border-neutral-700 p-2"
-
-function Print(obj: Signal<unknown>) {
-  // origin wrapper outside the panel – hovering the box's empty padding
-  // highlights this value's source (see WrapWithPrintIfNotReactElement)
-  return computed(() =>
-    <WithOriginHighlight obj={obj instanceof Signal ? obj.value : obj}>
-      <Panel className="overflow-scroll" testId="print-panel">
-        <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[obj]}>
-          {PrettyPrint(obj)}
-        </ErrorBoundary>
-      </Panel>
-    </WithOriginHighlight>
-  )
-}
-setMeta(Print, { noAutoLift: true })
-
-function PrintFunction(fn: Function) {
-  // Subscribe to meta version for reactive updates
-  if ((fn as any).__meta_v__) (fn as any).__meta_v__.value
-
-  const meta = getMeta(fn)
-  // Fluent lambdas override toString with their source; built-ins would show
-  // minified JS internals, which help nobody – never display those
-  const hasFluentSource = Object.prototype.hasOwnProperty.call(fn, "toString")
-  const source = hasFluentSource ? Code(computed(() => fn.toString())) : null
-  if (meta.doc) {
-    // same card as hover/completion: signature, one-liner, worked example
-    return <>{Text(docCard(meta))}{source}</>
-  }
-  if (source) { return source }
-  return Text(`\`${fn.name || "function"}\` — a built-in without a doc card yet`)
-}
-
-function PrettyPrintSyntaxTree(node: SyntaxTreeNode): JSX.Element {
-  // a backtick literal whose inner program failed to parse yields an Error
-  // node (its content is the message string) – render that message; feeding it
-  // to the tree layout used to throw and take the whole output panel down
-  if (node.type !== "Program") {
-    const message = node.type === "Error" ? node.content : `CodePrint: expected a program, got ${(node as { type?: string })?.type ?? String(node)}`
-    return PrettyPrint(new Error(message))
-  }
-  return Tree(node)
-}
-
-function WithOriginHighlight({ obj, children }: { obj: any, children: JSX.Element }): JSX.Element {
-  const origin = getOrigin(obj)
-  if (!origin) return children
-  return (
-    <span
-      style={{ display: 'contents' }}
-      onPointerOver={(e) => { e.stopPropagation(); setHoverHighlight(origin) }}
-      onPointerOut={() => setHoverHighlight(null)}
-    >
-      {children}
-    </span>
-  )
-}
-
-function PrettyPrint(obj: any): JSX.Element {
-  return <WithOriginHighlight obj={obj}>{PrettyPrintInner(obj)}</WithOriginHighlight>
-}
-
-function PrettyPrintInner(obj: any): JSX.Element {
-  if (obj === null || obj === undefined) {
-    return <div className="font-extrabold text-3xl">◌</div>;
-  }
-
-  if (typeof obj === "string" || obj instanceof String) {
-    const str = String(obj)  // normalize to primitive for display
-    const color = COLORS.find(rule => rule.token === "string")?.foreground;
-    return <div style={{ color: `#${color}` }}>"{str}"</div>;
-  }
-
-  if (Array.isArray(obj)) {
-    return (
-      <div className="grid gap-1 rounded-xl">
-        {obj.map((item, key) => (
-          // origin wrapper outside the row box – hovering a row's empty
-          // space highlights that item's source, not the whole list
-          <WithOriginHighlight key={key} obj={item}>
-            <div className={`${frameStyle} !border-0 grid hover:bg-neutral-900 mix-blend-screen`}>{PrettyPrint(item)}</div>
-          </WithOriginHighlight>
-        ))}
-      </div>
-    );
-  }
-
-  if (typeof obj === "function") {
-    // @ts-ignore
-    return PrintFunction(obj);
-  }
-
-  if (typeof obj === "object") {
-
-    if (obj instanceof Promise) {
-      return <>"! Promise"</>
-    }
-
-    if (obj instanceof Signal) {
-      // Reactive island: read `.value` inside a fresh computed so outer printers
-      // don't subscribe – a signal update re-renders only this subtree instead of
-      // the whole output panel. The read can throw (an evaluation error surfacing
-      // lazily); catch it into an Error box so the panel keeps rendering and
-      // recovers on the next evaluation instead of tripping the error boundary,
-      // which has no changing resetKeys to ever come back from.
-      return <div className="contents">{computed(() => {
-        try {
-          return PrettyPrint(obj.value)
-        } catch (e) {
-          return PrettyPrint(e instanceof Error ? e : new Error(String(e)))
-        }
-      }) as unknown as JSX.Element}</div>;
-    }
-
-    if (isValidElement(obj)) {
-      return obj;
-    }
-
-    // Reactive variable: create computed that re-reads on version change
-    if (obj instanceof FluentVariable) {
-      const variable = obj
-      const reactiveValue = computed(() => {
-        variable.version.value  // subscribe to changes
-        return variable.current
-      })
-      return PrettyPrint(reactiveValue)
-    }
-
-    if (isTensor(obj)) {
-      if (obj.ndim === 0) {
-        return <ScalarView data={obj} />
-      }
-
-      if (obj.ndim === 1) {
-        return (
-          <div className="">
-            <BarPlot data={obj} />
-          </div>
-        );
-      }
-
-      if (obj.ndim === 2) {
-        // Use fast canvas with viridis colormap for large tensors, Plotly for small (debugging)
-        const size = (obj.shape[0] ?? 0) * (obj.shape[1] ?? 0)
-        if (size > 400) {
-          return <HeatCanvas data={obj} />
-        }
-
-        return <HeatPlot data={obj} />
-      }
-
-      if (obj.ndim === 3) {
-        // RGB image - use canvas renderer
-        return <TensorCanvas data={obj} />
-      }
-
-      // rank > 3 has no plot: BarPlot flattens it, which draws a real-looking
-      // chart of something the tensor isn't. Show the shape and say so rather
-      // than warn to a console nobody has open and then draw it anyway.
-      if (obj.ndim > 3) {
-        return (
-          <div className="">
-            <span className="font-bold">Tensor:</span> {obj.shape.join(", ")}<br />
-            <span className="text-neutral-500">rank {obj.ndim} – reshape or slice it to plot</span>
-          </div>
-        );
-      }
-
-      return (
-        <div className="">
-          <span className="font-bold">Tensor:</span> {obj.shape.join(", ")}<br />
-          <BarPlot data={obj} />
-        </div>
-      );
-    }
-
-    if (obj instanceof Error) {
-      // traverse error causes and collent them into a flat list
-      function linearizeError(error: Error): Error[] {
-        const errors = [error];
-        let currentError: any = error;
-        while (currentError.cause && currentError.cause instanceof Error) {
-          errors.push(currentError.cause);
-          currentError = currentError.cause;
-        }
-        return errors;
-      }
-
-      // an Error's cause can be any value – what was tried, say – and it
-      // reads as the source that reproduces it, ahead of the messages
-      const chain = linearizeError(obj)
-      const payload = chain[chain.length - 1]!.cause
-      const carried = payload === undefined || payload instanceof Error ? null : StringLiteral(payload as Value)
-
-      return <ol className="list-decimal list-inside flex flex-col gap-2 border rounded-lg border-red-700 bg-red-950 overflow-scroll max-h-24">{carried !== null && <li className="list-item px-2 py-0.5 text-red-700">{carried}</li>}{chain.reverse().map((error, index) => {
-        return (
-          <li key={index}
-            className="list-item px-2 py-0.5 text-red-700 cursor-pointer hover:bg-red-700 hover:text-red-200"
-            onPointerOver={() => {
-              setHoverHighlight(getOrigin(error) ?? null)
-            }}
-            onPointerOut={() => {
-              setHoverHighlight(null)
-            }}>
-            {error.message}
-            {/* {obj.cause ? <div>{PrettyPrint(obj.cause)}</div> : null} */}
-          </li>
-        );
-      })}</ol>;
-
-
-
-    }
-
-    return (
-      <div className="">
-        {Object.entries(obj).map(([key, value]) => (
-          <div key={key}>
-            <span className="font-bold">{key}:</span> {PrettyPrint(value)}
-          </div>
-        ))}
-      </div>
-    );
-  }
-  console.warn("Unsupported type for PrettyPrint:", obj);
-
-  return <div className="text-violet-500">{String(obj)}</div>;
-}
 
 function Panel({ children, className, testId }: { children: JSX.Element, className?: string, testId?: string }) {
   return (
@@ -1874,386 +1199,246 @@ function Panel({ children, className, testId }: { children: JSX.Element, classNa
   )
 }
 
+// hovering a value highlights the source it came from
+function WithOrigin({ o, children }: { o?: Where, children: JSX.Element }): JSX.Element {
+  if (!o) { return children }
+  return (
+    <span
+      style={{ display: "contents" }}
+      onPointerOver={(e) => { e.stopPropagation(); setHoverHighlight(o) }}
+      onPointerOut={() => setHoverHighlight(null)}
+    >
+      {children}
+    </span>
+  )
+}
+
+function View({ d }: { d: Desc }): JSX.Element {
+  return <WithOrigin o={d.o}><ViewInner d={d} /></WithOrigin>
+}
+
+function ViewInner({ d }: { d: Desc }): JSX.Element {
+  switch (d.k) {
+    case "null": return <div className="font-extrabold text-3xl">◌</div>
+    case "string": return <div style={{ color: `#${tokenColors.string}` }}>"{d.v}"</div>
+    case "other": return <div className="text-violet-500">{d.v}</div>
+    case "list": return (
+      <div className="grid gap-1 rounded-xl">
+        {d.items.map((item, key) => (
+          // the origin wrapper sits outside the row box – hovering a row's empty space
+          // highlights that item's source, not the whole list
+          <WithOrigin key={key} o={item.o}>
+            <div className={`${frameStyle} !border-0 grid hover:bg-neutral-900 mix-blend-screen`}><View d={item} /></div>
+          </WithOrigin>
+        ))}
+      </div>
+    )
+    case "record": return (
+      <div>
+        {d.entries.map(([key, value]) => (
+          <div key={key}><span className="font-bold">{key}:</span> <View d={value} /></div>
+        ))}
+      </div>
+    )
+    case "function": return <FunctionView d={d} />
+    case "error": return <ErrorView d={d} />
+    case "tree": return <TreeView roots={d.roots} />
+    case "tensor": return <TensorPlot d={d} />
+    case "live": return <LiveView id={d.id} />
+    case "callback": return <div className="text-violet-500">function</div>
+    case "ui": return <WidgetView d={d} />
+  }
+}
+
+// a live value redraws on its own when it changes – nothing around it does
+function LiveView({ id }: { id: number }): JSX.Element {
+  useSignals()
+  const now = mirrors.get(id)?.desc.value
+  return now ? <View d={now} /> : <span className="opacity-50">…</span>
+}
+
+// A cell of a grid or a center: a widget draws bare, a value inside a framed panel – the
+// frame marks the cell, and the panel's whole extent carries the hover highlight
+function Cell({ d }: { d: Desc }): JSX.Element {
+  useSignals()
+  const now = resolve(d) ?? d
+  if (now.k === "ui") { return <WithOrigin o={now.o}><WidgetView d={now} /></WithOrigin> }
+  // a tree grows with its drawing: no scroll container, which would clip it
+  if (now.k === "tree") { return <WithOrigin o={now.o}><Panel><TreeView roots={now.roots} /></Panel></WithOrigin> }
+  return (
+    <WithOrigin o={now.o}>
+      <Panel className="overflow-scroll" testId="print-panel">
+        <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[now]}>
+          <View d={now} />
+        </ErrorBoundary>
+      </Panel>
+    </WithOrigin>
+  )
+}
+
+// a built-in shows its doc card; a Fluent lambda its source
+function FunctionView({ d }: { d: Extract<Desc, { k: "function" }> }): JSX.Element {
+  const source = d.source !== undefined ? <CodeView value={d.source} /> : null
+  if (d.doc) { return <><Markdown text={docCard(d.doc)} />{source}</> }
+  if (source) { return source }
+  return <Markdown text={`\`${d.name}\` — a built-in without a doc card yet`} />
+}
+
+function ErrorView({ d }: { d: Extract<Desc, { k: "error" }> }): JSX.Element {
+  return (
+    <ol className="list-decimal list-inside flex flex-col gap-2 border rounded-lg border-red-700 bg-red-950 overflow-scroll max-h-24">
+      {d.carried !== undefined && <li className="list-item px-2 py-0.5 text-red-700">{d.carried}</li>}
+      {d.chain.map((error, index) => (
+        <li
+          key={index}
+          className="list-item px-2 py-0.5 text-red-700 cursor-pointer hover:bg-red-700 hover:text-red-200"
+          onPointerOver={() => setHoverHighlight(error.o ?? null)}
+          onPointerOut={() => setHoverHighlight(null)}
+        >
+          {error.message}
+        </li>
+      ))}
+    </ol>
+  )
+}
+
 // MARK: Plots
+// A tensor draws by its shape (tensorView): a number, bars, a heatmap, an image. Its
+// values arrive with its description or right after it; until they do, the view keeps
+// showing the last ones it had.
 
-// A tensor's values for a display, without blocking the page: at once when they are on
-// the host or cheap to compute there; otherwise the display keeps its last values while
-// the GPU's answer is read asynchronously, and redraws when it lands. A plot never waits
-// behind a training loop's queued work.
-const useHostValues = (data: engine.Tensor): unknown => {
-  const onHost = engine.hostValue(data) !== undefined
-  const [, arrived] = useState(0)
-  const last = useRef<unknown>(null)
-  useEffect(() => {
-    if (onHost) { return }
-    let live = true
-    data.read().then(() => { if (live) { arrived((n) => n + 1) } }, () => { /* the generation retired */ })
-    return () => { live = false }
-  }, [data, onHost])
-  if (onHost) { last.current = getAsSyncList(data) }
-  return last.current
+function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
+  useSignals()
+  const view = tensorView(d.shape)
+  const fresh = payloads.get(d.id)?.value
+  const last = useRef<{ view: TensorView, shape: number[], payload: Payload } | null>(null)
+  if (fresh) { last.current = { view, shape: d.shape, payload: fresh } }
+  const shown = last.current?.view === view ? last.current : null
+
+  if (view === "shape") {
+    return (
+      <div>
+        <span className="font-bold">Tensor:</span> {d.shape.join(", ")}<br />
+        <span className="text-neutral-500">rank {d.shape.length} – reshape or slice it to plot</span>
+      </div>
+    )
+  }
+  if (view === "number") { return <ScalarView value={shown ? shown.payload[0] : undefined} /> }
+  if (view === "bars") { return <BarPlot values={shown ? Array.from(shown.payload) : null} /> }
+  if (view === "heatPlot") {
+    if (!shown) { return <div style={{ width: "100%", height: "12em" }} /> }
+    const [rows = 1, cols = 1] = shown.shape
+    const z = Array.from({ length: rows }, (_, i) => Array.from(shown.payload.subarray(i * cols, (i + 1) * cols)))
+    return <HeatPlot z={z} />
+  }
+  const [height = 1, width = 1] = (shown ?? { shape: d.shape }).shape
+  // small heatmaps (a 27×32 embedding) upscale by an integer factor to ~256px, so the
+  // cells stay crisp; images and large grids show at their own size
+  const displayWidth = view === "heatImage" && width < 256 ? width * Math.ceil(256 / width) : width
+  return <PixelCanvas rgba={shown?.payload as Uint8ClampedArray | undefined} width={width} height={height} displayWidth={displayWidth} />
 }
 
-const ScalarView = ({ data }: { data: engine.Tensor }) => {
-  const value = useHostValues(data) as number | null
-  const color = COLORS.find(rule => rule.token === "number")?.foreground || "FFFFFF"
-  if (value === null) { return <span style={{ color: `#${color}`, opacity: 0.5 }}>…</span> }
-  const formatted = value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 6, useGrouping: true }).replace(/,/g, "_")
-  return <span style={{ color: `#${color}` }}>{formatted}</span>
+const formatNumber = (value: number, digits: number) =>
+  value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: digits, useGrouping: true }).replace(/,/g, "_")
+
+const ScalarView = ({ value }: { value: number | undefined }) => {
+  if (value === undefined) { return <span style={{ color: `#${tokenColors.number}`, opacity: 0.5 }}>…</span> }
+  return <span style={{ color: `#${tokenColors.number}` }}>{formatNumber(value, 6)}</span>
 }
 
-const BarPlot = ({ data }: { data: engine.Tensor }) => {
-
-  const annotations: Partial<Annotations>[] = [];
-  const values = useHostValues(data) as number[] | null
-  if (values === null) { return <div style={{ width: '100%', height: '12em' }} /> }
-
-  if (data.shape.reduce((a, b) => a * b, 1) < 20) {
-    // @ts-ignore
-    annotations.push(...values.map((value: number, i: number) => ({
-      xref: "x1",
-      yref: "y1",
-      yanchor: "bottom",
-      x: i,
-      y: value,
-      text: value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2, useGrouping: true }).replace(/,/g, "_"),
-      font: { color: '#D4D4D4', shadow: "0px 0px 1px black" },
+const BarPlot = ({ values }: { values: number[] | null }) => {
+  if (values === null) { return <div style={{ width: "100%", height: "12em" }} /> }
+  const annotations: Partial<Annotations>[] = values.length < 20
+    ? values.map((value, i) => ({
+      xref: "x1", yref: "y1", yanchor: "bottom", x: i, y: value,
+      text: formatNumber(value, 2),
+      font: { color: "#D4D4D4", shadow: "0px 0px 1px black" },
       showarrow: false,
-    })));
-  }
-
+    }) as unknown as Partial<Annotations>)
+    : []
   return (
     <Plot
-      data={[
-        {
-          y: values,
-          type: 'bar',
-          marker: {
-          color: values,
-          colorscale: 'Viridis',
-        },
-        },
-      ]}
+      data={[{ y: values, type: "bar", marker: { color: values, colorscale: "Viridis" } }]}
       layout={{
-        paper_bgcolor: 'transparent',
-        plot_bgcolor: 'transparent',
-        font: { color: '#D4D4D4', },
+        paper_bgcolor: "transparent",
+        plot_bgcolor: "transparent",
+        font: { color: "#D4D4D4" },
         annotations,
-        xaxis: {
-          automargin: true,
-        },
-        yaxis: {
-          gridcolor: '#444444',
-          automargin: true,
-        },
-        margin: {
-          pad: 10,
-          t: 0,
-          l: 0,
-          r: 0,
-          b: 0
-        }
+        xaxis: { automargin: true },
+        yaxis: { gridcolor: "#444444", automargin: true },
+        margin: { pad: 10, t: 0, l: 0, r: 0, b: 0 },
       }}
-      config={{
-        staticPlot: true,
-        // when responsive is true, the plot flashes in random position when updating
-        responsive: false,
-      }}
-      style={{ width: '100%', height: "10em" }}
-    />
-  );
-}
-
-// An X/Y plot: PointPlot(x, y) draws y against x with connecting lines and
-// dots; PointPlot(y) alone plots y against its index. Unlike the automatic
-// 1-D bar plot, x is your own axis – powers of two, timestamps, anything.
-const PointPlot = (x: Value, y?: Value) => {
-  // Propagate an Error argument instead of silently drawing an empty plot –
-  // `PointPlot(1::10, …)` (unbound `::`) should show the error, not a blank chart.
-  if (x instanceof Error) { return x }
-  if (y instanceof Error) { return y }
-  // getAsSyncList reads a tensor and returns undefined for anything else, so a
-  // list or a string used to reach plotly as undefined: a raw TypeError from
-  // .map for the single-argument form, and silently plotting against the point
-  // INDEX when it was the x axis.
-  const axis = (v: Value, what: string): number[] | Error => {
-    const data = getAsSyncList(v)
-    if (typeof data === "number") { return [data] }
-    if (!Array.isArray(data)) {
-      return new Error(`\`PointPlot\`: ${what} must be a tensor – write a list as [ … ]`)
-    }
-    return data as number[]
-  }
-  const ys = axis(y ?? x, y === undefined ? "the argument" : "y")
-  if (ys instanceof Error) { return ys }
-  const xs = y === undefined ? ys.map((_, i) => i) : axis(x, "x")
-  if (xs instanceof Error) { return xs }
-  return (
-    <Plot
-      data={[{
-        x: xs,
-        y: ys,
-        type: 'scatter',
-        mode: 'lines+markers',
-        line: { color: '#666', width: 1 },
-        marker: { color: ys, colorscale: 'Viridis', size: 9, line: { color: 'black', width: 1 } },
-      }]}
-      layout={{
-        paper_bgcolor: 'transparent',
-        plot_bgcolor: 'transparent',
-        font: { color: '#D4D4D4' },
-        xaxis: { gridcolor: '#444444', zeroline: false, automargin: true },
-        yaxis: { gridcolor: '#444444', zeroline: false, automargin: true },
-        margin: { pad: 6, t: 6, l: 0, r: 6, b: 0 },
-      }}
+      // responsive plots flash in a random position when they update
       config={{ staticPlot: true, responsive: false }}
-      style={{ width: '100%', height: '12em' }}
+      style={{ width: "100%", height: "10em" }}
     />
-  );
+  )
 }
 
-const HeatPlot = ({ data }: { data: engine.Tensor }) => {
-  const z = useHostValues(data) as number[][] | null
-  if (z === null) { return <div style={{ width: '100%', height: '12em' }} /> }
-
-  let annotations: Partial<Annotations>[] = [];
-
-  if (data.shape.reduce((a, b) => a * b, 1) < 20) {
-    // @ts-ignore
-    annotations = z.map((row, i) => {
-      return row.map((value, j) => ({
-        xref: "x1",
-        yref: "y1",
-        x: j,
-        y: i,
-        text: value.toFixed(2),
-        font: { color: '#D4D4D4', shadow: "0px 0px 1px black" },
-        showarrow: false,
-      }));
-    }
-    ).flat();
-  }
-
+const HeatPlot = ({ z }: { z: number[][] }) => {
+  const annotations: Partial<Annotations>[] = z.length * (z[0]?.length ?? 0) < 20
+    ? z.flatMap((row, i) => row.map((value, j) => ({
+      xref: "x1", yref: "y1", x: j, y: i,
+      text: value.toFixed(2),
+      font: { color: "#D4D4D4", shadow: "0px 0px 1px black" },
+      showarrow: false,
+    }) as unknown as Partial<Annotations>))
+    : []
   return (
     <Plot
-      data={[
-        {
-          z,
-          type: 'heatmap',
-          colorscale: 'Viridis',
-          // colorscale: "Greys"
-        },
-      ]}
+      data={[{ z, type: "heatmap", colorscale: "Viridis" }]}
       layout={{
-        margin: {
-          pad: 10,
-          t: 0,
-          l: 0,
-          r: 0,
-          b: 0
-        },
-        paper_bgcolor: 'transparent',
-        plot_bgcolor: 'transparent',
-        font: { color: '#D4D4D4', },
+        margin: { pad: 10, t: 0, l: 0, r: 0, b: 0 },
+        paper_bgcolor: "transparent",
+        plot_bgcolor: "transparent",
+        font: { color: "#D4D4D4" },
         annotations,
-        xaxis: {
-          automargin: true,
-          side: 'top',
-        },
-        yaxis: {
-          gridcolor: '#444444',
-          automargin: true,
-          autorange: 'reversed',
-        },
+        xaxis: { automargin: true, side: "top" },
+        yaxis: { gridcolor: "#444444", automargin: true, autorange: "reversed" },
       }}
-      config={{
-        staticPlot: true,
-        autosizable: true,
-        responsive: true,
-      }}
-      // height: 100% of an auto-sized parent is circular and sometimes resolves
-      // to 0 – Plotly's absolutely-positioned svg then paints at its default
-      // size over the panels below. The min-height floor breaks the cycle.
-      style={{ width: '100%', height: '100%', minHeight: '16em' }}
-    />
-  );
-}
-
-// Fast canvas-based tensor renderer for real-time use (Camera, etc.)
-const TensorCanvas = ({ data }: { data: engine.Tensor }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-
-  const height = data.shape[0] || 100
-  const width = data.shape[1] || 100
-  const aspect = width / height
-
-  useEffect(() => {
-    if (!canvasRef.current || !data) { return }
-
-    const canvas = canvasRef.current
-
-    // Only resize if dimensions changed (resizing clears canvas, causes flicker)
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width
-      canvas.height = height
-    }
-
-    const device = getBlitDevice()
-    const channels = data.shape[2] ?? 1
-    // the shader reads base, base+1, base+2 for anything that isn't 1-channel,
-    // so a 2-channel tensor read across into the next pixel and past the end of
-    // the buffer on the last one. Only 1 and 3 are meaningful here – the CPU
-    // path documents the same pair – so let anything else fall through to it.
-    if (device && (channels === 1 || channels === 3) && getCanvasBlitState(device, canvas)) {
-      data.gpuBuffer().then((buffer) => {
-        if (canvasRef.current === canvas) {
-          blitToCanvas(device, canvas, "image", { width, height, channels, scale: 1 }, [buffer])
-        }
-      }).catch((e) => console.warn("blit failed:", e))
-      return
-    }
-
-    toPixels(data, canvas)
-  }, [data])
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{
-        width: '100%',
-        maxWidth: `${width}px`,
-        aspectRatio: `${aspect}`,
-        imageRendering: 'pixelated'
-      }}
+      config={{ staticPlot: true, autosizable: true, responsive: true }}
+      // height: 100% of an auto-sized parent is circular and sometimes resolves to 0 –
+      // the min-height floor breaks the cycle
+      style={{ width: "100%", height: "100%", minHeight: "16em" }}
     />
   )
 }
 
-// Generate viridis colormap LUT from d3-scale-chromatic (256 entries, RGB 0-1)
-const VIRIDIS_DATA = Float32Array.from(
-  Array.from({ length: 256 }, (_, i) => {
-    const color = rgb(interpolateViridis(i / 255))
-    return [color.r / 255, color.g / 255, color.b / 255]
-  }).flat()
-)
-const VIRIDIS_LUT = engine.tensor(VIRIDIS_DATA, { shape: [256, 3] })
-
-// Fast canvas-based heatmap with viridis colormap (GPU-accelerated via LUT)
-const HeatCanvas = ({ data }: { data: engine.Tensor }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-
-  const height = data.shape[0] || 100
-  const width = data.shape[1] || 100
-  const aspect = width / height
-
+// RGBA pixels, colored in the worker, drawn as they arrive
+const PixelCanvas = ({ rgba, width, height, displayWidth }: { rgba?: Uint8ClampedArray, width: number, height: number, displayWidth: number }) => {
+  const ref = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
-    if (!canvasRef.current || !data) { return }
-
-    const canvas = canvasRef.current
-
+    const canvas = ref.current
+    if (!canvas || !rgba || rgba.length !== width * height * 4) { return }
+    // resizing clears the canvas: only when the size changes
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width
       canvas.height = height
     }
-
-    const device = getBlitDevice()
-    if (device && getCanvasBlitState(device, canvas)) {
-      // [min, max] computed on-device; the shader normalizes and colors
-      // through the LUT per pixel – nothing is ever read back
-      const bounds = engine.stack([engine.min(data), engine.max(data)])
-      Promise.all([data.gpuBuffer(), bounds.gpuBuffer()]).then(([dataBuffer, boundsBuffer]) => {
-        if (canvasRef.current === canvas) {
-          blitToCanvas(device, canvas, "heat", { width, height, channels: 1, scale: 1 }, [dataBuffer, boundsBuffer, getViridisGpu(device)])
-        }
-      }).catch((e) => console.warn("blit failed:", e))
-      return
-    }
-
-    // Apply viridis colormap via lookup table: normalize to [0, 1], scale to
-    // LUT indices, gather colors.
-    const min = engine.min(data)
-    const range = engine.maximum(engine.subtract(engine.max(data), min), 1e-6)
-    const normalized = engine.divide(engine.subtract(data, min), range)
-    const indices = engine.trunc(engine.clip(engine.multiply(normalized, 255), 0, 255))
-    const colors = engine.take(VIRIDIS_LUT, engine.reshape(indices, [-1]), 0)
-    const image = engine.reshape(colors, [height, width, 3])
-
-    toPixels(image, canvas)
-  }, [data])
-
-  // small tensors (a 27×32 embedding matrix) capped at their natural width
-  // render as postage stamps – upscale by an integer factor to ~256px so the
-  // cells stay crisp under image-rendering: pixelated; large grids unchanged
-  const displayWidth = width < 256 ? width * Math.ceil(256 / width) : width
-
+    canvas.getContext("2d")?.putImageData(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, width, height), 0, 0)
+  }, [rgba, width, height])
   return (
     <canvas
-      ref={canvasRef}
-      style={{
-        width: '100%',
-        maxWidth: `${displayWidth}px`,
-        aspectRatio: `${aspect}`,
-        imageRendering: 'pixelated'
-      }}
+      ref={ref}
+      style={{ width: "100%", maxWidth: `${displayWidth}px`, aspectRatio: `${width / height}`, imageRendering: "pixelated" }}
     />
   )
 }
 
-// MARK: IDE environment
-// Register the UI components and live sources into the language environment,
-// and teach Code literals to render as syntax trees.
-
-setCodeNodePrinter(PrettyPrintSyntaxTree as unknown as (node: SyntaxTreeNode) => Value)
-
-extendEnvironment({
-  [Symbol.keyFor(Symbol.for("Documentation"))!]: Text(Documentation),
-  CodePrint: PrettyPrintSyntaxTree,
-
-  Button,
-  Center,
-  Checkbox,
-  Grid,
-  ImageUpload,
-  Layers,
-  MousePosition,
-  Point2D,
-  PointPlot,
-  Trail,
-  Slider,
-  Scrubber,
-
-  Text,
-  TextEditor,
-
-  Code,
-  CodeEditor,
-
-  Fetch,
-  LoadSafeTensorFromURL,
-  LoadTensorFromImageUrl,
-  Camera,
-  Microphone,
-  MicrophoneSpectrum,
-  SampleRate,
-  Time,
-
-  Print,
-  PrettyPrint,
-} as Record<string, Value>)
-
-// The Tour (tour.ts) is Fluent source, so it binds as a lazy getter rather
-// than a value: each read builds a fresh instance in a fresh scope, so every
-// evaluation gets its own live tour (a retired generation's disposal sweep
-// never reaches the one on screen), and a session that never evaluates
-// `Tour` never pays for it. Non-enumerable, because completion reads every
-// enumerable environment value when the popup opens – that would build a
-// tour per keystroke.
-import { TOUR_SOURCE } from "./tour"
-Object.defineProperty(DefaultEnvironment, "Tour", {
-  get: () => CodeEvaluate.call(createScope(), TOUR_SOURCE),
-  enumerable: false,
-  configurable: true,
-})
+// the program's value – the playground's output panel
+function ResultPanel(): JSX.Element {
+  useSignals()
+  const d = result.value
+  return (
+    <WithOrigin o={d?.o}>
+      <Panel className="overflow-scroll" testId="print-panel">
+        <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[d]}>
+          {d ? <View d={d} /> : <span className="opacity-50">…</span>}
+        </ErrorBoundary>
+      </Panel>
+    </WithOrigin>
+  )
+}
 
 // MARK: Examples
 import { EXAMPLES } from "./examples"
@@ -2277,7 +1462,7 @@ const exampleSource = (name: string) =>
 
 // MARK: Generated Code
 
-const FLUENT_GENERATION_SYSTEM_PROMPT = `
+const generationSystemPrompt = () => `
 
 You are an expert Fluent code generator. Follow these rules when generating Fluent code:
 
@@ -2305,7 +1490,7 @@ ${
 \`\`\`
 
 You can use the following built-in functions and environment variables:
-${Object.keys(DefaultEnvironment).join(", ")}
+${[...environmentNames.peek().keys()].join(", ")}
 
 ## Operator Definitions (Prelude)
 The following operators are defined as aliases to canonical functions:
@@ -2339,7 +1524,7 @@ async function generateFluentCode(instruction: string, context: string, apiKey: 
         type: 'enabled',
         budget_tokens: 10000
       },
-      system: FLUENT_GENERATION_SYSTEM_PROMPT,
+      system: generationSystemPrompt(),
       messages: [{
         role: 'user',
         content: `Current code context:\n\`\`\`\n${context}\n\`\`\`\n\nGenerate Fluent code for: ${instruction}`
@@ -2464,128 +1649,106 @@ const getEditorOptions: (type: "editable" | "readonly") => editor.IStandaloneEdi
   }))
 })
 
-function Code(sourceCode: Signal<string>) {
-  return SignalComputed(() => {
-    return (
-      // @ts-ignore
-      <Panel className="!p-0 border-none overflow-hidden h-[5em]">
-        {/* @ts-ignore */}
-        <Editor
-          onMount={editorOnMount}
-          height="100%"
-          defaultLanguage="fluent"
-          theme="fluentThemeReadOnly"
-          // Fluent strings are String objects (origin tracking) – Monaco needs a primitive
-          value={String(SignalRead(sourceCode) ?? "")}
-          onChange={(updatedSourceCode) => { SignalUpdate(sourceCode, updatedSourceCode) }}
-          options={getEditorOptions("readonly")}
-        />
-      </Panel>
-    )
-  })
+// A read-only editor: a function's source, a Code(…) value
+function CodeView({ value, onChange }: { value: string, onChange?: (code: string) => void }) {
+  return (
+    <Panel className="!p-0 border-none overflow-hidden h-[5em]">
+      <Editor
+        onMount={editorOnMount}
+        height="100%"
+        defaultLanguage="fluent"
+        theme="fluentThemeReadOnly"
+        value={value}
+        onChange={(next) => { if (next !== undefined) { onChange?.(next) } }}
+        options={getEditorOptions("readonly")}
+      />
+    </Panel>
+  )
 }
-setMeta(Code, { noAutoLift: true })
 
-// CodeEditor(code) fills its container – the playground's main panel.
-// CodeEditor(code, "auto") sizes itself to its content and grows as you type –
-// for editors embedded in auto-sized rows (tour cells, REPL cells), where
-// "100%" of an auto row would collapse to nothing.
-function CodeEditor(sourceCode: Signal<string>, sizing?: Value) {
-  const autoGrow = String(sizing ?? "") === "auto"
-  const height = SignalCreate(autoGrow ? "38px" : "100%")
-  // Each call is one editor identity. Without the key, swapping between two
-  // views with editors at the same tree position (tour rooms) makes React
-  // reuse the mounted Monaco instance: onMount never refires and the OLD
-  // cell's fit closure keeps writing the OLD cell's height signal.
-  const editorKey = `code-editor-${++codeEditorInstanceCount}`
+// An editor fills its container – the playground's main panel; with `auto` it sizes
+// itself to its content and grows as you type – for editors in auto-sized rows (tour
+// cells, REPL cells), where "100%" of an auto row would collapse to nothing.
+function CodeEditorView({ value, onChange, auto }: { value: string, onChange: (code: string) => void, auto: boolean }) {
+  const [height, setHeight] = useState(auto ? "38px" : "100%")
+  const shownHeight = useRef(height)
+  const changed = useRef(onChange)
+  changed.current = onChange
 
   // each editor validates its own model (REPL cells stay independent)
-  let editorRef: { editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null = null
+  const editorRef = useRef<{ editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null>(null)
   const validateCode = (code: string) => {
-    const model = editorRef?.editor.getModel()
-    if (!editorRef || !model) { return }
-
+    const mounted = editorRef.current
+    const model = mounted?.editor.getModel()
+    if (!mounted || !model) { return }
     const markers = getParseErrors(code).map(error => ({
       startLineNumber: error.start.line,
       startColumn: error.start.column,
       endLineNumber: error.end.line,
       endColumn: error.end.column,
       message: error.message,
-      severity: editorRef!.monaco.MarkerSeverity.Error,
+      severity: mounted.monaco.MarkerSeverity.Error,
     }))
-    editorRef.monaco.editor.setModelMarkers(model, "fluent-syntax", markers)
+    mounted.monaco.editor.setModelMarkers(model, "fluent-syntax", markers)
   }
 
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorOnMount(editor, monaco)
-    editorRef = { editor, monaco }
+    editorRef.current = { editor, monaco }
     editorRegistry.add(editor)
-    // Global shortcuts (⌘O gallery, ⌘S share) and legacy highlights target
-    // the app's MAIN editor – the one that fills its panel. Auto-grown
-    // editors are embedded cells (tour rooms, REPL): transient views that
-    // mount first and unmount on navigation, so letting one claim this ref
-    // left the shortcuts wired to a disposed editor.
-    if (!autoGrow && !mainEditorRef) { mainEditorRef = { editor, monaco } }
+    // Global shortcuts (⌘O gallery, ⌘S share) target the app's MAIN editor – the one
+    // that fills its panel. Auto-grown editors are embedded cells that mount first and
+    // unmount on navigation; one of them claiming this would leave the shortcuts wired
+    // to a disposed editor.
+    if (!auto && !mainEditorRef) { mainEditorRef = { editor, monaco } }
 
-    if (autoGrow) {
+    if (auto) {
       const fit = () => {
         const next = `${Math.min(editor.getContentHeight(), 320)}px`
-        if (height.peek() === next) { return }
-        // next frame, not now: a same-frame resize inside a ResizeObserver
-        // delivery is the textbook "ResizeObserver loop" browser error, and
-        // the dev overlay blocks the whole page for it
-        requestAnimationFrame(() => SignalUpdate(height, next))
+        if (shownHeight.current === next) { return }
+        shownHeight.current = next
+        // next frame, not now: a same-frame resize inside a ResizeObserver delivery is
+        // the textbook "ResizeObserver loop" error, and the dev overlay blocks the page
+        requestAnimationFrame(() => setHeight(next))
       }
       editor.onDidContentSizeChange(fit)
       fit()
-      // word-wrap breaks are computed on the first real layout, one frame
-      // after mount – the mount-time measurement is one line short for
-      // wrapped content, so measure once more when that layout has run
+      // word-wrap breaks are computed on the first real layout, one frame after mount –
+      // measure once more when that layout has run
       requestAnimationFrame(() => requestAnimationFrame(fit))
     }
 
-    // Validate on initial load
     const model = editor.getModel()
-    if (model) {
-      validateCode(model.getValue())
-    }
+    if (model) { validateCode(model.getValue()) }
   }
 
-  return SignalComputed(() => {
-    return (
-      // @ts-ignore
-      <Editor
-        key={editorKey}
-        beforeMount={editorBeforeMount}
-        onMount={handleEditorMount}
-        // @ts-ignore
-        height={SignalRead(height)}
-        defaultLanguage="fluent"
-        className={`${frameStyle} !p-0 overflow-hidden`}
-        theme="fluentTheme"
-        // Fluent strings are String objects (origin tracking) – Monaco needs a primitive
-        value={String(SignalRead(sourceCode) ?? "")}
-        onChange={(updatedSourceCode) => {
-          SignalUpdate(sourceCode, updatedSourceCode)
-          if (updatedSourceCode !== undefined) {
-            validateCode(updatedSourceCode)
-            // Check for generation comments and process them
-            const apiKey = getAnthropicApiKey()
-            if (apiKey && GENERATION_COMMENT_REGEX.test(updatedSourceCode)) {
-              GENERATION_COMMENT_REGEX.lastIndex = 0 // Reset regex state
-              processGenerationComments(updatedSourceCode, apiKey, (newCode) => {
-                SignalUpdate(sourceCode, newCode)
-                validateCode(newCode)
-              })
-            }
-          }
-        }}
-        options={getEditorOptions("editable")}
-      />
-    )
-  })
+  return (
+    <Editor
+      beforeMount={editorBeforeMount}
+      onMount={handleEditorMount}
+      height={height}
+      defaultLanguage="fluent"
+      className={`${frameStyle} !p-0 overflow-hidden`}
+      theme="fluentTheme"
+      value={value}
+      onChange={(next) => {
+        if (next === undefined) { return }
+        changed.current(next)
+        validateCode(next)
+        // generation comments (;; … ;;) are answered by the model, in place
+        const apiKey = getAnthropicApiKey()
+        if (apiKey && GENERATION_COMMENT_REGEX.test(next)) {
+          GENERATION_COMMENT_REGEX.lastIndex = 0
+          processGenerationComments(next, apiKey, (generated) => {
+            changed.current(generated)
+            validateCode(generated)
+          })
+        }
+      }}
+      options={getEditorOptions("editable")}
+    />
+  )
 }
-setMeta(CodeEditor, { noAutoLift: true })
 
 let EditorInstance: Monaco["editor"] | null = null
 
@@ -2619,23 +1782,19 @@ function fluentTokenAt(model: editor.ITextModel, position: monaco.Position): str
   return line.slice(start, end + 1)
 }
 
-// Docs live on the built-ins' metadata (attached inline in the prelude via
-// doc()); resolve a token through a scope and read them back.
-const docScope = createScope()
-const metaFor = (token: string | null): FunctionMeta | null => {
-  const value = token ? docScope[token] : undefined
-  const meta = typeof value === "function" ? getMeta(value) : {}
-  return meta.doc ? meta : null
-}
+// Docs live on the built-ins' metadata (attached inline in the prelude via doc()); the
+// worker lists every name in the environment with its card when it starts.
+const metaFor = (token: string | null): Doc | null =>
+  (token ? environmentNames.peek().get(token)?.doc ?? null : null)
 
 // A hover / completion card: signature, one-liner, worked example.
-const docCard = (m: FunctionMeta): string =>
+const docCard = (m: Doc): string =>
   [m.signature && "```fluent\n" + m.signature + "\n```", m.doc, m.example && "```fluent\n" + m.example + "\n```"]
     .filter(Boolean).join("\n\n")
 
 // completion's details pane already shows the signature as its header (the
 // item's `detail`) – repeating it in the body reads as a glitch
-const docCardBody = (m: FunctionMeta): string =>
+const docCardBody = (m: Doc): string =>
   [m.doc, m.example && "```fluent\n" + m.example + "\n```"]
     .filter(Boolean).join("\n\n")
 
@@ -2787,8 +1946,6 @@ const editorBeforeMount: BeforeMount = (monaco) => {
     when: 'editorTextFocus'
   });
 
-  // Scope includes DefaultEnvironment + PRELUDE
-  const completionScope = createScope();
   // [symbol, name, detail, filter terms] – rendered into completion items below
   const SYMBOL_TABLE: [string, string, string, string][] = [
     // Greek lowercase
@@ -2944,25 +2101,18 @@ const editorBeforeMount: BeforeMount = (monaco) => {
       // Every name in scope – the canonical binding (SignalOnce) and its
       // prelude alias (once) both list. The doc lives on the value, so aliases
       // share it: both cards read the same because they resolve to one object.
-      const allKeys: string[] = [];
-      for (const key in completionScope) { allKeys.push(key); }
-
       return ({
         suggestions: [
           ...symbolSuggestionItems,
-          ...allKeys.map((key) => {
-          const value = completionScope[key];
-          const meta = typeof value === 'function' ? getMeta(value) : {};
-          return ({
+          ...[...environmentNames.peek()].map(([key, { detail, doc }]) => ({
             label: key,
             kind: monaco.languages.CompletionItemKind.Function,
             insertText: key,
-            documentation: meta.doc ? { value: docCardBody(meta) } : `Function: ${key}`,
-            detail: meta.signature ?? (typeof value === 'function' ? 'function' : String(value).slice(0, 50)),
+            documentation: doc ? { value: docCardBody(doc) } : `Function: ${key}`,
+            detail,
             range,
             filterText: key,
-          })
-        }),
+          })),
         ]
       })
     }
@@ -3102,9 +2252,9 @@ export function Playground() {
       const codeFromUrl = StringDeserialize(params.get("code") ?? "");
       const exampleName = params.get("example");
       if (codeFromUrl !== "") {
-        SignalUpdate(code, codeFromUrl);
+        code.value = codeFromUrl
       } else if (exampleName !== null) {
-        SignalUpdate(code, exampleSource(exampleName));
+        code.value = exampleSource(exampleName)
       }
     };
     window.addEventListener("popstate", handleUrlChange);
@@ -3121,24 +2271,17 @@ export function Playground() {
       : exampleFromUrl !== null ? exampleSource(exampleFromUrl)
         : "1 + 1"
   )
-  const result = useComputed<Value>(() => {
-    return evaluateGeneration(() => {
-      const scope = createScope()
-      return evaluateSyntaxTreeNode(CodeParse(code.value), scope) ?? null
-    })
-  })
+  // every edit goes to the worker; it runs the latest
+  const source = code.value
+  useEffect(() => { toWorker({ t: "code", source }) }, [source])
 
   return (
-    <>
-      <div className="absolute inset-0 z-50 p-2 bg-neutral-900 grid text-white">
-        {
-          Grid(engine.tensor(2), engine.tensor(1))(
-            Print(result),
-            CodeEditor(code)
-          )
-        }
+    <div className="absolute inset-0 z-50 p-2 bg-neutral-900 grid text-white">
+      <div className="grid gap-2 overflow-scroll h-full" style={{ gridTemplateColumns: "repeat(2, minmax(auto, 1fr))", gridTemplateRows: "repeat(1, minmax(auto, 1fr))" }}>
+        <div className="contents"><ResultPanel /></div>
+        <div className="contents"><CodeEditorView value={source} onChange={(next) => { code.value = next }} auto={false} /></div>
       </div>
-    </>
+    </div>
   );
 }
 

@@ -3,9 +3,10 @@
 //   CHROME_ARGS=--enable-webgpu-developer-features bun engine/tests/run.ts engine/tests/bench-dreamer.ts
 import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope } from "../../language.ts";
 import { EXAMPLES } from "../../examples.ts";
-import { engineGpu } from "../tensor.ts";
+import { engineGpu, init } from "../tensor.ts";
 
 export default async function (): Promise<{ fails: number }> {
+  await init();
   const name = new URLSearchParams(globalThis.location?.search).get("example") ?? "dreamer";
   const src = (EXAMPLES as Record<string, string>)[name]!, head = src.slice(0, src.indexOf("; --- sampling"));
   const program = `${head}opt: adamw(0.03, 0.001),\n({ opt(loss) }, { 0 })`;

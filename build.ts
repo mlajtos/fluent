@@ -42,6 +42,24 @@ if (!workerBuild.success) {
   process.exit(1);
 }
 
+// Bundle the evaluation worker
+const evaluationBuild = await Bun.build({
+  entrypoints: ["./worker.ts"],
+  outdir,
+  minify: true,
+  target: "browser",
+  format: "esm",
+  naming: "fluent.worker.js",
+});
+
+if (!evaluationBuild.success) {
+  console.error("Evaluation worker build failed:");
+  for (const log of evaluationBuild.logs) {
+    console.error(log);
+  }
+  process.exit(1);
+}
+
 // Copy static datasets the examples fetch at runtime (the deployed site is
 // static – no /mnist.safetensors route like the dev server has)
 await Bun.write(`${outdir}/mnist.safetensors`, Bun.file("./mnist.safetensors"));
@@ -49,7 +67,7 @@ await Bun.write(`${outdir}/BQN386.ttf`, Bun.file("./BQN386.ttf"));
 
 console.log("Build complete!");
 console.log(`Output: ${outdir}`);
-for (const output of [...appBuild.outputs, ...workerBuild.outputs]) {
+for (const output of [...appBuild.outputs, ...workerBuild.outputs, ...evaluationBuild.outputs]) {
   const size = (output.size / 1024).toFixed(1);
   console.log(`  ${output.path.replace(process.cwd(), ".")} (${size} KB)`);
 }

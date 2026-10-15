@@ -9,12 +9,22 @@ const { outputs: [monacoWorker] } = await Bun.build({
 
 if (!monacoWorker) throw new Error("Failed to bundle Monaco worker");
 
+// The evaluation worker, bundled on every request: a reload runs the current evaluator
+const evaluationWorker = async () => {
+  const { success, logs, outputs: [bundle] } = await Bun.build({ entrypoints: ["./worker.ts"], target: "browser", format: "esm", sourcemap: "inline" });
+  if (!success || !bundle) {
+    return new Response(`throw new Error(${JSON.stringify(logs.map(String).join("\n"))})`, { headers: { "Content-Type": "application/javascript" } });
+  }
+  return new Response(bundle, { headers: { "Content-Type": "application/javascript" } });
+};
+
 const server = serve({
   routes: {
     "/": index,
     "/monaco.worker.js": new Response(monacoWorker, {
       headers: { "Content-Type": "application/javascript" },
     }),
+    "/fluent.worker.js": evaluationWorker,
     // dataset for the MNIST example (build.ts copies it into dist/ for prod)
     "/mnist.safetensors": () => new Response(Bun.file("./mnist.safetensors")),
     // symbol font for the editor and AST viz (build.ts copies it for prod)
