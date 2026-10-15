@@ -1,12 +1,13 @@
-// The dreamer's training step through Fluent on the engine's GPU: steps per second, and
-// where one step's GPU time goes, kernel by kernel.
+// A dreamer's training step through Fluent on the engine's GPU: steps per second, and
+// where one step's GPU time goes, kernel by kernel (QUERY=example=looped-dreamer for the other).
 //   CHROME_ARGS=--enable-webgpu-developer-features bun engine/tests/run.ts engine/tests/bench-dreamer.ts
 import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope } from "../../language.ts";
 import { EXAMPLES } from "../../examples.ts";
 import { engineGpu } from "../tensor.ts";
 
 export default async function (): Promise<{ fails: number }> {
-  const src = EXAMPLES["dreamer"]!, head = src.slice(0, src.indexOf("; --- sampling"));
+  const name = new URLSearchParams(globalThis.location?.search).get("example") ?? "dreamer";
+  const src = EXAMPLES[name]!, head = src.slice(0, src.indexOf("; --- sampling"));
   const program = `${head}opt: adamw(0.03, 0.001),\n({ opt(loss) }, { 0 })`;
   const [step] = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(program), createScope())) as unknown as [() => unknown];
   const engine = engineGpu();
@@ -18,7 +19,7 @@ export default async function (): Promise<{ fails: number }> {
   for (let i = 0; i < N; i++) step();
   await device.queue.onSubmittedWorkDone();
   const ms = (performance.now() - t0) / N;
-  console.log(`dreamer step: ${ms.toFixed(2)} ms (${(1000 / ms).toFixed(1)} steps/s)`);
+  console.log(`${name} step: ${ms.toFixed(2)} ms (${(1000 / ms).toFixed(1)} steps/s)`);
   {
     engine.profile = [];
     step();

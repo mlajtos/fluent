@@ -93,17 +93,22 @@ Error: doc(ErrorCreate, "Error(message, cause?)", "A failure, as a value: no ans
 ; NoMatch (bound natively) is the decline itself: what a candidate returns to
 ; say “not my case”. cascade and cond skip it; anywhere else it is an Error.
 
-erf: doc(TensorErrorFunction, "erf(x)", "Gauss error function – the area under a normal curve out to x, saturating at ±1. Smooth and differentiable everywhere.", "erf(1) ≈ 0.8427"),
+erf: TensorErrorFunction: doc({ x |
+  ; Abramowitz–Stegun 7.1.26, |error| < 1.5e-7
+  t: 1 ÷ (1 + (0.3275911 × abs(x))),
+  p: ((((1.061405429 × t - 1.453152027) × t + 1.421413741) × t - 0.284496736) × t + 0.254829592) × t,
+  sign(x) × (1 - (p × exp(-(x × x))))
+}, "erf(x)", "Gauss error function – the area under a normal curve out to x, saturating at ±1. Smooth and differentiable everywhere.", "erf(1) ≈ 0.8427"),
 
 ; Tensor shape/indexing
 (#): len: length: doc(Length, "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\"abc\") = 3"),
 (_): gather: doc(TensorGather, "x_i", "Index into a string, list, or tensor. `x_i` picks one element; `x_[i, j]` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30"),
 (⍴): reshape: doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]"),
 (..<): range: doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the `<` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]"),
-(...): rangeInclusive: doc(TensorRangeInclusive, "start ... stop", "Integer range from start through stop, endpoint included.", "1 ... 5 = [1, 2, 3, 4, 5]"),
+(...): rangeInclusive: TensorRangeInclusive: doc({ a, b | s: trunc(a), e: trunc(b), s + (where(s ≤ e, 1, -1) × (0 ..< (abs(e - s) + 1))) }, "start ... stop", "Integer range from start through stop, endpoint included.", "1 ... 5 = [1, 2, 3, 4, 5]"),
 shape: TensorShape,
 slice: TensorSlice,
-transpose: TensorTranspose,
+transpose: TensorTranspose: { x | r: #(shape(x)), permute(x, (r - 1) - (0 ..< r)) },
 permute: doc(TensorPermute, "permute(x, axes)", "Reorder x's axes: axis axes_i of x becomes axis i. A view – nothing moves.", "shape(permute(fill([2, 3, 4], 0), [2, 0, 1])) = [4, 2, 3]"),
 broadcast: doc(TensorBroadcast, "broadcast(x, shape)", "Stretch x's size-1 axes, and add missing leading ones, to shape – without copying.", "broadcast([1, 2], [2, 2]) = [[1, 2], [1, 2]]"),
 padAxis: doc(TensorPadAxis, "padAxis(x, axis, before, after)", "Zeros around x along one axis.", "padAxis([1, 2], 0, 1, 2) = [0, 1, 2, 0, 0]"),
@@ -111,8 +116,17 @@ window: doc(TensorWindow, "window(x, sizes)", "The sliding windows of x's traili
 take: doc(TensorTake, "take(x, indices)", "The rows of x at indices, any shape of them; a negative index counts from the end, and one out of range is an Error.", "take([10, 20, 30], [2, -3]) = [30, 10]"),
 scatterAdd: doc(TensorScatterAdd, "scatterAdd(indices, values, size)", "size zeros, each value added at its index – take's transpose: histograms, bincounts.", "scatterAdd([0, 2, 0], [1, 1, 1], 3) = [2, 0, 1]"),
 detach: doc(TensorDetach, "detach(x)", "x, with no derivative: ∇ treats it as a constant.", "∇({ x | detach(x) × x })(3) = 3"),
-moveaxis: TensorMoveAxis,
-reverse: TensorReverse,
+moveaxis: TensorMoveAxis: { x, from, to |
+  ; output axis i reads axis f where i = t, else the i-th of the others
+  r: #(shape(x)), f: from % r, t: to % r,
+  i: 0 ..< r, j: i - (i > t),
+  permute(x, where(i = t, f, j + (j ≥ f)))
+},
+reverse: TensorReverse: { x, k |
+  one: { y, k | z: moveaxis(y, k, 0), n: #(z), moveaxis(take(z, (n - 1) - (0 ..< n)), 0, k) },
+  ks: cond(guard(identical(k, ◌), { 0 ..< #(shape(x)) }), { k ⍴ [-1] }),
+  ListReduce(unstack(0 ..< #(ks)), { y, j | one(y, ks_j) }, x)
+},
 (⊗): outer: doc(TensorOuter, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]"),
 (⍤): rank: doc(TensorRank, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1,2,3],[4,5,6]]) = [6, 15]"),
 (∙): inner: doc(TensorInner, "a (g ∙ f) b", "Inner product: contract a's last axis with b's first – combine with g, then reduce with f, in the order it reads, like a × b reduce +. `× ∙ +` is matrix multiply; swap the ring for others: `+ ∙ ⌊` is shortest paths.", "[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]] = [[19,22],[43,50]]"),
@@ -211,35 +225,35 @@ ListScan: doc({ list, f, init |
   )
 }, "ListScan(list, f, init)", "Like ListReduce, but keep every step – the running fold, starting from init.", "ListScan((1, 2, 3), +, 0) = (0, 1, 3, 6)"),
 
-; Arithmetic
-(/): (÷): div: TensorDivide,
+; Arithmetic – + and × are the engine's; the rest are made from them
+add: doc(TensorAdd, "x + y", "Element-wise addition; shapes broadcast.", "[1, 2] + 10 = [11, 12]"),
+mul: doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcast.", "[1, 2] × 3 = [3, 6]"),
+neg: TensorNegate: doc({ x | x × -1 }, "neg(x)", "Negate each element.", "neg([1, -2]) = [-1, 2]"),
+sub: TensorSubtract: doc({ x, y | x + (y × -1) }, "x - y", "Element-wise subtraction; shapes broadcast.", "[3, 4] - 1 = [2, 3]"),
+(/): (÷): div: TensorDivide: doc({ x, y | x × reciprocal(y) }, "x ÷ y", "Element-wise division; shapes broadcast.", "[3, 4] ÷ 2 = [1.5, 2]"),
 (%): mod: TensorRemainder,
 (^): pow: TensorPower,
-(√): root: doc(TensorRoot, "x √ n", "The square root of x; with n, the n-th root of x.", "27 √ 3 = 3"),
-add: doc(TensorAdd, "x + y", "Element-wise addition; shapes broadcast.", "[1, 2] + 10 = [11, 12]"),
-sub: doc(TensorSubtract, "x - y", "Element-wise subtraction; shapes broadcast.", "[3, 4] - 1 = [2, 3]"),
-mul: doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcast.", "[1, 2] × 3 = [3, 6]"),
+(√): root: doc(FunctionArity(({ x, n | x ^ (1 ÷ n) }, TensorSquareRoot)), "x √ n", "The square root of x; with n, the n-th root of x.", "27 √ 3 = 3"),
 (+): FunctionArity((TensorAdd, TensorAbsolute)),
-(-): FunctionArity((TensorSubtract, TensorNegate)),
+(-): FunctionArity((sub, neg)),
 (*): FunctionArity((TensorMultiply, TensorSign)),
 (×): FunctionArity((TensorMultiply, TensorSign)),
 (·): FunctionArity((TensorMultiply, TensorSign)),
 
 ; Math
 π: pi: 3.141592653589793,
-neg: doc(TensorNegate, "neg(x)", "Negate each element.", "neg([1, -2]) = [-1, 2]"),
 abs: doc(TensorAbsolute, "abs(x)", "Absolute value of each element.", "abs([-2, 3]) = [2, 3]"),
 sign: doc(TensorSign, "sign(x)", "The sign of each element: -1, 0, or 1.", "sign([-5, 0, 3]) = [-1, 0, 1]"),
 round: TensorRound,
-trunc: TensorTruncate,
+trunc: TensorTruncate: doc({ x | where(x < 0, ceil(x), floor(x)) }, "trunc(x)", "Round each element toward zero.", "trunc([-2.7, 2.7]) = [-2, 2]"),
 floor: doc(TensorFloor, "⌊(x)  ·  floor(x)", "Round each element down to the nearest integer.", "⌊(2.7) = 2"),
-ceil: doc(TensorCeil, "⌈(x)  ·  ceil(x)", "Round each element up to the nearest integer.", "⌈(2.3) = 3"),
+ceil: TensorCeil: doc({ x | -(floor(-(x))) }, "⌈(x)  ·  ceil(x)", "Round each element up to the nearest integer.", "⌈(2.3) = 3"),
 reciprocal: TensorReciprocal,
 sqrt: TensorSquareRoot,
 square: TensorSquare: { x | x × x },
 cbrt: TensorCubeRoot,
-hypot: TensorHypotenuse,
-log: doc(TensorLogarithm, "log(x, base?)", "The natural logarithm of x; with a base, the logarithm of x in that base.", "8 log 2 = 3"),
+hypot: TensorHypotenuse: doc({ x, y | √((x × x) + (y × y)) }, "hypot(x, y)", "The length of the hypotenuse: √(x² + y²), element by element.", "hypot(3, 4) = 5"),
+log: doc(FunctionArity(({ x, b | TensorNaturalLogarithm(x) ÷ TensorNaturalLogarithm(b) }, TensorNaturalLogarithm)), "log(x, base?)", "The natural logarithm of x; with a base, the logarithm of x in that base.", "8 log 2 = 3"),
 log2: TensorLog2: { x | log(x) ÷ log(2) },
 log10: TensorLog10: { x | log(x) ÷ log(10) },
 log1p: TensorLog1Plus,
@@ -254,9 +268,16 @@ sigmoid: TensorSigmoid: { x | 0.5 × (1 + tanh(x ÷ 2)) },
 relu: TensorRelu: { x | x ⌈ 0 },
 silu: TensorSilu: { x | x × sigmoid(x) },
 rsqrt: TensorReciprocalSquareRoot: { x | 1 ÷ sqrt(x) },
-softmax: TensorSoftmax,
+softmax: TensorSoftmax: { x, k |
+  ax: cond(guard(identical(k, ◌), { -1 }), { k }),
+  cond(guard(#(shape(x)) = 0, { 1 + (x × 0) }), { e: exp(x - max(x, ax, 1)), e ÷ Σ(e, ax, 1) })
+},
+logSoftmax: TensorLogSoftmax: { x, k |
+  ax: cond(guard(identical(k, ◌), { -1 }), { k }),
+  s: x - max(x, ax, 1), s - log(Σ(exp(s), ax, 1))
+},
 oneHot: TensorOneHot,
-crossEntropy: TensorCrossEntropy,
+crossEntropy: TensorCrossEntropy: { labels, logits | μ(-(Σ(labels × logSoftmax(logits), -1))) },
 
 ; Trigonometry
 sin: TensorSine,
@@ -282,17 +303,17 @@ mish: TensorMish: doc({ x | x × tanh(softplus(x)) }, "mish(x)", "A self-gated a
 
 ; Comparison
 (<): lt: less: doc(TensorLess, "x < y", "Element-wise less-than: 1 where x is below y, else 0; shapes broadcast.", "([1, 2, 3] < 2) = [1, 0, 0]"),
-(>): gt: greater: doc(TensorGreater, "x > y", "Element-wise greater-than: 1 where x is above y, else 0; shapes broadcast.", "([1, 2, 3] > 2) = [0, 0, 1]"),
-(≤): (<=): le: lessEqual: doc(TensorLessEqual, "x ≤ y", "Element-wise less-than-or-equal: 1 where x is at most y, else 0; shapes broadcast.", "([1, 2, 3] ≤ 2) = [1, 1, 0]"),
-(≥): (>=): ge: greaterEqual: doc(TensorGreaterEqual, "x ≥ y", "Element-wise greater-than-or-equal: 1 where x is at least y, else 0; shapes broadcast.", "([1, 2, 3] ≥ 2) = [0, 1, 1]"),
+(>): gt: greater: TensorGreater: doc({ x, y | y < x }, "x > y", "Element-wise greater-than: 1 where x is above y, else 0; shapes broadcast.", "([1, 2, 3] > 2) = [0, 0, 1]"),
+(≤): (<=): le: lessEqual: TensorLessEqual: doc({ x, y | (x < y) ∨ (x = y) }, "x ≤ y", "Element-wise less-than-or-equal: 1 where x is at most y, else 0; shapes broadcast.", "([1, 2, 3] ≤ 2) = [1, 1, 0]"),
+(≥): (>=): ge: greaterEqual: TensorGreaterEqual: doc({ x, y | (y < x) ∨ (x = y) }, "x ≥ y", "Element-wise greater-than-or-equal: 1 where x is at least y, else 0; shapes broadcast.", "([1, 2, 3] ≥ 2) = [0, 1, 1]"),
 (=): equal: doc(TensorEqual, "x = y", "Element-wise equality: 1 where the operands are equal, else 0; shapes broadcast.", "([1, 2, 3] = 2) = [0, 1, 0]"),
-(≠): (!=): notEqual: doc(TensorNotEqual, "x ≠ y", "Element-wise inequality: 1 where the operands differ, else 0; shapes broadcast.", "([1, 2, 3] ≠ 2) = [1, 0, 1]"),
+(≠): (!=): notEqual: TensorNotEqual: doc({ x, y | ¬(x = y) }, "x ≠ y", "Element-wise inequality: 1 where the operands differ, else 0; shapes broadcast.", "([1, 2, 3] ≠ 2) = [1, 0, 1]"),
 
 ; Logical
-(∨): or: doc(TensorOr, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]"),
-(∧): and: doc(TensorAnd, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]"),
-(¬): not: doc(TensorNot, "¬(x)", "Logical not: 1 where x is zero, else 0.", "¬([0, 2]) = [1, 0]"),
-(⊻): xor: doc(TensorXor, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]"),
+(∨): or: TensorOr: doc({ x, y | ((x < 0) ⌈ (0 < x)) ⌈ ((y < 0) ⌈ (0 < y)) }, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]"),
+(∧): and: TensorAnd: doc({ x, y | ((x < 0) ⌈ (0 < x)) × ((y < 0) ⌈ (0 < y)) }, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]"),
+(¬): not: TensorNot: doc({ x | 1 - ((x < 0) ⌈ (0 < x)) }, "¬(x)", "Logical not: 1 where x is zero, else 0.", "¬([0, 2]) = [1, 0]"),
+(⊻): xor: TensorXor: doc({ x, y | abs(((x < 0) ⌈ (0 < x)) - ((y < 0) ⌈ (0 < y))) }, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]"),
 (⍲): nand: TensorNand: doc({ a, b | ¬(a ∧ b) }, "x ⍲ y", "Element-wise nand: 0 where both operands are nonzero, else 1. Functionally complete – every gate builds from it.", "[0, 1, 1] ⍲ [1, 1, 0] = [1, 0, 1]"),
 (⍱): nor: TensorNor: doc({ a, b | ¬(a ∨ b) }, "x ⍱ y", "Element-wise nor: 1 where both operands are zero, else 0. Functionally complete, like ⍲.", "[0, 1, 0] ⍱ [0, 1, 1] = [1, 0, 0]"),
 
@@ -301,7 +322,7 @@ mish: TensorMish: doc({ x | x × tanh(softplus(x)) }, "mish(x)", "A self-gated a
 (Σ): sum: doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6"),
 reduce: doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so `x reduce ⌈` is max.", "1 ..< 10 reduce + = 45"),
 (Π): prod: TensorProduct,
-(μ): mean: TensorMean,
+(μ): mean: TensorMean: doc({ x, k, keep | s: Σ(x, k, keep), s × (Π(shape(s)) ÷ Π(shape(x))) }, "μ(x, axis?)", "The mean of the elements, over one axis or the whole tensor.", "μ([1, 2, 3, 6]) = 3"),
 
 ; Min/max: the WORD reduces (whole tensor, or one axis like sum) – so
 ; max(x, axis) works. The GLYPH is APL's ⌈/⌊: ceiling/floor on one tensor,
@@ -311,8 +332,18 @@ max: doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the 
 min: doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the whole tensor.", "min([3, 1, 2]) = 1"),
 (⌈): FunctionArity((doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]"), TensorCeil)),
 (⌊): FunctionArity((doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]"), TensorFloor)),
-argmax: TensorArgMax,
-argmin: TensorArgMin,
+argmax: TensorArgMax: { x, k |
+  y: cond(guard(identical(k, ◌), { flat(x) }), guard((k % #(shape(x))) = (#(shape(x)) - 1), { x }), { moveaxis(x, k, -1) }),
+  n: #(y, -1),
+  cond(guard(n = 0, { Error("`argmax`: an empty tensor has no maximal index") }),
+    { min(where(y < max(y, -1, 1), n, 0 ..< n), -1) })
+},
+argmin: TensorArgMin: { x, k |
+  y: cond(guard(identical(k, ◌), { flat(x) }), guard((k % #(shape(x))) = (#(shape(x)) - 1), { x }), { moveaxis(x, k, -1) }),
+  n: #(y, -1),
+  cond(guard(n = 0, { Error("`argmin`: an empty tensor has no minimal index") }),
+    { min(where(min(y, -1, 1) < y, n, 0 ..< n), -1) })
+},
 
 ; Statistics
 𝕍: variance: TensorVariance: doc({ x | μ((x - μ(x))^2) }, "𝕍(x)", "Mean squared deviation from the mean, μ((x - μx)²).", "variance([1, 2, 3]) ≈ 0.667"),
@@ -328,7 +359,16 @@ watch: doc(TensorWatch, "watch(variable)", "A signal that updates whenever a var
 ; Tensor ops
 sort: doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]"),
 (⍋): argsort: doc(TensorArgSort, "argsort(x)", "The indices that sort a vector into ascending order – grade up. x_argsort(x) is x sorted.", "argsort([3, 1, 2]) = [1, 2, 0]"),
-roll: doc(TensorRoll, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]"),
+roll: TensorRoll: doc({ x, s, k |
+  one: { y, s, k |
+    z: moveaxis(y, k, 0), n: #(z), t: s % n,
+    cond(guard(t = 0, { y }), { moveaxis(padAxis(slice(z, [n - t]), 0, 0, n - t) + padAxis(slice(z, [0], [n - t]), 0, t, 0), 0, k) })
+  },
+  cond(
+    guard(identical(k, ◌), { one(flat(x), s, 0) ⍴ shape(x) }),
+    { ss: s ⍴ [-1], ks: k ⍴ [-1], ListReduce(unstack(0 ..< #(ks)), { y, j | one(y, ss_(j % #(ss)), ks_j) }, x) }
+  )
+}, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]"),
 flip: TensorReverse,
 mask: doc(TensorMask, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]"),
 where: doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0) = [1, 0, 3]"),
@@ -336,23 +376,32 @@ isNaN: TensorIsNaN,
 𝕀: eye: TensorIdentity: doc({ n | (0 ..< n) ⊗(=) (0 ..< n) }, "𝕀(n)", "The n×n identity matrix – 1 on the diagonal, 0 elsewhere.", "eye(2) = [[1, 0], [0, 1]]"),
 dot: TensorDotProduct,
 matmul: TensorMatrixMultiply,
-fft: TensorFFT,
+fft: TensorFFT: { x |
+  n: #(x, -1), m: floor(n ÷ 2) + 1,
+  w: (2 × π ÷ n) × (((0 ..< n) ⊗(×) (0 ..< m)) % n),
+  stack((x matmul cos(w), x matmul -(sin(w))))
+},
 meshgrid: TensorMeshgrid,
-pad: TensorPad,
-repeat: TensorRepeat,
-sinc: TensorSinc,
+pad: TensorPad: { x, w | ListReduce(unstack(0 ..< #(shape(x))), { y, k | padAxis(y, k, w, w) }, x) },
+repeat: TensorRepeat: { x, n | f: flat(x), broadcast(f ⍴ [-1, 1], [#(f), n]) ⍴ [-1] },
+sinc: TensorSinc: doc({ x | px: π × x, where(x = 0, 1, sin(px) ÷ px) }, "sinc(x)", "sin(πx) ÷ πx, and 1 at 0 – the normalized sinc.", "sinc(0) = 1"),
 topk: TensorTopK,
 einsum: TensorEinsum,
 
 ; Creation
 (⚄): rand: doc(TensorRandomUniform, "⚄(shape)  ·  rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "⚄([2, 2])"),
-randn: TensorRandomNormal,
-linspace: TensorLinearSpace,
-fill: TensorFill,
+randn: TensorRandomNormal: { shape | √(-2 × log(1 - ⚄(shape))) × cos(2 × π × ⚄(shape)) },
+linspace: TensorLinearSpace: { r, n | k: round(n) ⌈ 0, a: r_0, b: r_1, i: 0 ..< k,
+  cond(guard(k = 1, { [a] }), { where(i = (k - 1), b, a + ((b - a) × (i ÷ (k - 1)))) }) },
+fill: TensorFill: { shape, v | broadcast(v, shape) },
 stack: TensorStack,
 unstack: TensorUnstack,
 concat: TensorConcat,
-(⧉): tile: doc(TensorTile, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]"),
+(⧉): tile: TensorTile: doc({ x, reps |
+  r: reps ⍴ [-1], d: shape(x), n: #(r) ⌈ #(d),
+  sh: concat((fill([n - #(d)], 1), d)), rr: concat((fill([n - #(r)], 1), r)),
+  broadcast(x ⍴ (stack((sh × 0 + 1, sh), -1) ⍴ [-1]), stack((rr, sh), -1) ⍴ [-1]) ⍴ (sh × rr)
+}, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]"),
 
 ; Optimization
 adam: TensorOptimizationAdam,

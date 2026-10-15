@@ -259,17 +259,32 @@ function evaluate(u: UOp, ins: Float32Array[]): Float32Array {
   }
   throw new Error(`fold: cannot compute ${u.op}`);
 }
+const constData = (u: UOp): Float32Array => (u.op === "CONSTANT" ? u.arg : u.src[0]!.arg) as Float32Array;
+const isLiteral = (u: UOp): boolean => u.op === "CONSTANT" && !u.shape.length;
+// the result as data: a scalar from literals alone is a literal; anything else is held data
+const folded = (d: Float32Array, shape: readonly number[], literal: boolean): UOp => {
+  const v = d.length === ir.numel(shape) ? d : d.slice(0, ir.numel(shape));
+  return shape.length ? ir.data(v, shape) : literal ? ir.data(v, []) : ir.reshape(ir.data(v, [1]), []);
+};
+const VIEWS = new Set(["BROADCAST", "PERMUTE", "RESHAPE", "SLICE"]);
 function fold(root: UOp): UOp {
-  if (isData(root) || !foldable(root)) return root;
+  if (isData(root)) return root;
+  if (differentiable.has(root) || !FOLDS.has(root.op) || ir.numel(root.shape) > FOLD) return root;
+  // the common case – one op whose sources are data, or a constructor's view of data –
+  // computed directly
+  if (root.op !== "IOTA" && root.op !== "RANDOM" && root.src.every((s) => isData(s) || (VIEWS.has(s.op) && isData(s.src[0]!) && !differentiable.has(s)))) {
+    const ins = root.src.map((s) => (isData(s) ? constData(s) : evaluate(s, [constData(s.src[0]!)])));
+    return folded(evaluate(root, ins), root.shape, root.src.every((s) => isLiteral(isData(s) ? s : s.src[0]!)));
+  }
+  if (!foldable(root)) return root;
   const vals = new Map<UOp, Float32Array>();
   let literal = true;
   for (const u of ir.toposort(root)) {
     if (isData(u) && u.shape.length) literal = false;                         // a tensor or a held scalar: the result is data too
     if (u.op === "IOTA" || u.op === "RANDOM") literal = false;
-    vals.set(u, u.op === "RESHAPE" && isData(u) ? (u.src[0]!.arg as Float32Array) : evaluate(u, u.src.map((s) => vals.get(s)!)));
+    vals.set(u, isData(u) ? constData(u) : evaluate(u, u.src.map((s) => vals.get(s)!)));
   }
-  const d = vals.get(root)!, v = d.length === ir.numel(root.shape) ? d : d.slice(0, ir.numel(root.shape));
-  return root.shape.length ? ir.data(v, root.shape) : literal ? ir.data(v, []) : ir.reshape(ir.data(v, [1]), []);
+  return folded(vals.get(root)!, root.shape, literal);
 }
 // the value ∇ differentiates with respect to: an identity of its own, never folded away
 export const traced = (a: Tensor): Tensor => { const n = ir.reshape(a.node, a.node.shape); differentiable.add(n); return new Tensor(n, a.dtype); };
@@ -368,7 +383,7 @@ const not = (x: UOp) => ir.add(ir.konst(1), neg(x));
 const either = (x: UOp, y: UOp) => ir.where(x, ir.konst(1), y);
 const isnanN = (x: UOp) => ir.math("isnan", x);
 const ne0 = (x: UOp) => either(ir.cmplt(x, ir.konst(0)), ir.cmplt(ir.konst(0), x));   // NaN is false
-const eqN = (x: UOp, y: UOp) => ir.where(either(isnanN(x), isnanN(y)), ir.konst(0), ir.mul(not(ir.cmplt(x, y)), not(ir.cmplt(y, x))));
+const eqN = (x: UOp, y: UOp) => ir.math("eq", x, y);
 const m1 = (fn: string) => un((x) => ir.math(fn, x));
 
 export const add = bin(ir.add);

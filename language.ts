@@ -1761,9 +1761,6 @@ const TensorConcat = (...args: unknown[]) => {
   const xs = ((listed ? args[0] : args) as Value[]).map(operand) as engine.Tensor[]
   return engine.concatenate(xs, axis)
 }
-const TensorTile = (a: Value, reps: Value) => {
-  return engine.tile(operand(a), asNumberList(reps))
-}
 
 // Generalized outer product – J's "table" adverb. `a ⊗(f) b` applies f between
 // every cell of a and every cell of b: result shape [frame(a), frame(b), cell].
@@ -1841,20 +1838,11 @@ const TensorInner = function (this: CurrentScope, g: Value, f: Value) {
 }
 
 const TensorAdd = binaryOp(engine.add)
-const TensorSubtract = binaryOp(engine.subtract)
 const TensorMultiply = binaryOp(engine.multiply)
-const TensorDivide = binaryOp(engine.divide)
 
 // a literal integer exponent is exponentiation by squaring in the engine – exact
 // where exp(e·ln x) is not (3^2 is 9, (-2)^2 is 4), and x^2 differentiates as x·x
 const TensorPower = binaryOp(engine.power)
-// √x is the square root; x √ n is the n-th root of x – the value first, like x ^ n and x log b
-const TensorRoot = (a: Value, b?: Value) => {
-  if (b == null) {
-    return engine.sqrt(operand(a))
-  }
-  return TensorPower(a, TensorReciprocal(b))
-}
 // WGSL permits 2.5 ULP of division error, so on WebGPU floor(x/x) can miss
 // and remainder(x, x) comes back as x. A remainder of exactly ±y is
 // mathematically impossible – fold it to 0.
@@ -1874,11 +1862,7 @@ const comparisonOp = (op: (x: any, y: any) => engine.Tensor) =>
   }
 
 const TensorLess = comparisonOp(engine.less)
-const TensorGreater = comparisonOp(engine.greater)
-const TensorLessEqual = comparisonOp(engine.lessEqual)
-const TensorGreaterEqual = comparisonOp(engine.greaterEqual)
 const TensorEqual = comparisonOp(engine.equal)
-const TensorNotEqual = comparisonOp(engine.notEqual)
 
 // Match ≡ – is it the same value, whole? Tensors match when their shapes and
 // every element agree, lists when their elements match pair by pair, strings
@@ -1911,10 +1895,6 @@ const Match = (a: Value, b: Value) => TensorScalar(valuesMatch(a, b) ? 1 : 0)
 
 // Logical ops share the comparison contract: any nonzero operand counts as
 // true, the result is float32 0/1.
-const TensorOr = comparisonOp(engine.logicalOr)
-const TensorAnd = comparisonOp(engine.logicalAnd)
-const TensorXor = comparisonOp(engine.logicalXor)
-const TensorNot = (a: Value) => engine.astype(engine.logicalNot(operand(a)), engine.float32)
 
 const TensorSine = unaryOp(engine.sin)
 const TensorCosine = unaryOp(engine.cos)
@@ -1926,7 +1906,6 @@ const TensorSineHyperbolicInverse = unaryOp(engine.arcsinh)
 const TensorCosineHyperbolicInverse = unaryOp(engine.arccosh)
 const TensorTangentHyperbolicInverse = unaryOp(engine.arctanh)
 const TensorArcTangent2 = binaryOp(engine.arctan2)  // arctan2(y, x): angle of (x, y)
-const TensorHypotenuse = binaryOp(engine.hypot)
 
 // Reductions take an optional axis (scalar or vector tensor) as second
 // argument, and a truthy third argument keeps the reduced axis as size 1 –
@@ -1941,7 +1920,6 @@ const withOptionalAxis = (op: (a: any, axis?: number | number[] | null, opts?: {
 
 const TensorSum = withOptionalAxis(engine.sum)      // TensorReduce(a, +)
 const TensorProduct = withOptionalAxis(engine.prod) // TensorReduce(a, ×)
-const TensorMean = withOptionalAxis(engine.mean)
 const TensorMin = withOptionalAxis(engine.min)
 const TensorMax = withOptionalAxis(engine.max)
 
@@ -1978,32 +1956,11 @@ const TensorReduce = (tensor: Value, fn: Value, axis?: Value) => {
   return ListReduce(parts, (acc: Value, v: Value) => (fn as Function)(acc, v))
 }
 
-// argmax/argmin take a single axis (or none, over the flattened array) and
-// return the index of the extreme element. Over an empty reduction axis there
-// is no index – error at the source rather than hand a downstream gather one.
-const emptyReductionAxis = (a: Value, axis?: Value): boolean => {
-  const shape = (a instanceof FluentVariable ? a.current : a as any)?.shape
-  if (!Array.isArray(shape)) { return false } // not a tensor – let the op handle it
-  if (axis == null) { return shape.some((d: number) => d === 0) }
-  const n = asNumber(axis)
-  return shape[n < 0 ? shape.length + n : n] === 0
-}
-// The arg-ops tag their indices int32; Fluent is float32 throughout, so cast like
-// TensorRange does – `_` re-casts its index to int32.
-const TensorArgMax = (a: Value, axis?: Value) =>
-  emptyReductionAxis(a, axis) ? new Error("`argmax`: an empty tensor has no maximal index")
-    : (axis == null ? engine.argmax(operand(a)) : engine.argmax(operand(a), asWhole(axis))).astype(engine.float32)
-const TensorArgMin = (a: Value, axis?: Value) =>
-  emptyReductionAxis(a, axis) ? new Error("`argmin`: an empty tensor has no minimal index")
-    : (axis == null ? engine.argmin(operand(a)) : engine.argmin(operand(a), asWhole(axis))).astype(engine.float32)
 
-const TensorNegate = unaryOp(engine.negative)
 const TensorAbsolute = unaryOp(engine.absolute)
 const TensorSign = unaryOp(engine.sign)
 // log(x) is the natural logarithm; log(x, b) takes the base b, so 8 log 2 = 3
 const TensorNaturalLogarithm = unaryOp(engine.log)
-const TensorLogarithm = (a: Value, b?: Value) =>
-  b == null ? TensorNaturalLogarithm(a) : TensorDivide(TensorNaturalLogarithm(a), TensorNaturalLogarithm(b))
 const TensorLog1Plus = unaryOp(engine.log1p)      // log(1 + x), accurate near 0
 const TensorExponential = unaryOp(engine.exp)
 const TensorExpMinus1 = unaryOp(engine.expm1)     // exp(x) - 1, accurate near 0
@@ -2011,14 +1968,7 @@ const TensorReciprocal = unaryOp(engine.reciprocal)
 const TensorSquareRoot = unaryOp(engine.sqrt)
 const TensorCubeRoot = unaryOp(engine.cbrt)
 const TensorRound = unaryOp(engine.round)
-const TensorTruncate = unaryOp(engine.trunc)      // toward zero, unlike floor
-const TensorCeil = unaryOp(engine.ceil)
 const TensorFloor = unaryOp(engine.floor)
-const TensorErrorFunction = unaryOp(engine.erf)
-const TensorSoftmax = (x: Value, axis?: Value) =>
-  isScalarTensor(x)
-    ? engine.reshape(engine.softmax(engine.reshape(operand(x), [1]), 0), [])
-    : engine.softmax(operand(x), axis == null ? undefined : asWhole(axis))
 // oneHot of an index outside 0..<depth is an all-zero row: an off-by-one label
 // column, or a -1 "unknown" sentinel, would silently drop out of the loss. Bounds-check
 // the way `_` does one screen down.
@@ -2040,8 +1990,6 @@ const TensorOneHot = (indices: Value, depth: Value) => {
   }
   return engine.oneHot(engine.astype(operand(indices), engine.int32), n)
 }
-const TensorCrossEntropy = (labels: Value, logits: Value) =>
-  engine.mean(engine.negative(engine.sum(engine.multiply(operand(labels), engine.logSoftmax(operand(logits))), -1)))
 
 const TensorSort = (x: Value) =>
   isScalarTensor(x) ? engine.reshape(operand(x), []) : engine.sort(operand(x))
@@ -2076,9 +2024,6 @@ const TensorMask = (a: Value, b: Value) => {
   const valid = TensorSlice(top, TensorScalar(0), TensorScalar(count))
   return TensorGather(a, TensorReverse(valid))
 }
-const TensorFill = (shape: Value, value: Value) => {
-  return engine.full(asWholeList(shape), asNumber(value))
-}
 const TensorBoolean = (a: Value) => engine.astype(operand(a), engine.bool)
 
 const TensorGradient = (f: Value) => {
@@ -2107,7 +2052,6 @@ const TensorGradient = (f: Value) => {
     }
   }
 }
-const TensorTranspose = unaryOp(engine.transpose)
 // The views: x's elements renamed, nothing moved or computed. permute puts x's axis
 // axes_i at position i; broadcast stretches size-1 (and missing leading) axes to shape;
 // padAxis adds zeros around one axis; window gives the sliding windows of the trailing
@@ -2117,14 +2061,6 @@ const TensorBroadcast = (a: Value, shape: Value) => engine.broadcastTo(operand(a
 const TensorPadAxis = (a: Value, axis: Value, before: Value, after: Value) =>
   engine.padAxis(operand(a), asWhole(axis), asWhole(before), asWhole(after))
 const TensorWindow = (a: Value, sizes: Value) => engine.windows(operand(a), asWholeList(sizes))
-// Move one axis to a new position, keeping the others' relative order (a zero-copy
-// view). The general axis-rotation that `transpose` (full reverse) can't express;
-// `alongAxis` is built on it. Negative positions count from the end.
-const TensorMoveAxis = (a: Value, from: Value, to: Value) => {
-  const source = asWhole(from), target = asWhole(to)
-  const x = operand(a) as engine.Tensor
-  return engine.moveaxis(x, source, target)
-}
 const TensorRange = (a: Value, b?: Value) => {
   // arange tags its result int32 – Fluent tensors are float32 throughout
   if (b == null) {
@@ -2137,51 +2073,19 @@ const TensorRange = (a: Value, b?: Value) => {
   return engine.arange(start, stop, step).astype(engine.float32)
 }
 
-// Inclusive range: like `start ..< stop`, but the endpoint is included –
-// `1 ... 5 = [1, 2, 3, 4, 5]`, `5 ... 1 = [5, 4, 3, 2, 1]`.
-const TensorRangeInclusive = (a: Value, b: Value) => {
-  const start = Math.trunc(asFinite(a))
-  const stop = Math.trunc(asFinite(b))
-  const step = start <= stop ? 1 : -1
-  return engine.arange(start, stop + step, step).astype(engine.float32)
-}
 
-const TensorLinearSpace = (range: Value, steps: Value) => {
-  const bounds = requireData(range)
-  if (!Array.isArray(bounds) || bounds.length < 2) {
-    throw new Error("`linspace([start, stop], count)`: range must be a 2-element tensor")
-  }
-  const [start, stop] = bounds as [number, number]
-  // a count has to be a whole number; a live slider naturally drives it
-  // through fractional values (resolution × 90 + 10), so round rather than reject
-  return engine.linspace(start, stop, Math.max(0, Math.round(asNumber(steps))))
-}
 
 // Rank-polymorphic convolution: the kernel's rank sets the conv's rank, so the
 // same conv slides a 1-D kernel over a vector or a 2-D kernel over an image,
 // zero padded so the output keeps the input's shape.
 const TensorConvolution = (arr: Value, kernel: Value) => engine.conv(operand(arr), operand(kernel))
 
-// Real FFT: a real signal in, the positive-frequency half out. Fluent has no
-// complex dtype, so return the two components stacked as [2, bins] – f_0 is the
-// real part, f_1 the imaginary, magnitude is √(f_0^2 + f_1^2).
-const TensorFFT = (a: Value) => {
-  const { real, imag } = engine.fft.rfft(operand(a))
-  return engine.stack([real, imag])
-}
 
 // Coordinate grids: meshgrid(0 ..< w, 0 ..< h) → [X, Y], each broadcast to the full grid
 const TensorMeshgrid = (...args: Value[]) => engine.meshgrid(args.map(operand))
 
-const TensorPad = (a: Value, width: Value) => engine.pad(operand(a), asNumber(width))
 
-const TensorRepeat = (a: Value, count: Value) => {
-  const n = asNumber(count)
-  const x = operand(a) as engine.Tensor
-  return engine.repeat(x, n)
-}
 
-const TensorSinc = unaryOp(engine.sinc)
 
 // The k largest values and their indices, as [values, indices]
 const TensorTopK = (a: Value, k: Value) => {
@@ -2189,9 +2093,6 @@ const TensorTopK = (a: Value, k: Value) => {
   return [values, indices.astype(engine.float32)]
 }
 
-// Einstein summation: einsum("ij,jk->ik", a, b) is a matrix multiply
-const TensorEinsum = (subscripts: Value, ...args: Value[]) =>
-  engine.einsum(String(subscripts), ...args.map(operand))
 
 const TensorReshape = (a: Value, b?: Value) => {
   if (b != null) {
@@ -2201,17 +2102,18 @@ const TensorReshape = (a: Value, b?: Value) => {
   return engine.tensor(shapeOf(a))
 }
 
-// Toroidal shift – APL's rotate. roll(x, 1) shifts flat; roll(x, s, axis)
-// shifts along an axis, wrapping around.
-const TensorRoll = (a: Value, shift: Value, axis?: Value) =>
-  engine.roll(operand(a), requireData(shift) as number | number[],
-    axis == null ? undefined : requireData(axis) as number | number[])
 
 const TensorReverse = (a: Value, axis?: Value) =>
   engine.flip(operand(a), axis == null ? undefined : requireData(axis) as number | number[])
 
+
+// The contractions stay native until shape logic written in Fluent is cheap: their
+// Fluent versions spend most of a training step's host time reading shapes
 const TensorMatrixMultiply = binaryOp(engine.matmul)
 const TensorDotProduct = binaryOp(engine.dot)
+// Einstein summation: einsum("ij,jk->ik", a, b) is a matrix multiply
+const TensorEinsum = (subscripts: Value, ...args: Value[]) =>
+  engine.einsum(String(subscripts), ...args.map(operand))
 
 const TensorLength = (a: Value, b?: Value) => {
   // a list or a string is another candidate's case – decline it
@@ -2491,7 +2393,6 @@ const TensorOptimizationAdaGrad = (a: Value, ...rest: Value[]) => {
 // Stateful convenience RNG: a fresh key per call – deterministic per page load, not
 // across reloads.
 let rngCounter = 0
-const TensorRandomNormal = (a: Value) => engine.normal(rngCounter++, asNumberList(a))
 const TensorRandomUniform = (a: Value) => engine.uniform(rngCounter++, asNumberList(a))
 
 // A value as the Fluent SOURCE that reproduces it, so CodeEvaluate(String(x))
@@ -2637,30 +2538,18 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorStack,
   TensorUnstack,
   TensorConcat,
-  TensorTile,
 
   TensorAdd,
-  TensorSubtract,
   TensorMultiply,
-  TensorDivide,
 
   TensorPower,
-  TensorRoot,
   TensorRemainder,
   TensorMaximum,
   TensorMinimum,
 
   TensorLess,
-  TensorGreater,
-  TensorLessEqual,
-  TensorGreaterEqual,
   TensorEqual,
-  TensorNotEqual,
   Match,
-  TensorOr,
-  TensorAnd,
-  TensorNot,
-  TensorXor,
   TensorSine,
   TensorCosine,
   TensorSineInverse,
@@ -2671,41 +2560,30 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorCosineHyperbolicInverse,
   TensorTangentHyperbolicInverse,
   TensorArcTangent2,
-  TensorHypotenuse,
 
   TensorSum,
   TensorProduct,
-  TensorMean,
   TensorMin,
   TensorMax,
   TensorReduce,
-  TensorArgMax,
-  TensorArgMin,
 
-  TensorNegate,
   TensorAbsolute,
   TensorSign,
-  TensorLogarithm,
   TensorLog1Plus,
+  TensorNaturalLogarithm,
   TensorExponential,
   TensorExpMinus1,
   TensorReciprocal,
   TensorSquareRoot,
   TensorCubeRoot,
   TensorRound,
-  TensorTruncate,
-  TensorCeil,
   TensorFloor,
-  TensorErrorFunction,
-  TensorSoftmax,
   TensorOneHot,
-  TensorCrossEntropy,
   TensorSort,
   TensorArgSort,
 
   TensorGradient,
 
-  TensorTranspose,
   TensorPermute,
   TensorBroadcast,
   TensorPadAxis,
@@ -2713,18 +2591,10 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorTake,
   TensorScatterAdd,
   TensorDetach,
-  TensorMoveAxis,
   TensorRange,
-  TensorRangeInclusive,
-  TensorLinearSpace,
   TensorConvolution,
-  TensorFFT,
   TensorMeshgrid,
-  TensorPad,
-  TensorRepeat,
-  TensorSinc,
   TensorTopK,
-  TensorEinsum,
   TensorReshape,
   TensorLength,
   Length,
@@ -2734,9 +2604,6 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorIsNaN,
   TensorMask,
   TensorSlice,
-  TensorFill,
-  TensorReverse,
-  TensorRoll,
 
   TensorVariable,
   TensorData,
@@ -2746,12 +2613,12 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorOptimizationAdamW,
   TensorOptimizationSgd,
   TensorOptimizationAdaGrad,
-  TensorRandomNormal,
   TensorRandomUniform,
 
+  TensorOuter,
   TensorMatrixMultiply,
   TensorDotProduct,
-  TensorOuter,
+  TensorEinsum,
   TensorRank,
   TensorInner,
 
