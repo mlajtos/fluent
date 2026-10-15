@@ -659,30 +659,159 @@ as if nothing is broken"):
    numpy-shaped layer Fluent calls) + 44 — Fluent is ~5.7k lines, a quarter of
    the ~22.7k it was. The bundle is 10.23 MB against 10.55 MB (Monaco and
    Plotly are most of both).
-6. **S5 — JankFree:** the worker and the effect-yielding evaluator remove the
-   read bridge; the display device; the hitch gate. *In progress.* On the
-   main thread so far: a ⟳ step waits until at most two steps are queued on
-   the GPU, displays read asynchronously, `CodesToString` of codes still on
-   the GPU gives a signal that fills when they arrive (a lifted application
-   reads through a signal that holds a signal), the host-work estimate is
-   memoized per node, a random seed and every value that crosses time are
-   data rather than kernel text, a rank-0 device result has the same shape of
-   leaf as a held host scalar, and the plan key ignores whether a leaf is
-   host data or a device buffer — so a re-evaluated program finds every plan
-   it compiled before. The looped dreamer trains at 60 fps with no input
-   (360 frames in 6 s, p95 17.6 ms; jax-js: 86 frames, p50 67 ms). Typing
-   into it still drops to ~5 fps: every keystroke re-evaluates the program on
-   the main thread, and this one dreams twice per evaluation (58 transformer
-   passes). That is what the worker removes; it needs the client to render
-   Fluent values — widgets, signals, closures, media inputs — across a
-   message boundary, the remaining and largest piece of S5.
-7. **S6 — META:** derivatives as Fluent values, then laws (§0.1); natives move
-   to the prelude.
+From S5 on, each step moves something out of TypeScript into the prelude, or out
+of the engine's API layers into the engine's primitives, and the line counts are
+the gate (Milan, 2026-10-15: "compress the code via pushing as much as we can to
+userland"). Baseline: `language.ts` 2,835 TS lines + a 364-line prelude,
+`engine/` 2,481, `client.tsx` 3,171 — 8,487 lines of TS. Census of every native
+and engine export: 153 environment names = 38 engine primitives, 35 that must
+stay native (evaluation, reflection, signals, strings, I/O), 67 expressible in
+Fluent today, 11 expressible with one new primitive.
+
+6. **S5 — The primitive core.** Fluent binds the engine's primitives directly;
+   everything composite moves to the prelude.
+   - *First, bugs the census found:* a zero-size result computed on the CPU
+     is realized as one element (`[1, 2, 3] _ slice([5, 6, 7] _ [0, 1, 2],
+     [0], [0])` reads index 5 — it breaks `mask` with nothing kept and every
+     `einsum.fl` spec without a repeated label); `%` uploads a full-size zeros
+     tensor on every call and ∇ a full-size ones tensor (a broadcast constant
+     does both); ⟳ passes its index as a literal, so a step that reads it
+     compiles a new plan every step; `shape((1, 2))` leaks a raw engine error.
+   - *Constant-only values are computed while the graph is built* (§6.3). A
+     Fluent `y ⍴ [2, 2]` costs 33 µs and `concat((shape(y), [1]))` 72 µs
+     today — each a tiny CPU realization — against 1.8 µs for a native matmul,
+     so shape arithmetic must fold before shape-heavy code moves.
+   - *An IOTA leaf* (index → value, fused like RANDOM): ranges, linspace,
+     oneHot, eye, flip and argmax's index stop uploading host arrays.
+   - *New in the core* (~70 lines): `◌` means an absent argument in natives
+     as it already does in lambdas (today `{ x, k | Σ(x, k) }([1, 2, 3])` fails
+     with "got ◌") — this alone lets every combinator be a prelude lambda;
+     type tests `isTensor isList isString isError` and `identical`; the raw
+     views `permute broadcast padAxis window`; `take` (the gather, keeping
+     its bounds check); `scatterAdd`; `detach`.
+   - *Moves to the prelude* (~67 natives, ~800 TS lines out, ~250 Fluent
+     in): comparisons and logic from `<`; subtract, divide, negate, roots,
+     `%`, max/min; hypot, sinc, erf, ceil, trunc; softmax, logSoftmax,
+     crossEntropy, oneHot; mean, min, argmax/argmin, reduce; linspace, fill,
+     meshgrid, `...`, pad, tile, repeat, roll, reverse, mask; matmul, dot,
+     fft, einsum (`engine/einsum.fl`); randn; `⊗ ⍤ ∙`; the combinators,
+     `cascade`, `when`, `try`, `$`, `@`; `_` and `≡` over `take` and the
+     type tests. `⍣` stays the native loop: Fluent recursion overflows the
+     stack near depth 2,000 and slows superlinearly before that.
+   - *Sorting on the GPU:* a bitonic network in the prelude — each pass a
+     gather at a computed partner, a compare and a select, all existing
+     primitives; `argsort` carries indices, ties break on the index, so it is
+     stable and differentiable. The HOST op and its synchronous read inside
+     a plan leave the engine.
+   - *The facade dissolves:* `numpy.ts` becomes realization only (leaves,
+     placement, settle, reads); `jax.ts`, `nn.ts` and `optax.ts` go but for
+     ∇ and init; the dtype layer goes (every value is f32; only a printing
+     tag remains); the test-only second executor and resident buffers
+     (~140 lines in gpu.ts/cpu.ts, which the tests exercise and the app never
+     runs) go once the tests run on the shipping path; one kernel printer
+     shared by WGSL and JS; dead code (`tan`'s MATHS row, unused nn helpers,
+     `Describe`, `Tensor`, unused exports, id-keyed caches).
+   - *Gate:* every suite green; the dreamer's kernel count and step time
+     within 10%; host time per step within 10% (a Fluent application costs
+     ~0.8 µs against ~0.14 µs for a TS constructor; the prelude adds ~0.4 ms
+     to each evaluation).
+   - *Size:* `language.ts` TS 2,835 → ~2,200, prelude 364 → ~620; `engine/`
+     2,481 → ~1,700.
+7. **S6 — Learning in userland.** Optimizers become prelude values.
+   - ∇ of a function of no arguments differentiates with respect to *the
+     variables it reads* and returns them with their gradients. A variable's
+     value becomes a tracked read, as a signal's already is. This replaces
+     "train every variable alive": no list to write, and two models in one
+     program no longer step each other (today `adamw` decays the other
+     model's weights). An explicit list stays possible, as a value.
+   - `:=` on a list of variables commits all of them together — one
+     realization, settled.
+   - In the prelude: sgd, momentum, Nesterov, adam, adamw, adagrad (parity
+     first), then RMSprop, Adadelta, Adamax, NAdam, RAdam, AMSGrad, AdaBelief,
+     Yogi, Lion, LAMB, LARS, Adafactor, schedule-free AdamW, Muon (Newton–
+     Schulz: matmuls only), L-BFGS; and pieces that compose with `∘`:
+     clipping by norm, weight decay, schedules (cosine, warmup, step), EMA,
+     lookahead.
+   - *Deletes:* `makeOptimizer`, the Adam and AdaGrad transforms, the
+     variable registry, `optax.ts` (~160 lines). *Adds:* ~35 TS, ~150 Fluent.
+8. **S7 — JankFree: the worker** (JankFree.md §3, on the smaller core).
+   - The evaluator, the engine and the compute GPUDevice run in a worker;
+     the main thread keeps React, Monaco and input. Reads are effects
+     (JankFree's generator trampoline): the synchronous read bridge and the
+     sync realize path are deleted. Signals reach the page as mirrors;
+     widgets travel as descriptions; images and heatmaps draw on a separate
+     display device from small packed readbacks.
+   - Per-step host cost falls with it: state keeps stable leaves (a
+     variable's buffer is rebound, its node stays), so a step rebuilds the
+     same graph and every pass — ∇, fusion, lowering — is found by structure.
+   - Done on the main thread already: a ⟳ step waits until at most two steps
+     are queued on the GPU, displays read asynchronously, `CodesToString` of
+     codes still on the GPU gives a signal that fills when they arrive (a
+     lifted application reads through a signal that holds a signal), the
+     host-work estimate is memoized, a random seed and every value that
+     crosses time are data rather than kernel text, a rank-0 device result
+     has the same shape of leaf as a held host scalar, and the plan key
+     ignores whether a leaf is host data or a device buffer. The looped
+     dreamer trains at 60 fps (360 frames in 6 s, p95 17.6 ms; jax-js: 86
+     frames, p50 67 ms); typing into it drops to ~5 fps, because each
+     keystroke re-evaluates the program — two dreams, 58 transformer passes —
+     on the main thread.
+   - *Gate:* the hitch test in CI — typing and training together hold 60 fps.
+9. **S8 — META: rules as values.**
+   - `derivative(sin, { x, dx | cos(x) × dx })`: the elementwise and MATH
+     JVP rows become prelude values. Each is applied once, at registration, to
+     placeholder leaves, giving a graph template the engine instantiates per
+     node by substitution — TypeScript speed every step, Fluent as the source.
+     The linear ops collapse to one property; transposition, which reads
+     axes and slices, stays TypeScript.
+   - Users get custom derivatives: stop-gradient and straight-through
+     estimators, erf's exact derivative, the implicit-function rule for
+     `solve` and for S9's linear algebra.
+   - `law({ x | x × 1 }, { x | x })`: the algebraic laws become values,
+     compiled to patterns for one matcher; view laws keep their guards.
+   - Batching rules give a real vmap: `⍤` and `∙` build one batched graph
+     instead of a copy per cell.
+   - The primitive table itself (name, arity, JS and WGSL text) becomes data
+     a program can extend.
+   - *Needs:* records, for anything that reflects a node's structure.
+10. **S9 — Numerics in userland.** In the prelude, from existing primitives:
+    triangular solve, Cholesky, LU with partial pivoting, QR, `solve`/`inv`/
+    `det`/`logdet`, `eigh` (Jacobi), SVD (one-sided Jacobi), matrix roots
+    (Newton–Schulz) — each a ⍣ loop of fused kernels, fine to a few hundred
+    dimensions; scans by doubling (cumsum, cumprod, cummax in log n
+    kernels); radix-2 FFT for large n; categorical, gamma, beta, Dirichlet,
+    permutations; then the optimizers that need them (Shampoo, SOAP, natural
+    gradient). ~300 Fluent lines, no TypeScript.
+11. **S10 — The IDE in Fluent.** An `Element(tag, attrs, children)` primitive
+    and an event source; Button, Slider, Checkbox, TextEditor, Grid, Layers,
+    Center, Trail, the mouse and the clock as Fluent values; bar, scatter and
+    heatmap plots as SVG elements written in Fluent — Plotly already renders
+    only static SVG here, so the multi-megabyte dependency goes; the
+    documentation and the symbol table generated from the prelude's doc
+    cards; the playground itself a Fluent program. `client.tsx` 3,171 →
+    ~2,450 TS + ~200 Fluent. GPU-drawn plots come after (Milan: later).
+    *Needs:* records, for attributes.
+
+After S10 (estimates): ~6,100 lines of TS (−28%) and a ~1,150-line prelude —
+with every optimizer, linear algebra, vmap, GPU sorting, custom derivatives and
+the worker added. Beyond: the grammar and the evaluator's rules as Fluent
+values (OMeta), and the printers as tables — the language describing itself.
+
+Decisions these steps need (Milan):
+
+1. `◌` means an absent argument everywhere (S5).
+2. The dtype layer goes: every value f32, bool and int only as printing tags;
+   a NaN condition in `where` is the one observable nuance (S5).
+3. Optimizers train the variables their loss reads; an explicit list stays
+   possible (S6).
+4. Records — their design gates S8's structural rules and S10's attributes.
+5. Plotly → plots written in Fluent (S10): a visual change.
+6. The prelude in its own `.fl` file, so `language.ts` is TypeScript only.
 
 The platform layer of §6 (async compiles, constant block, shape-free maps,
 explicit layouts, memory plans, staging rings, rAF scheduler) and the kernel
 set (index-expression views, multi-output kernels, the measured matmul tile,
-roofline pricing) land inside S3–S5 where the gallery needs them.
+roofline pricing) land inside S3–S7 where the gallery needs them.
 
 ---
 
@@ -710,8 +839,10 @@ easy to revisit:
    a list of gradients, so a prelude optimizer is `∇(loss)((θ, φ))`; a list is
    already a value.
 7. **Unused natives** move to the prelude; none are dropped.
-8. **Sort:** a native bitonic routine; the O(n²) prelude version is a fallback
-   definition only.
+8. **Sort:** on the GPU, as a bitonic network written in the prelude from
+   existing primitives (gather, compare, select) — no routine in the engine
+   (revised 2026-10-15 with the S5 plan; Milan: "we definitely want to sort
+   on the GPU").
 9. **Cotangents through `where`:** the branch not taken gets an exact zero that
    stays zero through its backward chain (0 × ∞ = 0 there), so NaN from the
    branch not taken never leaks. This deletes the double-`where` idiom from the
