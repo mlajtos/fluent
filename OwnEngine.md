@@ -705,23 +705,20 @@ Fluent today, 11 expressible with one new primitive.
      cond, List, concat, meshgrid – stay: a Fluent lambda takes a fixed number
      of arguments (open: a rest-parameter form). So do `_`, reduce and the
      arity dispatchers it is keyed by, and the natives other natives call.
-7. **S6 — Learning in userland.** Optimizers become prelude values.
-   - ∇ of a function of no arguments differentiates with respect to *the
-     variables it reads* and returns them with their gradients. A variable's
-     value becomes a tracked read, as a signal's already is. This replaces
-     "train every variable alive": no list to write, and two models in one
-     program no longer step each other (today `adamw` decays the other
-     model's weights). An explicit list stays possible, as a value.
-   - `:=` on a list of variables commits all of them together — one
-     realization, settled.
-   - In the prelude: sgd, momentum, Nesterov, adam, adamw, adagrad (parity
-     first), then RMSprop, Adadelta, Adamax, NAdam, RAdam, AMSGrad, AdaBelief,
-     Yogi, Lion, LAMB, LARS, Adafactor, schedule-free AdamW, Muon (Newton–
-     Schulz: matmuls only), L-BFGS; and pieces that compose with `∘`:
-     clipping by norm, weight decay, schedules (cosine, warmup, step), EMA,
-     lookahead.
-   - *Deletes:* `makeOptimizer`, the Adam and AdaGrad transforms, the
-     variable registry, `optax.ts` (~160 lines). *Adds:* ~35 TS, ~150 Fluent.
+7. **S6 — Learning in userland** — *done 2026-10-16*. `∇(loss)()`, with no
+   argument, differentiates with respect to the `~` variables the loss reads
+   (a variable's read reports itself while ∇ follows the loss) and gives
+   (value, variables, gradients), computed in one pass; `:=` on a list of
+   variables commits them together. Two optimizers no longer step each other's
+   variables. An optimizer is a value: `optimizer(init, rule, lr, vars?)`, and
+   on it sgd (momentum), adam, adamw, adagrad, rmsprop, adadelta, adamax,
+   nadam, radam, amsgrad, adabelief, yogi, lion, lamb, muon; warmup and cosine
+   schedules (lr as a function of the step); clipNorm (a rule wrapping a
+   rule). Checked against references written from optax's definitions.
+   `makeOptimizer`, the transforms and the variable registries are gone;
+   training throughput unchanged. Not yet: L-BFGS (a history and a line
+   search), Adafactor (factored moments), schedule-free AdamW, LARS, EMA and
+   lookahead; Shampoo and SOAP wait for linear algebra (S9, skipped).
 8. **S7 — JankFree: the worker** (JankFree.md §3, on the smaller core).
    - The evaluator, the engine and the compute GPUDevice run in a worker;
      the main thread keeps React, Monaco and input. Reads are effects
