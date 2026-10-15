@@ -1096,6 +1096,12 @@ describe("inverse and ⍢ under", () => {
     expect(value("(sin ⍣ -1)([0.5, -0.9])")).toEqual([expect.closeTo(Math.asin(0.5), 5), expect.closeTo(Math.asin(-0.9), 5)])
     expect(run("(square ⍣ -1)(-4)")).toBeInstanceOf(Error)                     // no real root, from anywhere
   })
+  test("where Newton can't take a step from a start, the element tries the next", () => {
+    // x^x has no slope at 0, the closest start for 3: Newton can't move from there
+    expect(value("({ x | x^x } ⍣ -1)(3)")).toBeCloseTo(1.82545, 4)
+    // per element: 1 lands from its own closest start and keeps that answer
+    expect(value("({ x | x^x } ⍣ -1)([3, 1])")).toEqual([expect.closeTo(1.82545, 4), 1])
+  })
   test("school math is one idea: do it in the right space, then come back", () => {
     expect(value("3 (square ⍢ +) 4")).toBeCloseTo(5, 5)                         // Pythagoras
     expect(value("6 (reciprocal ⍢ +) 3")).toBeCloseTo(2, 5)                     // resistors in parallel
@@ -1649,11 +1655,8 @@ describe("the evaluation host", () => {
             : d.k === "live" ? [[`${path}()`, d.now]] : []
     return parts.flatMap(([p, x]) => errorsIn(x, p))
   }
-  // under: `({ x | x^x } ⍣ -1)(3)` finds no solution – Newton from the seed meets x^x
-  // where its slope is undefined (ln 0); how ⍣ -1 picks seeds is an open decision
-  const knownBroken = new Set(["under"])
   for (const [name, src] of [...Object.entries(EXAMPLES), ["Tour", "Tour"]] as [string, string][]) {
-    (knownBroken.has(name) ? test.failing : test)(`${name} crosses to the page whole`, async () => {
+    test(`${name} crosses to the page whole`, async () => {
       const d = await evaluate(src.trim())
       expect(() => structuredClone(d)).not.toThrow()
       expect(errorsIn(d)).toEqual([])

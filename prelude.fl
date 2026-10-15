@@ -25,7 +25,7 @@ identical: doc(Identical, "identical(a, b)", "1 if a and b are the same value �
 
 ; Inverse and Under – ∇ gives every smooth function its slope, so Newton's
 ; method can run it backwards: no table of inverses, any smooth function.
-FunctionSolve: solve: doc({ g, y, seed |
+FunctionNewton: newton: doc({ g, y, seed |
   ; back(x, v) carries an output-shaped v back to the inputs it came from –
   ; the transpose of g at x, by ∇
   back: { x, v | ∇({ z | Σ(v × g(z)) })(x) },
@@ -43,32 +43,52 @@ FunctionSolve: solve: doc({ g, y, seed |
     m: miss(x),
     ; halve the step wherever it doesn't help, until nothing is left to halve:
     ; an element must get strictly closer, unless it's already well inside the
-    ; tolerance – and a step off the function (NaN) never helps
+    ; tolerance – and a step off the function (NaN) never helps. Where the slope
+    ; is undefined the flag comes back NaN – nothing moves there, so nothing halves
     shrink: { σ |
       mX: miss(x + (σ × Δ)),
-      worse: back(x, isNaN(mX) ∨ ((m > 1e-6) ∧ (mX ≥ m))) ≠ 0,
+      worse: abs(back(x, isNaN(mX) ∨ ((m > 1e-6) ∧ (mX ≥ m)))) > 0,
       where(worse, where(σ < 1e-6, 0, σ ÷ 2), σ)
     },
     x + ((shrink ⍣ ≡)(Δ × 0 + 1) × Δ)
   },
   ; no miss ever grows – staying put is always allowed – so this ends
-  x: (step ⍣ { new, old | max(miss(new)) ≥ max(miss(old)) })(seed),
+  (step ⍣ { new, old | max(miss(new)) ≥ max(miss(old)) })(seed)
+}, "newton(g, y, seed)", "Newton's method from seed toward g(x) = y, with ∇ supplying the slope: where it stops, landed or not. solve checks that it landed.", "newton({ x | x^3 + x }, 10, 1) ≈ 2"),
+FunctionSolve: solve: doc({ g, y, seed |
+  x: FunctionNewton(g, y, seed),
   ; an answer is checked, never assumed: no solution near the seed is an Error
   cond(
-    guard(max(miss(x)) ≤ 1e-4, { x }),
+    guard(max(abs(g(x) - y) ÷ (1 + abs(y))) ≤ 1e-4, { x }),
     { Error("solve: no solution near the seed", seed) }
   )
 }, "solve(g, y, seed)", "The x nearest seed where g(x) = y – Newton's method, with ∇ supplying the slope. When g works element by element, it runs g backwards (the seed picks the branch). When g picks out part of its input – a gather, a slice, the diagonal – it changes that part of seed and keeps the rest. No solution is an Error, never a wrong number.", "solve(cos, 0, 1) ≈ 1.5708"),
 FunctionInverse: inverse: doc({ g | FunctionArity((
   { x, y | FunctionInverse({ z | g(x, z) })(y) },
   { y |
-    ; each element starts from whichever of y, 0 and 1 lands closest to it
+    ; each element starts from whichever of y, 0 and 1 lands closest
     starts: stack((y, y × 0, y × 0 + 1)),
     off: abs(g(starts) - y),
-    pick: argmin(where(isNaN(off), 1e30, off), 0),
-    FunctionSolve(g, y, Σ(oneHot(pick, 3) × moveaxis(starts, 0, -1), -1))
+    order: moveaxis(argsort(moveaxis(where(isNaN(off), 1e30, off), 0, -1)), -1, 0),
+    seedAt: { k | Σ(oneHot(order _ k, 3) × moveaxis(starts, 0, -1), -1) },
+    seeds: (seedAt(0), seedAt(1), seedAt(2), y × 0 - 1),
+    landed: { x | abs(g(x) - y) ÷ (1 + abs(y)) ≤ 1e-4 },
+    ; a start Newton can't take a single step from – no slope there – says nothing,
+    ; so those elements try the next start; one it moved from and still missed is
+    ; an answer: no solution near it
+    attempt: { k, x, stuck | cond(
+      guard((k < 4) ∧ max(stuck), {
+        seed: seeds _ k,
+        fresh: FunctionNewton(g, y, seed),
+        attempt(k + 1, where(stuck, fresh, x), stuck ∧ (fresh = seed) ∧ ¬(landed(fresh)))
+      }),
+      guard(min(landed(x)), { x }),
+      { Error("solve: no solution near the seed", seedAt(0)) }
+    ) },
+    first: FunctionNewton(g, y, seedAt(0)),
+    attempt(1, first, (first = seedAt(0)) ∧ ¬(landed(first)))
   }
-)) }, "inverse(g)", "g run backwards – the same as g ⍣ -1. Each element starts from whichever of y, 0 and 1 lands closest. Dyadic x inverse(g) y solves g(x, ?) = y.", "inverse({ x | x^3 + x })(10) = 2"),
+)) }, "inverse(g)", "g run backwards – the same as g ⍣ -1. Each element starts from whichever of y, 0 and 1 lands closest; where Newton can't take a step from it (no slope there), from the next, then from -1. Dyadic x inverse(g) y solves g(x, ?) = y.", "inverse({ x | x^3 + x })(10) = 2"),
 FunctionUnder: under: (⍢): doc({ g, f |
   ; the answer is the point nearest the argument – the right one, dyadically –
   ; where g lands on f's result; when f changed the shape (it reduced), the
