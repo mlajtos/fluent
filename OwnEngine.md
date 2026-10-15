@@ -668,55 +668,43 @@ and engine export: 153 environment names = 38 engine primitives, 35 that must
 stay native (evaluation, reflection, signals, strings, I/O), 67 expressible in
 Fluent today, 11 expressible with one new primitive.
 
-6. **S5 — The primitive core.** Fluent binds the engine's primitives directly;
-   everything composite moves to the prelude.
-   - *First, bugs the census found:* a zero-size result computed on the CPU
-     is realized as one element (`[1, 2, 3] _ slice([5, 6, 7] _ [0, 1, 2],
-     [0], [0])` reads index 5 — it breaks `mask` with nothing kept and every
-     `einsum.fl` spec without a repeated label); `%` uploads a full-size zeros
-     tensor on every call and ∇ a full-size ones tensor (a broadcast constant
-     does both); ⟳ passes its index as a literal, so a step that reads it
-     compiles a new plan every step; `shape((1, 2))` leaks a raw engine error.
-   - *Constant-only values are computed while the graph is built* (§6.3). A
-     Fluent `y ⍴ [2, 2]` costs 33 µs and `concat((shape(y), [1]))` 72 µs
-     today — each a tiny CPU realization — against 1.8 µs for a native matmul,
-     so shape arithmetic must fold before shape-heavy code moves.
-   - *An IOTA leaf* (index → value, fused like RANDOM): ranges, linspace,
-     oneHot, eye, flip and argmax's index stop uploading host arrays.
-   - *New in the core* (~70 lines): `◌` means an absent argument in natives
-     as it already does in lambdas (today `{ x, k | Σ(x, k) }([1, 2, 3])` fails
-     with "got ◌") — this alone lets every combinator be a prelude lambda;
-     type tests `isTensor isList isString isError` and `identical`; the raw
-     views `permute broadcast padAxis window`; `take` (the gather, keeping
-     its bounds check); `scatterAdd`; `detach`.
-   - *Moves to the prelude* (~67 natives, ~800 TS lines out, ~250 Fluent
-     in): comparisons and logic from `<`; subtract, divide, negate, roots,
-     `%`, max/min; hypot, sinc, erf, ceil, trunc; softmax, logSoftmax,
-     crossEntropy, oneHot; mean, min, argmax/argmin, reduce; linspace, fill,
-     meshgrid, `...`, pad, tile, repeat, roll, reverse, mask; matmul, dot,
-     fft, einsum (`engine/einsum.fl`); randn; `⊗ ⍤ ∙`; the combinators,
-     `cascade`, `when`, `try`, `$`, `@`; `_` and `≡` over `take` and the
-     type tests. `⍣` stays the native loop: Fluent recursion overflows the
-     stack near depth 2,000 and slows superlinearly before that.
-   - *Sorting on the GPU:* a bitonic network in the prelude — each pass a
-     gather at a computed partner, a compare and a select, all existing
-     primitives; `argsort` carries indices, ties break on the index, so it is
-     stable and differentiable. The HOST op and its synchronous read inside
-     a plan leave the engine.
-   - *The facade dissolves:* `numpy.ts` becomes realization only (leaves,
-     placement, settle, reads); `jax.ts`, `nn.ts` and `optax.ts` go but for
-     ∇ and init; the dtype layer goes (every value is f32; only a printing
-     tag remains); the test-only second executor and resident buffers
-     (~140 lines in gpu.ts/cpu.ts, which the tests exercise and the app never
-     runs) go once the tests run on the shipping path; one kernel printer
-     shared by WGSL and JS; dead code (`tan`'s MATHS row, unused nn helpers,
-     `Describe`, `Tensor`, unused exports, id-keyed caches).
-   - *Gate:* every suite green; the dreamer's kernel count and step time
-     within 10%; host time per step within 10% (a Fluent application costs
-     ~0.8 µs against ~0.14 µs for a TS constructor; the prelude adds ~0.4 ms
-     to each evaluation).
-   - *Size:* `language.ts` TS 2,835 → ~2,200, prelude 364 → ~620; `engine/`
-     2,481 → ~1,700.
+6. **S5 — The primitive core** — *done 2026-10-16*. What landed:
+   - *Folding:* a value that depends only on constants is computed as it is
+     built (up to 256 elements), each op as its kernel computes it – a
+     property gate checks all 45 ops against the CPU kernels, bit for bit.
+     Fluent shape arithmetic went from 33–72 µs to ~9–11 µs a call.
+   - *IOTA* is a leaf computed where it is read; ranges, one-hot rows and
+     index tables stop uploading arrays. `eq` is one engine row, NaN-safe on
+     the GPU (as a composite every guard paid 50 µs for it).
+   - *Into the prelude* (each checked against its native on the same
+     arguments – 189 cases): − ÷ neg √n log-base, > ≤ ≥ ≠ ∨ ∧ ¬ ⊻, ceil
+     trunc hypot sinc erf mean %, ranges linspace fill, roll reverse tile
+     repeat pad moveaxis transpose, softmax logSoftmax crossEntropy argmax
+     argmin fft randn, ⊗ ⍤ ∙ mask ≡. `∙` is now one fused contraction; `≡`
+     reads back one number, not both tensors.
+   - *New in the core:* ◌ is an argument not given (natives agree with
+     lambdas); isTensor isList isString isError identical; permute broadcast
+     padAxis window take scatterAdd detach. The prelude is `prelude.fl`.
+   - *Sorting on the GPU:* data on the device sorts by a bitonic network
+     (one gather and one select a pass, partners computed in the kernel); data
+     the host has sorts there. Stable, NaN last. The HOST op and its
+     synchronous read inside a plan are gone.
+   - *The facade dissolved:* `engine/tensor.ts` (`numpy.ts`, `jax.ts`,
+     `nn.ts`, `optax.ts` gone); one value type – the dtype tags went; the
+     test-only executor went (the gates run the shipping path); one plan
+     cache for CPU and GPU over placeholder leaves, so a cached plan holds no
+     data. Fixed on the way: a zero-size CPU result came back as one element;
+     `%` and ∇ uploaded full-size zeros and ones; ⟳'s index was a literal.
+   - *Size:* `language.ts` 3,199 → 2,599, prelude 364 → 462, `engine/`
+     2,481 → 2,239. Training throughput unchanged (dreamer 8.7 ms a step,
+     looped dreamer 37.3 ms). Less than planned moved, for measured reasons:
+     a Fluent application costs ~1–3 µs of host time, so code that runs dozens
+     of them per call stays native until the evaluator is fast (S7) – matmul,
+     dot, einsum (einsum.fl took 12.7 ms a call), the bitonic network (30–110
+     ms to build in Fluent). The variadic natives – the combinators, cascade,
+     cond, List, concat, meshgrid – stay: a Fluent lambda takes a fixed number
+     of arguments (open: a rest-parameter form). So do `_`, reduce and the
+     arity dispatchers it is keyed by, and the natives other natives call.
 7. **S6 — Learning in userland.** Optimizers become prelude values.
    - ∇ of a function of no arguments differentiates with respect to *the
      variables it reads* and returns them with their gradients. A variable's
