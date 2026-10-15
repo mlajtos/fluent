@@ -752,19 +752,28 @@ Fluent today, 11 expressible with one new primitive.
    - *Not done, by measurement:* reads are not effects. The evaluator stays
      synchronous and the synchronous read bridge stays: it blocks the worker,
      not the page, and a generator trampoline would slow the evaluator, which
-     is the measured bottleneck. Stable leaves for state (rebinding a
+     is the measured bottleneck. (Milan, 2026-10-16: a frozen worker is
+     basically invisible – accepted.) Stable leaves for state (rebinding a
      variable's buffer under the same node) are not done either.
    - *Tests:* the Bun suite runs the host's real widgets and sources (only
      the network loaders are stubbed) and checks the protocol: answered
      writes, batches gated on drawing, released lives going quiet, and every
      gallery demo crossing whole with no error in any cell it shows. That
-     check found a shipped error: under's `({ x | x^x } ⍣ -1)(3)` finds no
-     solution (Newton meets x^x where its slope is undefined) – marked as a
-     known failure; how ⍣ -1 seeds is an open decision.
+     check found a shipped error: under's `({ x | x^x } ⍣ -1)(3)` found no
+     solution – its closest start, 0, gives Newton no slope. ⍣ -1 now tries
+     the next start for exactly those elements (one Newton moved from and
+     still missed stays an Error).
    - *Size:* the IDE is `client.tsx` 2,304 + `host.ts` 814 + `protocol.ts`
      99 + `worker.ts` 20 + `documentation.ts` 126 = 3,363 lines, against
      `client.tsx`'s 3,161.
-9. **S8 — META: rules as values.**
+9. **S8 — META: rules as values** — *not taken (2026-10-16)*. Milan: worth it
+   only for great leverage, and it has none to show. Derivatives as values
+   come out about line-neutral (~35 TS rows → ~25 Fluent lines + ~40 lines of
+   template machinery); laws as values add a matcher to replace six one-line
+   rules; the user-facing gain – custom derivatives – is niche, and ∇ through
+   ⍣ -1 is already exact (it differentiates the Newton iterations). Reopens if
+   a demo needs a custom derivative, or ⍤'s copy-per-cell cost shows up in a
+   measurement. The plan as written:
    - `derivative(sin, { x, dx | cos(x) × dx })`: the elementwise and MATH
      JVP rows become prelude values. Each is applied once, at registration, to
      placeholder leaves, giving a graph template the engine instantiates per
