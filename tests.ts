@@ -1110,6 +1110,10 @@ describe("inverse and ⍢ under", () => {
     expect(value("∇(erf)(0)")).toBeCloseTo(2 / Math.sqrt(Math.PI), 4)
     expect(value("erf([-1, 0, 1])")).toEqual([expect.closeTo(-0.8427, 4), 0, expect.closeTo(0.8427, 4)])
   })
+  test("g needn't work element by element: each start runs alone", () => {
+    // g reads its argument as one number beside a [2] vector – a stack of starts would collide
+    expect(value("v: [1, 2], g: { s | Σ(v × s) }, (g ⍣ -1)(9)")).toBeCloseTo(3, 4)
+  })
   test("any CDF run backwards is a sampler", () => {
     // the standard normal's quantiles, from its CDF alone
     expect(value("Φ: { x | 0.5 × (1 + erf(x ÷ √(2))) }, (Φ ⍣ -1)([0.01, 0.5, 0.99])"))

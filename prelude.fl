@@ -68,9 +68,10 @@ FunctionSolve: solve: doc({ g, y, seed |
 FunctionInverse: inverse: doc({ g | FunctionArity((
   { x, y | FunctionInverse({ z | g(x, z) })(y) },
   { y |
-    ; each element starts from whichever of y, 0 and 1 lands closest
+    ; each element starts from whichever of y, 0 and 1 lands closest – g runs on each
+    ; start alone, so it needn't work element by element
     starts: stack((y, y × 0, y × 0 + 1)),
-    off: abs(g(starts) - y),
+    off: stack((abs(g(y) - y), abs(g(y × 0) - y), abs(g(y × 0 + 1) - y))),
     order: moveaxis(argsort(moveaxis(where(isNaN(off), 1e30, off), 0, -1)), -1, 0),
     seedAt: { k | Σ(oneHot(order _ k, 3) × moveaxis(starts, 0, -1), -1) },
     seeds: (seedAt(0), seedAt(1), seedAt(2), y × 0 - 1),
