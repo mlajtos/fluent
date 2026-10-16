@@ -130,6 +130,8 @@ export const MATHS: Record<string, { arity: 1 | 2; js: (...a: number[]) => numbe
   log1p: { arity: 1, js: Math.log1p, wgsl: (x) => `select(log(1.0 + ${x}), ${x} * (1.0 - ${x} * (0.5 - ${x} / 3.0)), abs(${x}) < 1e-3)` },
   cbrt: { arity: 1, js: Math.cbrt, wgsl: (x) => `(sign(${x}) * pow(abs(${x}), 1.0 / 3.0))` },
   atan2: { arity: 2, js: Math.atan2, wgsl: (y, x) => `atan2(${y}, ${x})` },
+  // a true quotient: x × (1 ÷ y) rounds twice, and 1 ÷ 3 × 3 is not 1
+  div: { arity: 2, js: (a, b) => a / b, wgsl: (a, b) => `(${a} / ${b})` },
   // equal, and never for NaN – spelled out, as WGSL may assume a float is never NaN
   eq: { arity: 2, js: (a, b) => (a === b ? 1 : 0), wgsl: (a, b) => `select(0.0, 1.0, ${a} == ${b} && (bitcast<u32>(${a}) & 0x7fffffffu) <= 0x7f800000u)` },
   // WGSL pow is exp2(y·log2 x): undefined for x < 0 and for 0^0 — spell out what Math.pow does

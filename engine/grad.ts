@@ -46,6 +46,10 @@ export const JVP: Partial<Record<UOp["op"], Jvp>> = {
       const [y, x] = u.src as [UOp, UOp], r = recip(add(sq(x), sq(y)));
       return plus(scale(mul(x, r), a), scale(neg(mul(y, r)), b));
     }
+    if (fn === "div") {                                                        // d(x ÷ y) = dx ÷ y − (x ÷ y)·dy ÷ y
+      const r = recip(u.src[1]!);
+      return plus(scale(r, a), scale(neg(mul(u, r)), b));
+    }
     if (fn === "pow") {                                                        // d(xʸ) = y·xʸ⁻¹·dx + xʸ·ln x·dy
       const [x, y] = u.src as [UOp, UOp];
       return plus(scale(mul(y, math("pow", x, add(y, konst(-1)))), a), scale(mul(u, log(x)), b));

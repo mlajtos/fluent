@@ -364,7 +364,7 @@ const m1 = (fn: string) => un((x) => ir.math(fn, x));
 export const add = bin(ir.add);
 export const multiply = bin(ir.mul);
 export const subtract = bin((x, y) => ir.add(x, neg(y)));
-export const divide = bin((x, y) => ir.mul(x, ir.recip(y)));
+export const divide = bin((x, y) => ir.math("div", x, y));
 export const reciprocal = un(ir.recip);
 export const square = un((x) => ir.mul(x, x));
 export const sqrt = un(ir.sqrt);
@@ -428,10 +428,30 @@ export const scatterAdd = (indices: Like, values: Like, size: number): Tensor =>
   return wrap(ir.scatterAdd(ir.reshape(i, [n]), ir.reshape(v, [n, ...v.shape.slice(i.shape.length)]), size));
 };
 export const broadcastTo = (a: Like, shape: readonly number[]): Tensor => { const x = nodeOf(a); return wrap(ir.sameShape(x.shape, shape) ? x : ir.broadcastTo(x, shape)); };
+// Pieces whose values the host already holds – a literal's numbers, mostly – are joined by
+// copying: as a graph, n pieces are n kernels, each adding the whole result again. Not
+// for a piece ∇ follows, whose join must stay in the graph.
+const joinOnHost = (arrays: readonly Tensor[], shapes: readonly (readonly number[])[], ax: number, shape: readonly number[]): Tensor | null => {
+  const datas = arrays.map((a) => (differentiable.has(a.node) ? undefined : dataOf(a.node)));
+  if (datas.some((d) => d === undefined)) return null;
+  const out = new Float32Array(ir.numel(shape)), outer = ir.numel(shape.slice(0, ax));
+  let at = 0;
+  for (let o = 0; o < outer; o++) {
+    datas.forEach((d, p) => {
+      const block = ir.numel(shapes[p]!.slice(ax));
+      out.set(d!.subarray(o * block, (o + 1) * block), at);
+      at += block;
+    });
+  }
+  return new Tensor(held(out, shape));
+};
 export function concatenate(arrays: readonly Tensor[], axis = 0): Tensor {
   if (!arrays.length) throw new Error("concatenate: needs at least one array");
   const r = arrays[0]!.ndim, ax = normAxis(axis, r);
   const total = arrays.reduce((t, a) => t + a.node.shape[ax]!, 0);
+  const shape = arrays[0]!.node.shape.map((d, i) => (i === ax ? total : d));
+  const copied = joinOnHost(arrays, arrays.map((a) => a.node.shape), ax, shape);
+  if (copied) return copied;
   let off = 0, sum: UOp | null = null;
   for (const a of arrays) {
     const len = a.node.shape[ax]!, piece = ir.pad(a.node, ax, off, total - off - len);
@@ -442,7 +462,9 @@ export function concatenate(arrays: readonly Tensor[], axis = 0): Tensor {
 }
 export function stack(arrays: readonly Tensor[], axis = 0): Tensor {
   const r = arrays[0]!.ndim + 1, ax = normAxis(axis, r);
-  return concatenate(arrays.map((a) => reshape(a, [...a.shape.slice(0, ax), 1, ...a.shape.slice(ax)])), ax);
+  const shapes = arrays.map((a) => [...a.shape.slice(0, ax), 1, ...a.shape.slice(ax)]);
+  const shape = [...arrays[0]!.shape.slice(0, ax), arrays.length, ...arrays[0]!.shape.slice(ax)];
+  return joinOnHost(arrays, shapes, ax, shape) ?? concatenate(arrays.map((a, i) => reshape(a, shapes[i]!)), ax);
 }
 // take: out = x[..., idx, ...] along `axis`, idx of any shape
 export function take(a: Like, indices: Like, axis?: number): Tensor {

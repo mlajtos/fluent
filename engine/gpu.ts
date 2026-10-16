@@ -5,7 +5,7 @@
 import type { UOp } from "./ir.ts";
 import { node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM } from "./ir.ts";
 import { graphRewriteMany } from "./rewrite.ts";
-import { optimizeMany, COST, canonical, placeholders } from "./opt.ts";
+import { optimizeMany, COST, canonical, placeholders, checkMemory } from "./opt.ts";
 import type { HostData } from "./cpu.ts";
 
 // Dispatches per queue.submit. Submitting each kernel alone costs ~15× in dispatch
@@ -469,6 +469,7 @@ export class GPU {
       if (this.#plans.size > 512) this.#plans.delete(this.#plans.keys().next().value!);
       const p = placeholders(roots, leaves);
       plan = { lowered: lowerMany(p.roots), slots: p.slots };
+      checkMemory(plan.lowered, "KERNEL");
       this.#plans.set(key, plan);
     } else { this.#plans.delete(key); this.#plans.set(key, plan); }               // most recently used last
     const lowered = plan.lowered;

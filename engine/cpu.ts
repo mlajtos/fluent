@@ -3,8 +3,8 @@
 // prints — with every value op fround'd so it matches the GPU's f32 arithmetic.
 
 import type { UOp } from "./ir.ts";
-import { numel, kInputs, bufName, toposort, MATHS, hashUniform } from "./ir.ts";
-import { optimizeMany, canonical, placeholders } from "./opt.ts";
+import { numel, kInputs, bufName, toposort, MATHS, hashUniform, bounds } from "./ir.ts";
+import { optimizeMany, canonical, placeholders, checkMemory } from "./opt.ts";
 
 export interface HostData { data: Float32Array; shape: readonly number[] }
 
@@ -42,7 +42,12 @@ function render(u: UOp, c: Ctx): string {
     case "IDIV": e = `Math.floor(${r(u.src[0]!)} / ${r(u.src[1]!)})`; break;
     case "IMOD": e = `(${r(u.src[0]!)} % ${r(u.src[1]!)})`; break;
     case "IIDX": e = `Math.trunc(${r(u.src[0]!)})`; break;
-    case "IVAL": e = `f(${r(u.src[0]!)})`; break;
+    case "IVAL": {
+      // an integer below 2²⁴ already is a float32: nothing to round
+      const [lo, hi] = bounds(u.src[0]!);
+      e = lo > -(2 ** 24) && hi < 2 ** 24 ? `(${r(u.src[0]!)})` : `f(${r(u.src[0]!)})`;
+      break;
+    }
     case "LOAD": e = `a${(u.arg as { slot: number }).slot}[${r(u.src[0]!)}]`; break;
     case "ADD": e = `f(${r(u.src[0]!)} + ${r(u.src[1]!)})`; break;
     case "MULTIPLY": e = `f(${r(u.src[0]!)} * ${r(u.src[1]!)})`; break;
@@ -89,6 +94,19 @@ export function printKernel(k: UOp): string {
   const loads = Array.from({ length: nIn }, (_, i) => `const a${i} = ins[${i}];`).join(" ");
   return `(ins, o) => {\n${loads}\nfor (let i = 0; i < ${n}; i++) {\n${c.scopes[0]!.join("\n")}\no[i] = ${body};\n}\n}`;
 }
+// JavaScriptCore (Bun, Safari) can hand back the compiled code of another source that
+// differs only in its digits – two kernels ran one's code, a wrong number with no error.
+// So every kernel is compiled with a serial number it answers with when called without
+// inputs, and code that answers with another's number is compiled again.
+let serial = 0;
+const fromSource = (src: string): Compiled => {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const id = ++serial;
+    const fn = new Function("f", "M", "H", `return ${src.replace("(ins, o) => {", `(ins, o) => {\nif (ins === null) return ${id};`)}`)(Math.fround, MATH_JS, hashUniform);
+    if (fn(null) === id) return fn as Compiled;
+  }
+  throw new Error("cpu: the JavaScript engine kept returning another kernel's compiled code");
+};
 const kernelFn = new WeakMap<UOp, Compiled>();                                 // a plan's kernels are printed once
 const compile = (k: UOp): Compiled => {
   let fn = kernelFn.get(k);
@@ -97,7 +115,7 @@ const compile = (k: UOp): Compiled => {
   fn = compiled.get(src);
   if (!fn) {
     if (compiled.size > 4096) compiled.clear();
-    fn = new Function("f", "M", "H", `return ${src}`)(Math.fround, MATH_JS, hashUniform) as Compiled;
+    fn = fromSource(src);
     compiled.set(src, fn);
   }
   kernelFn.set(k, fn);
@@ -141,6 +159,7 @@ export class CPU {
       if (this.#plans.size > 512) this.#plans.delete(this.#plans.keys().next().value!);
       const p = placeholders(roots, leaves);
       plan = { opt: optimizeMany(p.roots), slots: p.slots };
+      checkMemory(plan.opt, "FUSED");
       this.#plans.set(key, plan);
     } else { this.#plans.delete(key); this.#plans.set(key, plan); }
     return this.#eval(plan.opt, inputs, new Map(plan.slots.map((s, i) => [s.id, leaves[i]!])));

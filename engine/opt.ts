@@ -33,6 +33,23 @@ const SIMPLIFY: Rule[] = [
 ];
 export const simplifyMany = (roots: UOp[]): UOp[] => graphRewriteMany(roots, SIMPLIFY);
 
+// The memory a plan computes into, all of it, is refused past a budget: a broadcast one
+// axis too big must be an Error, not exhaust the machine's memory (on Apple silicon the GPU
+// shares it with everything else). `materialized` names the nodes the backend allocates.
+export const MEMORY_BUDGET = 2 ** 31;
+export const checkMemory = (roots: readonly UOp[], materialized: Op): void => {
+  let bytes = 0;
+  const seen = new Set<number>();
+  for (const r of roots) for (const u of toposort(r)) {
+    if (seen.has(u.id)) continue;
+    seen.add(u.id);
+    if (u.op === materialized) bytes += numel(u.shape) * 4;
+  }
+  if (bytes > MEMORY_BUDGET) {
+    throw new Error(`this needs ${(bytes / 2 ** 30).toFixed(1)} GB of memory at once – more than the ${MEMORY_BUDGET / 2 ** 30} GB Fluent allows; compute it in smaller pieces`);
+  }
+};
+
 // Σ-linearity at the SCHEDULE level (reordering float summation is a schedule license —
 // the tile and coop tree-reduces already take it). ∇'s fork-summed cotangents (several
 // reduce chains added per weight) become ONE chain whose sum-of-products body the split-K
