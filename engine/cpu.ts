@@ -94,8 +94,9 @@ export function printKernel(k: UOp): string {
   const loads = Array.from({ length: nIn }, (_, i) => `const a${i} = ins[${i}];`).join(" ");
   return `(ins, o) => {\n${loads}\nfor (let i = 0; i < ${n}; i++) {\n${c.scopes[0]!.join("\n")}\no[i] = ${body};\n}\n}`;
 }
-// JavaScriptCore (Bun, Safari) can hand back the compiled code of another source that
-// differs only in its digits – two kernels ran one's code, a wrong number with no error.
+// Bun's JavaScriptCore can hand back the compiled code of another source that differs
+// only in its digits – two kernels ran one's code, a wrong number with no error (Safari
+// and V8 compile both correctly).
 // So every kernel is compiled with a serial number it answers with when called without
 // inputs, and code that answers with another's number is compiled again.
 let serial = 0;

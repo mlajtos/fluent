@@ -1750,9 +1750,9 @@ describe("the engine", () => {
     expect(() => big.readSync()).toThrow(/GB of memory at once/)
   })
   test("the CPU backend runs the kernel it compiled, not a look-alike", async () => {
-    // JavaScriptCore hands back another source's compiled code for some pairs of sources
-    // that differ only in their digits: this concatenation of 8192 pieces – 8185 kernels
-    // alike but for their offsets – came out with two numbers swapped
+    // Bun's JavaScriptCore hands back another source's compiled code for some pairs of
+    // sources that differ only in their digits: this concatenation of 8192 pieces – 8185
+    // kernels alike but for their offsets – came out with two numbers swapped
     const ir = await import("./engine/ir.ts")
     const { CPU } = await import("./engine/cpu.ts")
     const n = 8192
