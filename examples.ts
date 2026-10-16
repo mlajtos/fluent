@@ -128,7 +128,7 @@ hop: { M | M (+ ∙ ⌊) W },        ; one min-plus relaxation = allow one more 
 )
 `,
   "under": `
-; ⍢ Under – the simple thing, in the right space.
+; ⍢ Around – the simple thing, in the right space.
 ;   x (g ⍢ f) y  =  g⁻¹(f(g(x), g(y)))
 ; Fluent can differentiate any smooth g, so it can also run g backwards:
 ; Newton's method, with ∇ supplying the slope. No table of inverses.
@@ -144,7 +144,7 @@ M: [[3, 1, 4], [1, 5, 9], [2, 6, 5]],
 diagonal: { m | Σ(m × 𝕀(#(m)), 1) },
 
 (
-  Text("# ⍢ Under – the simple thing, in the right space"),
+  Text("# ⍢ Around – the simple thing, in the right space"),
   Grid(3)(
     row("Pythagoras",                 "√(x² + y²)",          3 (square ⍢ +) 4         ),
     row("resistors in parallel",      "1 ÷ (1/x + 1/y)",     6 ∥ 3                    ),

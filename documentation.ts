@@ -84,7 +84,7 @@ Button("Reset", { x(0) }),
     - a predicate runs until it holds: \`(cos ⍣ ≡)(1)\` is the fixed point \`0.739…\`
 - Inverse and Under – any smooth function runs backwards (Newton's method, slope from \`∇\`)
   - \`inverse(f)\` is \`f ⍣ -1\`; \`solve(g, y, seed)\` is the x near seed with g(x) = y
-  - under with \`⍢\`: \`x (g ⍢ f) y\` is \`g⁻¹(f(g(x), g(y)))\` – do f in g's world, then come back
+  - around with \`⍢\`: \`x (g ⍢ f) y\` is \`g⁻¹(f(g(x), g(y)))\` – go into g's world, do f, come back; \`f under g\` is the same in APL's order
   - \`3 (square ⍢ +) 4\` is \`5\`, \`(log ⍢ μ)(x)\` is the geometric mean, \`6 (reciprocal ⍢ +) 3\` is \`2\`
   - when g picks out a part, f edits just that part: \`({ x | x_[1, 2, 3] } ⍢ sort)(v)\` sorts only the middle
 - Choosing – a candidate answers or declines

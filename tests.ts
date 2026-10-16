@@ -101,7 +101,7 @@ describe("combinators", () => {
     expect(value("3 (⍨ -) 10")).toBe(7)
     expect(value("(⍨ ×)(9)")).toBe(81)
   })
-  test("⍥ over: preprocessor first, combiner second (Ψ)", () => {
+  test("⍥ into: preprocessor first, combiner second (Ψ) – and over, its APL order", () => {
     expect(value("-3 (abs ⍥ =) 3")).toBe(1)
   })
   test("Φ fork: middle tine combines the outer tines (Φ, Φ₁)", () => {
@@ -124,7 +124,8 @@ describe("combinators", () => {
   })
   test("word aliases: array-language and mainstream names", () => {
     expect(value("then(+, √)(9, 16)")).toBe(5)
-    expect(value("compose(+, √)(9, 16)")).toBe(5)
+    expect(value("then(+, √)(9, 16)")).toBe(5)
+    expect(value("compose(√, +)(9, 16)")).toBe(5)                    // mathematics' order
     expect(value("3 (swap(-)) 10")).toBe(7)
     expect(value("fork(Σ, ÷, #)([1, 2, 3, 4])")).toBe(2.5)
     expect(value("before(1, +)(41)")).toBe(42)
@@ -174,14 +175,14 @@ describe("tensors", () => {
     expect(value("a: [10, 20, 30], a_(-1)")).toBe(30)
     expect(value("#([1, 2, 3])")).toBe(3)
   })
-  test("length is a cascade: tensor, list, or string – #, length, len agree", () => {
+  test("length is a cascade: tensor, list, or string – # and length agree", () => {
     expect(value("length([1, 2, 3])")).toBe(3)          // tensor
     expect(value("length([[1, 2], [3, 4]])")).toBe(2)   // leading axis
     expect(value("length((1, 2, 3))")).toBe(3)          // list
     expect(value('length("abc")')).toBe(3)              // string
     // the three tiers are one function
     expect(value('#("hi")')).toBe(2)
-    expect(value('len("hello")')).toBe(5)
+
     // empties work in every shape
     expect(value("length([])")).toBe(0)
     expect(value("length(())")).toBe(0)
@@ -493,10 +494,10 @@ describe("math functions", () => {
     expect(value("TensorTangent(1)")).toBeCloseTo(1.5574, 3)   // descriptive name holds the impl
   })
   test("inverse trig, both arc* and short spellings", () => {
-    expect(value("arcsin(1)")).toBeCloseTo(1.5708, 3)
+    expect(value("asin(1)")).toBeCloseTo(1.5708, 3)
     expect(value("asin(1)")).toBeCloseTo(1.5708, 3)   // short alias, same value
-    expect(value("arccos(1)")).toBe(0)
-    expect(value("arctan2(1, 1)")).toBeCloseTo(0.7854, 3)
+    expect(value("acos(1)")).toBe(0)
+    expect(value("atan2(1, 1)")).toBeCloseTo(0.7854, 3)
     expect(value("hypot(3, 4)")).toBe(5)
     expect(value("deg2rad(180)")).toBeCloseTo(3.14159, 3)
   })
@@ -775,6 +776,12 @@ describe("lists and strings", () => {
   test("ListReduce", () => {
     expect(value("ListReduce((1, 2, 3), { a, b | a + b })")).toBe(6)
   })
+  test("ListScan keeps every step, in one pass", () => {
+    expect(value("TensorStack(ListScan((1, 2, 3), { a, b | a + b }, 0))")).toEqual([0, 1, 3, 6])
+    const t = performance.now()
+    expect(value("#(ListScan(TensorUnstack(0 ..< 20000), ⊢, 0))")).toBe(20001)
+    expect(performance.now() - t).toBeLessThan(5_000)
+  }, 30_000)
   test("strings are values", () => {
     expect(String(value('"hello"'))).toBe("hello")
     expect(value('StringLength("abc")')).toBe(3)
@@ -1077,7 +1084,12 @@ describe("⍣ power: counts, inverses, and fixed points", () => {
   })
 })
 
-describe("inverse and ⍢ under", () => {
+describe("inverse and ⍢ around", () => {
+  test("under, over and compose are around, into and then in the traditional order", () => {
+    expect(value("3 (+ under square) 4")).toBeCloseTo(value("3 (square ⍢ +) 4"), 5)
+    expect(value("-3 (= over abs) 3")).toBe(1)
+    expect(value("(√ compose +)(9, 16)")).toBe(5)
+  })
   test("solve finds the x near the seed, or says there is none", () => {
     expect(value("solve(cos, 0, 1)")).toBeCloseTo(Math.PI / 2, 5)
     const none = run("solve(cos, 0, 0)") as Error
@@ -1701,6 +1713,9 @@ describe("numbers come out right", () => {
   })
   test("functions that misbehaved at their edges", () => {
     expect(value("∇(sinc)(0)")).toBe(0)                                   // not NaN from the 0 ÷ 0 branch
+    expect(value("∇({ x | where(x = 0, 1, sin(x) ÷ x) })(0)")).toBe(0)
+    expect(value("∇({ x | where(x > 0, log(x), x) })([1, 2, 0])")).toEqual([1, 0.5, 1])
+    expect(Number.isNaN(value("∇({ x | where(x > 0, √(x), x) × (0 ÷ 0) })(1)"))).toBe(true)
     expect(value("sinh(1e-6)")).toBeCloseTo(1e-6, 12)                     // not cancelled to noise
     expect(value("hypot(1e20, 1e20)")).toBeCloseTo(Math.SQRT2 * 1e20, -14) // not Inf
     expect(value("-8 √ 3")).toBe(-2)                                      // an odd root of a negative

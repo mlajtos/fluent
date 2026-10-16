@@ -39,7 +39,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | `⌊` | `floor` | `TensorFloor` |
 | — | `max` | `TensorMax` |
 | — | `min` | `TensorMin` |
-| `#` | `length` | `TensorLength` |
+| `#` | `length` | `Length` |
 | `_` | `gather` | `TensorGather` |
 | `⍴` | `reshape` | `TensorReshape` |
 | `..<` | `range` | `TensorRange` |
@@ -54,7 +54,12 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | `:=` | — | `TensorAssign` |
 | `⟳` | `iter` | `FunctionIterate` |
 | `⍣` | `power` | `FunctionPower` |
-| `⍢` | `under` | `FunctionUnder` |
+| `∘` | `then` | `FunctionThen` |
+| — | `compose` | `FunctionCompose` – the same, in mathematics' order |
+| `⍥` | `into` | `FunctionInto` |
+| — | `over` | `FunctionOver` – the same, in APL's order |
+| `⍢` | `around` | `FunctionAround` |
+| — | `under` | `FunctionUnder` – the same, in APL's order |
 | — | `inverse` | `FunctionInverse` |
 | — | `solve` | `FunctionSolve` |
 | `≡` | `match` | `Match` |

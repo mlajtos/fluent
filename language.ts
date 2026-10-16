@@ -1205,7 +1205,7 @@ const tacitToString = (h: Function): Function => {
 // Q (Queer bird) – then: apply f, then g to the result. Reading order is
 // evaluation order – (f ∘ g)(…x) = g(f(…x)) – so this is APL's atop (B/B₁)
 // with the tines swapped to read left-to-right, like the . pipe.
-const FunctionCompose = (f: Value, g: Value) => {
+const FunctionThen = (f: Value, g: Value) => {
   if (!isFn(f) || !isFn(g)) { return new Error("`(f ∘ g)`: both operands must be functions") }
   return tacitToString(function (this: CurrentScope, ...args: Value[]) {
     return safeApply(g, [safeApply(f, args, this)], this)
@@ -1223,7 +1223,7 @@ const FunctionCommute = (f: Value) => {
 // Ψ (Psi) – over: preprocess every argument with g, then combine with f.
 // The preprocessor is read first because it runs first: (g ⍥ f)(x, y) =
 // f(g(x), g(y)) – APL spells this f⍥g, but Fluent reads left-to-right.
-const FunctionOver = (g: Value, f: Value) => {
+const FunctionInto = (g: Value, f: Value) => {
   if (!isFn(f) || !isFn(g)) { return new Error("`(g ⍥ f)`: both operands must be functions") }
   return tacitToString(function (this: CurrentScope, ...args: Value[]) {
     return safeApply(f, args.map((a) => safeApply(g, [a], this)), this)
@@ -1632,6 +1632,19 @@ const ListReduce = (a: any[], fn: (acc: any, value: any) => any, initialValue?: 
   }
 
   return a.reduce(fn, initialValue)
+}
+
+// ListReduce that keeps every step: (init, f(init, a₀), f(f(init, a₀), a₁), …)
+const ListScan = (a: any[], fn: (acc: any, value: any) => any, init: any) => {
+  if (!Array.isArray(a)) {
+    return new Error("'ListScan': `list` must be a list")
+  }
+  if (typeof fn !== "function") {
+    return new Error("'ListScan': `fn` must be a function")
+  }
+  const out = [init]
+  for (const v of a) { out.push(fn(out[out.length - 1], v)) }
+  return out
 }
 
 // Read scalar/vector metadata (axis, sizes, indices, counts) out of a tensor
@@ -2243,9 +2256,9 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
 
   FunctionIterate,
   FunctionRepeat,
-  FunctionCompose,
+  FunctionThen,
   FunctionCommute,
-  FunctionOver,
+  FunctionInto,
   FunctionFork,
   FunctionBefore,
   FunctionAfter,
@@ -2365,6 +2378,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   ListGet,
   ListMap,
   ListReduce,
+  ListScan,
 
   // String operations
   StringConcat,

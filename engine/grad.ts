@@ -79,10 +79,19 @@ export const JVP: Partial<Record<UOp["op"], Jvp>> = {
   SCATTER_ADD: (u, [, v = null]) => v && node("SCATTER_ADD", [u.src[0]!, v], u.arg, u.shape),
 };
 
+// A cotangent of exactly 0 carries nothing back, whatever it meets. `where` routes 0 to
+// the branch it didn't take, and that branch's slope may be infinite or NaN there – the
+// slope of sin(x) ÷ x at 0 – where 0 × ∞ would poison the answer. A NaN the cotangent
+// itself carries still propagates; a finite constant factor needs no guard.
+const finite = (f: UOp): boolean =>
+  (f.op === "CONSTANT" && Array.from(f.arg as Float32Array).every(Number.isFinite)) ||
+  ((f.op === "BROADCAST" || f.op === "RESHAPE") && finite(f.src[0]!));
+const times = (ct: UOp, f: UOp): UOp => (finite(f) ? mul(ct, f) : where(math("eq", ct, konst(0)), zeros(ct.shape), mul(ct, f)));
+
 type Tr = (u: UOp, ct: UOp, isLin: (s: UOp) => boolean) => (UOp | null)[];
 export const TRANSPOSE: Partial<Record<UOp["op"], Tr>> = {
   ADD: (_u, ct) => [ct, ct],                                                   // T[copy] = add, so T[add] = copy
-  MULTIPLY: (u, ct, isLin) => (isLin(u.src[0]!) ? [mul(ct, u.src[1]!), null] : [null, mul(ct, u.src[0]!)]),
+  MULTIPLY: (u, ct, isLin) => (isLin(u.src[0]!) ? [times(ct, u.src[1]!), null] : [null, times(ct, u.src[0]!)]),
   WHERE: (u, ct) => { const z = zeros(u.shape); return [null, where(u.src[0]!, ct, z), where(u.src[0]!, z, ct)]; },
   REDUCE: (u, ct) => {
     const { axis, keepdims } = u.arg as { axis: number; keepdims: boolean }, s = u.src[0]!.shape;
