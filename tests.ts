@@ -1102,6 +1102,19 @@ describe("inverse and ⍢ under", () => {
     // per element: 1 lands from its own closest start and keeps that answer
     expect(value("({ x | x^x } ⍣ -1)([3, 1])")).toEqual([expect.closeTo(1.82545, 4), 1])
   })
+  test("an element that is stuck never stops another from landing", () => {
+    // 3 is stuck at its first start while 1.5 travels: Newton runs per element
+    expect(value("x: ({ x | x^x } ⍣ -1)([3, 1.5]), x^x")).toEqual([expect.closeTo(3, 4), expect.closeTo(1.5, 4)])
+  })
+  test("erf's slope at 0 is 2/√π, not the 0 sign and abs give there", () => {
+    expect(value("∇(erf)(0)")).toBeCloseTo(2 / Math.sqrt(Math.PI), 4)
+    expect(value("erf([-1, 0, 1])")).toEqual([expect.closeTo(-0.8427, 4), 0, expect.closeTo(0.8427, 4)])
+  })
+  test("any CDF run backwards is a sampler", () => {
+    // the standard normal's quantiles, from its CDF alone
+    expect(value("Φ: { x | 0.5 × (1 + erf(x ÷ √(2))) }, (Φ ⍣ -1)([0.01, 0.5, 0.99])"))
+      .toEqual([expect.closeTo(-2.32635, 3), expect.closeTo(0, 5), expect.closeTo(2.32635, 3)])
+  })
   test("school math is one idea: do it in the right space, then come back", () => {
     expect(value("3 (square ⍢ +) 4")).toBeCloseTo(5, 5)                         // Pythagoras
     expect(value("6 (reciprocal ⍢ +) 3")).toBeCloseTo(2, 5)                     // resistors in parallel
@@ -1527,6 +1540,11 @@ describe("lifts created inside owned computeds (reactive cells)", () => {
 })
 
 describe("error messages carry context", () => {
+  test("an Error in arithmetic says so, and keeps the Error as its cause", () => {
+    const e = run(`Error("x") × 2`) as Error
+    expect(e.message).toBe("expected a tensor, got an Error")
+    expect((e.cause as Error).message).toBe("x")
+  })
   test("a cascade that matches nothing names the arguments and the reason", () => {
     const v = run(`cascade((guard(1 = 2, { 7 }),))(5)`) as Error
     expect(v).toBeInstanceOf(Error)

@@ -796,6 +796,8 @@ const operand = (v: any): any => {
     // bag – write `[1, 2, 3]` for a tensor.
     throw new Error(`expected a tensor, got a list of ${v.length} – write it as a tensor [ … ]`)
   }
+  // the Error itself becomes the cause (safeApply), so the chain still says why
+  if (v instanceof Error) { throw new Error("expected a tensor, got an Error") }
   return v
 }
 

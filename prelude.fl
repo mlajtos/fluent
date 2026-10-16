@@ -52,8 +52,10 @@ FunctionNewton: newton: doc({ g, y, seed |
     },
     x + ((shrink ⍣ ≡)(Δ × 0 + 1) × Δ)
   },
-  ; no miss ever grows – staying put is always allowed – so this ends
-  (step ⍣ { new, old | max(miss(new)) ≥ max(miss(old)) })(seed)
+  ; each element runs until it lands or stops getting closer – one that is stuck
+  ; never stops the others. Outside the tolerance a miss only ever shrinks, so
+  ; this ends
+  (step ⍣ { new, old | min((miss(new) ≥ miss(old)) ∨ (miss(old) ≤ 1e-6)) })(seed)
 }, "newton(g, y, seed)", "Newton's method from seed toward g(x) = y, with ∇ supplying the slope: where it stops, landed or not. solve checks that it landed.", "newton({ x | x^3 + x }, 10, 1) ≈ 2"),
 FunctionSolve: solve: doc({ g, y, seed |
   x: FunctionNewton(g, y, seed),
@@ -125,10 +127,14 @@ Error: doc(ErrorCreate, "Error(message, cause?)", "A failure, as a value: no ans
 ; say “not my case”. cascade and cond skip it; anywhere else it is an Error.
 
 erf: TensorErrorFunction: doc({ x |
-  ; Abramowitz–Stegun 7.1.26, |error| < 1.5e-7
-  t: 1 ÷ (1 + (0.3275911 × abs(x))),
+  ; Abramowitz–Stegun 7.1.26, |error| < 1.5e-7, on |x|, mirrored for x < 0. 0 takes
+  ; the positive side, where the formula is smooth – so ∇ there is its slope, 2/√π,
+  ; not the 0 that sign and abs give at 0
+  s: where(x < 0, -1, 1),
+  a: x × s,
+  t: 1 ÷ (1 + (0.3275911 × a)),
   p: ((((1.061405429 × t - 1.453152027) × t + 1.421413741) × t - 0.284496736) × t + 0.254829592) × t,
-  sign(x) × (1 - (p × exp(-(x × x))))
+  s × (1 - (p × exp(-(a × a))))
 }, "erf(x)", "Gauss error function – the area under a normal curve out to x, saturating at ±1. Smooth and differentiable everywhere.", "erf(1) ≈ 0.8427"),
 
 ; Tensor shape/indexing
