@@ -94,20 +94,6 @@ export function printKernel(k: UOp): string {
   const loads = Array.from({ length: nIn }, (_, i) => `const a${i} = ins[${i}];`).join(" ");
   return `(ins, o) => {\n${loads}\nfor (let i = 0; i < ${n}; i++) {\n${c.scopes[0]!.join("\n")}\no[i] = ${body};\n}\n}`;
 }
-// Bun's JavaScriptCore can hand back the compiled code of another source that differs
-// only in its digits – two kernels ran one's code, a wrong number with no error (Safari
-// and V8 compile both correctly).
-// So every kernel is compiled with a serial number it answers with when called without
-// inputs, and code that answers with another's number is compiled again.
-let serial = 0;
-const fromSource = (src: string): Compiled => {
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const id = ++serial;
-    const fn = new Function("f", "M", "H", `return ${src.replace("(ins, o) => {", `(ins, o) => {\nif (ins === null) return ${id};`)}`)(Math.fround, MATH_JS, hashUniform);
-    if (fn(null) === id) return fn as Compiled;
-  }
-  throw new Error("cpu: the JavaScript engine kept returning another kernel's compiled code");
-};
 const kernelFn = new WeakMap<UOp, Compiled>();                                 // a plan's kernels are printed once
 const compile = (k: UOp): Compiled => {
   let fn = kernelFn.get(k);
@@ -116,7 +102,7 @@ const compile = (k: UOp): Compiled => {
   fn = compiled.get(src);
   if (!fn) {
     if (compiled.size > 4096) compiled.clear();
-    fn = fromSource(src);
+    fn = new Function("f", "M", "H", `return ${src}`)(Math.fround, MATH_JS, hashUniform) as Compiled;
     compiled.set(src, fn);
   }
   kernelFn.set(k, fn);
