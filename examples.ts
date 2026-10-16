@@ -37,7 +37,7 @@ a:[1,2,3], b:[4,5,6], a+b
     add(1,2),
     +(1,2),
     (1,2) . +,
-    (1,2) apply add,
+    (1,2) pipe add,
 )
 `,
   "max-variations": `
@@ -1614,11 +1614,11 @@ fib:  { n |
   fact(5),   ; 120
   fib(10),   ; 55
 
-  ; ANONYMOUS — a nameless function has no name to call, so 'recur' (the
-  ; Y combinator, also 𝕐) hands it one: recur({ f | … f … }) ties the knot
+  ; ANONYMOUS — a nameless function has no name to call, so 'fix' (the
+  ; Y combinator, also 𝕐) hands it one: fix({ f | … f … }) ties the knot
   ; with no binding in sight. Euclid's gcd, defined and applied on the
   ; spot without ever being named:
-  recur({ gcd |
+  fix({ gcd |
     { a, b |
       cascade((
         guard(b = 0, { a }),

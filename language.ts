@@ -1472,13 +1472,13 @@ const SymbolAssign = function (this: CurrentScope, a: Value, b: Value) {
 // First argument (target symbol) should not be reified
 setMeta(SymbolAssign, { quotedArgs: [0], noAutoLift: true })
 
-const FunctionEvaluate = function (this: CurrentScope, fn: Value, args: Value) {
+const FunctionApply = function (this: CurrentScope, fn: Value, args: Value) {
   // a bare argument applies directly – `f @ 5` is f(5); a list spreads
   const list = args instanceof Array ? args : [args]
   return safeApply(fn, list, this)
 }
 
-const FunctionApply = function (this: CurrentScope, a: Value, b: Value): Value {
+const FunctionPipe = function (this: CurrentScope, a: Value, b: Value): Value {
   const arg = a instanceof Array ? a : [a]
   return safeApply(b, arg, this)
 }
@@ -1618,7 +1618,7 @@ const ListMap = (a: any[], fn: (value: any, index: Value) => any) => {
 
   return a.map((value, index) => {
     // @ts-ignore
-    return FunctionEvaluate(fn, [value, TensorScalar(index)])
+    return FunctionApply(fn, [value, TensorScalar(index)])
   })
 }
 
@@ -1834,6 +1834,7 @@ const TensorLog1Plus = unaryOp(engine.log1p)      // log(1 + x), accurate near 0
 const TensorExponential = unaryOp(engine.exp)
 const TensorExpMinus1 = unaryOp(engine.expm1)     // exp(x) - 1, accurate near 0
 const TensorReciprocal = unaryOp(engine.reciprocal)
+const TensorDivide = binaryOp(engine.divide)
 const TensorSquareRoot = unaryOp(engine.sqrt)
 const TensorCubeRoot = unaryOp(engine.cbrt)
 const TensorRound = unaryOp(engine.round)
@@ -2259,8 +2260,8 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   FunctionCascade,
   FunctionCond,
   FunctionArity,
-  FunctionEvaluate,
   FunctionApply,
+  FunctionPipe,
   FunctionNoAutoLift,
   FunctionGuard,
   FunctionTry,
@@ -2316,6 +2317,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorExponential,
   TensorExpMinus1,
   TensorReciprocal,
+  TensorDivide,
   TensorSquareRoot,
   TensorCubeRoot,
   TensorRound,

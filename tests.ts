@@ -76,13 +76,12 @@ describe("functions", () => {
   test("lambda as infix operator", () => {
     expect(value("1 {x, y | x + y} 2")).toBe(3)
   })
-  test("recursion: named (self-visible binding) and anonymous (fix / recur / 𝕐)", () => {
+  test("recursion: named (self-visible binding) and anonymous (fix / 𝕐)", () => {
     // a binding is visible in its own body – named recursion needs nothing special
     expect(value(`fact: { n | cascade((guard(n = 0, { 1 }), { n × fact(n - 1) }))() }, fact(5)`)).toBe(120)
-    // fix ties the knot for a nameless function; the three aliases agree
+    // fix ties the knot for a nameless function; its glyph agrees
     const anon = (name: string) => `${name}({ rec | { n | cascade((guard(n = 0, { 1 }), { n × rec(n - 1) }))() } })(5)`
     expect(value(anon("fix"))).toBe(120)
-    expect(value(anon("recur"))).toBe(120)
     expect(value(anon("𝕐"))).toBe(120)
   })
   test("function power ⍣ iterates synchronously", () => {
@@ -308,7 +307,7 @@ describe("tensors", () => {
     // the number-lexing fix must not break real float literals
     expect(value("1.5 + 0.25")).toBeCloseTo(1.75, 5)
   })
-  test("builtins: fft, meshgrid, einsum, topk, pad, repeat, flip, sinc", () => {
+  test("builtins: fft, meshgrid, einsum, topk, pad, repeat, reverse, sinc", () => {
     // fft returns [real; imag] stacked; a period-4 wave peaks at bin 2
     // (rounded: the near-zero bins carry f32 residuals)
     expect((value("f: fft([0, 1, 0, -1, 0, 1, 0, -1]), √(f_0^2 + f_1^2)") as number[]).map(x => Math.round(x))).toEqual([0, 0, 4, 0, 0])
@@ -318,7 +317,9 @@ describe("tensors", () => {
     expect(value("ListGet(topk([3, 1, 4, 1, 5, 9, 2], 3), 0)")).toEqual([9, 5, 4])
     expect(value("pad([1, 2, 3], 2)")).toEqual([0, 0, 1, 2, 3, 0, 0])
     expect(value("repeat([1, 2], 3)")).toEqual([1, 1, 1, 2, 2, 2])
-    expect(value("flip([1, 2, 3])")).toEqual([3, 2, 1])
+    expect(value("reverse([1, 2, 3])")).toEqual([3, 2, 1])
+    expect(value("reverse([[1, 2], [3, 4]])")).toEqual([[4, 3], [2, 1]])        // every axis: one gather
+    expect(value("reverse([[1, 2], [3, 4]], 1)")).toEqual([[2, 1], [4, 3]])
     expect(value("sinc(0)")).toBe(1)   // sinc(0) = 1 by definition
   })
   test("stack with axis and broadcasting", () => {
@@ -387,7 +388,6 @@ describe("tensors", () => {
   })
   test("alongAxis applies any f along a named axis", () => {
     expect(value("(Σ alongAxis 0)([[1,2,3],[4,5,6]])")).toEqual([5, 7, 9])    // reducer down columns
-    expect(value("(Σ ⌸ 0)([[1,2,3],[4,5,6]])")).toEqual([5, 7, 9])                    // tier-1 terse glyph
     expect(value("(Σ TensorAlongAxis 0)([[1,2,3],[4,5,6]])")).toEqual([5, 7, 9])      // tier-3 descriptive [Type][Function]
     expect(value("(Σ alongAxis 1)([[1,2,3],[4,5,6]])")).toEqual([6, 15])      // reducer across rows
     expect(value("(Σ alongAxis -1)([[1,2,3],[4,5,6]])")).toEqual([6, 15])     // negative axis
@@ -415,22 +415,24 @@ describe("math functions", () => {
     expect(value("sigmoid(0)")).toBe(0.5)
     expect(value("relu(0 - 3)")).toBe(0)
   })
-  test("softplus, gelu, mish – and their tier names resolve to the same op", () => {
+  test("softplus, gelu, mish – and their descriptive names resolve to the same op", () => {
     expect(value("softplus(0)")).toBeCloseTo(0.6931, 3)   // log 2
-    expect(value("softRelu(0)")).toBeCloseTo(0.6931, 3)   // alt name
+    expect(value("TensorSoftplus(0)")).toBeCloseTo(0.6931, 3)
     expect(value("gelu(0)")).toBe(0)
     expect(value("gelu(1)")).toBeCloseTo(0.8412, 3)
     expect(value("TensorGelu(1)")).toBeCloseTo(0.8412, 3) // descriptive name
     expect(value("mish(0)")).toBe(0)
     expect(value("mish(1)")).toBeCloseTo(0.8651, 3)
   })
-  test("statistics: variance, std (σ), l2norm – with glyph tiers", () => {
+  test("statistics: variance, std (σ), norm – whole, or along an axis", () => {
     expect(value("variance([1, 2, 3])")).toBeCloseTo(0.6667, 3)
     expect(value("𝕍([1, 2, 3])")).toBeCloseTo(0.6667, 3)  // glyph tier
     expect(value("std([2, 4, 4, 4, 5, 5, 7, 9])")).toBe(2)
     expect(value("σ([2, 4, 4, 4, 5, 5, 7, 9])")).toBe(2)  // glyph tier
     expect(value("norm([3, 4])")).toBe(5)
-    expect(value("l2norm([3, 4])")).toBe(5)               // alt name
+    expect(value("variance([[1, 2], [3, 5]], 0)")).toEqual([1, 2.25])
+    expect(value("σ([[1, 2], [3, 5]], 0)")).toEqual([1, 1.5])
+    expect(value("norm([[3, 4], [6, 8]], 1)")).toEqual([5, 10])
   })
   test("eye is the identity matrix, folded from an outer-product equality", () => {
     expect(value("eye(2)")).toEqual([[1, 0], [0, 1]])
@@ -1147,7 +1149,7 @@ describe("inverse and ⍢ under", () => {
     // a quote that slips out of the prelude template literal breaks the card's
     // string silently – the example then evaluates to garbage, not an error
     const card = (name: string) => (createScope()[name] as any).__meta__
-    expect(card("Error").example).toBe(`cond(guard(x ≥ 0, { √(x) }), { Error("no real root", x) })`)
+    expect(card("Error").example).toBe(`x: -4, isError(cond(guard(x ≥ 0, { √(x) }), { Error("no real root", x) })) = 1`)
     expect(card("⍢").signature).toBe("x (g ⍢ f) y")
     expect(card("⍣").example).toContain("2 (^ ⍣ -1) 8 = 3")
     expect(card("try").signature).toBe("try({ value })")
@@ -1689,4 +1691,113 @@ describe("the evaluation host", () => {
     await evaluate("0")
     for (const m of inbox) { structuredClone(m) }
   })
+})
+
+describe("numbers come out right", () => {
+  test("division is a true quotient: n ÷ n is 1 for every n", () => {
+    expect(value("Σ(((1 ..< 1000) ÷ (1 ..< 1000)) ≠ 1)")).toBe(0)
+    expect(value("(1 ÷ 3) × 3")).toBe(1)
+    expect(value("∇({ y | 2 ÷ y })(4)")).toBe(-0.125)
+  })
+  test("functions that misbehaved at their edges", () => {
+    expect(value("∇(sinc)(0)")).toBe(0)                                   // not NaN from the 0 ÷ 0 branch
+    expect(value("sinh(1e-6)")).toBeCloseTo(1e-6, 12)                     // not cancelled to noise
+    expect(value("hypot(1e20, 1e20)")).toBeCloseTo(Math.SQRT2 * 1e20, -14) // not Inf
+    expect(value("-8 √ 3")).toBe(-2)                                      // an odd root of a negative
+    expect(Number.isNaN(value("-16 √ 4"))).toBe(true)                     // an even one has none
+    expect(value("argmax([1, 0 ÷ 0, 3])")).toBe(1)                        // the first NaN, as numpy
+    expect(value("argmin([3, 1, 0 ÷ 0])")).toBe(2)
+  })
+  test("windows and chunks are views of the same numbers", () => {
+    expect(value("windows(3, [1, 2, 3, 4, 5])")).toEqual([[1, 2, 3], [2, 3, 4], [3, 4, 5]])
+    expect(value("windows(2, [[1, 2], [3, 4], [5, 6]])")).toEqual([[[1, 2], [3, 4]], [[3, 4], [5, 6]]])
+    expect(value("chunks(2, [1, 2, 3, 4, 5, 6])")).toEqual([[1, 2], [3, 4], [5, 6]])
+  })
+  test("fft's fast path agrees with the DFT", () => {
+    for (const n of [64, 256]) {
+      const x = Array.from({ length: n }, (_, i) => Math.fround(Math.sin(i * 0.37) + ((i * 7919) % 13) / 13 - 0.5))
+      const got = value(`fft([${x.join(", ")}])`) as number[][]
+      let worst = 0, top = 0
+      for (let k = 0; k <= n / 2; k++) {
+        let re = 0, im = 0
+        for (let j = 0; j < n; j++) { const t = 2 * Math.PI * ((j * k) % n) / n; re += x[j]! * Math.cos(t); im -= x[j]! * Math.sin(t) }
+        worst = Math.max(worst, Math.abs(got[0]![k]! - re), Math.abs(got[1]![k]! - im)); top = Math.max(top, Math.abs(re), Math.abs(im))
+      }
+      expect(worst / top).toBeLessThan(1e-5)
+    }
+  })
+  test("scan is a running fold, ∇ included", () => {
+    expect(value("[1, 2, 3, 4] scan +")).toEqual([1, 3, 6, 10])
+    expect(value("[3, 1, 4, 1, 5, 9, 2, 6] scan ⌈")).toEqual([3, 3, 4, 4, 5, 9, 9, 9])
+    expect(value("scan([[1, 2, 3], [4, 5, 6]], +, 0)")).toEqual([[1, 2, 3], [5, 7, 9]])
+    expect(value("∇({ x | Σ((x scan +) × [1, 10, 100]) })([1, 2, 3])")).toEqual([111, 110, 100])
+  })
+  test("pipe, apply and zerosLike", () => {
+    expect(value("(1, 2) pipe add")).toBe(3)
+    expect(value("add apply (1, 2)")).toBe(3)
+    expect(value("zerosLike([1, 2])")).toEqual([0, 0])
+  })
+  test("a literal is exactly its numbers", () => {
+    const n = 8192
+    const got = value(`[${Array.from({ length: n }, (_, i) => i).join(", ")}]`) as number[]
+    expect(got.every((v, i) => v === i)).toBe(true)
+  }, 30_000)
+})
+
+describe("the engine", () => {
+  test("a computation past the memory budget is an Error, not an exhausted machine", () => {
+    const big = run("x: fill([1000, 1000], 1), (x ⍴ [1000, 1000, 1, 1]) + (x ⍴ [1, 1, 1000, 1000])") as engine.Tensor
+    expect(() => big.readSync()).toThrow(/GB of memory at once/)
+  })
+  test("the CPU backend runs the kernel it compiled, not a look-alike", async () => {
+    // JavaScriptCore hands back another source's compiled code for some pairs of sources
+    // that differ only in their digits: this concatenation of 8192 pieces – 8185 kernels
+    // alike but for their offsets – came out with two numbers swapped
+    const ir = await import("./engine/ir.ts")
+    const { CPU } = await import("./engine/cpu.ts")
+    const n = 8192
+    let sum: any = null
+    for (let i = 0; i < n; i++) { const piece = ir.pad(ir.reshape(ir.konst(i), [1]), 0, i, n - i - 1); sum = sum ? ir.add(sum, piece) : piece }
+    const data = new CPU().realizeSync([sum])[0]!.data
+    expect(Array.from(data).every((v, i) => v === i)).toBe(true)
+  }, 60_000)
+})
+
+describe("doc cards", () => {
+  // every example on every card runs, and the ones that state a value hold:
+  // `a = b` as a whole-value match, `a ≈ b` to 1%
+  const scope = createScope(), groups = new Map<Function, string[]>()
+  for (const k in scope) { const v = scope[k]; if (typeof v === "function") { if (!groups.has(v)) { groups.set(v, []) } groups.get(v)!.push(k) } }
+  const split = (s: string, sep: string): string[] => {
+    const out: string[] = []
+    let depth = 0, quoted = false, last = 0
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i]!
+      if (quoted) { if (c === "\\") { i++ } else if (c === '"') { quoted = false } continue }
+      if (c === '"') { quoted = true } else if ("([{".includes(c)) { depth++ } else if (")]}".includes(c)) { depth-- }
+      else if (depth === 0 && s.startsWith(sep, i)) { out.push(s.slice(last, i)); last = i + sep.length; i += sep.length - 1 }
+    }
+    out.push(s.slice(last))
+    return out
+  }
+  for (const [fn, names] of groups) {
+    const example = (fn as any).__meta__?.example as string | undefined
+    if (!example) { continue }
+    test(`${names[0]}: ${example.split("\n")[0]}`, () => {
+      for (const ex of example.split("\n")) {
+        const binds = split(ex, ":").slice(1).some((p) => !p.startsWith("="))
+        for (const part of binds ? [ex] : split(ex, ", ")) {
+          const eq = split(part, " = "), approx = split(part, " ≈ ")
+          const src = binds ? part
+            : eq.length === 2 ? `(${eq[0]}) ≡ (${eq[1]})`
+              : approx.length === 2 ? `max(abs((${approx[0]}) - (${approx[1]}))) ≤ (0.01 × (1 + max(abs(${approx[1]}))))`
+                : part
+          const v = run(src)
+          expect([part, v instanceof Error ? v.message : "ok"]).toEqual([part, "ok"])
+          if (!binds && (eq.length === 2 || approx.length === 2)) { expect([part, value(src)]).toEqual([part, 1]) }
+          flushRetirements()
+        }
+      }
+    })
+  }
 })

@@ -44,7 +44,7 @@ Button("Reset", { x(0) }),
   - lambda with \`{}\`: \`{ x | x + 1 }\`, \`{ x, y | x * y }\`, \`{ 42 }\`
   - last expression is the return value: \`{ a: 1, b: 2, a + b }\` returns \`3\`
   - application: \`add(1, 2)\` or infix \`1 add 2\`
-  - recursion: a binding is visible in its own body, so \`fact: { n | … fact(n - 1) … }\` just works. For an ANONYMOUS function use the prelude's fixpoint: \`fix\` (also \`recur\`, \`𝕐\`)
+  - recursion: a binding is visible in its own body, so \`fact: { n | … fact(n - 1) … }\` just works. For an ANONYMOUS function use the prelude's fixpoint: \`fix\` (also \`𝕐\`)
 - Symbols
   - letter-based: \`a\`, \`FooBar\`, \`barBaz1\`, \`α\`, \`β\`, \`θ\` – no \`-\`, which is always the subtraction operator
   - operator-based: \`+\`, \`≠\`, \`!=\`, \`√\`, \`∇\`

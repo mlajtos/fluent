@@ -58,8 +58,8 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | — | `inverse` | `FunctionInverse` |
 | — | `solve` | `FunctionSolve` |
 | `≡` | `match` | `Match` |
-| `.` | `apply` | `FunctionApply` |
-| `@` | `eval` | `FunctionEvaluate` |
+| `.` | `pipe` | `FunctionPipe` |
+| `@` | `apply` | `FunctionApply` |
 | `$` | — | `Reactive` |
 | — | `watch` | `TensorWatch` |
 | — | `conv` | `TensorConvolution` |
