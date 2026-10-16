@@ -1776,6 +1776,21 @@ describe("the engine", () => {
     const data = new CPU().realizeSync([sum])[0]!.data
     expect(Array.from(data).every((v, i) => v === i)).toBe(true)
   }, 60_000)
+  test("a distance-field drawing runs each pixel's loop over segments in place", async () => {
+    // pixels × segments is the drawing's whole work; written out, it is the frame rate
+    const { canonical, placeholders, optimizeMany } = await import("./engine/opt.ts")
+    const { toposort, numel } = await import("./engine/ir.ts")
+    const drawing = run(`
+      W: 640, H: 400,
+      P: stack(meshgrid((0 ..< W) + 0.5, (0 ..< H) + 0.5), -1) ⍴ [H, W, 1, 2],
+      segments: { a, b | pa: P - a, ba: b - a, h: clamp(Σ(pa × ba, -1, 1) ÷ Σ(ba × ba, -1, 1), 0, 1), min(√(Σ((pa - (h × ba))^2, -1)), -1) },
+      xs: linspace([0, 6], 128), pts: stack((xs × 100, sin(xs) × 100 + 200), -1),
+      clamp(2 - segments(pts_(0 ..< 127), pts_(1 ..< 128)), 0, 1)
+    `) as engine.Tensor
+    const { leaves } = canonical([drawing.node])
+    const kernels = optimizeMany(placeholders([drawing.node], leaves).roots).flatMap((r) => toposort(r)).filter((u) => u.op === "FUSED")
+    expect(Math.max(...kernels.map((k) => numel(k.shape)))).toBeLessThanOrEqual(640 * 400 * 2)
+  })
 })
 
 describe("doc cards", () => {

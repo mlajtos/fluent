@@ -264,7 +264,7 @@ const describeTensor = (t: engine.Tensor): Desc => {
   ).finally(() => {
     if (live) {
       live.reading--
-      if (dirty.has(live)) { scheduleFlush() }
+      if (dirty.has(live)) { flush() }
     }
   })
   return { k: "tensor", id, shape }
@@ -771,8 +771,9 @@ const receive = (m: ToWorker) => {
       return
     }
     case "drawn": {
+      // the page answers once a frame, so the next batch can go now
       pageDrawing = false
-      if (dirty.size) { scheduleFlush() }
+      flush()
       return
     }
     case "sampleRate": {

@@ -256,6 +256,18 @@ export const iadd = (a: UOp, b: UOp): UOp => {
   return fired ? fromLinear({ terms: l.terms.filter((_, i) => !used.has(i)), k: l.k }) : sum;
 };
 export const imul = mulRaw;
+const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a);
+// the index as g·x + r with g a factor of c and 0 ≤ r < g
+const shared = (l: Linear, c: number): { g: number; x: UOp; r: UOp } | null => {
+  for (const [t] of l.terms) {
+    const g = gcd(c, t);
+    if (g <= 1 || g === c) continue;
+    const r = fromLinear({ terms: l.terms.filter(([u]) => u % g !== 0), k: l.k % g });
+    const [lo, hi] = bounds(r);
+    if (lo >= 0 && hi < g) return { g, x: fromLinear({ terms: l.terms.filter(([u]) => u % g === 0).map(([u, v]) => [u / g, v]), k: Math.floor(l.k / g) }), r };
+  }
+  return null;
+};
 export const idiv = (a: UOp, b: UOp): UOp => {
   const x = iv(a), c = iv(b);
   if (x !== null && c !== null) return iconst(Math.floor(x / c));
@@ -272,6 +284,9 @@ export const idiv = (a: UOp, b: UOp): UOp => {
       const q = fromLinear({ terms: whole.map(([t, u]) => [t / c, u]), k: Math.floor(l.k / c) });
       return iadd(q, idiv(fromLinear({ terms: rest, k: l.k % c }), b));
     }
+    // (g·x + r) / (g·m) is x / m: a factor the divisor shares with the index divides out
+    const s = shared(l, c);
+    if (s) return idiv(s.x, iconst(c / s.g));
   }
   return node("IDIV", [a, b], null, []);
 };
@@ -288,9 +303,12 @@ export const imod = (a: UOp, b: UOp): UOp => {
     {
       const r = fromLinear({ terms: l.terms.filter(([t]) => t % c !== 0).map(([t, u]) => [t % c, u]), k: l.k % c });
       const [rl, rh] = bounds(r);
-      return rl >= 0 && rh < c ? r : node("IMOD", [r, b], null, []);
+      return rl >= 0 && rh < c ? r : imod(r, b);
     }
   }
+  // (g·x + r) % (g·m) is g·(x % m) + r
+  const s = nonneg(l) ? shared(l, c) : null;
+  if (s) return iadd(imul(imod(s.x, iconst(c / s.g)), iconst(s.g)), s.r);
   return node("IMOD", [a, b], null, []);
 };
 // rebuild a kernel node from new sources, simplifying index arithmetic as it goes

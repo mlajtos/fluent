@@ -123,23 +123,36 @@ function schedule(roots: UOp[], uc: Map<number, number>): Set<number> {
 }
 
 const accMemo = new WeakMap<UOp, number>();                                     // values are immutable; the memo keeps the DAG walk linear and dies with the nodes
-const accCost = (v: UOp): number => {                                          // product of ACC extents = the recompute a splice pays per element
+// the loop work one element of a kernel costs: a loop is its extent times its body's, a
+// nest multiplies down, side-by-side loops count once – the costliest of them
+const accCost = (v: UOp): number => {
   const m = accMemo.get(v); if (m !== undefined) return m;
-  let c = v.op === "ACC" ? (v.src[0]!.arg as { extent: number }).extent : 1;
-  for (const s of v.src) c *= accCost(s);
+  let c = 1;
+  for (const s of v.src) c = Math.max(c, accCost(s));
+  if (v.op === "ACC") c *= (v.src[0]!.arg as { extent: number }).extent;
   accMemo.set(v, c);
   return c;
+};
+
+// the loop variables an index reads
+const rangeMemo = new WeakMap<UOp, ReadonlySet<UOp>>();
+const rangesIn = (u: UOp): ReadonlySet<UOp> => {
+  const m = rangeMemo.get(u); if (m) return m;
+  const out = new Set<UOp>(u.op === "RANGE" ? [u] : []);
+  for (const s of u.src) for (const r of rangesIn(s)) out.add(r);
+  rangeMemo.set(u, out);
+  return out;
 };
 
 function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[] {
   const built = new Map<number, UOp>();
 
   // Build one kernel's scalar value for `top` over the index space `regionShape`, read at
-  // index expression `at` (its total evaluation count is numel(regionShape) — reduce bodies
-  // include the loop axis, so splice costs need no extra bookkeeping). `cap` bounds growth:
-  // inlining and splicing stop there, but mandatory reads may still push past it — the
-  // caller retries an over-wide kernel with cap 1 (materialize everything non-mandatory).
-  const kernel = (top: UOp, regionShape: readonly number[], at: UOp, cap = MAX_INPUTS, outN = Math.max(numel(regionShape), 1)): { inputs: UOp[]; value: UOp } => {
+  // index expression `at`; `loop` is the reduction's loop variable, if the kernel has one.
+  // `cap` bounds growth: inlining and splicing stop there, but mandatory reads may still
+  // push past it — the caller retries an over-wide kernel with cap 1 (materialize
+  // everything non-mandatory).
+  const kernel = (top: UOp, regionShape: readonly number[], at: UOp, cap = MAX_INPUTS, outN = Math.max(numel(regionShape), 1), loop?: UOp): { inputs: UOp[]; value: UOp } => {
     const inputs: UOp[] = [], slot = new Map<number, number>(), spliced = new Map<string, UOp>();
     let grown = 0;                                                             // ops inlined so far — bounds the region BEFORE its reads materialize
     const addInput = (b: UOp): number => { let i = slot.get(b.id); if (i === undefined) { i = inputs.length; inputs.push(b); slot.set(b.id, i); } return i; };
@@ -177,12 +190,17 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
       if (vm.base.op === "IOTA") return ival(e);
       if (vm.base.op === "PAD") return readPad(vm.base, e);
       const b = build(vm.base);
-      if (b.op === "FUSED" && chainUse(v) === 1 && slot.get(b.id) === undefined && inputs.length + b.src.length - 2 <= cap) {
+      // the inputs a splice adds: a second read of a spliced kernel adds none
+      const fresh = () => kInputs(b).filter((x) => !slot.has(x.id)).length;
+      if (b.op === "FUSED" && chainUse(v) === 1 && slot.get(b.id) === undefined && inputs.length + fresh() <= cap) {
         const c = accCost(b.src[1]!);                                          // c = 1: a pure map folds free; a loop folds while recompute stays cheap
+        // a spliced value runs once a thread, and again each step of the reduction's loop
+        // only where its index reads the loop variable – the printers hoist it otherwise
+        const evals = outN * (loop && rangesIn(e).has(loop) ? (loop.arg as { extent: number }).extent : 1);
         // two budgets: TOTAL recompute (dispatch-vs-flops) and PER-OUTPUT-ELEMENT work —
         // a splice that squares per-thread loops at low thread counts starves the GPU
         // (2048 threads × 8192 sequential ops is a 100 ms kernel however you dispatch it)
-        const perElem = (Math.max(numel(regionShape), 1) / outN) * c;
+        const perElem = (evals / outN) * c;
         // perElem prices RECOMPUTE, not inherent contraction length. At amplification ≈ 1
         // (each producer element consumed exactly once) a reduce-into-reduce splice that
         // becomes the reader's whole body does the two-stage work minus the intermediate
@@ -191,12 +209,15 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
         // elementwise body instead, the contraction would run as serial loops per thread
         // where, materialized, it runs as a tile. The occupancy floor (outN ≥ 1024) keeps
         // a near-scalar output (a loss) from folding the graph into one serial thread.
-        const amp = Math.max(numel(regionShape), 1) / Math.max(numel(b.shape), 1);
+        const amp = evals / Math.max(numel(b.shape), 1);
         const traffic = whole && amp <= 1.01 && outN >= 1024;
         // a loop spliced into a reduction's body runs once per step of the outer loop, on
         // one thread – materialized it runs on its own, in parallel; only a short one pays
-        const nested = numel(regionShape) > outN && c > 16;
-        if (c === 1 || traffic || (!nested && perElem <= COST.perElem && numel(regionShape) * c <= COST.reduceBudget)) return splice(b, e);
+        const nested = evals > outN && c > 16;
+        // TOTAL recompute: what the reader evaluates beyond computing b once. A loop as long
+        // as a tile is priced whole: materialized, a contraction runs as a tile
+        const extra = (c >= COST.tile ? evals : evals - Math.max(numel(b.shape), 1)) * c;
+        if (c === 1 || traffic || (!nested && perElem <= COST.perElem && extra <= COST.reduceBudget)) return splice(b, e);
       }
       return load(addInput(b), e);
     };
@@ -245,7 +266,7 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
         let base: UOp = iconst(0);
         for (let d = 0; d < outSh.length; d++) base = iadd(base, imul(imod(idiv(gid, iconst(outSt[d]!)), iconst(outSh[d]!)), iconst(mapped[d]!)));
         const k = range(inSh[a.axis]!);
-        const { inputs, value } = kernel(u.src[0]!, inSh, iadd(base, imul(k, iconst(inSt[a.axis]!))), cap, Math.max(numel(outSh), 1));
+        const { inputs, value } = kernel(u.src[0]!, inSh, iadd(base, imul(k, iconst(inSt[a.axis]!))), cap, Math.max(numel(outSh), 1), k);
         return fused(gid, acc(a.op, k, value), inputs, u.shape);
       };
       out = mk(MAX_INPUTS);
