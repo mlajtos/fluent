@@ -79,7 +79,8 @@ export type ToPage =
   | { t: "result", desc: Desc }
   // live values that changed, as they are now; `ack` is the page's last write each has seen
   | { t: "lives", lives: { id: number, desc: Desc, ack: number }[] }
-  | { t: "tensor", id: number, payload: Payload }
+  // a tensor's values, or why they couldn't be computed
+  | { t: "tensor", id: number, payload?: Payload, error?: string }
   // start or stop a source on the page: the camera, the microphone, the pointer
   | { t: "source", id: number, kind: SourceKind, size: number[], fps?: number }
   | { t: "stop", id: number }

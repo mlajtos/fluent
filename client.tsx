@@ -125,7 +125,8 @@ type Mirror = {
   local: Signal<unknown>,
 }
 const mirrors = new Map<number, Mirror>()
-const payloads = new Map<number, Signal<Payload | undefined>>()
+// a tensor's values, or the message saying why they couldn't be computed
+const payloads = new Map<number, Signal<Payload | string | undefined>>()
 const result = signal<Desc | null>(null)
 const environmentNames = signal(new Map<string, { detail: string, doc: Doc | null }>())
 
@@ -214,7 +215,7 @@ worker.onmessage = ({ data: m }: MessageEvent<ToPage>) => {
     }
     case "tensor": {
       const payload = payloads.get(m.id)
-      if (payload) { payload.value = m.payload }
+      if (payload) { payload.value = m.error ?? m.payload }
       return
     }
     case "source": { startSource(m.id, m.kind, m.size, m.fps); return }
@@ -243,7 +244,10 @@ const resolve = (d: Desc | undefined): Desc | undefined => {
   for (let i = 0; d?.k === "live" && i < 64; i++) { d = mirrors.get(d.id)?.desc.value }
   return d
 }
-const payloadOf = (d: Desc | undefined): Payload | undefined => (d?.k === "tensor" ? payloads.get(d.id)?.value : undefined)
+const payloadOf = (d: Desc | undefined): Payload | undefined => {
+  const p = d?.k === "tensor" ? payloads.get(d.id)?.value : undefined
+  return typeof p === "string" ? undefined : p
+}
 const numberOf = (d: Desc | undefined): number | undefined => {
   const p = payloadOf(resolve(d))
   return p instanceof Float32Array ? p[0] : undefined
@@ -1312,6 +1316,7 @@ function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
   const view = tensorView(d.shape)
   const fresh = payloads.get(d.id)?.value
   const last = useRef<{ view: TensorView, shape: number[], payload: Payload } | null>(null)
+  if (typeof fresh === "string") { return <ErrorView d={{ k: "error", chain: [{ message: fresh }] }} /> }
   if (fresh) { last.current = { view, shape: d.shape, payload: fresh } }
   const shown = last.current?.view === view ? last.current : null
 

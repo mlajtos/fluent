@@ -242,7 +242,12 @@ const describeCallback = (fn: Function): Desc => {
 const describeTensor = (t: engine.Tensor): Desc => {
   const id = ++nextId, shape = [...t.shape], view = tensorView(shape)
   if (view === "shape") { return { k: "tensor", id, shape } }
-  const onHost = engine.hostValue(t)
+  let onHost: Float32Array | undefined
+  try {
+    onHost = engine.hostValue(t)
+  } catch (e) {
+    return describeError(e instanceof Error ? e : new Error(String(e)))
+  }
   if (onHost) {
     const payload = payloadOf(view, shape, onHost)
     transfers.push(payload.buffer as ArrayBuffer)
@@ -255,7 +260,7 @@ const describeTensor = (t: engine.Tensor): Desc => {
       const payload = payloadOf(view, shape, data)
       post({ t: "tensor", id, payload }, [payload.buffer as ArrayBuffer])
     },
-    () => { /* the program moved on */ },
+    (e) => { post({ t: "tensor", id, error: e instanceof Error ? e.message : String(e) }) },
   ).finally(() => {
     if (live) {
       live.reading--
