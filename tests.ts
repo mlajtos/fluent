@@ -1866,6 +1866,14 @@ describe("the engine", () => {
     const tall = await lowered(matmul(ir.buffer("A", [1 << 20, 64]), ir.buffer("B", [64, 16])))
     expect(tiled(tall) && tall.every((k) => k.dispatch.every((d) => d <= 65535))).toBe(true)
   })
+  test("joining n pieces the host does not hold takes about n/7 kernels, not n", async () => {
+    const { optimizeMany } = await import("./engine/opt.ts")
+    const { toposort } = await import("./engine/ir.ts")
+    const pieces = Array.from({ length: 256 }, (_, i) => engine.uniform(i, [1, 300]))
+    const joined = engine.concatenate(pieces)
+    expect(toposort(optimizeMany([joined.node])[0]!).filter((u) => u.op === "FUSED").length).toBeLessThan(40)
+    expect(joined.slice(200).js()).toEqual(pieces[200]!.slice(0).js())
+  })
 })
 
 describe("doc cards", () => {

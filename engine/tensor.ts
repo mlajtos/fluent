@@ -450,16 +450,17 @@ export function concatenate(arrays: readonly Tensor[], axis = 0): Tensor {
   const r = arrays[0]!.ndim, ax = normAxis(axis, r);
   const total = arrays.reduce((t, a) => t + a.node.shape[ax]!, 0);
   const shape = arrays[0]!.node.shape.map((d, i) => (i === ax ? total : d));
-  const copied = joinOnHost(arrays, arrays.map((a) => a.node.shape), ax, shape);
-  if (copied) return copied;
-  let off = 0, sum: UOp | null = null;
-  for (const a of arrays) {
-    const len = a.node.shape[ax]!, piece = ir.pad(a.node, ax, off, total - off - len);
-    sum = sum ? ir.add(sum, piece) : piece;
-    off += len;
-  }
-  return new Tensor(sum!);
+  return joinOnHost(arrays, arrays.map((a) => a.node.shape), ax, shape) ?? new Tensor(join(arrays.map((a) => a.node), ax));
 }
+// a sum of pads, each piece zero-padded to the whole: a kernel adds eight of them at most,
+// so n pieces join in groups of eight, and the groups in groups of eight – about n/7
+// kernels, where one sum of n pads would be n − 7
+const join = (xs: UOp[], ax: number): UOp => {
+  if (xs.length > 8) return join(Array.from({ length: Math.ceil(xs.length / 8) }, (_, i) => join(xs.slice(8 * i, 8 * i + 8), ax)), ax);
+  const total = xs.reduce((t, x) => t + x.shape[ax]!, 0);
+  let off = 0;
+  return xs.map((x) => { const p = ir.pad(x, ax, off, total - off - x.shape[ax]!); off += x.shape[ax]!; return p; }).reduce(ir.add);
+};
 export function stack(arrays: readonly Tensor[], axis = 0): Tensor {
   const r = arrays[0]!.ndim + 1, ax = normAxis(axis, r);
   const shapes = arrays.map((a) => [...a.shape.slice(0, ax), 1, ...a.shape.slice(ax)]);
