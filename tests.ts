@@ -637,6 +637,11 @@ describe("language fixes", () => {
     expect(((scope.n as Signal<Value>).value as engine.Tensor).js()).toBe(1)
     expect(value("{ 0 } ⟳ 3, 7")).toBe(7)
   })
+  test("sizes and indices are whole numbers; an empty tensor is not a scalar", () => {
+    expect(value("shape(⚄([2.4]))")).toEqual([2])
+    expect(value("slice([1, 2, 3, 4], [0.6], [2])")).toEqual([2, 3])
+    expect(run("ListGet((10, 20, 30), [])")).toBeInstanceOf(Error)
+  })
   test("indexing an unknown name names it", () => {
     expect(message("a_0")).toContain("unknown name: a")
   })

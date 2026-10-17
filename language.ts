@@ -1669,15 +1669,12 @@ const requireData = (v: Value): number | unknown[] => {
   return data as number | unknown[]
 }
 
+// a scalar, or a tensor of one element
 const asNumber = (v: Value): number => {
-  const data = requireData(v)
-  const n = Number(data) // 1-element vectors keep coercing, as they always did
-  if (Number.isNaN(n)) {
-    throw new Error(typeof data === "number"
-      ? "expected a number, got NaN"
-      : `expected a scalar, got a tensor of shape [${shapeOf(v).join(" ")}]`)
-  }
-  return n
+  const data = [requireData(v)].flat(Infinity) as number[]
+  if (data.length !== 1) { throw new Error(`expected a scalar, got a tensor of shape [${shapeOf(v).join(" ")}]`) }
+  if (Number.isNaN(data[0])) { throw new Error("expected a number, got NaN") }
+  return data[0]!
 }
 const asNumberList = (v: Value): number[] => ([] as number[]).concat(requireData(v) as any)
 
@@ -1877,8 +1874,8 @@ const TensorArgSort = (x: Value) =>
     ? engine.reshape(engine.argsort(engine.reshape(operand(x), [1])), [])
     : engine.argsort(operand(x))
 const TensorSlice = (a: Value, begin: Value, size?: Value) => {
-  const beginList = asNumberList(begin)
-  const sizeList = size == null ? undefined : asNumberList(size)
+  const beginList = asWholeList(begin)
+  const sizeList = size == null ? undefined : asWholeList(size)
   const spec = beginList.map((b, i) => {
     const s = sizeList?.[i]
     return (s === undefined || s === -1 ? [b] : [b, b + s]) as [number] | [number, number]
@@ -1987,7 +1984,7 @@ const TensorTopK = (a: Value, k: Value) => {
 
 const TensorReshape = (a: Value, b?: Value) => {
   if (b != null) {
-    return engine.reshape(operand(a), asNumberList(b))
+    return engine.reshape(operand(a), asWholeList(b))
   }
 
   return engine.tensor(shapeOf(a))
@@ -2149,7 +2146,7 @@ const TensorWatch = (a: Value): Value => {
 // Stateful convenience RNG: a fresh key per call – deterministic per page load, not
 // across reloads.
 let rngCounter = 0
-const TensorRandomUniform = (a: Value) => engine.uniform(rngCounter++, asNumberList(a))
+const TensorRandomUniform = (a: Value) => engine.uniform(rngCounter++, asWholeList(a))
 
 // A value as the Fluent SOURCE that reproduces it, so CodeEvaluate(String(x))
 // gives x back. This is repr, not display: a string comes back quoted, a list
