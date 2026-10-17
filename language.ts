@@ -2166,7 +2166,7 @@ const StringLiteral = (v: Value): string => {
     return `"${String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
   }
   if (typeof v === "symbol") { return Symbol.keyFor(v) ?? String(v) }
-  if (v instanceof FluentVariable) { return `~(${StringLiteral(v.current)})` }
+  if (v instanceof FluentVariable) { return `${v instanceof FluentData ? "~~" : "~"}(${StringLiteral(v.current)})` }
   if (v instanceof Signal) { return `$(${StringLiteral(v.peek() as Value)})` }
   if (isTensor(v)) { return nestedLiteral(getAsSyncList(v)) }
   if (Array.isArray(v)) {

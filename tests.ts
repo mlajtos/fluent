@@ -650,6 +650,9 @@ describe("language fixes", () => {
     expect(message(`StringConcat("a", ◌)`)).toContain("◌")
     expect(run(`StringConcat("a", Error("x"))`)).toBeInstanceOf(Error)
   })
+  test("String prints a data slot as ~~", () => {
+    expect(value("String(~~[1, 2])")).toBe("~~([1, 2])")
+  })
   test("indexing an unknown name names it", () => {
     expect(message("a_0")).toContain("unknown name: a")
   })
