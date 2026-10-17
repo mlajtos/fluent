@@ -120,6 +120,15 @@ export default async function (): Promise<{ fails: number }> {
       check(`parity: tiled ${nm}`, rel(b.data, a.data) < 1e-5, `relΔ ${rel(b.data, a.data).toExponential(1)}`);
     }
   }
+  if (gpu) { // the synchronous read, through canvases: a whole canvas, whole rows and a partial row
+    const n = 256 * 256 + 17 * 256 + 112, d = Float32Array.from({ length: n }, (_, i) => Math.sin(i) * 1e3);
+    d[5] = NaN; d[6] = -Infinity; d[7] = -0;
+    const src = gpu.device.createBuffer({ size: n * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+    gpu.device.queue.writeBuffer(src, 0, d);
+    const got = gpu.readSync(src, n);
+    check("readSync returns the buffer's bits", got.every((v, i) => Object.is(v, d[i]) || (Number.isNaN(v) && Number.isNaN(d[i]!))));
+    src.destroy();
+  }
   if (gpu) { // a tile grid past 32,768 workgroups folds into two axes, the last workgroups idle
     const m = 8208, k = 64, n = 1024, Ad = rv(m * k), Bd = rv(k * n);
     const out = (await realize(gpu, matmul(buffer("A", [m, k]), buffer("B", [k, n])), new Map([["A", T(Ad, [m, k])], ["B", T(Bd, [k, n])]]))).data;
