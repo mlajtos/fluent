@@ -1154,7 +1154,7 @@ const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert
         try {
           const verdict = safeApply(until, [value, prev], scope)
           if (verdict instanceof Error) { value = verdict; break }
-          if (isTruthy(requireData(verdict))) { break }
+          if (isTruthy(verdict)) { break }
         } catch (e) {
           if (e instanceof StateWrite) { throw e }
           value = e instanceof Error ? e : new Error(String(e))
@@ -1476,13 +1476,12 @@ const FunctionNoAutoLift = (fn: Function) => {
 }
 setMeta(FunctionNoAutoLift, { noAutoLift: true })
 
-// Fluent's truth: a number holds when it's nonzero, a tensor when any element
-// is (an all-zero tensor doesn't), and NaN never does. guard, when and the
-// until-form of ⍣ all ask this one question.
-const isTruthy = (data: number | unknown[]): boolean => {
-  const falsy = (v: unknown) => v === 0 || v === false
-  if (Array.isArray(data)) { return !(data.flat(Infinity) as unknown[]).every(falsy) }
-  return !(falsy(data) || Number.isNaN(data))
+// Fluent's truth, one rule for a number and a tensor: some element is nonzero and not
+// NaN. guard, when and the until-form of ⍣ all ask it, and read one number to answer.
+const isTruthy = (v: Value): boolean => {
+  const t = operand(v)
+  if (!isTensor(t)) { throw new Error(`expected a tensor, got ${describeArg(v)}`) }
+  return t.size > 0 && engine.max(engine.truthy(t)).item() > 0
 }
 
 // guard(cond, { value }) – a candidate that answers with value while cond holds
@@ -1491,7 +1490,7 @@ const isTruthy = (data: number | unknown[]): boolean => {
 // itself becomes the Error, and a cascade surfaces it instead of skipping.
 // A body that isn't a thunk is its own value.
 const FunctionGuard = function (this: CurrentScope, cond: Value, body: Value) {
-  const holds = isTruthy(requireData(cond))
+  const holds = isTruthy(cond)
   const scope = this
   const candidate = function () {
     if (!holds) {
@@ -1532,7 +1531,7 @@ setMeta(FunctionTry, { noAutoLift: true })
 // truthy, yield ◌ otherwise. Not a candidate: whatever the thunk returns –
 // an Error included – is the result, so a broken training step stays loud.
 const FunctionWhen = function (this: CurrentScope, cond: Value, thunk: Value) {
-  if (!isTruthy(requireData(cond))) { return null }
+  if (!isTruthy(cond)) { return null }
   if (typeof thunk !== "function") {
     return new Error("`when(cond, { … })`: second argument must be a thunk")
   }

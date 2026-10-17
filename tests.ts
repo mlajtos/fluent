@@ -612,6 +612,13 @@ describe("language fixes", () => {
     expect(value("a: 1, f: { x, y | x }, f(a, a: 2)")).toBe(1)
     expect(value("a: 1, [a, a: 2]")).toEqual([1, 2])
   })
+  test("NaN is false for a number and for a tensor alike", () => {
+    expect(run("when(0 ÷ 0, { 1 })")).toBe(null)
+    expect(run("when([0 ÷ 0], { 1 })")).toBe(null)
+    expect(run("when([0, 0 ÷ 0], { 1 })")).toBe(null)
+    expect(value("when([0, 0 ÷ 0, 2], { 1 })")).toBe(1)
+    expect(run("guard([0 ÷ 0], { 1 })()")).toBeInstanceOf(NoMatch)
+  })
   test("indexing an unknown name names it", () => {
     expect(message("a_0")).toContain("unknown name: a")
   })
