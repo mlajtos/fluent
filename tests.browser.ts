@@ -228,7 +228,7 @@ test("printing a Fluent lambda still shows its source", async ({ page }) => {
   await expect(panel(page)).toContainText("x × 2")
 })
 
-test("README training snippet converges and stays responsive", async ({ page }) => {
+test("a ⟳ training loop converges and stays responsive", async ({ page }) => {
   // training in a ⟳ loop must stay fluid, with converged values rendered well
   // within the timeout
   await open(page, `
@@ -435,6 +435,13 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
   }
   const room = (heading: string) => expect(page.getByText(heading)).toBeVisible()
   const solved = (done: string) => expect(page.getByText(done)).toBeVisible()
+  // a cheat shows the answer without doing the work: give the light time to
+  // turn, and it stays off
+  const rejected = async (anchor: string, cheat: string, done: string) => {
+    await typeInCell(page, anchor, cheat)
+    await page.waitForTimeout(1000)
+    await expect(page.getByText(done)).toHaveCount(0)
+  }
 
   await open(page, "Tour")
 
@@ -469,19 +476,22 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
 
   // 6 · three names for everything
   await room("Every built-in has three names")
-  await typeInCell(page, "now sum 1 through 100", "sum(1 ... 100)")
+  await rejected("now sum 1 through 100", "(5050)", "Gauss needed a clever trick")
+  await typeInCell(page, "(5050)", "sum(1 ... 100)")
   await solved("Gauss needed a clever trick")
   await next()
 
   // 7 · operators are functions – a name in operator position, no parens, no +
   await room("Operators aren")
-  await typeInCell(page, "now put plus in the middle", "plus: add, 40 plus 2")
+  await rejected("now put plus in the middle", "plus: add, 42", "You taught the language a word")
+  await typeInCell(page, "plus: add, 42", "plus: add, 40 plus 2")
   await solved("You taught the language a word")
   await next()
 
   // 8 · your own function
   await room("Make your own function")
-  await typeInCell(page, "almost. a cube is", "cube: { x | x^3 }, cube(3)")
+  await rejected("almost. a cube is", "cube: { x | x^2 }, 27", "You fixed a function")
+  await typeInCell(page, "cube: { x | x^2 }, 27", "cube: { x | x^3 }, cube(3)")
   await solved("You fixed a function")
   await next()
 
@@ -493,7 +503,8 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
 
   // 10 · grad reads a function
   await room("The slope machine")
-  await typeInCell(page, "the slope of x·x·x, at 2", "f: { x | x^3 }, df: grad(f), df(2)")
+  await rejected("the slope of x·x·x, at 2", "f: { x | x^2 }, df: grad(f), 12", "You differentiated a program")
+  await typeInCell(page, "df: grad(f), 12", "f: { x | x^3 }, df: grad(f), df(2)")
   await solved("You differentiated a program by editing a program")
   await next()
 

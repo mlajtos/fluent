@@ -20,10 +20,11 @@
 // – Backticks appear inside cell code (quoted ASTs); in this template
 //   literal they must be written as \` – a regular template literal keeps
 //   them as plain backticks (String.raw would keep the backslash too).
-// – A challenge's check reads the cell's SOURCE as well as its value (via
-//   StringToCodes), so a challenge about naming can insist on names instead
-//   of accepting a typed-in answer. Keep checked characters out of the
-//   cell's seed comments, or the seed itself satisfies the check.
+// – A challenge's check gets the cell's value and its SOURCE. It tests what
+//   the code does by running it again with a line after it (cube(4)) or
+//   with a built-in switched off before it, so a typed-in answer fails. A
+//   challenge about how code is written counts characters (StringToCodes):
+//   keep those characters out of the seed's comments, or the seed passes.
 export const TOUR_SOURCE = `
 ; The Fluent tour – fifteen rooms, from 1 + 2 to a value that learns.
 
@@ -37,9 +38,9 @@ status: { check, done, hint |
 
 ; A checked cell: its own editor, its own scope, a live result, a light.
 ; The check lambda receives (value, source) – value equality alone is an
-; honor system, so most challenges also read the source. Returns a flat
-; (editor, result, light) list: Grid flattens it into its own cells, and a
-; nested Grid would collapse in an auto-sized row.
+; honor system, so most challenges also run or read the source. Returns a
+; flat (editor, result, light) list: Grid flattens it into its own cells, and
+; a nested Grid would collapse in an auto-sized row.
 challenge: { src, check, done, hint |
   code: $(src),
   result: CodeEvaluate(code),
@@ -69,8 +70,13 @@ headFinal: { label |
   )
 },
 
+; the cell's code run again, with one more line after it or before it: both
+; run in this lambda's scope, so each sees the other's names
+appended: { s, line | CodeEvaluate(s), CodeEvaluate(line) },
+prepended: { line, s | CodeEvaluate(line), CodeEvaluate(s) },
+
 ; character codes the checks look for:
-; ( 40, * 42, + 43, . 46, : 58, _ 95, { 123, × 215, ∇ 8711, 🍌 127820
+; ( 40, . 46, _ 95, 🍌 127820
 
 ; 1 · reading order
 s1: Grid(1)(
@@ -82,11 +88,10 @@ s1: Grid(1)(
 *This tour is interactive: every code box is a real editor. Change things and see what happens.*"),
   challenge("1 + 2 * 3 ; ← make this say 7",
     { r, s |
-      c: StringToCodes(s),
       min(r = 7)
-        ∧ (Σ(c = 40) = 0)
-        ∧ (Σ(c = 43) ≥ 1)
-        ∧ (Σ(c = 42) + Σ(c = 215) ≥ 1)
+        ∧ (Σ(StringToCodes(s) = 40) = 0)
+        ∧ (prepended("(+): { a, b | 0 }", s) ≠ 7)
+        ∧ (prepended("(*): (×): { a, b | 0 }", s) ≠ 7)
     },
     Text("✅ **Seven.** You just changed what a program means with a *space*. Let that sink in."),
     Text("🎯 *Make the box say **7** — keep the \`+\` and the \`*\`, no parentheses. The check reads your code.*")
@@ -156,7 +161,7 @@ s6: Grid(1)(
   Σ(1 ... 3), ; …a glyph for speed. Same function.
 )"),
   challenge("sum([1, 2, 3]) ; ← now sum 1 through 100. all of them.",
-    { r, s | c: StringToCodes(s), min(r = 5050) ∧ (Σ(c = 40) ≥ 1) },
+    { r, s | min(r = 5050) ∧ (prepended("sum: Σ: TensorSum: { x | 0 }", s) = 0) },
     Text("✅ **5050.** Gauss needed a clever trick. You needed eleven keystrokes. History will decide whose was cooler."),
     Text("🎯 *Make the lower box say **5050** — the sum of every whole number from 1 to 100, summed, not typed.*")
   )
@@ -177,11 +182,9 @@ s7: Grid(1)(
   challenge("plus: add,
 plus(40, 2) ; ← now put plus in the middle",
     { r, s |
-      c: StringToCodes(s),
       min(r = 42)
-        ∧ (Σ(c = 58) ≥ 1)
-        ∧ (Σ(c = 40) = 0)
-        ∧ (Σ(c = 43) = 0)
+        ∧ (Σ(StringToCodes(s) = 40) = 0)
+        ∧ (prepended("add: { a, b | a - b }", s) = 38)
     },
     Text("✅ **42.** You taught the language a word. Next room: teach it a whole function."),
     Text("🎯 *Make it say **42** with \`plus\` *between* the numbers — no parentheses, no \`+\`.*")
@@ -198,7 +201,7 @@ s8: Grid(1)(
 square([1, 2, 3, 4]) ; every item, one call"),
   challenge("cube: { x | x^2 }, ; ← almost. a cube is x·x·x.
 cube(3)",
-    { r, s | c: StringToCodes(s), min(r = 27) ∧ (Σ(c = 123) ≥ 1) },
+    { r, s | min(r = 27) ∧ (appended(s, "cube(4)") = 64) },
     Text("✅ **27.** You fixed a function. From here on, everything in the language is either a value or one of these."),
     Text("🎯 *\`cube\` doesn’t cube yet — one character stands between it and **27**.*")
   )
@@ -234,10 +237,9 @@ s10: Grid(1)(
 df: grad(f),
 df(3) ; ← now: the slope of x·x·x, at 2",
     { r, s |
-      c: StringToCodes(s),
       min(r = 12)
-        ∧ (Σ(c = 123) ≥ 1)
-        ∧ (Σ(c = 8711) + Σ(c = 103) ≥ 1)
+        ∧ (appended(s, "df(3)") = 27)
+        ∧ (prepended("grad: TensorGradient: { f | { x | 0 } }, (∇): grad", s) = 0)
     },
     Text("✅ **12.** You differentiated a program by editing a program. Some people sit through a whole semester before they believe this is allowed."),
     Text("🎯 *Make the box say **12** — the slope of \`x^3\` at 2, computed by \`grad\`, not by you.*")

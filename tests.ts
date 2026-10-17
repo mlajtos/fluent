@@ -1547,6 +1547,72 @@ describe("every name in shipped Fluent source resolves", () => {
   test("the Tour", () => {
     expect(unknown(TOUR_SOURCE)).toEqual([])
   })
+
+  test("the README's names at a glance are each one function", async () => {
+    // a row's glyph, word and full name are bound to one function – or, for a glyph
+    // that is two functions by arity (× is mul and sign), to the one the row names –
+    // and a cell left empty (—) has no name in the prelude
+    const readme = await Bun.file(new URL("README.md", import.meta.url)).text()
+    const table = readme.slice(readme.indexOf("| glyph | word | full name |"), readme.indexOf("</details>"))
+    const scope = createScope(), p = engine.tensor([0.5, 2, 3]), q = engine.tensor([3, 2, 1])
+    const namesOf = new Map<unknown, string[]>()
+    for (const k in scope) { namesOf.set(scope[k], [...(namesOf.get(scope[k]) ?? []), k]) }
+    const agree = (f: any, g: any) => {
+      if (f === g) { return true }
+      const same = (call: (h: any) => any) => { try { return JSON.stringify(call(f).js()) === JSON.stringify(call(g).js()) } catch { return false } }
+      return same((h) => h(p)) || same((h) => h(p, q))
+    }
+    const rows = table.split("\n").slice(2).filter((row) => row.startsWith("|"))
+    expect(rows.length).toBeGreaterThan(30)
+    for (const row of rows) {
+      const [glyph, word, full] = row.split("|").slice(1, 4).map((cell) => cell.match(/^\s*`([^`]+)`/)?.[1])
+      const fns = [glyph, word, full].flatMap((n) => n ? [scope[n]] : [])
+      const unlisted = (namesOf.get(fns[0]) ?? []).filter((n) => (!glyph && !/^[A-Za-z]/.test(n)) || (!word && /^[a-z]/.test(n)))
+      expect([row, fns.every((f) => typeof f === "function" && agree(fns[0], f)), unlisted]).toEqual([row, true, []])
+    }
+  })
+})
+
+// The Tour's challenges check what a learner's code does: each room's solutions light
+// it up, and the cheats that only look like one stay dark
+describe("the Tour's checks", () => {
+  const scope = createScope()
+  evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(TOUR_SOURCE), scope))
+  // challenge(seed, check, done, hint), wherever the Tour calls it
+  const checks: [string, Function][] = []
+  const find = (n: any) => {
+    if (!n || typeof n !== "object") { return }
+    if (n.type === "Operation" && n.content?.operator?.content?.value === "challenge") {
+      const [seed, check] = n.content.args.content.value
+      checks.push([seed.content.value, evaluateSyntaxTreeNode(check, scope) as Function])
+    }
+    for (const k of Object.keys(n)) { if (k !== "origin") { find(n[k]) } }
+  }
+  find(CodeParse(TOUR_SOURCE))
+  const lights = (seed: string, src: string) => {
+    const check = checks.find(([s]) => s.includes(seed))![1]
+    let v: any = evaluateGeneration(() => check(CodeEvaluate.call(Object.create(scope), src), src))
+    while (v instanceof Signal) { v = v.value }
+    return v instanceof engine.Tensor && v.js() === 1
+  }
+  const rooms: [string, string[], string[]][] = [
+    ["make this say 7", ["1 + 2*3"], ["7", "7 ; +*", "1 + 6 ; *", "1 + (2 * 3)"]],
+    ["fish out the 30", ["[10, 20, 30] _ 2", "[10, 20, 30]_2"], ["30"]],
+    ["turn this into", ["1 ... 5 * 2", "(1 ... 5) × 2"], ["[2, 4, 6, 8, 10]"]],
+    ["waste of good bananas", ["🍌: 7, 🍌 * 🍌"], ["🍌: 7, 49"]],
+    ["now sum 1 through 100", ["sum(1 ... 100)", "Σ(1 ... 100)", "TensorSum(1 ... 100)"], ["(5050)", "5050"]],
+    ["now put plus in the middle", ["plus: add, 40 plus 2", "plus: add,\n40 plus 2 ; ← now put plus in the middle"],
+      ["plus: add, 42", "plus: add, 40 + 2", "plus: add, plus(40, 2)"]],
+    ["almost. a cube is", ["cube: { x | x^3 }, cube(3)", "cube: { x | x × x × x }, ; ← almost.\ncube(3) ; done"], ["cube: { x | x^2 }, 27"]],
+    ["the slope of x·x·x, at 2", ["f: { x | x^3 }, df: grad(f), df(2)", "f: { x | x^3 },\ndf: ∇(f),\ndf(2) ; ← now: the slope of x·x·x, at 2"],
+      ["f: { x | x^2 }, df: grad(f), 12", "f: { x | x^3 }, df: { x | 3 × x^2 }, df(2)"]],
+  ]
+  for (const [seed, solutions, cheats] of rooms) {
+    test(`“${seed}”`, () => {
+      expect(solutions.map((src) => [src, lights(seed, src)])).toEqual(solutions.map((src) => [src, true]))
+      expect(cheats.map((src) => [src, lights(seed, src)])).toEqual(cheats.map((src) => [src, false]))
+    })
+  }
 })
 
 describe("lifts created inside owned computeds (reactive cells)", () => {

@@ -43,7 +43,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | `_` | `gather` | `TensorGather` |
 | `⍴` | `reshape` | `TensorReshape` |
 | `..<` | `range` | `TensorRange` |
-| `...` | — | `TensorRangeInclusive` |
+| `...` | `rangeInclusive` | `TensorRangeInclusive` |
 | `⊗` | `outer` | `TensorOuter` |
 | `^` | `pow` | `TensorPower` |
 | `√` | `root` | `TensorRoot` |
@@ -51,6 +51,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | `÷` | `div` | `TensorDivide` |
 | `×` | `mul` | `TensorMultiply` |
 | `~` | `var` | `TensorVariable` |
+| `~~` | `data` | `TensorData` |
 | `:=` | — | `TensorAssign` |
 | `⟳` | `iter` | `FunctionIterate` |
 | `⍣` | `power` | `FunctionPower` |
@@ -67,7 +68,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | `@` | `apply` | `FunctionApply` |
 | `$` | — | `Reactive` |
 | — | `watch` | `TensorWatch` |
-| — | `conv` | `TensorConvolution` |
+| `⊛` | `conv` | `TensorConvolution` |
 | — | `once` | `SignalOnce` |
 
 Some cells are still empty — the language is young, and names are earned.
@@ -82,6 +83,8 @@ Live evaluation on every keystroke, hover docs, unicode completion (type `alpha`
 
 ## Run locally
 
+Needs [Bun](https://bun.sh) 1.3.14 or newer.
+
 ```sh
 git clone https://github.com/mlajtos/fluent.git
 cd fluent && bun install
@@ -92,8 +95,11 @@ The whole thing fits in a handful of files — read it, change it:
 
 | file | what |
 |---|---|
-| [`language.ts`](language.ts) | the language — grammar ([Ohm](https://ohmjs.org)), evaluator, prelude; tensors via Fluent's own engine ([`engine/`](engine)), reactivity via [preact signals](https://preactjs.com/guide/v10/signals/) |
+| [`language.ts`](language.ts) | the language — grammar ([Ohm](https://ohmjs.org)), evaluator, native built-ins; reactivity via [preact signals](https://preactjs.com/guide/v10/signals/) |
+| [`prelude.fl`](prelude.fl) | the standard library, written in Fluent |
+| [`engine/`](engine) | Fluent's own tensor engine — WebGPU, with a CPU fallback |
+| [`host.ts`](host.ts), [`worker.ts`](worker.ts) | the evaluation host, run in a worker: widgets, live sources, values described to the page |
 | [`client.tsx`](client.tsx) | the IDE — components, visualizers, Monaco editor, playground |
 | [`tour.ts`](tour.ts) | the tour — fifteen rooms, written in Fluent itself |
-| [`tests.ts`](tests.ts) | language tests (`bun test ./tests.ts`) |
+| [`tests.ts`](tests.ts) | language tests (`bun test ./tests.ts`); engine tests (`bun run test:engine`) |
 | [`tests.browser.ts`](tests.browser.ts) | IDE tests in real Chromium (`bun run test:browser`) |
