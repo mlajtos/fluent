@@ -1575,14 +1575,8 @@ const List = (...args: unknown[]) => {
 }
 
 const ListConcat = (...args: Value[]) => {
-  return args.reduce((acc, arg) => {
-    if (arg instanceof Array) {
-      return acc.concat(arg)
-    } else {
-      return acc.concat(new Error(`'ListConcat': argument is not an array: ${String(arg)}`))
-    }
-  }, [] as unknown[]
-  )
+  const bad = args.findIndex((a) => !Array.isArray(a))
+  return bad < 0 ? ([] as Value[]).concat(...args) : new Error(`'ListConcat': expected lists, got ${describeArg(args[bad]!)}`)
 }
 
 const ListLength = (a: unknown[]) => {
@@ -1618,20 +1612,19 @@ const ListMap = function (this: CurrentScope, a: any[], fn: (value: any, index: 
   return a.map((value, index) => safeApply(fn, [value, TensorScalar(index)], this))
 }
 
-const ListReduce = (a: any[], fn: (acc: any, value: any) => any, initialValue?: any) => {
-  if (typeof fn !== "function") {
-    return new Error("'ListReduce': `fn` must be a function")
-  }
-
-  if (initialValue == null) {
-    return a.reduce(fn)
-  }
-
-  return a.reduce(fn, initialValue)
+// Fold a list left to right with f(acc, element), from init – or from the first
+// element when there is no init
+const ListReduce = function (this: CurrentScope, a: Value, fn: Value, init?: Value) {
+  if (!Array.isArray(a)) { return new Error(`'ListReduce': expected a list, got ${describeArg(a)}`) }
+  if (typeof fn !== "function") { return new Error("'ListReduce': `fn` must be a function") }
+  if (init == null && a.length === 0) { return new Error("'ListReduce': an empty list with no init has nothing to fold") }
+  let acc = init == null ? a[0]! : init
+  for (const v of init == null ? a.slice(1) : a) { acc = safeApply(fn, [acc, v], this) }
+  return acc
 }
 
 // ListReduce that keeps every step: (init, f(init, a₀), f(f(init, a₀), a₁), …)
-const ListScan = (a: any[], fn: (acc: any, value: any) => any, init: any) => {
+const ListScan = function (this: CurrentScope, a: Value, fn: Value, init: Value) {
   if (!Array.isArray(a)) {
     return new Error("'ListScan': `list` must be a list")
   }
@@ -1639,7 +1632,7 @@ const ListScan = (a: any[], fn: (acc: any, value: any) => any, init: any) => {
     return new Error("'ListScan': `fn` must be a function")
   }
   const out = [init]
-  for (const v of a) { out.push(fn(out[out.length - 1], v)) }
+  for (const v of a) { out.push(safeApply(fn, [out[out.length - 1]!, v], this)) }
   return out
 }
 
@@ -1812,7 +1805,7 @@ const LEADING_AXIS: Value = engine.tensor(0)
 // `1 ..< 10 reduce +` = 45, `x reduce { a, b | a - b }` = ((x_0-x_1)-x_2)-…
 // A known op takes its native reduction (fast, axis-aware); anything else folds
 // over the slices along the axis (default 0).
-const TensorReduce = (tensor: Value, fn: Value, axis?: Value) => {
+const TensorReduce = function (this: CurrentScope, tensor: Value, fn: Value, axis?: Value) {
   if (typeof fn !== "function") {
     return new Error("`reduce(tensor, fn, axis?)`: the second argument must be a function")
   }
@@ -1828,7 +1821,7 @@ const TensorReduce = (tensor: Value, fn: Value, axis?: Value) => {
     // empty fold has no answer to hand back
     return new Error("`reduce`: cannot fold an empty tensor with a custom function")
   }
-  return ListReduce(parts, (acc: Value, v: Value) => (fn as Function)(acc, v))
+  return ListReduce.call(this, parts, fn)
 }
 
 
@@ -2185,7 +2178,12 @@ const StringLiteral = (v: Value): string => {
   return String(v)   // an Error has no literal form – show it rather than lie
 }
 
-const StringConcat = (...args: any[]) => "".concat(...args)
+// text joined end to end; ◌, an Error or an unknown name is not text
+const StringConcat = (...args: Value[]) => {
+  const bad = args.findIndex((a) => a == null || a instanceof Error || typeof a === "symbol")
+  if (bad >= 0) { throw new Error(`StringConcat: expected text, got ${describeArg(args[bad]!)}`) }
+  return args.join("")
+}
 // characters, not UTF-16 units: `#` disagreed with StringToCodes about how
 // long a string is (4 vs 3 for "a🍌b"), and `_` handed back lone surrogates
 const StringLength = (a: Value) =>

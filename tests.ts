@@ -642,6 +642,14 @@ describe("language fixes", () => {
     expect(value("slice([1, 2, 3, 4], [0.6], [2])")).toEqual([2, 3])
     expect(run("ListGet((10, 20, 30), [])")).toBeInstanceOf(Error)
   })
+  test("list and string natives fail as values, not as JS errors", () => {
+    expect(message("ListReduce(5, +)")).toContain("a list")
+    expect(message("ListReduce((), +)")).toContain("empty")
+    expect(value("ListReduce((1, 2), { a, b, i | identical(i, ◌) }, 0)")).toBe(1)
+    expect(run("ListConcat((1,), 2)")).toBeInstanceOf(Error)
+    expect(message(`StringConcat("a", ◌)`)).toContain("◌")
+    expect(run(`StringConcat("a", Error("x"))`)).toBeInstanceOf(Error)
+  })
   test("indexing an unknown name names it", () => {
     expect(message("a_0")).toContain("unknown name: a")
   })
