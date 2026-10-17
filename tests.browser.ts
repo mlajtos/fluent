@@ -2,7 +2,7 @@
 // boots it on :3210). Covers what tests.ts structurally can't – Monaco, the
 // output panel, reactive islands, canvas renderers, media sources.
 // Run with `bun run test:browser`; `bunx playwright install chromium` once.
-import { test, expect, type Page } from "@playwright/test"
+import { test, expect, type Locator, type Page } from "@playwright/test"
 
 // The dev server injects a <bun-hmr> status overlay that sits above the page
 // and swallows pointer events once it has rendered. It is harness chrome, not
@@ -20,9 +20,154 @@ const open = async (page: Page, code: string) => {
 // the result panel – scoped so Monaco's text and line numbers never match
 const panel = (page: Page) => page.getByTestId("print-panel").first()
 
+// How far apart the darkest and the brightest red on screen are, over an element – what
+// the screen shows, whoever painted it; a blank canvas is 0
+const spreadOf = async (element: Locator): Promise<number> => {
+  const png = (await element.screenshot()).toString("base64")
+  return element.page().evaluate(async (b64) => {
+    const img = new Image()
+    img.src = `data:image/png;base64,${b64}`
+    await img.decode()
+    const copy = document.createElement("canvas")
+    copy.width = img.width
+    copy.height = img.height
+    const ctx = copy.getContext("2d")!
+    ctx.drawImage(img, 0, 0)
+    const { data } = ctx.getImageData(0, 0, copy.width, copy.height)
+    let min = 255, max = 0
+    for (let i = 0; i < data.length; i += 4) {
+      min = Math.min(min, data[i]!)
+      max = Math.max(max, data[i]!)
+    }
+    return max - min
+  }, png)
+}
+
 test("evaluates a program and renders the result", async ({ page }) => {
   await open(page, "1 + 1")
   await expect(panel(page)).toContainText("2")
+})
+
+test("typing re-renders the editor, not the output", async ({ page }) => {
+  // regression: the playground read the program, so every keystroke re-rendered the
+  // whole output (12 keystrokes redrew 4 plots 52 times). React reports each commit to
+  // a devtools hook; the output panel got new props exactly when its parent re-rendered it.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __outputRenders: number, __REACT_DEVTOOLS_GLOBAL_HOOK__: unknown }
+    w.__outputRenders = 0
+    let props: unknown
+    type Fiber = { type?: { name?: string }, memoizedProps: unknown, child: Fiber | null, sibling: Fiber | null }
+    const find = (f: Fiber | null): Fiber | null => {
+      for (; f; f = f.sibling) {
+        if (f.type?.name === "ResultPanel") { return f }
+        const inner = find(f.child)
+        if (inner) { return inner }
+      }
+      return null
+    }
+    w.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+      supportsFiber: true, renderers: new Map(), inject: () => 1, onCommitFiberUnmount() { }, onPostCommitFiberRoot() { },
+      onCommitFiberRoot(_: number, root: { current: Fiber }) {
+        const panel = find(root.current)
+        if (panel && props !== undefined && panel.memoizedProps !== props) { w.__outputRenders++ }
+        props = panel?.memoizedProps
+      },
+    }
+  })
+  await open(page, "1 + 1")
+  await expect(panel(page)).toContainText("2")
+  await page.locator(".monaco-editor .view-line").first().click()
+  await page.keyboard.press("End")
+  const before = await page.evaluate(() => (window as unknown as { __outputRenders: number }).__outputRenders)
+  await page.keyboard.type(" ; abcdef", { delay: 30 })
+  await page.waitForTimeout(500)
+  expect(await page.evaluate(() => (window as unknown as { __outputRenders: number }).__outputRenders)).toBe(before)
+})
+
+test("the worker parses, its errors mark the editor, and the page bundles no parser", async ({ page }) => {
+  // regression: the page imported language.ts – ohm, the grammar, the engine – to parse
+  // every keystroke itself (29 ms a key on error-diffusion)
+  await open(page, "1 + (")
+  await expect(page.locator(".monaco-editor .squiggly-error").first()).toBeAttached()
+  const src = await page.locator("script[type=module][src]").first().getAttribute("src")
+  expect(await (await page.request.get(src!)).text()).not.toContain("ListOf<Expr")
+})
+
+test("an escaped quote doesn't end a string's highlighting", async ({ page }) => {
+  await open(page, '"a \\" b" + 1')
+  // the `1` after the string is a number, not more string
+  const tokens = page.locator(".monaco-editor .view-line span span")
+  await expect.poll(() => tokens.evaluateAll((spans) => spans.map((s) => [s.textContent?.trim(), getComputedStyle(s).color])))
+    .toContainEqual(["1", "rgb(10, 129, 239)"])
+})
+
+test("a generation comment's answer lands where the comment is, and edits made meanwhile stay", async ({ page }) => {
+  // regression: the answer replaced the comment in the text as it was when asked – what
+  // was typed while waiting vanished – and `$&` in the answer was expanded
+  await page.addInitScript(() => localStorage.setItem("fluent-anthropic-api-key", "test"))
+  await page.route("https://api.anthropic.com/v1/messages", async (route) => {
+    await new Promise((r) => setTimeout(r, 1500))
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ content: [{ type: "text", text: "2 $& 3" }] }) })
+  })
+  await open(page, "1 + 1")
+  await expect(panel(page)).toContainText("2")
+  await page.locator(".monaco-editor .view-line").first().click()
+  await page.keyboard.press("End")
+  await page.keyboard.type("\n;;two numbers;;")
+  await page.keyboard.type("\n; mine")
+  const text = () => page.locator(".monaco-editor .view-lines").first().innerText().then((t) => t.replace(/ /g, " "))
+  await expect.poll(text).toContain("2 $& 3")
+  expect(await text()).toContain("; mine")
+  expect(await text()).not.toContain(";;")
+})
+
+test("Fetch of a missing file shows an Error, not the server's 404 page", async ({ page }) => {
+  await open(page, 'Fetch("does-not-exist.txt")')
+  await expect(panel(page)).toContainText("404")
+})
+
+test("a lost GPU starts another worker, which runs the program again", async ({ page }) => {
+  await open(page, "1 + 41")
+  await expect(panel(page)).toContainText("42")
+  // what the worker posts when its device is lost
+  const replaced = await page.evaluate(() => {
+    const scope = globalThis as unknown as { __fluentWorker: Worker }, lost = scope.__fluentWorker
+    lost.dispatchEvent(new MessageEvent("message", { data: { t: "lost", message: "test" } }))
+    return scope.__fluentWorker !== lost
+  })
+  expect(replaced).toBe(true)
+  await expect(panel(page)).not.toContainText("lost")
+  await expect(panel(page)).toContainText("42")
+})
+
+test("a picture wider than the GPU's textures still paints", async ({ page }) => {
+  // regression: a canvas past maxTextureDimension2D paints nothing
+  await open(page, "[0..<10000] ÷ 10000")
+  await expect.poll(() => spreadOf(panel(page).locator("canvas").first())).toBeGreaterThan(10)
+})
+
+test("a view that fails to draw says why", async ({ page }) => {
+  // regression: the fallback said "Something went wrong" and hid the error. A tree node
+  // without a label is what a broken description would send.
+  await open(page, "1 + 1")
+  await expect(panel(page)).toContainText("2")
+  await page.evaluate(() => {
+    const desc = { k: "tree", roots: [{ label: null, o: { s: [1, 1], e: [1, 2], d: 0 }, children: [] }] }
+    ;(globalThis as unknown as { __fluentWorker: Worker }).__fluentWorker.dispatchEvent(new MessageEvent("message", { data: { t: "result", desc } }))
+  })
+  await expect(panel(page)).toContainText("This view failed")
+  await expect(page.getByText("Something went wrong")).toHaveCount(0)
+})
+
+test("controls are named and reachable from the keyboard", async ({ page }) => {
+  await open(page, "x: $(0.5), c: $(1), (Slider(x), Checkbox(c), Scrubber(x, 0.1), ImageUpload($(0)), x)")
+  await expect(page.getByRole("slider", { name: "Slider" })).toBeVisible()
+  await expect(page.getByRole("checkbox", { name: "Checkbox" })).toBeVisible()
+  await expect(page.getByRole("button", { name: /drop an image/ })).toBeVisible()
+  await page.getByRole("slider", { name: "Scrubber" }).focus()
+  await page.keyboard.press("ArrowRight")
+  await expect(panel(page)).toContainText("0.6")
+  expect(await page.locator("html").getAttribute("lang")).toBe("en")
 })
 
 test("a typo'd axis renders an Error, not a silently wrong number", async ({ page }) => {
@@ -110,7 +255,7 @@ test("a checkbox bound to a ~ variable writes to it", async ({ page }) => {
 
 test("PointPlot says what it wanted instead of plotting the index", async ({ page }) => {
   // regression: getAsSyncList returns undefined for a list, so a list axis
-  // reached plotly as undefined and it silently plotted against the point
+  // reached the plot as undefined and it silently plotted against the point
   // index; the single-argument form threw a raw TypeError out of .map
   await open(page, "PointPlot((1, 2, 3))")
   await expect(panel(page)).toContainText("must be a tensor")
@@ -126,7 +271,7 @@ test("a rank-4 tensor reports its shape instead of plotting a flattened lie", as
   await open(page, "reshape(0 ..< 16, [2, 2, 2, 2])")
   await expect(panel(page)).toContainText("2, 2, 2, 2")
   await expect(panel(page)).toContainText("reshape or slice it to plot")
-  await expect(panel(page).locator(".js-plotly-plot")).toHaveCount(0)
+  await expect(panel(page).locator("canvas, svg")).toHaveCount(0)
 })
 
 test("a 2-channel image renders instead of reading past its buffer", async ({ page }) => {
@@ -213,7 +358,7 @@ test("?example= with an unknown name spells 404 in a binary tensor", async ({ pa
   await page.goto("/?example=no-such-bird")
   await expect(page.getByText('example "no-such-bird" not found')).toBeVisible()
   // the 5×11 bit matrix renders as a heatmap in the output panel
-  await expect(panel(page).locator(".js-plotly-plot, canvas").first()).toBeVisible()
+  await expect(panel(page).locator("canvas").first()).toBeVisible()
 })
 
 test("printing a documented built-in shows its doc card, never JS internals", async ({ page }) => {
@@ -254,34 +399,12 @@ edges
   const canvas = panel(page).locator("canvas").first()
   await expect(canvas).toBeVisible({ timeout: 20_000 })
   // the fake feed has structure, so the heatmap must span the colormap
-  await expect(async () => {
-    // what the screen shows – the heatmap may be a WebGPU canvas (GPU blit) or a 2-D one
-    const png = (await canvas.screenshot()).toString("base64")
-    const spread = await page.evaluate(async (b64) => {
-      const img = new Image()
-      img.src = `data:image/png;base64,${b64}`
-      await img.decode()
-      const copy = document.createElement("canvas")
-      copy.width = img.width
-      copy.height = img.height
-      const ctx = copy.getContext("2d")
-      if (!ctx) { return -1 }
-      ctx.drawImage(img, 0, 0)
-      const { data } = ctx.getImageData(0, 0, copy.width, copy.height)
-      let min = 255, max = 0
-      for (let i = 0; i < data.length; i += 4) {
-        min = Math.min(min, data[i]!)
-        max = Math.max(max, data[i]!)
-      }
-      return max - min
-    }, png)
-    expect(spread).toBeGreaterThan(10)
-  }).toPass({ timeout: 15_000 })
+  await expect.poll(() => spreadOf(canvas), { timeout: 15_000 }).toBeGreaterThan(10)
 })
 
 test("PointPlot draws an x/y plot (custom x axis)", async ({ page }) => {
   await open(page, "PointPlot(2 ^ (0...7), [2.7, 1.98, 1.08, 0.82, 0.68, 0.62, 0.59, 0.57])")
-  await expect(panel(page).locator(".js-plotly-plot").first()).toBeVisible({ timeout: 20_000 })
+  await expect(panel(page).locator("svg polyline").first()).toBeVisible({ timeout: 20_000 })
 })
 
 test("PointPlot surfaces an error argument, not a blank chart", async ({ page }) => {
@@ -326,10 +449,10 @@ test("a reactive cell: lifts inside CodeEvaluate survive slider drags", async ({
   // constants captured by a lift created inside another computed survive replay,
   // and nested lifts evaluate
   await open(page, `x: $(0.5),\ncode: $("(Slider(x), 0 ... 100*x)"),\nCodeEvaluate(code)`)
-  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+  await expect(panel(page).locator("canvas").first()).toBeVisible()
   await page.locator('input[type="range"]').first().fill("0.9")
   await expect(page.getByText(/disposed|freed|expected a tensor/)).toHaveCount(0)
-  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+  await expect(panel(page).locator("canvas").first()).toBeVisible()
 })
 
 test("CodeEditor auto mode sizes to its content", async ({ page }) => {
@@ -385,8 +508,8 @@ test("an overflowing panel scrolls instead of crushing its plots", async ({ page
   // scroll container's min-content height is ~zero – plots and button rows
   // were squeezed to 28px slivers
   await open(page, `(\nText("one"), 0 ... 8,\nText("two"), (1 ... 6) ⊗(×) (1 ... 6),\nText("three"), [0, 1, 4, 9, 16, 25],\nText("four"), [25, 16, 9, 4, 1, 0],\nText("five"), 8 ... 0\n)`)
-  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
-  for (const plot of await page.locator(".js-plotly-plot").all()) {
+  await expect(panel(page).locator("canvas").first()).toBeVisible()
+  for (const plot of await panel(page).locator("canvas, svg").all()) {
     const panelBox = await plot.evaluate(el => el.closest(".rounded-xl")!.getBoundingClientRect().height)
     expect(panelBox).toBeGreaterThan(100)
   }
@@ -510,7 +633,7 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
 
   // 11 · the slope, drawn – no challenge, both curves must plot
   await room("The slope, drawn")
-  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+  await expect(panel(page).locator("canvas").first()).toBeVisible()
   await next()
 
   // 12 · find the bottom by feel – scrub the guess from 10 to 42.

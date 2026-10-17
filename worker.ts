@@ -13,8 +13,10 @@ const scope = globalThis as unknown as {
 const early: ToWorker[] = []
 scope.onmessage = (e) => { early.push(e.data) }
 
-// the engine computes on WebGPU where the platform has it, on the CPU everywhere else
+// the engine computes on WebGPU where the platform has it, on the CPU everywhere else;
+// a lost GPU ends this worker, and the page starts another
 await engine.init()
+engine.engineGpu()?.device.lost.then((info) => scope.postMessage({ t: "lost", message: info.message || info.reason }, []))
 const receive = startHost((message, transfer) => scope.postMessage(message, transfer ?? []))
 scope.onmessage = (e) => receive(e.data)
 for (const message of early.splice(0)) { receive(message) }
