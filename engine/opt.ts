@@ -235,16 +235,21 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
       const at = iadd(srcIdx, iconst(-before * sst[axis]!));                 // wraps below 0 only where `inside` is 0
       return node("WHERE", [inside, read(src, at, src.shape), konst(0)], null, []);
     };
-    const val = (v: UOp, ix: UOp, whole = false): UOp => {
+    // every value is read at `at`, so a node reached twice is one value: x·x·x·x is 2 multiplies
+    const vals = new Map<number, UOp>();
+    const val = (v: UOp, whole = false): UOp => {
+      let o = vals.get(v.id);
+      if (o) return o;
       const s = scalarOf(v);
-      if (s !== null) return konst(s);                                         // a scalar constant is a literal — no buffer, no slot
-      if (ELEM.has(v.op) && !mat.has(v.id) && grown < cap * 3) {               // a fork the schedule did NOT materialize is recomputed in place
+      if (s !== null) o = konst(s);                                            // a scalar constant is a literal — no buffer, no slot
+      else if (ELEM.has(v.op) && !mat.has(v.id) && grown < cap * 3) {          // a fork the schedule did NOT materialize is recomputed in place
         grown++;
-        return node(v.op, v.src.map((x) => val(x, ix)), v.arg, []);
-      }
-      return read(v, ix, regionShape, whole);
+        o = node(v.op, v.src.map((x) => val(x)), v.arg, []);
+      } else o = read(v, at, regionShape, whole);
+      vals.set(v.id, o);
+      return o;
     };
-    const value = ELEM.has(top.op) ? node(top.op, top.src.map((x) => val(x, at)), top.arg, []) : val(top, at, true);
+    const value = ELEM.has(top.op) ? node(top.op, top.src.map((x) => val(x)), top.arg, []) : val(top, true);
     return { inputs, value };
   };
 

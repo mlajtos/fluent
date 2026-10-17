@@ -1837,6 +1837,15 @@ describe("the engine", () => {
     // x + 0 is not x where x is −0
     expect(Object.is(cpu.realizeSync([ir.add(ir.mul(x, ir.konst(-0)), ir.konst(0))], inputs)[0]!.data[0], 0)).toBe(true)
   })
+  test("a kernel computes a value it reads twice once", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { optimize } = await import("./engine/opt.ts")
+    let x = ir.buffer("x", [4096])
+    for (let i = 0; i < 6; i++) x = ir.mul(x, x)                          // x^64: 6 multiplies
+    const kernels = ir.toposort(optimize(x)).filter((u) => u.op === "FUSED")
+    const count = (op: string) => ir.toposort(kernels[0]!.src[1]!).filter((u) => u.op === op).length
+    expect([kernels.length, count("MULTIPLY"), count("LOAD")]).toEqual([1, 6, 1])
+  })
 })
 
 describe("doc cards", () => {
