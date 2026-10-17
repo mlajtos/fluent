@@ -597,6 +597,7 @@ const SliderView = ({ d }: { d: UIDesc }) => {
     <div className="grid">
       <input
         type="range"
+        aria-label="Slider"
         min={0}
         max={1}
         step={0.01}
@@ -614,6 +615,7 @@ const CheckboxView = ({ d }: { d: UIDesc }) => {
   return (
     <input
       type="checkbox"
+      aria-label="Checkbox"
       checked={value >= 0.5}
       onChange={(e) => write(e.target.checked ? 1 : 0)}
       className="w-5 h-5 accent-white cursor-pointer place-self-start"
@@ -621,19 +623,16 @@ const CheckboxView = ({ d }: { d: UIDesc }) => {
   )
 }
 
-// a number you drag sideways: `step` per 10 pixels
+// a number you drag sideways, `step` per 10 pixels, or step with the arrow keys
 const ScrubberView = ({ d }: { d: UIDesc }) => {
   useSignals()
   const { step, decimals } = d.props as { step: number, decimals: number }
   const { value, write } = useNumber(d.slots.target)
-  const factor = Math.pow(10, decimals)
+  const set = (v: number) => write(Math.round(v * 10 ** decimals) / 10 ** decimals)
   const handlePointerDown = (e: React.PointerEvent<HTMLSpanElement>) => {
     e.preventDefault()
     const startX = e.clientX, startValue = value
-    const onMove = (me: PointerEvent) => {
-      const raw = startValue + (me.clientX - startX) * step * 0.1
-      write(Math.round(raw * factor) / factor)
-    }
+    const onMove = (me: PointerEvent) => set(startValue + (me.clientX - startX) * step * 0.1)
     const onUp = () => {
       window.removeEventListener("pointermove", onMove)
       window.removeEventListener("pointerup", onUp)
@@ -641,9 +640,17 @@ const ScrubberView = ({ d }: { d: UIDesc }) => {
     window.addEventListener("pointermove", onMove)
     window.addEventListener("pointerup", onUp)
   }
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const by = ({ ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 } as Record<string, number>)[e.key]
+    if (by) { e.preventDefault(); set(value + by * step) }
+  }
   return (
-    <span style={{ color: `#${tokenColors.number}`, cursor: "ew-resize", userSelect: "none" }} onPointerDown={handlePointerDown}>
-      {value.toLocaleString("en-US", { maximumFractionDigits: decimals }).replace(/,/g, "_")}
+    <span
+      role="slider" tabIndex={0} aria-label="Scrubber" aria-valuenow={value}
+      style={{ color: `#${tokenColors.number}`, cursor: "ew-resize", userSelect: "none" }}
+      onPointerDown={handlePointerDown} onKeyDown={onKeyDown}
+    >
+      {formatNumber(value, decimals)}
     </span>
   )
 }
@@ -651,27 +658,24 @@ const ScrubberView = ({ d }: { d: UIDesc }) => {
 // Drag & drop works even where native file dialogs are unavailable (embedded webviews)
 const ImageUploadView = ({ d }: { d: UIDesc }) => {
   const { write } = useBound(d.slots.target)
+  const input = useRef<HTMLInputElement>(null)
   const load = async (file: File | null | undefined) => {
     if (!file || !file.type.startsWith("image")) { return }
     write(await createImageBitmap(file))
   }
   return (
-    <div
-      className="text-sm text-neutral-400 hover:text-neutral-200 border border-dashed border-neutral-600 hover:border-neutral-400 rounded-xl p-3 text-center cursor-pointer select-none"
-      // open the picker explicitly – label→hidden-input forwarding is flaky
-      onClick={(e) => { e.currentTarget.querySelector("input")?.click() }}
-      onDragOver={(e) => { e.preventDefault() }}
-      onDrop={(e) => { e.preventDefault(); load(e.dataTransfer.files?.[0]) }}
-    >
-      drop an image here – or click to choose
-      <input
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onClick={(e) => { e.stopPropagation() }}
-        onChange={(e) => load(e.target.files?.[0])}
-      />
-    </div>
+    <>
+      <button
+        type="button"
+        className="text-sm text-neutral-400 hover:text-neutral-200 border border-dashed border-neutral-600 hover:border-neutral-400 rounded-xl p-3 text-center cursor-pointer select-none"
+        onClick={() => input.current?.click()}
+        onDragOver={(e) => { e.preventDefault() }}
+        onDrop={(e) => { e.preventDefault(); load(e.dataTransfer.files?.[0]) }}
+      >
+        drop an image here – or click to choose
+      </button>
+      <input ref={input} type="file" accept="image/*" className="hidden" onChange={(e) => load(e.target.files?.[0])} />
+    </>
   )
 }
 
@@ -829,18 +833,7 @@ const CodeEditorWidgetView = ({ d }: { d: UIDesc }) => {
   return <CodeEditorView value={(local as string | undefined) ?? (remote?.k === "string" ? remote.v : "")} onChange={write} auto={d.props.auto === true} />
 }
 
-const PrintView = ({ d }: { d: UIDesc }) => {
-  const child = d.children[0] ?? { k: "null" }
-  return (
-    <WithOrigin o={child.o}>
-      <Panel className="overflow-scroll" testId="print-panel">
-        <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[child]}>
-          <View d={child} />
-        </ErrorBoundary>
-      </Panel>
-    </WithOrigin>
-  )
-}
+const PrintView = ({ d }: { d: UIDesc }) => <Framed d={d.children[0] ?? { k: "null" }} />
 
 const PrettyPrintView = ({ d }: { d: UIDesc }) => <View d={d.children[0] ?? { k: "null" }} />
 
@@ -1275,11 +1268,17 @@ function Cell({ d }: { d: Desc }): JSX.Element {
   if (now.k === "ui") { return <WithOrigin o={now.o}><WidgetView d={now} /></WithOrigin> }
   // a tree grows with its drawing: no scroll container, which would clip it
   if (now.k === "tree") { return <WithOrigin o={now.o}><Panel><TreeView roots={now.roots} /></Panel></WithOrigin> }
+  return <Framed d={now} />
+}
+
+// A value in a framed, scrolling panel whose whole extent carries the hover highlight; a
+// view that fails to draw shows why, in place
+function Framed({ d }: { d: Desc | null }): JSX.Element {
   return (
-    <WithOrigin o={now.o}>
+    <WithOrigin o={d?.o}>
       <Panel className="overflow-scroll" testId="print-panel">
-        <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[now]}>
-          <View d={now} />
+        <ErrorBoundary fallbackRender={({ error }) => <ErrorView d={{ k: "error", chain: [{ message: `This view failed: ${(error as Error)?.message ?? error}` }] }} />} resetKeys={[d]}>
+          {d ? <View d={d} /> : <span className="opacity-50">…</span>}
         </ErrorBoundary>
       </Panel>
     </WithOrigin>
@@ -1443,16 +1442,7 @@ const ScalarView = ({ value }: { value: number | undefined }) => {
 // the program's value – the playground's output panel
 function ResultPanel(): JSX.Element {
   useSignals()
-  const d = result.value
-  return (
-    <WithOrigin o={d?.o}>
-      <Panel className="overflow-scroll" testId="print-panel">
-        <ErrorBoundary fallback={<div>Something went wrong</div>} resetKeys={[d]}>
-          {d ? <View d={d} /> : <span className="opacity-50">…</span>}
-        </ErrorBoundary>
-      </Panel>
-    </WithOrigin>
-  )
+  return <Framed d={result.value} />
 }
 
 // MARK: Examples

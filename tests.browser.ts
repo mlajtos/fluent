@@ -146,6 +146,30 @@ test("a picture wider than the GPU's textures still paints", async ({ page }) =>
   await expect.poll(() => spreadOf(panel(page).locator("canvas").first())).toBeGreaterThan(10)
 })
 
+test("a view that fails to draw says why", async ({ page }) => {
+  // regression: the fallback said "Something went wrong" and hid the error. A tree node
+  // without a label is what a broken description would send.
+  await open(page, "1 + 1")
+  await expect(panel(page)).toContainText("2")
+  await page.evaluate(() => {
+    const desc = { k: "tree", roots: [{ label: null, o: { s: [1, 1], e: [1, 2], d: 0 }, children: [] }] }
+    ;(globalThis as unknown as { __fluentWorker: Worker }).__fluentWorker.dispatchEvent(new MessageEvent("message", { data: { t: "result", desc } }))
+  })
+  await expect(panel(page)).toContainText("This view failed")
+  await expect(page.getByText("Something went wrong")).toHaveCount(0)
+})
+
+test("controls are named and reachable from the keyboard", async ({ page }) => {
+  await open(page, "x: $(0.5), c: $(1), (Slider(x), Checkbox(c), Scrubber(x, 0.1), ImageUpload($(0)), x)")
+  await expect(page.getByRole("slider", { name: "Slider" })).toBeVisible()
+  await expect(page.getByRole("checkbox", { name: "Checkbox" })).toBeVisible()
+  await expect(page.getByRole("button", { name: /drop an image/ })).toBeVisible()
+  await page.getByRole("slider", { name: "Scrubber" }).focus()
+  await page.keyboard.press("ArrowRight")
+  await expect(panel(page)).toContainText("0.6")
+  expect(await page.locator("html").getAttribute("lang")).toBe("en")
+})
+
 test("a typo'd axis renders an Error, not a silently wrong number", async ({ page }) => {
   await open(page, "sum([[1, 2], [3, 4]], axs)")
   await expect(panel(page)).toContainText("expected a tensor, got unbound symbol 'axs'")
