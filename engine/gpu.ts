@@ -15,9 +15,11 @@ const SUBMIT_CHUNK = 32;
 // Chrome on Mac allows 10 storage buffers per stage: 9 inputs and the output.
 const MAX_BINDINGS = 10;
 
-// WGSL rejects NaN and ±∞ from constant expressions; these build them at runtime
+// WGSL rejects NaN and ±∞ from constant expressions; these build them at runtime. WGSL's
+// max may drop a NaN: maxf keeps it, as Math.max does on the CPU.
 const WGSL_SPECIALS = `fn nanf() -> f32 { var b = 0x7fc00000u; return bitcast<f32>(b); }
-fn inff() -> f32 { var b = 0x7f800000u; return bitcast<f32>(b); }`;
+fn inff() -> f32 { var b = 0x7f800000u; return bitcast<f32>(b); }
+fn maxf(a: f32, b: f32) -> f32 { return select(max(a, b), nanf(), (bitcast<u32>(a) & 0x7fffffffu) > 0x7f800000u || (bitcast<u32>(b) & 0x7fffffffu) > 0x7f800000u); }`;
 const wgslF32 = (v: number): string => {
   if (!Number.isFinite(v)) return v > 0 ? "inff()" : v < 0 ? "(-inff())" : "nanf()";
   const s = v.toString().replace("e+", "e");
@@ -96,7 +98,7 @@ function render(u: UOp, c: Ctx): string {
       const inner = c.scopes.pop()!;
       c.names.delete(rg.id); c.scopeOf.delete(rg.id);
       const name = `acc${k}`;
-      c.scopes[scopeIdx(u, c)]!.push(`  var ${name}: f32 = ${op === "MAX" ? "-3.4e38" : op === "MUL" ? "1.0" : "0.0"};\n  for (var r${k}: u32 = 0u; r${k} < ${n}u; r${k} = r${k} + 1u) {\n${inner.join("\n")}\n    ${name} = ${op === "MAX" ? `max(${name}, ${v})` : `${name} ${op === "MUL" ? "*" : "+"} ${v}`};\n  }`);
+      c.scopes[scopeIdx(u, c)]!.push(`  var ${name}: f32 = ${op === "MAX" ? "-inff()" : op === "MUL" ? "1.0" : "0.0"};\n  for (var r${k}: u32 = 0u; r${k} < ${n}u; r${k} = r${k} + 1u) {\n${inner.join("\n")}\n    ${name} = ${op === "MAX" ? `maxf(${name}, ${v})` : `${name} ${op === "MUL" ? "*" : "+"} ${v}`};\n  }`);
       c.bound.set(u.id, name);
       return name;
     }
@@ -334,7 +336,7 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
 }
 
 const withHelpers = (wgsl: string): string =>
-  `${wgsl.includes("hashUniform(") ? WGSL_HASH_UNIFORM + "\n" : ""}${/nanf\(|inff\(/.test(wgsl) ? WGSL_SPECIALS + "\n" : ""}${wgsl}`;
+  `${wgsl.includes("hashUniform(") ? WGSL_HASH_UNIFORM + "\n" : ""}${/nanf\(|inff\(|maxf\(/.test(wgsl) ? WGSL_SPECIALS + "\n" : ""}${wgsl}`;
 
 // codegen as a rewrite: FUSED → KERNEL (src = inputs; wgsl + dispatch in arg)
 export function lowerMany(roots: UOp[]): UOp[] {
