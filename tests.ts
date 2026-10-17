@@ -575,6 +575,90 @@ describe("reactivity", () => {
   })
 })
 
+describe("language fixes", () => {
+  const message = (source: string): string => {
+    const v = run(source)
+    return v instanceof Error ? v.message : `not an Error: ${String(v)}`
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 150))
+  test("◌ used as a tensor fails with a message that says ◌", () => {
+    expect(message("x: ◌, x + 1")).toContain("◌")
+    expect(message("sin(◌)")).toContain("◌")
+  })
+  test("an unknown name reached through a native's call is an Error, never ◌", () => {
+    const [first] = run("ListMap((oops, 1), (⍨ +))") as Value[]
+    expect((first as Error).message).toContain("unknown name: oops")
+    expect(message("((⍨ +) ⍣ 1)(oops)")).toContain("unknown name: oops")
+  })
+  test("call arguments read the bindings made among them, in reading order", () => {
+    expect(value("a: 1, f: { x, y | y }, f(a: 2, a)")).toBe(2)
+    expect(value("a: 1, f: { x, y | x }, f(a, a: 2)")).toBe(1)
+    expect(value("a: 1, [a, a: 2]")).toEqual([1, 2])
+  })
+  test("NaN is false for a number and for a tensor alike", () => {
+    expect(run("when(0 ÷ 0, { 1 })")).toBe(null)
+    expect(run("when([0 ÷ 0], { 1 })")).toBe(null)
+    expect(run("when([0, 0 ÷ 0], { 1 })")).toBe(null)
+    expect(value("when([0, 0 ÷ 0, 2], { 1 })")).toBe(1)
+    expect(run("guard([0 ÷ 0], { 1 })()")).toBeInstanceOf(NoMatch)
+  })
+  test("FunctionNoAutoLift marks a new function, not the one it is given", () => {
+    run("FunctionNoAutoLift(sin)")
+    expect(value("sin($(0))")).toBe(0)
+    expect(message("FunctionNoAutoLift(sin)($(0))")).toContain("signal")
+  })
+  test("SignalRead and SignalUpdate take the signal itself", () => {
+    expect(value("s: $3, SignalRead(s)")).toBe(3)
+    expect(value("s: $3, SignalUpdate(s, 4), s()")).toBe(4)
+  })
+  test("⟳ stops at a step that fails, and its signal holds the Error", async () => {
+    const scope = createScope()
+    const r = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(`n: $0, { n(n() + 1), 1 + "a" } ⟳ 5`), scope))
+    expect(r).toBeInstanceOf(Signal)
+    await settle()
+    expect((r as Signal<Value>).value).toBeInstanceOf(Error)
+    expect(((scope.n as Signal<Value>).value as engine.Tensor).js()).toBe(1)
+    expect(value("{ 0 } ⟳ 3, 7")).toBe(7)
+  })
+  test("sizes and indices are whole numbers; an empty tensor is not a scalar", () => {
+    expect(value("shape(⚄([2.4]))")).toEqual([2])
+    expect(value("slice([1, 2, 3, 4], [0.6], [2])")).toEqual([2, 3])
+    expect(run("ListGet((10, 20, 30), [])")).toBeInstanceOf(Error)
+  })
+  test("list and string natives fail as values, not as JS errors", () => {
+    expect(message("ListReduce(5, +)")).toContain("a list")
+    expect(message("ListReduce((), +)")).toContain("empty")
+    expect(value("ListReduce((1, 2), { a, b, i | identical(i, ◌) }, 0)")).toBe(1)
+    expect(run("ListConcat((1,), 2)")).toBeInstanceOf(Error)
+    expect(message(`StringConcat("a", ◌)`)).toContain("◌")
+    expect(run(`StringConcat("a", Error("x"))`)).toBeInstanceOf(Error)
+  })
+  test("String prints a data slot as ~~", () => {
+    expect(value("String(~~[1, 2])")).toBe("~~([1, 2])")
+  })
+  test("indexing an unknown name names it", () => {
+    expect(message("a_0")).toContain("unknown name: a")
+  })
+  test("parsing keeps nothing alive once it is done", async () => {
+    const { heapSize } = await import("bun:jsc")
+    const program = Array.from({ length: 2000 }, (_, i) => `f${i}: { x | x × ${i} + 1 },`).join("\n")
+    Bun.gc(true)
+    const before = heapSize()
+    for (let i = 0; i < 3; i++) { getParseErrors(program + " ".repeat(i)) }
+    // off this stack first, so a collector that scans it sees no stale reference
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    Bun.gc(true)
+    expect((heapSize() - before) / 1e6).toBeLessThan(20)
+  })
+  test("a long line costs no more to parse than the same text over many lines", () => {
+    const numbers = Array.from({ length: 5000 }, (_, i) => i)
+    const time = (source: string) => { const t = performance.now(); CodeParse(source); return performance.now() - t }
+    const oneLine = `[${numbers.join(", ")}]`, lines = `[${numbers.join(",\n")}]`
+    time(oneLine); time(lines)
+    expect(time(oneLine)).toBeLessThan(3 * time(lines))
+  })
+})
+
 describe("differentiation and optimization", () => {
   test("gradient", () => {
     expect(value("∇({ x | x^2 })(3)")).toBe(6)
