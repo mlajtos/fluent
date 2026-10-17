@@ -54,21 +54,11 @@ demo: { src |
 },
 
 ; The header doubles as navigation – every room's first row is
-; [◂ back]  Fluent Tour · n / 15  [next ▸]
-head: { label |
-  Grid([1, 2, 1])(
-    Button("◂ back", { step(0 ⌈ (step() - 1)) }),
-    Center(Text(label)),
-    Button("next ▸", { step((step() + 1) ⌊ 14) })
-  )
+; [◂ back]  Fluent Tour · n / 15  [next ▸], and the last room's starts over
+nav: { label, onward |
+  Grid([1, 2, 1])(Button("◂ back", { step(0 ⌈ (step() - 1)) }), Center(Text(label)), onward)
 },
-headFinal: { label |
-  Grid([1, 2, 1])(
-    Button("◂ back", { step(0 ⌈ (step() - 1)) }),
-    Center(Text(label)),
-    Button("start over ↺", { step(0) })
-  )
-},
+head: { label | nav(label, Button("next ▸", { step((step() + 1) ⌊ 14) })) },
 
 ; the cell's code run again, with one more line after it or before it: both
 ; run in this lambda's scope, so each sees the other's names
@@ -335,7 +325,7 @@ watch(answer)"),
 
 ; 15 · it keeps going
 s15: Grid(1)(
-  headFinal("**Fluent Tour** · 15 / 15"),
+  nav("**Fluent Tour** · 15 / 15", Button("start over ↺", { step(0) })),
   Text("### It keeps going
 
 **That was the tour** — numbers, lists, names, functions; then a slope, a bottom found by hand, a walk, and a value that found √42 on its own.
