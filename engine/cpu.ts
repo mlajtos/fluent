@@ -2,97 +2,43 @@
 // the CPU prints each kernel as a JavaScript function — the same loop nest the WGSL printer
 // prints — with every value op fround'd so it matches the GPU's f32 arithmetic.
 
-import type { UOp } from "./ir.ts";
-import { numel, kInputs, bufName, toposort, MATHS, hashUniform, bounds } from "./ir.ts";
+import type { UOp, Syntax } from "./ir.ts";
+import { numel, kInputs, bufName, toposort, MATHS, hashUniform, bounds, nest, planUses, render, INDEX_SYNTAX } from "./ir.ts";
 import { optimizeMany, planner, checkMemory } from "./opt.ts";
 
 export interface HostData { data: Float32Array; shape: readonly number[] }
 
 const jsNumber = (v: number): string => (Number.isNaN(v) ? "NaN" : v === Infinity ? "Infinity" : v === -Infinity ? "-Infinity" : Object.is(v, -0) ? "-0" : String(Math.fround(v)));
-
-// A shared subexpression becomes a `const` at the outermost scope its loop variables
-// allow; everything else inlines.
-interface Ctx { names: Map<number, string>; ctr: { n: number }; uses: Map<number, number>; deps: Map<number, Set<number>>; scopeOf: Map<number, number>; scopes: string[][]; bound: Map<number, string> }
-const planUses = (value: UOp, c: Ctx): void => {
-  const seen = new Set<number>();
-  const walk = (v: UOp): void => {
-    c.uses.set(v.id, (c.uses.get(v.id) ?? 0) + 1);
-    if (seen.has(v.id)) return;
-    seen.add(v.id);
-    const d = new Set<number>();
-    if (v.op === "RANGE") d.add(v.id);
-    for (const s of v.src) { walk(s); for (const x of c.deps.get(s.id)!) d.add(x); }
-    if (v.op === "ACC") d.delete(v.src[0]!.id);
-    c.deps.set(v.id, d);
-  };
-  walk(value);
+const rounded = (o: string) => (r: (i: number) => string) => `f(${r(0)} ${o} ${r(1)})`, call = (fn: string) => (r: (i: number) => string) => `f(${fn}(${r(0)}))`;
+// every shared subexpression is a `const`
+const JS: Syntax = {
+  op: {
+    ...INDEX_SYNTAX,
+    ICONST: (_, u) => String(u.arg as number),
+    CONSTANT: (_, u) => jsNumber((u.arg as Float32Array)[0]!),
+    IDIV: (r) => `Math.floor(${r(0)} / ${r(1)})`,
+    IIDX: (r) => `Math.trunc(${r(0)})`,
+    // an integer below 2²⁴ already is a float32: nothing to round
+    IVAL: (r, u) => { const [lo, hi] = bounds(u.src[0]!); return lo > -(2 ** 24) && hi < 2 ** 24 ? `(${r(0)})` : `f(${r(0)})`; },
+    ADD: rounded("+"), MULTIPLY: rounded("*"), RECIPROCAL: (r) => `f(1 / ${r(0)})`, EXP: call("Math.exp"), LOG: call("Math.log"), SQRT: call("Math.sqrt"),
+    LESS_THAN: (r) => `(${r(0)} < ${r(1)} ? 1 : 0)`,
+    WHERE: (r) => `(${r(0)} !== 0 ? ${r(1)} : ${r(2)})`,
+    MATH: (r, u) => `f(M.${(u.arg as { fn: string }).fn}(${u.src.map((_, i) => r(i)).join(", ")}))`,
+    RAND: (r) => `H(${r(1)}, ${r(0)})`,
+  },
+  acc: (a, op, r, n, body, v) => `let ${a} = ${op === "MAX" ? "-Infinity" : op === "MUL" ? "1" : "0"};\nfor (let ${r} = 0; ${r} < ${n}; ${r}++) {\n${body.join("\n")}\n${a} = ${op === "MAX" ? `Math.max(${a}, ${v})` : `f(${a} ${op === "MUL" ? "*" : "+"} ${v})`};\n}`,
+  let: (name, e) => `const ${name} = ${e};`,
+  named: (uses) => uses > 1,
 };
-const scopeIdx = (u: UOp, c: Ctx): number => { let s = 0; for (const r of c.deps.get(u.id)!) s = Math.max(s, c.scopeOf.get(r) ?? 0); return s; };
-function render(u: UOp, c: Ctx): string {
-  const hit = c.bound.get(u.id);
-  if (hit) return hit;
-  const r = (s: UOp) => render(s, c);
-  let e: string;
-  switch (u.op) {
-    case "RANGE": return c.names.get(u.id) ?? ((): never => { throw new Error("cpu: unbound RANGE"); })();
-    case "ICONST": return String(u.arg as number);
-    case "CONSTANT": return jsNumber((u.arg as Float32Array)[0]!);
-    case "IADD": e = `(${r(u.src[0]!)} + ${r(u.src[1]!)})`; break;
-    case "IMUL": e = `(${r(u.src[0]!)} * ${r(u.src[1]!)})`; break;
-    case "IDIV": e = `Math.floor(${r(u.src[0]!)} / ${r(u.src[1]!)})`; break;
-    case "IMOD": e = `(${r(u.src[0]!)} % ${r(u.src[1]!)})`; break;
-    case "IIDX": e = `Math.trunc(${r(u.src[0]!)})`; break;
-    case "IVAL": {
-      // an integer below 2²⁴ already is a float32: nothing to round
-      const [lo, hi] = bounds(u.src[0]!);
-      e = lo > -(2 ** 24) && hi < 2 ** 24 ? `(${r(u.src[0]!)})` : `f(${r(u.src[0]!)})`;
-      break;
-    }
-    case "LOAD": e = `a${(u.arg as { slot: number }).slot}[${r(u.src[0]!)}]`; break;
-    case "ADD": e = `f(${r(u.src[0]!)} + ${r(u.src[1]!)})`; break;
-    case "MULTIPLY": e = `f(${r(u.src[0]!)} * ${r(u.src[1]!)})`; break;
-    case "RECIPROCAL": e = `f(1 / ${r(u.src[0]!)})`; break;
-    case "EXP": e = `f(Math.exp(${r(u.src[0]!)}))`; break;
-    case "LOG": e = `f(Math.log(${r(u.src[0]!)}))`; break;
-    case "SQRT": e = `f(Math.sqrt(${r(u.src[0]!)}))`; break;
-    case "LESS_THAN": e = `(${r(u.src[0]!)} < ${r(u.src[1]!)} ? 1 : 0)`; break;
-    case "WHERE": e = `(${r(u.src[0]!)} !== 0 ? ${r(u.src[1]!)} : ${r(u.src[2]!)})`; break;
-    case "MATH": e = `f(M.${(u.arg as { fn: string }).fn}(${u.src.map(r).join(", ")}))`; break;
-    case "RAND": e = `H(${r(u.src[1]!)}, ${r(u.src[0]!)})`; break;
-    case "ACC": {
-      const k = c.ctr.n++, rg = u.src[0]!, n = (rg.arg as { extent: number }).extent, op = (u.arg as { op: string }).op;
-      c.names.set(rg.id, `r${k}`);
-      c.scopes.push([]); c.scopeOf.set(rg.id, c.scopes.length - 1);
-      const v = render(u.src[1]!, c);
-      const inner = c.scopes.pop()!;
-      c.names.delete(rg.id); c.scopeOf.delete(rg.id);
-      const name = `acc${k}`;
-      const step = op === "MAX" ? `Math.max(${name}, ${v})` : `f(${name} ${op === "MUL" ? "*" : "+"} ${v})`;
-      c.scopes[scopeIdx(u, c)]!.push(`let ${name} = ${op === "MAX" ? "-Infinity" : op === "MUL" ? "1" : "0"};\nfor (let r${k} = 0; r${k} < ${n}; r${k}++) {\n${inner.join("\n")}\n${name} = ${step};\n}`);
-      c.bound.set(u.id, name);
-      return name;
-    }
-    default: throw new Error(`cpu: cannot render ${u.op}`);
-  }
-  if ((c.uses.get(u.id) ?? 1) > 1) {
-    const name = `v${c.ctr.n++}`;
-    c.scopes[scopeIdx(u, c)]!.push(`const ${name} = ${e};`);
-    c.bound.set(u.id, name);
-    return name;
-  }
-  return e;
-}
 
 type Compiled = (ins: Float32Array[], out: Float32Array) => void;
 const MATH_JS = Object.fromEntries(Object.entries(MATHS).map(([k, m]) => [k, m.js]));
 const compiled = new Map<string, Compiled>();
 export function printKernel(k: UOp): string {
-  const gid = k.src[0]!, n = Math.max(numel(k.shape), 1), nIn = kInputs(k).length;
-  const c: Ctx = { names: new Map([[gid.id, "i"]]), ctr: { n: 0 }, uses: new Map(), deps: new Map(), scopeOf: new Map([[gid.id, 0]]), scopes: [[]], bound: new Map() };
+  const c = nest(JS, new Map([[k.src[0]!.id, "i"]]));
   planUses(k.src[1]!, c);
-  const body = render(k.src[1]!, c);
-  const loads = Array.from({ length: nIn }, (_, i) => `const a${i} = ins[${i}];`).join(" ");
-  return `(ins, o) => {\n${loads}\nfor (let i = 0; i < ${n}; i++) {\n${c.scopes[0]!.join("\n")}\no[i] = ${body};\n}\n}`;
+  const body = render(k.src[1]!, c), loads = kInputs(k).map((_, i) => `const a${i} = ins[${i}];`).join(" ");
+  return `(ins, o) => {\n${loads}\nfor (let i = 0; i < ${Math.max(numel(k.shape), 1)}; i++) {\n${c.scopes[0]!.join("\n")}\no[i] = ${body};\n}\n}`;
 }
 const compile = (k: UOp): Compiled => {
   const src = printKernel(k);

@@ -2,8 +2,8 @@
 // the executor never mentions an op. Index math, view folding and reduce loops are all
 // decided in the IR — cpu.ts walks the same nodes. Every value is f32.
 
-import type { UOp } from "./ir.ts";
-import { node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM, range, iconst, iadd, imul, idiv, imod, load, rebuild } from "./ir.ts";
+import type { UOp, Syntax } from "./ir.ts";
+import { node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM, range, iconst, iadd, imul, idiv, imod, load, rebuild, nest, planUses, render, bind, infix, INDEX_SYNTAX } from "./ir.ts";
 import { graphRewriteMany } from "./rewrite.ts";
 import { optimizeMany, COST, planner, checkMemory, rangesIn, MEMORY_BUDGET } from "./opt.ts";
 
@@ -29,92 +29,29 @@ const wgslF32 = (v: number): string => {
   return /[.e]/.test(s) ? s : s + ".0";
 };
 
-// One renderer for both algebras: index ops print u32 expressions, value ops f32.
-//
-// A shared subexpression is inlined unless it is big: the Metal compiler CSEs better than
-// the printer does, and every `let` pins a value into a register — so only a shared subtree
-// large enough that re-inlining would bloat the shader becomes a `let`, emitted at the
-// OUTERMOST scope its loop variables allow (loop-invariant reductions hoist out).
-interface Ctx { names: Map<number, string>; ctr: { n: number }; uses: Map<number, number>; deps: Map<number, Set<number>>; size: Map<number, number>; scopeOf: Map<number, number>; scopes: string[][]; bound: Map<number, string> }
-const ctx = (names: Map<number, string>, scopeOf = new Map<number, number>()): Ctx =>
-  ({ names, ctr: { n: 0 }, uses: new Map(), deps: new Map(), size: new Map(), scopeOf, scopes: [[]], bound: new Map() });
-const planUses = (value: UOp, c: Ctx): void => {                               // one pre-pass: use counts, the RANGEs each node needs, subtree sizes
-  const seen = new Set<number>();
-  const walk = (v: UOp): void => {
-    c.uses.set(v.id, (c.uses.get(v.id) ?? 0) + 1);
-    if (seen.has(v.id)) return;
-    seen.add(v.id);
-    const d = new Set<number>();
-    if (v.op === "RANGE") d.add(v.id);
-    for (const s of v.src) { walk(s); for (const x of c.deps.get(s.id)!) d.add(x); }
-    if (v.op === "ACC") d.delete(v.src[0]!.id);                                // an ACC's own range is bound inside it
-    c.deps.set(v.id, d);
-    let sz = 1; for (const s of v.src) sz += c.size.get(s.id) ?? 1; c.size.set(v.id, sz);
-  };
-  walk(value);
+// Index ops print u32 expressions, value ops f32. A shared subexpression is inlined unless
+// it is big: the Metal compiler CSEs better than the printer does, and every `let` pins a
+// value into a register — so only a shared subtree large enough that re-inlining would
+// bloat the shader becomes a `let`.
+const fn1 = (f: string) => (r: (i: number) => string) => `${f}(${r(0)})`;
+const WGSL: Syntax = {
+  op: {
+    ...INDEX_SYNTAX,
+    ICONST: (_, u) => { const v = u.arg as number; return `${v < 0 ? 4294967296 + v : v}u`; },   // a negative offset wraps, as u32 arithmetic does
+    CONSTANT: (_, u) => wgslF32((u.arg as Float32Array)[0]!),
+    IDIV: infix("/"), IIDX: fn1("u32"), IVAL: fn1("f32"),
+    ADD: infix("+"), MULTIPLY: infix("*"), RECIPROCAL: (r) => `(1.0 / ${r(0)})`, EXP: fn1("exp"), LOG: fn1("log"), SQRT: fn1("sqrt"),
+    LESS_THAN: (r) => `select(0.0, 1.0, ${r(0)} < ${r(1)})`,
+    WHERE: (r) => `select(${r(2)}, ${r(1)}, ${r(0)} != 0.0)`,
+    // a template may spell an operand more than once – pow's does five times – so an
+    // operand that isn't a name or a number is computed once, as a `let`
+    MATH: (r, u, c) => MATHS[(u.arg as { fn: string }).fn]!.wgsl(...u.src.map((s, i) => { const a = r(i); return /^-?[\w.]+$/.test(a) ? a : bind(s, a, c); })),
+    RAND: (r) => `hashUniform(u32(${r(1)}), ${r(0)})`,
+  },
+  acc: (a, op, r, n, body, v) => `  var ${a}: f32 = ${op === "MAX" ? "-inff()" : op === "MUL" ? "1.0" : "0.0"};\n  for (var ${r}: u32 = 0u; ${r} < ${n}u; ${r} = ${r} + 1u) {\n${body.join("\n")}\n    ${a} = ${op === "MAX" ? `maxf(${a}, ${v})` : `${a} ${op === "MUL" ? "*" : "+"} ${v}`};\n  }`,
+  let: (name, e) => `  let ${name} = ${e};`,
+  named: (uses, size) => uses > 1 && size > 12,
 };
-const scopeIdx = (u: UOp, c: Ctx): number => { let s = 0; for (const r of c.deps.get(u.id)!) s = Math.max(s, c.scopeOf.get(r) ?? 0); return s; };
-function render(u: UOp, c: Ctx): string {
-  const hit = c.bound.get(u.id);
-  if (hit) return hit;
-  const r = (s: UOp) => render(s, c);
-  let e: string;
-  switch (u.op) {
-    case "RANGE": return c.names.get(u.id) ?? ((): never => { throw new Error("gpu: unbound RANGE"); })();
-    case "ICONST": { const v = u.arg as number; return `${v < 0 ? 4294967296 + v : v}u`; }   // a negative offset wraps, as u32 arithmetic does
-    case "CONSTANT": return wgslF32((u.arg as Float32Array)[0]!);
-    case "IADD": e = `(${r(u.src[0]!)} + ${r(u.src[1]!)})`; break;
-    case "IMUL": e = `(${r(u.src[0]!)} * ${r(u.src[1]!)})`; break;
-    case "IDIV": e = `(${r(u.src[0]!)} / ${r(u.src[1]!)})`; break;
-    case "IMOD": e = `(${r(u.src[0]!)} % ${r(u.src[1]!)})`; break;
-    case "IIDX": e = `u32(${r(u.src[0]!)})`; break;
-    case "IVAL": e = `f32(${r(u.src[0]!)})`; break;
-    case "LOAD": e = `a${(u.arg as { slot: number }).slot}[${r(u.src[0]!)}]`; break;
-    case "ADD": e = `(${r(u.src[0]!)} + ${r(u.src[1]!)})`; break;
-    case "MULTIPLY": e = `(${r(u.src[0]!)} * ${r(u.src[1]!)})`; break;
-    case "RECIPROCAL": e = `(1.0 / ${r(u.src[0]!)})`; break;
-    case "EXP": e = `exp(${r(u.src[0]!)})`; break;
-    case "LOG": e = `log(${r(u.src[0]!)})`; break;
-    case "SQRT": e = `sqrt(${r(u.src[0]!)})`; break;
-    case "LESS_THAN": e = `select(0.0, 1.0, ${r(u.src[0]!)} < ${r(u.src[1]!)})`; break;
-    case "WHERE": e = `select(${r(u.src[2]!)}, ${r(u.src[1]!)}, ${r(u.src[0]!)} != 0.0)`; break;
-    case "MATH": {
-      // a template may spell an operand more than once – pow's does five times – so an
-      // operand that isn't a name or a number is computed once, as a `let`
-      const operand = (s: UOp): string => {
-        const a = r(s);
-        if (/^-?[\w.]+$/.test(a)) return a;
-        const name = `v${c.ctr.n++}`;
-        c.scopes[scopeIdx(s, c)]!.push(`  let ${name} = ${a};`);
-        c.bound.set(s.id, name);
-        return name;
-      };
-      e = MATHS[(u.arg as { fn: string }).fn]!.wgsl(...u.src.map(operand));
-      break;
-    }
-    case "RAND": e = `hashUniform(u32(${r(u.src[1]!)}), ${r(u.src[0]!)})`; break;
-    case "ACC": {
-      const k = c.ctr.n++, rg = u.src[0]!, n = (rg.arg as { extent: number }).extent, op = (u.arg as { op: string }).op;
-      c.names.set(rg.id, `r${k}`);
-      c.scopes.push([]); c.scopeOf.set(rg.id, c.scopes.length - 1);
-      const v = render(u.src[1]!, c);
-      const inner = c.scopes.pop()!;
-      c.names.delete(rg.id); c.scopeOf.delete(rg.id);
-      const name = `acc${k}`;
-      c.scopes[scopeIdx(u, c)]!.push(`  var ${name}: f32 = ${op === "MAX" ? "-inff()" : op === "MUL" ? "1.0" : "0.0"};\n  for (var r${k}: u32 = 0u; r${k} < ${n}u; r${k} = r${k} + 1u) {\n${inner.join("\n")}\n    ${name} = ${op === "MAX" ? `maxf(${name}, ${v})` : `${name} ${op === "MUL" ? "*" : "+"} ${v}`};\n  }`);
-      c.bound.set(u.id, name);
-      return name;
-    }
-    default: throw new Error(`gpu: cannot render ${u.op}`);
-  }
-  if ((c.uses.get(u.id) ?? 1) > 1 && (c.size.get(u.id) ?? 1) > 12) {
-    const name = `v${c.ctr.n++}`;
-    c.scopes[scopeIdx(u, c)]!.push(`  let ${name} = ${e};`);
-    c.bound.set(u.id, name);
-    return name;
-  }
-  return e;
-}
 
 const binds = (n: number): string =>
   Array.from({ length: n }, (_, i) => `@group(0) @binding(${i}) var<storage, read> a${i}: array<f32>;`).join("\n");
@@ -126,7 +63,7 @@ export function printFused(u: UOp, nIn: number): { wgsl: string; dispatch: numbe
   const n = Math.max(numel(u.shape), 1);
   const WG = n >= 256 ? 256 : 64;
   const groups = Math.ceil(n / WG), GX = Math.min(groups, 32768), ny = Math.ceil(groups / GX);
-  const c = ctx(new Map([[u.src[0]!.id, "i"]]), new Map([[u.src[0]!.id, 0]]));
+  const c = nest(WGSL, new Map([[u.src[0]!.id, "i"]]));
   planUses(u.src[1]!, c);
   const body = render(u.src[1]!, c);
   return {
@@ -203,7 +140,7 @@ function tileNest(u: UOp, nIn: number): { wgsl: string; dispatch: number[]; spli
     else if (of(y, col) && of(x, row)) pairs.push({ term, a: y, b: x });
     else return null;
   }
-  const named = (...m: [UOp, string][]) => ctx(new Map(m.map(([r, s]) => [r.id, s])));
+  const named = (...m: [UOp, string][]) => nest(WGSL, new Map(m.map(([r, s]) => [r.id, s])));
   const steps = Math.ceil(K / T), SP = Math.ceil(steps / G), MN = M * N;
   // register-blocked micro-tiles: each thread owns an RT×RT block of outputs — RT² FMAs
   // per pair of shared reads, RT² accumulators of instruction-level parallelism
@@ -217,8 +154,7 @@ function tileNest(u: UOp, nIn: number): { wgsl: string; dispatch: number[]; spli
       stageCells.push(`    Bs${j}[${r} * ${T}u + ${cc}] = select(0.0, ${render(b.at, named([col, `(colB + ${cc})`], [k, `(t * ${T}u + ${r})`]))}, (t * ${T}u + ${r}) < ${K}u && (colB + ${cc}) < ${N}u);`);
     });
     // each output adds every term, its reads bound to the slabs
-    const c = ctx(new Map());
-    c.ctr = ctr;
+    const c = nest(WGSL, new Map(), ctr);
     pairs.forEach(({ term, a, b }, j) => {
       for (const id of a.ids) c.bound.set(id, `As${j}[${r} * ${T}u + kk]`);
       for (const id of b.ids) c.bound.set(id, `Bs${j}[kk * ${T}u + ${cc}]`);
@@ -303,7 +239,7 @@ function coopGemv(u: UOp, nIn: number): { wgsl: string; dispatch: number[] } | n
   });
   // CSE lets are load-bearing here: a flattened nested reduce reads through mixed-radix
   // index expressions that would otherwise duplicate combinatorially
-  const c = ctx(names);
+  const c = nest(WGSL, names);
   planUses(inner, c);
   const expr = render(inner, c), pre = c.scopes[0]!.join("\n      ");
   const GX = Math.min(N, 32768);                                               // 2-D workgroup grid fold width

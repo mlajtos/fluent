@@ -191,7 +191,7 @@ export const scatterAdd = (idx: UOp, values: UOp, size: number): UOp =>
 
 // ---- the kernel language: a loop nest, as UOps --------------------------------
 // Index builders simplify as they build, so an index expression stays the closed form a
-// human would write; the printer (gpu.ts) and the walker (cpu.ts) both just read it.
+// human would write; both backends print it as it is.
 // Every range knows its extent, so every index knows its bounds, and the division laws
 // apply where they hold: x / c is 0 and x % c is x when 0 ≤ x < c; (c·q + r) / c is
 // q + r / c and (c·q + r) % c is r % c for r ≥ 0; (x / a) / b is x / (a·b); x % (c·k) / c
@@ -330,6 +330,60 @@ export const bcIndex = (st: readonly number[], outSh: readonly number[], gid: UO
   for (let d = 0; d < outSh.length; d++) { if (st[d] === 0 || outSh[d] === 1) continue; off = iadd(off, imul(imod(idiv(gid, iconst(os[d]!)), iconst(outSh[d]!)), iconst(st[d]!))); }
   return off;
 };
+
+// ---- printing a loop nest: one printer, a syntax per backend ----------------------
+// Each op prints from its operands' text (`r(i)` prints operand i, where the syntax reads
+// it). A shared subexpression the syntax names becomes a `let` at the OUTERMOST scope its
+// loop variables allow: a loop-invariant value hoists out of the loops below it.
+export interface Syntax {
+  op: Partial<Record<Op, (r: (i: number) => string, u: UOp, c: Nest) => string>>;
+  acc: (name: string, op: string, r: string, n: number, body: string[], v: string) => string;
+  let: (name: string, e: string) => string;
+  named: (uses: number, size: number) => boolean;
+}
+export interface Nest { syn: Syntax; names: Map<number, string>; ctr: { n: number }; uses: Map<number, number>; deps: Map<number, Set<number>>; size: Map<number, number>; scopeOf: Map<number, number>; scopes: string[][]; bound: Map<number, string> }
+export const nest = (syn: Syntax, names: Map<number, string>, ctr = { n: 0 }): Nest =>
+  ({ syn, names, ctr, uses: new Map(), deps: new Map(), size: new Map(), scopeOf: new Map(), scopes: [[]], bound: new Map() });
+export const infix = (o: string) => (r: (i: number) => string) => `(${r(0)} ${o} ${r(1)})`;
+export const INDEX_SYNTAX: Syntax["op"] = { IADD: infix("+"), IMUL: infix("*"), IMOD: infix("%"), LOAD: (r, u) => `a${(u.arg as { slot: number }).slot}[${r(0)}]` };
+// one pre-pass over a value: use counts, the RANGEs each node needs, subtree sizes
+export const planUses = (value: UOp, c: Nest): void => {
+  const seen = new Set<number>();
+  const walk = (v: UOp): void => {
+    c.uses.set(v.id, (c.uses.get(v.id) ?? 0) + 1);
+    if (seen.has(v.id)) return;
+    seen.add(v.id);
+    const d = new Set<number>(v.op === "RANGE" ? [v.id] : []);
+    let size = 1;
+    for (const s of v.src) { walk(s); for (const x of c.deps.get(s.id)!) d.add(x); size += c.size.get(s.id)!; }
+    if (v.op === "ACC") d.delete(v.src[0]!.id);                                // an ACC's own range is bound inside it
+    c.deps.set(v.id, d); c.size.set(v.id, size);
+  };
+  walk(value);
+};
+const scopeIdx = (u: UOp, c: Nest): number => { let s = 0; for (const r of c.deps.get(u.id)!) s = Math.max(s, c.scopeOf.get(r) ?? 0); return s; };
+export const bind = (u: UOp, e: string, c: Nest): string => {
+  const name = `v${c.ctr.n++}`;
+  c.scopes[scopeIdx(u, c)]!.push(c.syn.let(name, e));
+  c.bound.set(u.id, name);
+  return name;
+};
+export function render(u: UOp, c: Nest): string {
+  const hit = c.bound.get(u.id);
+  if (hit) return hit;
+  if (u.op === "RANGE") return c.names.get(u.id) ?? err("print: unbound RANGE");
+  if (u.op === "ACC") {
+    const k = c.ctr.n++, rg = u.src[0]!;
+    c.names.set(rg.id, `r${k}`); c.scopes.push([]); c.scopeOf.set(rg.id, c.scopes.length - 1);
+    const v = render(u.src[1]!, c), body = c.scopes.pop()!;
+    c.names.delete(rg.id); c.scopeOf.delete(rg.id);
+    c.scopes[scopeIdx(u, c)]!.push(c.syn.acc(`acc${k}`, (u.arg as { op: string }).op, `r${k}`, (rg.arg as { extent: number }).extent, body, v));
+    c.bound.set(u.id, `acc${k}`);
+    return `acc${k}`;
+  }
+  const e = (c.syn.op[u.op] ?? err(`print: cannot print ${u.op}`))((i) => render(u.src[i]!, c), u, c);
+  return u.op !== "ICONST" && u.op !== "CONSTANT" && c.syn.named(c.uses.get(u.id) ?? 1, c.size.get(u.id) ?? 1) ? bind(u, e, c) : e;
+}
 
 // every node the roots reach, each once, sources first; `srcOf` picks the edges to follow.
 // Iterative: real graphs are thousands deep.
