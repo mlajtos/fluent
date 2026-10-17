@@ -2,9 +2,9 @@
 // Runs the real pipeline – grammar → AST → evaluator → tensors – on the engine's CPU
 // backend (Bun has no WebGPU). `bun test` runs this file.
 
-import { describe, test, expect } from "bun:test"
+import { describe, test, expect, beforeAll, afterAll } from "bun:test"
 import { Signal, effect } from "@preact/signals-core"
-import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, setCodeNodePrinter, extendEnvironment, SignalCreate, DefaultEnvironment, NoMatch, type Value } from "./language"
+import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, type Value } from "./language"
 import { startHost } from "./host"
 import type { ToPage, ToWorker } from "./protocol"
 import { EXAMPLES } from "./examples"
@@ -14,6 +14,10 @@ import { TOUR_SOURCE } from "./tour"
 // here the page is this inbox
 const inbox: ToPage[] = []
 const toHost: (message: ToWorker) => void = startHost((message) => { inbox.push(message) })
+// there is no server to load from: an image is zeros, and a safetensors file is a
+// signal holding an empty list – what the real loader holds until its fetch resolves
+const loading = { LoadTensorFromImageUrl: () => SignalCreate(engine.zeros([16, 16, 3])), Fetch: () => SignalCreate(""), LoadSafeTensorFromURL: () => SignalCreate([]) }
+extendEnvironment(loading as Record<string, Value>)
 
 const run = (source: string) =>
   evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope()))
@@ -1371,40 +1375,48 @@ describe("cond (eager variadic cascade)", () => {
   })
 })
 
-// Every shipped gallery example, run headless, must parse and evaluate without
-// error – a language/prelude change that breaks a demo fails CI here. The widgets
-// and the camera, microphone and pointer are the host's own: a source is a signal
-// of zeros of the shape it asked for until the page streams frames, and nothing
-// streams here. Only the network loaders are stubbed – there is no server to load
-// from. (Full-stack behavior – WebGPU, hardware, panels – is the browser suite's.)
+// Every shipped gallery example, run headless, parses, evaluates and then does its
+// work: each ⟳ step runs twice and each button is pressed once, in order, and nothing
+// it binds may hold an Error afterwards – a language or prelude change that breaks a
+// demo's loss or update fails here. Every ~ must move: a step's failed statement is
+// discarded by its sequence, so a loss that breaks shows only as weights that stay
+// put. The widgets and the camera, microphone and pointer are the host's own – a
+// source is a signal of zeros of the shape it asked for, and nothing streams here –
+// and mnist.safetensors is read from disk. (WebGPU, hardware and panels are the
+// browser suite's.)
 describe("gallery examples smoke suite", () => {
-  const at = (v: unknown) => { const s = SignalCreate(v as any); return s }
-  extendEnvironment({
-    LoadTensorFromImageUrl: (() => at(engine.zeros([16, 16, 3]))) as Value,
-    Fetch: (() => at("")) as Value,
-    // the real safetensors loader is a signal holding an empty list until its fetch
-    // resolves, so the demos see "still loading"
-    LoadSafeTensorFromURL: (() => at([])) as Value,
+  const steps: Function[] = [], presses: Function[] = []
+  const stepLater = (step: Function) => { steps.push(step); return null }
+  const button = DefaultEnvironment.Button as Function
+  const pressLater = (label: Value, onClick: Value) => { if (typeof onClick === "function") { presses.push(onClick) } return button(label, onClick) }
+  setMeta(stepLater, { noAutoLift: true })
+  setMeta(pressLater, { noAutoLift: true })
+  const real = { FunctionIterate: DefaultEnvironment.FunctionIterate, Button: button }
+  beforeAll(async () => {
+    // safetensors: an 8-byte header length, a JSON header, then the bytes; mnist is U8
+    const bytes = new Uint8Array(await Bun.file(new URL("mnist.safetensors", import.meta.url)).arrayBuffer())
+    const length = Number(new DataView(bytes.buffer).getBigUint64(0, true))
+    const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + length)))
+    const mnist = Object.entries(header).map(([name, t]: [string, any]) =>
+      [name, engine.tensor(Float32Array.from(bytes.subarray(8 + length + t.data_offsets[0], 8 + length + t.data_offsets[1])), { shape: t.shape })])
+    extendEnvironment({ FunctionIterate: stepLater, Button: pressLater, LoadSafeTensorFromURL: () => SignalCreate(mnist) } as Record<string, Value>)
   })
+  afterAll(() => { extendEnvironment({ ...real, LoadSafeTensorFromURL: loading.LoadSafeTensorFromURL } as Record<string, Value>) })
 
-  // Force every value the example binds, following signals, variables and
-  // lists, and read each tensor off the device. The top-level value of a demo
-  // is almost always a Grid, so asserting only that it isn't an Error passed
-  // demos whose entire contents were broken – a hyphenated binding, a dead
-  // gradient, an op erroring inside a cell. Returns the first failure found.
-  const forceEverything = (scope: Record<string, Value>): string | null => {
+  // Force every value the example binds, following signals, variables and lists, and
+  // read each tensor off the device: the top-level value of a demo is almost always a
+  // Grid, which hides an op erroring inside it. Returns the first failure found.
+  const firstError = (scope: Record<string, Value>): string | null => {
     const seen = new Set<unknown>()
     const walk = (v: any, path: string, depth = 0): string | null => {
-      if (v == null || depth > 8) { return null }
-      if (typeof v === "object") { if (seen.has(v)) { return null }; seen.add(v) }
+      if (v == null || depth > 8 || seen.has(v)) { return null }
+      if (typeof v === "object") { seen.add(v) }
       try {
         if (v instanceof Error) { return `${path}: ${v.message}` }
         if (v instanceof Signal) { return walk(v.value, `${path}()`, depth + 1) }
         if (v instanceof FluentVariable) { return walk(v.current, path, depth + 1) }
-        if (v instanceof engine.Tensor) { v.js(); return null }
-        if (Array.isArray(v)) {
-          for (let i = 0; i < v.length; i++) { const bad = walk(v[i], `${path}[${i}]`, depth + 1); if (bad) { return bad } }
-        }
+        if (v instanceof engine.Tensor) { v.js() }
+        if (Array.isArray(v)) { for (const [i, x] of v.entries()) { const bad = walk(x, `${path}[${i}]`, depth + 1); if (bad) { return bad } } }
       } catch (e: any) { return `${path}: threw ${e?.message ?? e}` }
       return null
     }
@@ -1413,17 +1425,28 @@ describe("gallery examples smoke suite", () => {
   }
 
   for (const [name, src] of Object.entries(EXAMPLES)) {
-    test(`${name}`, () => {
-      const source = src.trim()
-      expect(CodeParse(source).type).not.toBe("Error")
+    test(name, () => {
+      steps.length = presses.length = 0
+      const tree = CodeParse(src.trim())
+      expect(tree.type).not.toBe("Error")
       const scope = createScope()
-      const result = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), scope))
-      expect(result).not.toBeInstanceOf(Error)
-      expect(forceEverything(scope)).toBeNull()
+      expect(evaluateGeneration(() => evaluateSyntaxTreeNode(tree, scope))).not.toBeInstanceOf(Error)
+      expect(firstError(scope)).toBeNull()
+      const trained = Object.keys(scope).filter((k) => scope[k] instanceof FluentVariable && !(scope[k] instanceof FluentData))
+      const before = trained.map((k) => JSON.stringify((scope[k] as FluentVariable).current.js()))
+      const failures: string[] = []
+      const call = (what: string, f: Function, ...args: Value[]) => {
+        try { const r = f(...args); if (r instanceof Error) { failures.push(`${what}: ${r.message}`) } } catch (e: any) { failures.push(`${what} threw: ${e?.message ?? e}`) }
+      }
+      const runSteps = () => { for (const step of steps.splice(0)) { call("⟳ step", step, engine.scalar(0)); call("⟳ step", step, engine.scalar(1)) } }
+      runSteps()
+      for (const press of presses.splice(0)) { call("button", press); runSteps() }
+      expect(failures).toEqual([])
+      expect(firstError(scope)).toBeNull()
+      expect(trained.filter((k, i) => JSON.stringify((scope[k] as FluentVariable).current.js()) === before[i])).toEqual([])
       flushRetirements()
-    })
+    }, 30_000)
   }
-
 })
 
 // A name that resolves to nothing is the shape almost every language change
