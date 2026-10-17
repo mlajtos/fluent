@@ -1846,6 +1846,26 @@ describe("the engine", () => {
     const count = (op: string) => ir.toposort(kernels[0]!.src[1]!).filter((u) => u.op === op).length
     expect([kernels.length, count("MULTIPLY"), count("LOAD")]).toEqual([1, 6, 1])
   })
+  const lowered = async (root: any) => {
+    const ir = await import("./engine/ir.ts")
+    const { lowerMany } = await import("./engine/gpu.ts")
+    return ir.toposort(lowerMany([root])[0]!).filter((u) => u.op === "KERNEL").map((u) => u.arg as { wgsl: string; dispatch: number[] })
+  }
+  const tiled = (kernels: { wgsl: string }[]) => kernels.some((k) => k.wgsl.includes("var<workgroup> As"))
+  test("the backward matmuls tile like the forward one", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { gradAll } = await import("./engine/grad.ts")
+    const { matmul } = await import("./engine/tests/vocab.ts")
+    const X = ir.buffer("X", [256, 128]), W = ir.buffer("W", [128, 64]), y = matmul(X, W)
+    const [dW, dX] = gradAll(ir.sum(ir.mul(y, y)), [W, X])               // ∇'s products are guarded where the cotangent is 0
+    expect([tiled(await lowered(y)), tiled(await lowered(dW)), tiled(await lowered(dX))]).toEqual([true, true, true])
+  })
+  test("a tile grid past 65,535 workgroups on an axis folds into two", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { matmul } = await import("./engine/tests/vocab.ts")
+    const tall = await lowered(matmul(ir.buffer("A", [1 << 20, 64]), ir.buffer("B", [64, 16])))
+    expect(tiled(tall) && tall.every((k) => k.dispatch.every((d) => d <= 65535))).toBe(true)
+  })
 })
 
 describe("doc cards", () => {

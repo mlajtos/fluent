@@ -138,7 +138,7 @@ const accCost = (v: UOp): number => {
 
 // the loop variables an index reads
 const rangeMemo = new WeakMap<UOp, ReadonlySet<UOp>>();
-const rangesIn = (u: UOp): ReadonlySet<UOp> => {
+export const rangesIn = (u: UOp): ReadonlySet<UOp> => {
   const m = rangeMemo.get(u); if (m) return m;
   const out = new Set<UOp>(u.op === "RANGE" ? [u] : []);
   for (const s of u.src) for (const r of rangesIn(s)) out.add(r);

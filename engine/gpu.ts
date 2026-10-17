@@ -3,17 +3,18 @@
 // decided in the IR — cpu.ts walks the same nodes. Every value is f32.
 
 import type { UOp } from "./ir.ts";
-import { node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM } from "./ir.ts";
+import { node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM, range, iconst, iadd, imul, idiv, imod, load, rebuild } from "./ir.ts";
 import { graphRewriteMany } from "./rewrite.ts";
-import { optimizeMany, COST, canonical, placeholders, checkMemory } from "./opt.ts";
+import { optimizeMany, COST, canonical, placeholders, checkMemory, rangesIn } from "./opt.ts";
 import type { HostData } from "./cpu.ts";
 
 // Dispatches per queue.submit. Submitting each kernel alone costs ~15× in dispatch
 // overhead; one submit per step wedges some drivers and starves the compositor. 16–32 is
 // where measured runtimes sit (TVM's sweep peaks at 32).
 const SUBMIT_CHUNK = 32;
-// Chrome on Mac allows 10 storage buffers per stage: 9 inputs and the output.
-const MAX_BINDINGS = 10;
+// Chrome on Mac allows 10 storage buffers per stage: 9 inputs and the output; and 65,535
+// workgroups per dispatch axis. Past either it drops the command buffer, without an error.
+const MAX_BINDINGS = 10, MAX_GROUPS = 65535;
 
 // WGSL rejects NaN and ±∞ from constant expressions; these build them at runtime. WGSL's
 // max may drop a NaN: maxf keeps it, as Math.max does on the CPU.
@@ -140,103 +141,95 @@ ${c.scopes[0]!.join("\n")}
 }
 
 // ── tiling as a schedule rule: match the LOOP NEST, never a name. A tiled matmul is a
-// schedule for `for i,j: out[i,j] = Σₖ a[…]·b[…]`, visible in the IR as ACC(ADD,k,LOAD·LOAD).
-// Cooperative staging requires a[…] independent of col and b[…] of row — PROVED by
-// evaluating each index over its free axis (a wrong assumption here is a silent miscompile).
-const evalIdx = (u: UOp, env: Map<number, number>): number => {
-  switch (u.op) {
-    case "RANGE": return env.get(u.id)!;
-    case "ICONST": return u.arg as number;
-    case "IADD": return evalIdx(u.src[0]!, env) + evalIdx(u.src[1]!, env);
-    case "IMUL": return evalIdx(u.src[0]!, env) * evalIdx(u.src[1]!, env);
-    case "IDIV": return Math.floor(evalIdx(u.src[0]!, env) / evalIdx(u.src[1]!, env));
-    case "IMOD": return evalIdx(u.src[0]!, env) % evalIdx(u.src[1]!, env);
-  }
-  throw new Error(`tile: ${u.op}`);
-};
+// schedule for `for i,j: out[i,j] = Σₖ f(a[…], b[…])`, visible in the IR as an ADD-ACC whose
+// body is a sum of terms, each an elementwise function of two reads: a product, or ∇'s
+// product guarded where the cotangent is 0. Cooperative staging requires a[…] independent
+// of col and b[…] of row — PROVED by rewriting each index over fresh row, col and k
+// variables: the index simplifier drops a variable the index does not read, and a read
+// that still names both is declined (a wrong assumption here is a silent miscompile).
+const VALUE = new Set<UOp["op"]>(["CONSTANT", "ADD", "MULTIPLY", "RECIPROCAL", "EXP", "LOG", "SQRT", "LESS_THAN", "WHERE", "MATH"]);
+const extent = (r: UOp): number => (r.arg as { extent: number }).extent;
+const idxKey = (v: UOp): string => `${v.op}${v.op === "RANGE" ? v.id : v.op === "ICONST" ? v.arg : ""}(${v.src.map(idxKey)})`;
 interface SplitK { wgsl: string; dispatch: number[]; pShape: number[]; wgsl2: string; dispatch2: number[] }
 function tileNest(u: UOp, nIn: number): { wgsl: string; dispatch: number[]; split?: SplitK } | null {
-  const gid = u.src[0]!, value = u.src[1]!;
   // a CHAIN of pure ADD-ACCs (a folded weight gradient: sum over w of sum over t)
-  // flattens to one K; each range binds to its mixed-radix digit of flat k
-  const chainT: UOp[] = [];
-  let inner: UOp = value;
-  while (inner.op === "ACC" && (inner.arg as { op: string }).op === "ADD") { chainT.push(inner.src[0]!); inner = inner.src[1]! }
-  if (!chainT.length) return null;
-  // the body may be a SUM of products (Σ-linearity merges ∇'s fork terms):
-  // Σ_j A_j[row,k]·B_j[k,col], each term staged through its own slab pair
+  // flattens to one K; each range is its mixed-radix digit of flat k
+  const chain: UOp[] = [];
+  let inner = u.src[1]!;
+  while (inner.op === "ACC" && (inner.arg as { op: string }).op === "ADD") { chain.push(inner.src[0]!); inner = inner.src[1]!; }
+  if (!chain.length) return null;
+  // the body may be a SUM of terms (Σ-linearity merges ∇'s fork terms), each staged
+  // through its own slab pair
   const terms: UOp[] = [];
-  const flat = (v: UOp): boolean => v.op === "ADD" ? flat(v.src[0]!) && flat(v.src[1]!) : (terms.push(v), true);
+  const flat = (v: UOp): void => { if (v.op === "ADD") { flat(v.src[0]!); flat(v.src[1]!); } else terms.push(v); };
   flat(inner);
-  if (terms.length > 4 || !terms.every((t) => t.op === "MULTIPLY" && t.src.every((x) => x.op === "LOAD"))) return null;
-  const extentsT = chainT.map((r) => (r.arg as { extent: number }).extent);
+  if (terms.length > 4) return null;
   // unit axes don't count: a keepdims matmul ends in [...,1], and its N is the last
   // non-unit axis
-  const shT = u.shape.filter((d) => d !== 1);
-  const sh = shT.length >= 2 ? shT : u.shape, N = sh.at(-1) ?? 1, M = Math.floor(Math.max(numel(u.shape), 1) / Math.max(N, 1)), K = extentsT.reduce((a, b) => a * b, 1);
-  const rBind = (kv: number): [number, number][] => {                          // numeric digits of flat k, per range
-    const out: [number, number][] = []; let rest = kv;
-    for (let i = extentsT.length - 1; i >= 0; i--) { out.push([chainT[i]!.id, rest % extentsT[i]!]); rest = Math.floor(rest / extentsT[i]!) }
-    return out;
-  };
-  const rName = (kExpr: string): [number, string][] => {                       // WGSL digit expressions of flat k, per range
-    let stride = K;
-    return chainT.map((r, i) => { stride /= extentsT[i]!; return [r.id, chainT.length === 1 ? kExpr : `(((${kExpr}) / ${stride}u) % ${extentsT[i]}u)`] as [number, string] });
-  };
+  const shT = u.shape.filter((d) => d !== 1), sh = shT.length >= 2 ? shT : u.shape;
+  const N = sh.at(-1) ?? 1, M = Math.floor(Math.max(numel(u.shape), 1) / Math.max(N, 1)), K = chain.reduce((p, r) => p * extent(r), 1);
   if (M < Math.max(2, COST.tileMinM) || N < 2 || K < 2) return null;   // M = 1 keeps the streaming nest — a tile would idle 15/16 threads
-  if (K < 64 && chainT.length === 1) return null;                      // tiny K cannot amortize tile staging (K=32 tiles lose to the plain nest)
+  if (K < 64 && chain.length === 1) return null;                       // tiny K cannot amortize tile staging (K=32 tiles lose to the plain nest)
   // Occupancy: a tile grid smaller than the machine (weight-grad shapes like [32,96] with
   // K = 5344 give 12 workgroups) leaves the GPU idle on long serial tile loops. A K-GROUP
   // axis fixes it: workgroup z owns a K-slice, runs the same coalesced tile loop over it,
   // and writes a [G,M,N] partial that a second kernel sums. G is the smallest split that
   // fills the machine with ≥ 4 tile steps per group.
-  const grid = Math.ceil(N / COST.tile) * Math.ceil(M / COST.tile);
+  const T = COST.tile, NT = Math.ceil(N / T), tiles = NT * Math.ceil(M / T);
   let G = 1;
-  if (grid < 48) {
-    G = Math.min(Math.ceil(96 / grid), Math.floor(Math.ceil(K / COST.tile) / 4));
+  if (tiles < 48) {
+    G = Math.min(Math.ceil(96 / tiles), Math.floor(Math.ceil(K / T) / 4));
     if (G < 2) return null;                                            // K too short to split — the plain nest is fine
   }
-  const indep = (idx: UOp, free: "col" | "row", fixed: [number, number][], nFree: number): boolean => {
-    for (const [o, k] of fixed) {
-      let first: number | null = null;
-      for (let fr = 0; fr < nFree; fr++) {
-        const g = free === "col" ? o * N + fr : fr * N + o;
-        const v = evalIdx(idx, new Map([[gid.id, g], ...rBind(k)]));
-        if (first === null) first = v; else if (v !== first) return false;
-      }
-    }
-    return true;
-  };
-  // per term: one load must depend on (row,k) only, the other on (col,k) only
-  const pairs: [UOp, UOp][] = [];
-  for (const t of terms) {
-    const [x, y] = [t.src[0]!, t.src[1]!];
-    const aFix: [number, number][] = [[0, 0], [Math.min(1, M - 1), Math.min(1, K - 1)], [M - 1, K - 1]];
-    const bFix: [number, number][] = [[0, 0], [Math.min(1, N - 1), Math.min(1, K - 1)], [N - 1, K - 1]];
-    if (indep(x.src[0]!, "col", aFix, N) && indep(y.src[0]!, "row", bFix, M)) pairs.push([x, y]);
-    else if (indep(y.src[0]!, "col", aFix, N) && indep(x.src[0]!, "row", bFix, M)) pairs.push([y, x]);
+  const row = range(M), col = range(N), k = range(K), sub = new Map<number, UOp>([[u.src[0]!.id, iadd(imul(row, iconst(N)), col)]]);
+  let stride = K;
+  for (const r of chain) { stride /= extent(r); sub.set(r.id, imod(idiv(k, iconst(stride)), iconst(extent(r)))); }
+  const subst = (v: UOp): UOp => { let o = sub.get(v.id); if (!o) { o = v.src.length ? rebuild(v.op, v.src.map(subst), v.arg, v.shape) : v; sub.set(v.id, o); } return o; };
+  // per term: two reads, one of (row, k) only, the other of (col, k) only
+  type Read = { at: UOp; ids: number[] };
+  const pairs: { term: UOp; a: Read; b: Read }[] = [];
+  for (const term of terms) {
+    const reads = new Map<string, Read>();
+    const walk = (v: UOp): boolean => {
+      if (v.op !== "LOAD") return VALUE.has(v.op) && v.src.every(walk);
+      const at = load((v.arg as { slot: number }).slot, subst(v.src[0]!)), key = idxKey(at), seen = reads.get(key);
+      if (seen) seen.ids.push(v.id); else reads.set(key, { at, ids: [v.id] });
+      return true;
+    };
+    if (!walk(term) || reads.size !== 2) return null;
+    const [x, y] = [...reads.values()] as [Read, Read], of = (r: Read, not: UOp) => !rangesIn(r.at).has(not);
+    if (of(x, col) && of(y, row)) pairs.push({ term, a: x, b: y });
+    else if (of(y, col) && of(x, row)) pairs.push({ term, a: y, b: x });
     else return null;
   }
-  const T = COST.tile;
-  const at = (l: UOp, g: string, k: string) => render(l, ctx(new Map<number, string>([[gid.id, g], ...rName(k)])));
+  const named = (...m: [UOp, string][]) => ctx(new Map(m.map(([r, s]) => [r.id, s])));
   const steps = Math.ceil(K / T), SP = Math.ceil(steps / G), MN = M * N;
   // register-blocked micro-tiles: each thread owns an RT×RT block of outputs — RT² FMAs
   // per pair of shared reads, RT² accumulators of instruction-level parallelism
   const RT = 2, L = T / RT;                                                    // L lanes per axis
   const slabDecls = pairs.map((_, j) => `var<workgroup> As${j}: array<f32, ${T * T}>;\nvar<workgroup> Bs${j}: array<f32, ${T * T}>;`).join("\n");
-  const stageCells: string[] = [];
+  const stageCells: string[] = [], accDecls: string[] = [], accUpd: string[] = [], ctr = { n: 0 };
   for (let i = 0; i < RT; i++) for (let jj = 0; jj < RT; jj++) {
     const r = `(l.y * ${RT}u + ${i}u)`, cc = `(l.x * ${RT}u + ${jj}u)`;
-    pairs.forEach(([a, b], j) => {
-      stageCells.push(`    As${j}[${r} * ${T}u + ${cc}] = select(0.0, ${at(a, `((rowB + ${r}) * ${N}u + 0u)`, `(t * ${T}u + ${cc})`)}, (rowB + ${r}) < ${M}u && (t * ${T}u + ${cc}) < ${K}u);`);
-      stageCells.push(`    Bs${j}[${r} * ${T}u + ${cc}] = select(0.0, ${at(b, `(0u * ${N}u + (colB + ${cc}))`, `(t * ${T}u + ${r})`)}, (t * ${T}u + ${r}) < ${K}u && (colB + ${cc}) < ${N}u);`);
+    pairs.forEach(({ a, b }, j) => {
+      stageCells.push(`    As${j}[${r} * ${T}u + ${cc}] = select(0.0, ${render(a.at, named([row, `(rowB + ${r})`], [k, `(t * ${T}u + ${cc})`]))}, (rowB + ${r}) < ${M}u && (t * ${T}u + ${cc}) < ${K}u);`);
+      stageCells.push(`    Bs${j}[${r} * ${T}u + ${cc}] = select(0.0, ${render(b.at, named([col, `(colB + ${cc})`], [k, `(t * ${T}u + ${r})`]))}, (t * ${T}u + ${r}) < ${K}u && (colB + ${cc}) < ${N}u);`);
     });
-  }
-  const accDecls: string[] = [], accUpd: string[] = [];
-  for (let i = 0; i < RT; i++) for (let jj = 0; jj < RT; jj++) {
+    // each output adds every term, its reads bound to the slabs
+    const c = ctx(new Map());
+    c.ctr = ctr;
+    pairs.forEach(({ term, a, b }, j) => {
+      for (const id of a.ids) c.bound.set(id, `As${j}[${r} * ${T}u + kk]`);
+      for (const id of b.ids) c.bound.set(id, `Bs${j}[kk * ${T}u + ${cc}]`);
+      planUses(term, c);
+    });
+    const e = pairs.map(({ term }) => render(term, c)).join(" + ");
     accDecls.push(`var acc${i}${jj} = 0.0;`);
-    accUpd.push(`      acc${i}${jj} = acc${i}${jj} + ${pairs.map((_, j) => `As${j}[(l.y * ${RT}u + ${i}u) * ${T}u + kk] * Bs${j}[kk * ${T}u + (l.x * ${RT}u + ${jj}u)]`).join(" + ")};`);
+    accUpd.push(...c.scopes[0]!, `      acc${i}${jj} = acc${i}${jj} + ${e};`);
   }
+  // a term need not vanish on the zeros staged past K, so the last step stops at K; a grid
+  // past 65,535 workgroups on one axis folds into two, as printFused's does
+  const kEnd = K % T ? `min(${T}u, ${K}u - t * ${T}u)` : `${T}u`, GX = Math.min(tiles, 32768), GY = Math.ceil(tiles / GX);
   const program = (t0: string, t1: string, outIdx: (r: string, c: string, acc: string) => string) => {
     const writes: string[] = [];
     for (let i = 0; i < RT; i++) for (let jj = 0; jj < RT; jj++)
@@ -246,12 +239,13 @@ function tileNest(u: UOp, nIn: number): { wgsl: string; dispatch: number[]; spli
 ${slabDecls}
 @compute @workgroup_size(${L}, ${L})
 fn main(@builtin(local_invocation_id) l: vec3<u32>, @builtin(workgroup_id) w: vec3<u32>) {
-  let rowB = w.y * ${T}u; let colB = w.x * ${T}u;
+  let tile = w.y * ${GX}u + w.x;${GX * GY > tiles ? ` if (tile >= ${tiles}u) { return; }` : ""}
+  let rowB = (tile / ${NT}u) * ${T}u; let colB = (tile % ${NT}u) * ${T}u;
   ${accDecls.join(" ")}
   for (var t = ${t0}; t < ${t1}; t = t + 1u) {
 ${stageCells.join("\n")}
     workgroupBarrier();
-    for (var kk = 0u; kk < ${T}u; kk = kk + 1u) {
+    for (var kk = 0u; kk < ${kEnd}; kk = kk + 1u) {
 ${accUpd.join("\n")}
     }
     workgroupBarrier();
@@ -259,15 +253,12 @@ ${accUpd.join("\n")}
 ${writes.join("\n")}
 }`;
   };
-  if (G === 1) return {
-    wgsl: program("0u", `${steps}u`, (r, c, a) => `o[${r} * ${N}u + ${c}] = ${a};`),
-    dispatch: [Math.ceil(N / T), Math.ceil(M / T)],
-  };
+  if (G === 1) return { wgsl: program("0u", `${steps}u`, (r, c, a) => `o[${r} * ${N}u + ${c}] = ${a};`), dispatch: [GX, GY] };
   return {
     wgsl: "", dispatch: [],
     split: {
       wgsl: program(`w.z * ${SP}u`, `min(${steps}u, (w.z + 1u) * ${SP}u)`, (r, c, a) => `o[w.z * ${MN}u + ${r} * ${N}u + ${c}] = ${a};`),
-      dispatch: [Math.ceil(N / T), Math.ceil(M / T), G],
+      dispatch: [GX, GY, G],
       pShape: [G, M, N],
       wgsl2: `${binds(1)}
 @group(0) @binding(1) var<storage, read_write> o: array<f32>;
@@ -345,13 +336,14 @@ export function lowerMany(roots: UOp[]): UOp[] {
     if (u.op !== "FUSED") return null;
     const ins = kInputs(u);
     if (ins.length + 1 > MAX_BINDINGS) throw new Error(`gpu: kernel needs ${ins.length + 1} bindings — over the ${MAX_BINDINGS} storage buffers per stage (shape [${u.shape}])`);
+    const kernel = (src: readonly UOp[], wgsl: string, dispatch: number[], shape: readonly number[]): UOp => {
+      if (dispatch.some((d) => d > MAX_GROUPS)) throw new Error(`gpu: dispatch [${dispatch}] is over ${MAX_GROUPS} workgroups on an axis (shape [${u.shape}])`);
+      return node("KERNEL", src, { wgsl: withHelpers(wgsl), dispatch }, shape);
+    };
     const k = tileNest(u, ins.length) ?? coopGemv(u, ins.length) ?? printFused(u, ins.length);
     const sp = (k as { split?: SplitK }).split;
-    if (sp) {                                                                   // split-K tile: partials kernel + G-sum kernel, chained
-      const k1 = node("KERNEL", ins, { wgsl: withHelpers(sp.wgsl), dispatch: sp.dispatch }, sp.pShape);
-      return node("KERNEL", [k1], { wgsl: sp.wgsl2, dispatch: sp.dispatch2 }, u.shape);
-    }
-    return node("KERNEL", ins, { wgsl: withHelpers(k.wgsl), dispatch: k.dispatch }, u.shape);
+    // split-K tile: partials kernel + G-sum kernel, chained
+    return sp ? kernel([kernel(ins, sp.wgsl, sp.dispatch, sp.pShape)], sp.wgsl2, sp.dispatch2, u.shape) : kernel(ins, k.wgsl, k.dispatch, u.shape);
   }]);
 }
 
