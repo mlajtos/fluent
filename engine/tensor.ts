@@ -406,7 +406,7 @@ const normAxis = (axis: number, rank: number): number => {
 export function reshape(a: Like, shape: readonly number[]): Tensor {
   const x = nodeOf(a), n = ir.numel(x.shape), known_ = shape.filter((d) => d !== -1).reduce((p, d) => p * d, 1);
   const s = shape.map((d) => (d === -1 ? n / known_ : d));
-  if (ir.numel(s) !== n) throw new Error(`cannot reshape [${x.shape}] into [${shape}]`);
+  if (ir.numel(s) !== n || !s.every((d) => Number.isInteger(d) && d >= 0)) throw new Error(`cannot reshape [${x.shape}] into [${shape}]`);
   return new Tensor(ir.sameShape(s, x.shape) ? x : ir.reshape(x, s));
 }
 export const transpose = (a: Like, axes?: readonly number[]): Tensor => { const x = nodeOf(a); return wrap(ir.permute(x, axes ? axes.map((p) => normAxis(p, x.shape.length)) : x.shape.map((_, i) => x.shape.length - 1 - i))); };

@@ -1823,6 +1823,11 @@ describe("the engine", () => {
   test("index ramps of different lengths stay different", () => {
     expect(value("concat((0 ..< 300, 0 ..< 500))_600")).toBe(300)
   })
+  test("a reshape into a fractional or negative axis is an Error", () => {
+    expect(run("[1, 2, 3, 4, 5] ⍴ [-1, 2]")).toBeInstanceOf(Error)
+    expect(run("[1, 2, 3, 4, 5, 6] ⍴ [-2, -3]")).toBeInstanceOf(Error)
+    expect(value("[1, 2, 3, 4, 5, 6] ⍴ [-1, 2]")).toEqual([[1, 2], [3, 4], [5, 6]])
+  })
 })
 
 describe("doc cards", () => {
