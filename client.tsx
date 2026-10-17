@@ -1503,89 +1503,52 @@ const ANTHROPIC_API_KEY_STORAGE = "fluent-anthropic-api-key"
 const getAnthropicApiKey = () => localStorage.getItem(ANTHROPIC_API_KEY_STORAGE) ?? ""
 const setAnthropicApiKey = (key: string) => localStorage.setItem(ANTHROPIC_API_KEY_STORAGE, key)
 
-let pendingGenerationRequests = new Set<string>()
-
 async function generateFluentCode(instruction: string, context: string, apiKey: string): Promise<string> {
-
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-5',
+      model: "claude-sonnet-5",
       max_tokens: 16000,
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 10000
-      },
+      thinking: { type: "enabled", budget_tokens: 10000 },
       system: generationSystemPrompt(),
-      messages: [{
-        role: 'user',
-        content: `Current code context:\n\`\`\`\n${context}\n\`\`\`\n\nGenerate Fluent code for: ${instruction}`
-      }]
-    })
+      messages: [{ role: "user", content: `Current code context:\n\`\`\`\n${context}\n\`\`\`\n\nGenerate Fluent code for: ${instruction}` }],
+    }),
   })
-
-
   const data = await response.json()
-
-  if (data.error) {
-    throw new Error(data.error.message)
-  }
-
-  // With thinking enabled, find the text block (not thinking block)
-  const textBlock = data.content.find((block: any) => block.type === 'text')
-  if (!textBlock) {
-    throw new Error('No text block in response')
-  }
-
-  let result = textBlock.text.trim()
-
-  // Strip markdown code fences if present
-  result = result.replace(/^```(?:fluent)?\n?/gm, '').replace(/```$/gm, '').trim()
-
-
-  return result
+  if (data.error) { throw new Error(data.error.message) }
+  // the answer is the text block, after the thinking one, without code fences
+  const text = data.content.find((block: { type: string }) => block.type === "text")?.text
+  if (text === undefined) { throw new Error("No text block in response") }
+  return text.trim().replace(/^```(?:fluent)?\n?/gm, "").replace(/```$/gm, "").trim()
 }
 
-function processGenerationComments(
-  code: string,
-  apiKey: string,
-  onUpdate: (newCode: string) => void
-): string {
-  const matches = [...code.matchAll(GENERATION_COMMENT_REGEX)]
-
-  for (const match of matches) {
-    const fullMatch = match[0]
-    const instruction = match[1]!.trim()
-
-    // Skip if already processing this exact comment
-    if (pendingGenerationRequests.has(fullMatch)) {
-      continue
-    }
-    pendingGenerationRequests.add(fullMatch)
-
-    // Fire off async generation
-    generateFluentCode(instruction, code, apiKey)
-      .then(generatedCode => {
-        pendingGenerationRequests.delete(fullMatch)
-        const newCode = code.replace(fullMatch, generatedCode)
-        onUpdate(newCode)
+// Generation comments (;; … ;;) are answered by the model, in place: the answer replaces
+// the comment where it is when the answer arrives, so what was typed meanwhile stays
+const pendingGenerations = new Set<string>()
+const answerGenerationComments = (editor: editor.IStandaloneCodeEditor, apiKey: string) => {
+  const model = editor.getModel()
+  if (!model) { return }
+  for (const [comment, instruction] of model.getValue().matchAll(GENERATION_COMMENT_REGEX)) {
+    if (pendingGenerations.has(comment)) { continue }
+    pendingGenerations.add(comment)
+    generateFluentCode(instruction!.trim(), model.getValue(), apiKey)
+      .catch((err) => {
+        console.error("[Generation] Failed:", err)
+        return `; ERROR: ${err.message}`
       })
-      .catch(err => {
-        pendingGenerationRequests.delete(fullMatch)
-        console.error('[Generation] Failed:', err)
-        onUpdate(code.replace(fullMatch, `; ERROR: ${err.message}`))
+      .then((text) => {
+        pendingGenerations.delete(comment)
+        const [found] = model.isDisposed() ? [] : model.findMatches(comment, false, false, true, null, false)
+        if (found) { editor.executeEdits("generation", [{ range: found.range, text }]) }
       })
   }
-
-  return code
 }
-
 
 // MARK: Editor
 
@@ -1674,9 +1637,11 @@ function CodeEditorView({ value, onChange, auto }: { value: string, onChange: (c
   changed.current = onChange
   // each editor's text is parsed on its own (REPL cells stay independent)
   const validateCode = (source: string) => toWorker({ t: "parse", source })
+  const mounted = useRef<editor.IStandaloneCodeEditor | null>(null)
 
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorOnMount(editor, monaco)
+    mounted.current = editor
     editorRegistry.add(editor)
     // Global shortcuts (⌘O gallery, ⌘S share) target the app's MAIN editor – the one
     // that fills its panel. Auto-grown editors are embedded cells that mount first and
@@ -1715,15 +1680,8 @@ function CodeEditorView({ value, onChange, auto }: { value: string, onChange: (c
         if (next === undefined) { return }
         changed.current(next)
         validateCode(next)
-        // generation comments (;; … ;;) are answered by the model, in place
         const apiKey = getAnthropicApiKey()
-        if (apiKey && GENERATION_COMMENT_REGEX.test(next)) {
-          GENERATION_COMMENT_REGEX.lastIndex = 0
-          processGenerationComments(next, apiKey, (generated) => {
-            changed.current(generated)
-            validateCode(generated)
-          })
-        }
+        if (apiKey && mounted.current) { answerGenerationComments(mounted.current, apiKey) }
       }}
       options={getEditorOptions("editable")}
     />
