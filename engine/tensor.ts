@@ -238,7 +238,7 @@ const isLiteral = (u: UOp): boolean => u.op === "CONSTANT" && !u.shape.length;
 // the result as data: a scalar from literals alone is a literal; anything else is held data
 const folded = (d: Float32Array, shape: readonly number[], literal: boolean): UOp => {
   const v = d.length === ir.numel(shape) ? d : d.slice(0, ir.numel(shape));
-  return shape.length ? ir.data(v, shape) : literal ? ir.data(v, []) : ir.reshape(ir.data(v, [1]), []);
+  return literal && !shape.length ? ir.data(v, []) : held(v, shape);
 };
 const VIEWS = new Set(["BROADCAST", "PERMUTE", "RESHAPE", "SLICE"]);
 function fold(root: UOp): UOp {

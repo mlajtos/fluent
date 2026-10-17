@@ -271,45 +271,38 @@ export function lowerMany(roots: UOp[]): UOp[] {
   }]);
 }
 
-
 // ── the synchronous read: WebGPU has none, so a buffer is copied into the texture of a
 // WebGPU canvas, drawn onto a 2-D canvas and read with getImageData (TF.js's trick, which
 // jax-js uses too) — once as opaque RGB, once premultiplied for alpha. Slow, and only a
 // bridge: the evaluator reads asynchronously once it runs in a worker (OwnEngine.md S5).
-class SyncReader {
-  static readonly W = 256;
-  static readonly H = 256;
-  #dev: GPUDevice;
-  #device: { canvas: OffscreenCanvas; context: GPUCanvasContext; alpha: "opaque" | "premultiplied" }[] | null = null;
-  #host: OffscreenCanvasRenderingContext2D | null = null;
-  constructor(dev: GPUDevice) { this.#dev = dev; }
-  read(buffer: GPUBuffer, bytes: number): Uint8Array {
-    if (!this.#device) {
-      this.#device = (["opaque", "premultiplied"] as const).map((alpha) => {
-        const canvas = new OffscreenCanvas(SyncReader.W, SyncReader.H), context = canvas.getContext("webgpu") as GPUCanvasContext;
-        context.configure({ device: this.#dev, format: "bgra8unorm", usage: GPUTextureUsage.COPY_DST, alphaMode: alpha });
-        return { canvas, context, alpha };
-      });
-      this.#host = new OffscreenCanvas(SyncReader.W, SyncReader.H).getContext("2d", { willReadFrequently: true })!;
-    }
-    const pixels = Math.ceil(bytes / 4), out = new Uint8Array(pixels * 4), perCanvas = SyncReader.W * SyncReader.H;
+// Each canvas is SIDE × SIDE pixels.
+const SIDE = 256;
+function syncReader(dev: GPUDevice): (buffer: GPUBuffer, bytes: number) => Uint8Array {
+  let canvases: { canvas: OffscreenCanvas; context: GPUCanvasContext; alpha: "opaque" | "premultiplied" }[] | null = null, host: OffscreenCanvasRenderingContext2D;
+  return (buffer, bytes) => {
+    canvases ??= (["opaque", "premultiplied"] as const).map((alpha) => {
+      const canvas = new OffscreenCanvas(SIDE, SIDE), context = canvas.getContext("webgpu") as GPUCanvasContext;
+      context.configure({ device: dev, format: "bgra8unorm", usage: GPUTextureUsage.COPY_DST, alphaMode: alpha });
+      return { canvas, context, alpha };
+    });
+    host ??= new OffscreenCanvas(SIDE, SIDE).getContext("2d", { willReadFrequently: true })!;
+    const pixels = Math.ceil(bytes / 4), out = new Uint8Array(pixels * 4);
     // whole canvases, then whole rows, then the last partial row: a copy reads full rows only
     const pieces: [number, number, number][] = [];                               // [first pixel, width, rows]
     let at = 0;
-    for (; pixels - at >= perCanvas; at += perCanvas) pieces.push([at, SyncReader.W, SyncReader.H]);
-    const rows = Math.floor((pixels - at) / SyncReader.W);
-    if (rows) { pieces.push([at, SyncReader.W, rows]); at += rows * SyncReader.W; }
+    for (; pixels - at >= SIDE * SIDE; at += SIDE * SIDE) pieces.push([at, SIDE, SIDE]);
+    const rows = Math.floor((pixels - at) / SIDE);
+    if (rows) { pieces.push([at, SIDE, rows]); at += rows * SIDE; }
     if (pixels > at) pieces.push([at, pixels - at, 1]);
-    for (const { canvas, context, alpha } of this.#device) {
+    for (const { canvas, context, alpha } of canvases) {
       for (const [first, width, rows] of pieces) {
-        const n = width * rows;
-        const enc = this.#dev.createCommandEncoder();
-        enc.copyBufferToTexture({ buffer, offset: first * 4, bytesPerRow: SyncReader.W * 4 }, { texture: context.getCurrentTexture() }, { width, height: rows });
-        this.#dev.queue.submit([enc.finish()]);
-        this.#host!.clearRect(0, 0, width, rows);
-        this.#host!.drawImage(canvas, 0, 0);
-        const px = this.#host!.getImageData(0, 0, width, rows).data;
-        for (let k = 0; k < n * 4; k += 4) {
+        const enc = dev.createCommandEncoder();
+        enc.copyBufferToTexture({ buffer, offset: first * 4, bytesPerRow: SIDE * 4 }, { texture: context.getCurrentTexture() }, { width, height: rows });
+        dev.queue.submit([enc.finish()]);
+        host.clearRect(0, 0, width, rows);
+        host.drawImage(canvas, 0, 0);
+        const px = host.getImageData(0, 0, width, rows).data;
+        for (let k = 0; k < width * rows * 4; k += 4) {
           const o = first * 4 + k;
           if (alpha === "premultiplied") out[o + 3] = px[k + 3]!;
           else { out[o] = px[k + 2]!; out[o + 1] = px[k + 1]!; out[o + 2] = px[k]!; }
@@ -317,7 +310,7 @@ class SyncReader {
       }
     }
     return out.subarray(0, bytes);
-  }
+  };
 }
 
 // ── the executor: plans, buffers, bind groups, dispatches in chunked submits ──────────
@@ -330,18 +323,11 @@ export class GPU {
   static async create(): Promise<GPU | null> {
     const adapter = await (globalThis.navigator as { gpu?: { requestAdapter(): Promise<GPUAdapter | null> } })?.gpu?.requestAdapter();
     if (!adapter) return null;
-    const L = adapter.limits, ts = adapter.features.has("timestamp-query");
+    const ts = adapter.features.has("timestamp-query");
     // the defaults fail silently (a buffer over the limit reads back as zeros) — ask for the adapter's maxima
-    const dev = await adapter.requestDevice({
-      requiredFeatures: (ts ? ["timestamp-query"] : []) as GPUFeatureName[],
-      requiredLimits: {
-        maxBufferSize: L.maxBufferSize, maxStorageBufferBindingSize: L.maxStorageBufferBindingSize,
-        maxStorageBuffersPerShaderStage: L.maxStorageBuffersPerShaderStage,
-        maxComputeInvocationsPerWorkgroup: L.maxComputeInvocationsPerWorkgroup,
-        maxComputeWorkgroupSizeX: L.maxComputeWorkgroupSizeX, maxComputeWorkgroupSizeY: L.maxComputeWorkgroupSizeY,
-        maxComputeWorkgroupStorageSize: L.maxComputeWorkgroupStorageSize,
-      },
-    });
+    const limits = ["maxBufferSize", "maxStorageBufferBindingSize", "maxStorageBuffersPerShaderStage", "maxComputeInvocationsPerWorkgroup",
+      "maxComputeWorkgroupSizeX", "maxComputeWorkgroupSizeY", "maxComputeWorkgroupStorageSize"] as const;
+    const dev = await adapter.requestDevice({ requiredFeatures: (ts ? ["timestamp-query"] : []) as GPUFeatureName[], requiredLimits: Object.fromEntries(limits.map((k) => [k, adapter.limits[k]])) });
     return new GPU(dev, ts);
   }
   get device(): GPUDevice { return this.#dev; }
@@ -393,11 +379,11 @@ export class GPU {
     }
   }
 
-  #reader: SyncReader | null = null;
+  #reader: ((buffer: GPUBuffer, bytes: number) => Uint8Array) | null = null;
   readSync(b: GPUBuffer, n: number): Float32Array {
     this.#raiseLate();
-    this.#reader ??= new SyncReader(this.#dev);
-    const bytes = this.#reader.read(b, Math.max(n, 1) * 4);
+    this.#reader ??= syncReader(this.#dev);
+    const bytes = this.#reader(b, Math.max(n, 1) * 4);
     return new Float32Array(bytes.buffer, bytes.byteOffset, Math.max(n, 1)).slice(0, n);
   }
   async readAsync(b: GPUBuffer, n: number): Promise<Float32Array> {
