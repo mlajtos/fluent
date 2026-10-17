@@ -97,7 +97,7 @@ M: [[1, 4, 2, 8],
     [5, 3, 9, 1],
     [7, 2, 6, 4],
     [3, 8, 1, 5]],
-nrm: { x | (x - min(x)) ÷ (max(x) - min(x)) }, ; scales an array to 0..1
+nrm: { x | x - min(x) ÷ (max(x) - min(x)) }, ; scales an array to 0..1
 
 (
   Text("# ⍤ Rank polymorphism"),
@@ -170,7 +170,7 @@ diagonal: { m | Σ(m × 𝕀(#m), 1) },
     row("root mean square",           "√(mean of x²)",       (square ⍢ μ)([3, 4])     ),
     row("60 dB + 60 dB",              "10 log(10⁶ + 10⁶)",   60 (dB ⍢ +) 60           ),
     row("½c ⊕ ½c, relativistically",  "(u + v) ÷ (1 + uv)",  0.5 (atanh ⍢ +) 0.5      ),
-    row("a six in four rolls",        "1 − (1 − p)⁴",        ((1 ⊸ -) ⍢ Π)(1/6 ⧉ 4)   ),
+    row("a six in four rolls",        "1 − (1 − p)⁴",        (1 ⊸ - ⍢ Π)(1/6 ⧉ 4)   ),
     row("two 80% witnesses",          "odds multiply",       0.8 (logit ⍢ +) 0.8      ),
     row("smooth max",                 "log(Σ eˣ)",           (exp ⍢ Σ)([1, 2, 3])     ),
   ),
@@ -199,7 +199,7 @@ diagonal: { m | Σ(m × 𝕀(#m), 1) },
 (≻): { t, v | v_0 × (1 - t) + v_1×t },
 
 ; invlerp: [1, 3] ≺ 2 = 0.5
-(≺): { v, t | (t - v_0) ÷ (v_1 - v_0) },
+(≺): { v, t | t - v_0 ÷ (v_1 - v_0) },
 
 rescale: { x | [min(x), max(x)] ≺ x },
 [10, 20, 30] . rescale
@@ -237,7 +237,7 @@ gray: [68, 68, 68] ÷ 255,
 ; y = sin(x + t) over a full turn, in pixels (the screen's y runs down)
 x: linspace([0, 2×π], 128),
 y: sin(x + t),
-curve: stack((x×W ÷ (2×π), H÷2 - y×H÷2.4), -1),
+curve: stack((x×W ÷ 2×π, H÷2 - y×H÷2.4), -1),
 axis: [[0, H÷2], [W, H÷2]],
 marks: curve_(0..<8 × 18),
 
@@ -284,7 +284,7 @@ tasks: $List(),
 )
 `,
   "tasks-compressed": `
-(++):ListConcat,taskName: $(""),taskCreate:{name|s: $(name),f: $("🔴"),Grid([1,10])(Button(f,{f("✅")}),TextEditor(s))},tasks: $(()),(Text("# TODO"),Grid([5,1])(TextEditor(taskName),Button("Add",{tasks(tasks()++List(taskCreate(taskName()))),taskName("")})),tasks)
+(++):ListConcat,taskName: $"",taskCreate:{name|s: $name,f: $"🔴",Grid([1,10])(Button(f,{f("✅")}),TextEditor(s))},tasks: $(()),(Text("# TODO"),Grid([5,1])(TextEditor(taskName),Button("Add",{tasks(tasks()++List(taskCreate(taskName()))),taskName("")})),tasks)
 `,
   "tasks-mini": `
 ; Minimal TODO app – type a task, add it to the list
@@ -410,10 +410,10 @@ x: linspace([0.05, 4], 240), ; Box–Cox is defined for x > 0
 
 ; the transform. at λ = 0 the 0/0 limit is exactly ln(x), so branch there.
 ; (x × 0 broadcasts the scalar test across the 240 sample points)
-p: { l | where((abs(l) < 0.001) + (x × 0), log(x), (x^l - 1) ÷ l) },
+p: { l | where(abs(l)<0.001 + x×0, log(x), x^l - 1 ÷ l) },
 
 ; wrap the plot in a computed so it re-draws as you scrub λ (like Scrubber does)
-curve: $({ PointPlot(x, p(λ())) }),
+curve: \${ PointPlot(x, p(λ())) },
 
 (
   Text("# 📈 Box–Cox transform"),
@@ -500,7 +500,7 @@ f: { t | Δ(t × w) },
 𝓛: { mean((f(τ) - ŷ)^2) },
 opt: adam(0.001),
 losses: $[],
-pred: $(f(τ)),
+pred: $f(τ),
 
 { losses ++= [opt(𝓛)], pred(f(τ)) } ⟳ 500,
 
@@ -566,11 +566,11 @@ opt: adam(0.06),
 ; anchors to concrete tensors first (av/bv/cv), so the ⊗ lambda works on plain
 ; tensors.
 g: linspace([-2, 2], n),
-field: $({
+field: \${
   av: a(), bv: b(), cv: c(),
   Fc: { q | dist(q, av) + dist(q, bv) + dist(q, cv) },
   g (⊗ { y, x | Fc([x, y]) }) g
-}),
+},
 
 (
   Text("# 📍 Geometric median"),
@@ -608,22 +608,22 @@ last: oneHot(n - 1, n) ⍴ [n, 1], ; picks the tip
   tip: Σ(P × last, 0), ; the hand
   reach: Σ((tip - target())^2), ; hand → target
   avoid: Σ(1 ÷ (Σ((P - obstacle())^2, 1) + 0.02)), ; repel
-  (reach + 0.004) × avoid
+  reach + 0.0005×avoid
 },
 
 opt: adam(0.05), ; optimiser
-joints: $(fk(θ)), ; live pose for the glow
-{ opt(𝓛), joints(fk(θ)) } ⟳ 100000, ; step, then publish
+joints: $fk(θ), ; live pose for the glow
+{ opt(𝓛), joints(fk(θ)) } ⟳ Time()×60, ; 60 steps a second: step, then publish
 
 range: [[-1, 1], [-1, 1]], ; view box
 gres: 300, ; glow resolution
 g: linspace([-1, 1], gres), ; grid axis
-arm: $({ ; the glowing arm
+arm: \${ ; the glowing arm
   q: transpose(joints()), ; xs, ys as rows
-  dx: (g ⍴ [1, gres, 1]) - (q_0 ⍴ [1, 1, n]),
-  dy: (g ⍴ [gres, 1, 1]) - (q_1 ⍴ [1, 1, n]),
+  dx: g ⍴ [1, gres, 1] - (q_0 ⍴ [1, 1, n]),
+  dy: g ⍴ [gres, 1, 1] - (q_1 ⍴ [1, 1, n]),
   Σ(exp(-(dx^2 + dy^2) ÷ 0.005), 2) ; Σ gaussians
-}),
+},
 
 (
   Text("# 🦾 Differentiable reach"),
@@ -644,17 +644,17 @@ target: $[0.72, -0.12], ; drag me (orange)
 𝓛: { Σ((fly(vel)_(T - 1) - target())^2) }, ; squared miss of where the shot lands
 
 opt: adam(0.06), ; optimiser
-path: $(fly(vel)), ; live trajectory for the glow
+path: $fly(vel), ; live trajectory for the glow
 { opt(𝓛), path(fly(vel)) } ⟳ 100000, ; descend the miss, then publish the arc
 
 range: [[-1, 1], [-1, 1]], gres: 280,
 gg: linspace([-1, 1], gres),
-shot: $({ ; glow along the trajectory – a Gaussian at every sample
+shot: \${ ; glow along the trajectory – a Gaussian at every sample
   q: transpose(path()),
-  dx: (gg ⍴ [1, gres, 1]) - (q_0 ⍴ [1, 1, T]),
-  dy: (gg ⍴ [gres, 1, 1]) - (q_1 ⍴ [1, 1, T]),
+  dx: gg ⍴ [1, gres, 1] - (q_0 ⍴ [1, 1, T]),
+  dy: gg ⍴ [gres, 1, 1] - (q_1 ⍴ [1, 1, T]),
   Σ(exp(-(dx^2 + dy^2) ÷ 0.0005), 2)
-}),
+},
 
 (
   Text("# 🎯 Aim by calculus"),
@@ -677,8 +677,8 @@ ring: { g, n, c | ; the goal image: a bright ring of radius 0.5 around c, on an 
 },
 paint: { p, g, n | ; render K Gaussian blobs at centers p [K, 2] onto an n×n image
   q: transpose(p),
-  dx: (g ⍴ [1, n, 1]) - (q_0 ⍴ [1, 1, K]),
-  dy: (g ⍴ [n, 1, 1]) - (q_1 ⍴ [1, 1, K]),
+  dx: g ⍴ [1, n, 1] - (q_0 ⍴ [1, 1, K]),
+  dy: g ⍴ [n, 1, 1] - (q_1 ⍴ [1, 1, K]),
   Σ(exp(-(dx^2 + dy^2) ÷ blobW), 2)
 },
 
@@ -688,7 +688,7 @@ a0: 0..<K × (2×π ÷ K), ; blobs start as a tiny huddle at the middle
 𝓛: { Σ((paint(θ, lg, lres) - ring(lg, lres, center()))^2) }, ; coarse pixel mismatch
 
 opt: adam(0.02),
-shown: $(paint(θ, vg, vres)), ; the fine picture, for display
+shown: $paint(θ, vg, vres), ; the fine picture, for display
 { opt(𝓛), shown(paint(θ, vg, vres)) } ⟳ 100000, ; descend the mismatch, then repaint
 
 range: [[-1, 1], [-1, 1]],
@@ -739,7 +739,7 @@ pose: $θ,
 range: [[-1, 1], [-1, 1]],
 gres: 240,
 gg: linspace([-1, 1], gres),
-mesh: $({ ; glow at every node + 3 samples along each edge → continuous strands
+mesh: \${ ; glow at every node + 3 samples along each edge → continuous strands
   P: pose(),
   seg: { B | P + ([0.25, 0.5, 0.75] ⊗(×) (B - P)) }, ; 3 points along an edge → [3, ny, nx, 2]
   wt: { m | [1, 1, 1] ⊗(×) m }, ; the same weight for those 3 points
@@ -747,10 +747,10 @@ mesh: $({ ; glow at every node + 3 samples along each edge → continuous strand
   w: concat((z ⍴ [1, ny, nx], wt(inCol × z), wt(inRow × z)), 0) ⍴ [-1], ; wrap edges weighted 0
   M: #w,
   q: transpose(pts),
-  dx: (gg ⍴ [1, gres, 1]) - (q_0 ⍴ [1, 1, M]),
-  dy: (gg ⍴ [gres, 1, 1]) - (q_1 ⍴ [1, 1, M]),
-  Σ((w ⍴ [1, 1, M]) × exp(-(dx^2 + dy^2) ÷ 0.0007), 2)
-}),
+  dx: gg ⍴ [1, gres, 1] - (q_0 ⍴ [1, 1, M]),
+  dy: gg ⍴ [gres, 1, 1] - (q_1 ⍴ [1, 1, M]),
+  Σ(w ⍴ [1, 1, M] × exp(-(dx^2 + dy^2) ÷ 0.0007), 2)
+},
 
 (
   Text("# 🧵 Differentiable cloth"),
@@ -847,7 +847,7 @@ surface: log(linspace(range_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(range_0
 ; Animated Magnetic Field – spinning, pulsing magnets and their field lines
 
 (≻): { t, v | v_0 × (1 - t) + v_1×t },
-(≺): { v, t | (t - v_0) / (v_1 - v_0) },
+(≺): { v, t | t - v_0 / (v_1 - v_0) },
 rescale: { x | [min(x), max(x)] ≺ x },
 
 numMagnets: 3,
@@ -1004,7 +1004,7 @@ step ⟳ 100000,
   "game-of-life-tacit": `
 ; Game of Life, tacitly – the whole rule as one point-free function
 
-next: (⊛ ⟜ (1 ⧉ [3, 3])) ⊸ Φ(= ⟜ 3, ∨, = ⟜ (3 ⊸ +)),
+next: ⊛ ⟜ (1 ⧉ [3, 3]) ⊸ Φ(= ⟜ 3, ∨, = ⟜ (3 ⊸ +)),
 board: $(⚄([256, 256]) < 0.3),
 { board← next(once(board)) } ⟳ 100000,
 (
@@ -1023,7 +1023,7 @@ edges: { x, ax | roll(x, 1, ax) + roll(x, -1, ax) }, ; both neighbours along an 
 ; sprinkle v into a sea of u, then let it self-organise
 u: $1,
 v: $0,
-reseed: { s: (rand([n, n]) < 0.08) × 0.5, u← 1 - s, v← s },
+reseed: { s: rand([n, n]) < 0.08 × 0.5, u← 1 - s, v← s },
 
 ; drag feed and kill – the whole zoo of patterns hides in a tiny window
 F: $0.055,
@@ -1096,7 +1096,7 @@ d: 16, ; embedding dimension
 ; sinusoidal positional embeddings, so nearby tokens are similar (K = Q)
 pos: 0 ..< n,
 k: 0 ..< d÷2,
-freqs: 1 ÷ 10000^(k ÷ (d÷2)),
+freqs: 1 ÷ 10000^(k ÷ d÷2),
 angles: pos (⊗ ×) freqs,
 Q: concat((sin(angles), cos(angles)), 1),
 
@@ -1398,7 +1398,7 @@ accuracy: \${
 ; 3:1 (the init), and learning drives it toward the cortical 1:1 on its own.
 eibal: \${
   errs(),
-  (mean(Wpp1()) + mean(Wnn1()) + mean(Wpp2()) + mean(Wnn2()))
+  mean(Wpp1()) + mean(Wnn1()) + mean(Wpp2()) + mean(Wnn2())
     ÷ (mean(Wnp1()) + mean(Wpn1()) + mean(Wnp2()) + mean(Wpn2()))
 },
 

@@ -5,7 +5,7 @@
 
 import { grammar, type ActionDict } from "ohm-js";
 import { toAST as ohmToAST } from "ohm-js/extras";
-import { signal, Signal, computed, effect } from "@preact/signals-core"
+import { signal, Signal, computed, effect, untracked } from "@preact/signals-core"
 import dedent from "ts-dedent";
 import * as engine from "./engine/tensor.ts"
 import PRELUDE from "./prelude.fl" with { type: "text" }
@@ -1306,7 +1306,10 @@ const FunctionIterate = (fn: (index?: engine.Tensor) => void, iterations?: Value
     }
     return n
   }
-  readTarget()   // a bad count is an error at the call, not silently zero frames
+  // a bad count is an error at the call, not silently zero frames. Read untracked: the
+  // loop follows a live count itself, and a program that read it would re-run – and
+  // restart its loop – every time the count changed
+  untracked(readTarget)
 
   const generation = currentGeneration
   let i = 0

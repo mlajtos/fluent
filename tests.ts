@@ -3,7 +3,7 @@
 // backend (Bun has no WebGPU). `bun test` runs this file.
 
 import { describe, test, expect } from "bun:test"
-import { Signal } from "@preact/signals-core"
+import { Signal, effect } from "@preact/signals-core"
 import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, setCodeNodePrinter, extendEnvironment, SignalCreate, DefaultEnvironment, NoMatch, type Value } from "./language"
 import { startHost } from "./host"
 import type { ToPage, ToWorker } from "./protocol"
@@ -557,6 +557,22 @@ describe("reactivity", () => {
   })
   test("once reads without subscribing", () => {
     expect(value("x: $(4), once(x) + 1")).toBe(5)
+  })
+  test("⟳ follows a live count without re-running the program that started it", () => {
+    // the IDE runs a program inside an effect: a program that read the count would
+    // run again – and restart its loop – each time the count moved
+    const budget = SignalCreate(engine.scalar(1) as Value)
+    let runs = 0
+    const stop = effect(() => {
+      runs++
+      const scope = createScope()
+      scope.budget = budget
+      evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse("{ 0 } ⟳ budget"), scope))
+    })
+    budget.value = engine.scalar(5) as Value
+    budget.value = engine.scalar(9) as Value
+    stop()
+    expect(runs).toBe(1)
   })
   test("watch bridges a variable into the signal world", () => {
     expect(value("θ: ~([2]), w: watch(θ), θ := [8], w")).toEqual([8])

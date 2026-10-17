@@ -102,6 +102,20 @@ import { type Annotations } from "plotly.js"
   getWorker: () => new Worker(new URL("monaco.worker.js", document.baseURI), { type: "module" }),
 }
 
+// In Safari, Monaco's clipboard service hands ClipboardItem a promise on every click
+// and keypress, then cancels it on the next one, with nothing handling the
+// rejection. A ClipboardItem here handles the promises it is given; the clipboard
+// still receives them unchanged.
+if (typeof ClipboardItem === "function") {
+  const Native = ClipboardItem
+  ;(globalThis as { ClipboardItem: typeof ClipboardItem }).ClipboardItem = class extends Native {
+    constructor(items: Record<string, string | Blob | PromiseLike<string | Blob>>, options?: ClipboardItemOptions) {
+      for (const item of Object.values(items)) { if (item instanceof Promise) { item.catch(() => { }) } }
+      super(items, options)
+    }
+  }
+}
+
 // Configure @monaco-editor/react to use local monaco-editor package
 loader.config({ monaco })
 

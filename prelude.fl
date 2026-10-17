@@ -11,9 +11,9 @@ SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current sco
 ; Combinators – glyph, array-language name, mainstream name
 (∘): then: doc(FunctionThen, "(f ∘ g)", "Then: apply f to the arguments, then g to the result – (f ∘ g)(x, y) = g(f(x, y)). Reading order is evaluation order. The Queer bird – APL's atop, swapped to read left-to-right.", "(+ ∘ √)(9, 16) = 5"),
 (⍨): swap: commute: doc(FunctionCommute, "(⍨ f)", "Commute: flip a binary function's arguments – x (⍨ f) y = f(y, x). With one argument, duplicate it: (⍨ f)(x) = f(x, x). The Cardinal and the Warbler.", "3 (⍨ -) 10 = 7"),
-compose: FunctionCompose: doc((⍨ then), "(f compose g)", "Composition in mathematics' order: (f compose g)(x) = f(g(x)) – then, the other way round. f compose g is g ∘ f.", "(√ compose +)(9, 16) = 5"),
+compose: FunctionCompose: doc(⍨ then, "(f compose g)", "Composition in mathematics' order: (f compose g)(x) = f(g(x)) – then, the other way round. f compose g is g ∘ f.", "(√ compose +)(9, 16) = 5"),
 (⍥): into: doc(FunctionInto, "(g ⍥ f)", "Into: preprocess each argument with g, then feed them into f – x (g ⍥ f) y = f(g(x), g(y)). The preprocessor is read first because it runs first. The Psi bird.", "-3 (abs ⍥ =) 3 = 1"),
-over: FunctionOver: doc((⍨ into), "(f over g)", "APL's Over, in APL's order: x (f over g) y = f(g(x), g(y)) – the same as g ⍥ f.", "-3 (= over abs) 3 = 1"),
+over: FunctionOver: doc(⍨ into, "(f over g)", "APL's Over, in APL's order: x (f over g) y = f(g(x), g(y)) – the same as g ⍥ f.", "-3 (= over abs) 3 = 1"),
 Φ: phi: fork: doc(FunctionFork, "Φ(f, g, h)", "Fork: apply the outer tines f and h to the arguments, combine the results with the middle tine g – x Φ(f, g, h) y = g(f(x, y), h(x, y)). A non-function tine is held constant. The Phoenix; dyadically the Pheasant.", "Φ(Σ, ÷, #)([1, 2, 3, 4]) = 2.5"),
 (⊸): before: doc(FunctionBefore, "(f ⊸ g)", "Before: preprocess the left (or only) argument with f, then combine with g – (f ⊸ g)(x, y) = g(f(x), y); (f ⊸ g)(x) = g(f(x), x). A constant binds the left argument. The Violet Starling; dyadically the Zebra Dove.", "(1 ⊸ +)(41) = 42"),
 (⟜): hook: after: doc(FunctionAfter, "(f ⟜ g)", "After: preprocess the right (or only) argument with g, then combine with f – (f ⟜ g)(x, y) = f(x, g(y)); (f ⟜ g)(x) = f(x, g(x)) – the J hook. A constant binds the right argument. The Starling; dyadically the Dove.", "(÷ ⟜ √)(16) = 4"),
@@ -106,7 +106,7 @@ FunctionInverse: inverse: doc({ g | FunctionArity((
     { x | t: f(g(x)), FunctionSolve(g, t, near(x, t)) }
   ))
 }, "x (g ⍢ f) y", "Around: g around f goes into g's world, does f there, and comes back. When g transforms values – log, square – it is g⁻¹(f(g(x), g(y))): Pythagoras is square around +, the geometric mean is log around μ. When g picks out a part – a gather, a row, the diagonal – f edits just that part: (diagonal ⍢ (× ⟜ 0)) zeroes the diagonal. One rule for both: the nearest point to the argument where g lands on f's result. Reads left to right: g, then f, then g undone – (g ⍥ f) ∘ (g ⍣ -1).", "3 (square ⍢ +) 4 = 5"),
-under: FunctionUnder: doc((⍨ around), "x (f under g) y", "APL's Under, in APL's order: f under g is g around f – f done in g's world. Pythagoras is + under square.", "3 (+ under square) 4 = 5"),
+under: FunctionUnder: doc(⍨ around, "x (f under g) y", "APL's Under, in APL's order: f under g is g around f – f done in g's world. Pythagoras is + under square.", "3 (+ under square) 4 = 5"),
 (≡): match: Match: doc({ a, b |
   cond(
     guard(isTensor(a) ∧ isTensor(b), {
@@ -150,7 +150,7 @@ erf: TensorErrorFunction: doc({ x |
   s: where(x < 0, -1, 1),
   a: x × s,
   t: 1 ÷ (1 + (0.3275911 × a)),
-  p: ((((1.061405429 × t - 1.453152027) × t + 1.421413741) × t - 0.284496736) × t + 0.254829592) × t,
+  p: 1.061405429 × t - 1.453152027 × t + 1.421413741 × t - 0.284496736 × t + 0.254829592 × t,
   s × (1 - (p × exp(-(a × a))))
 }, "erf(x)", "Gauss error function – the area under a normal curve out to x, saturating at ±1. Smooth and differentiable everywhere.", "erf(1) ≈ 0.8427"),
 
@@ -189,7 +189,7 @@ reverse: TensorReverse: doc({ x, k |
   rA: r_0, rB: r_1,
   { a, b |
     sa: shape(a), split: (#sa) - rA ⌈ 0, cellA: slice(sa, [split]),
-    extra: ((#shape(b)) - rB ⌈ 0) + (rB - (#cellA) ⌈ 0),
+    extra: (#shape(b)) - rB ⌈ 0 + (rB - (#cellA) ⌈ 0),
     f(a ⍴ concat((slice(sa, [0], [split]), fill([extra], 1), cellA)), b)
   }
 }, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "0..<3 (⊗ ×) 0..<3 = [[0, 0, 0], [0, 1, 2], [0, 2, 4]]"),
@@ -247,7 +247,7 @@ alongAxis: TensorAlongAxis: doc({ f, k |
 }, "(f alongAxis k)", "Apply f along axis k: f runs on each fibre parallel to axis k, mapping over the rest. Any function, any axis; a reducer drops the axis, a shape-preserving f keeps it.", "(Σ alongAxis 0)([[1, 2, 3], [4, 5, 6]]) = [5, 7, 9]"),
 
 ; Shape manipulation
-flat: TensorFlatten: doc((⍴ ⟜ [-1]), "flat(x)", "x as one long vector, in reading order.", "flat([[1, 2], [3, 4]]) = [1, 2, 3, 4]"),
+flat: TensorFlatten: doc(⍴ ⟜ [-1], "flat(x)", "x as one long vector, in reading order.", "flat([[1, 2], [3, 4]]) = [1, 2, 3, 4]"),
 squeeze: TensorSqueeze: doc({ x |
   s: shape(x),
   newShape: mask(s, s ≠ 1),
@@ -345,7 +345,7 @@ cbrt: doc(TensorCubeRoot, "cbrt(x)", "The cube root of each element – negative
 hypot: TensorHypotenuse: doc({ x, y |
   ; scaled by the larger side, so squaring never overflows
   m: abs(x) ⌈ abs(y), s: where(m = 0, 1, m),
-  m × √((x ÷ s) × (x ÷ s) + ((y ÷ s) × (y ÷ s)))
+  m × √(x ÷ s × (x ÷ s) + (y ÷ s × (y ÷ s)))
 }, "hypot(x, y)", "The length of the hypotenuse: √(x² + y²), element by element, without overflowing for large sides.", "hypot(3, 4) = 5"),
 TensorLogarithm: doc({ x, b | TensorNaturalLogarithm(x) ÷ TensorNaturalLogarithm(b) }, "TensorLogarithm(x, base)", "The logarithm of x in the given base.", "TensorLogarithm(8, 2) = 3"),
 log: doc(FunctionArity((TensorLogarithm, TensorNaturalLogarithm)), "log(x, base?)", "The natural logarithm of x; with a base, the logarithm of x in that base.", "8 log 2 = 3"),
@@ -383,8 +383,8 @@ acos: doc(TensorCosineInverse, "acos(x)", "The angle whose cosine is x, in radia
 atan: doc(TensorTangentInverse, "atan(x)", "The angle whose tangent is x, in radians.", "atan(1) ≈ 0.7854"),
 atan2: doc(TensorArcTangent2, "atan2(y, x)", "The angle of the point (x, y) from the positive x axis, in radians – in all four quadrants.", "atan2(1, 1) ≈ 0.7854"),
 ; through expm1: exp(x) - exp(-x) cancels to noise near 0
-sinh: TensorSineHyperbolic: doc({ x | (expm1(x) - expm1(-x)) ÷ 2 }, "sinh(x)", "The hyperbolic sine, (eˣ - e⁻ˣ) ÷ 2.", "sinh(0) = 0"),
-cosh: TensorCosineHyperbolic: doc({ x | (exp(x) + exp(-x)) ÷ 2 }, "cosh(x)", "The hyperbolic cosine, (eˣ + e⁻ˣ) ÷ 2 – the shape of a hanging chain.", "cosh(0) = 1"),
+sinh: TensorSineHyperbolic: doc({ x | expm1(x) - expm1(-x) ÷ 2 }, "sinh(x)", "The hyperbolic sine, (eˣ - e⁻ˣ) ÷ 2.", "sinh(0) = 0"),
+cosh: TensorCosineHyperbolic: doc({ x | exp(x) + exp(-x) ÷ 2 }, "cosh(x)", "The hyperbolic cosine, (eˣ + e⁻ˣ) ÷ 2 – the shape of a hanging chain.", "cosh(0) = 1"),
 tanh: doc(TensorTangentHyperbolic, "tanh(x)", "The hyperbolic tangent – an S-curve from -1 to 1.", "tanh(0) = 0"),
 asinh: doc(TensorSineHyperbolicInverse, "asinh(x)", "The inverse hyperbolic sine.", "asinh(0) = 0"),
 acosh: doc(TensorCosineHyperbolicInverse, "acosh(x)", "The inverse hyperbolic cosine, for x ≥ 1.", "acosh(1) = 0"),
@@ -406,18 +406,18 @@ mish: TensorMish: doc({ x | x × tanh(softplus(x)) }, "mish(x)", "A self-gated a
 (≠): (!=): notEqual: TensorNotEqual: doc({ x, y | 1 - (x = y) }, "x ≠ y", "Element-wise inequality: 1 where the operands differ, else 0; shapes broadcast.", "([1, 2, 3] ≠ 2) = [1, 0, 1]"),
 
 ; Logical
-(∨): or: TensorOr: doc({ x, y | (x<0 ⌈ 0<x) ⌈ (y<0 ⌈ 0<y) }, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]"),
-(∧): and: TensorAnd: doc({ x, y | (x<0 ⌈ 0<x) × (y<0 ⌈ 0<y) }, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]"),
+(∨): or: TensorOr: doc({ x, y | x<0 ⌈ 0<x ⌈ (y<0 ⌈ 0<y) }, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]"),
+(∧): and: TensorAnd: doc({ x, y | x<0 ⌈ 0<x × (y<0 ⌈ 0<y) }, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]"),
 (¬): not: TensorNot: doc({ x | 1 - (x<0 ⌈ 0<x) }, "¬x", "Logical not: 1 where x is zero, else 0.", "(¬[0, 2]) = [1, 0]"),
-(⊻): xor: TensorXor: doc({ x, y | abs((x<0 ⌈ 0<x) - (y<0 ⌈ 0<y)) }, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]"),
+(⊻): xor: TensorXor: doc({ x, y | abs(x<0 ⌈ 0<x - (y<0 ⌈ 0<y)) }, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]"),
 (⍲): nand: TensorNand: doc({ a, b | ¬(a ∧ b) }, "x ⍲ y", "Element-wise nand: 0 where both operands are nonzero, else 1. Functionally complete – every gate builds from it.", "[0, 1, 1] ⍲ [1, 1, 0] = [1, 0, 1]"),
 (⍱): nor: TensorNor: doc({ a, b | ¬(a ∨ b) }, "x ⍱ y", "Element-wise nor: 1 where both operands are zero, else 0. Functionally complete, like ⍲.", "[0, 1, 0] ⍱ [0, 1, 1] = [1, 0, 0]"),
 
 ; Reductions
 (∇): grad: doc(TensorGradient, "∇f", "Gradient of a function: ∇(f)(x) is df/dx at x. Works on any function of smooth numeric ops — reshape and indexing pass through; argmax/round/comparisons read as constant (zero gradient). Nests: ∇(∇(f)) is the second derivative. With no argument, ∇(loss)() differentiates with respect to the ~ variables loss reads and gives (value, variables, gradients) – what an optimizer steps.", "(∇{ x | x^2 })(3) = 6"),
-(Σ): sum: doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6"),
+Σ: sum: doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6"),
 reduce: doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so `x reduce ⌈` is max.", "1..<10 reduce + = 45"),
-(Π): prod: doc(TensorProduct, "Π(x, axis?)", "The product of the elements, over one axis or the whole tensor.", "Π([1, 2, 3, 4]) = 24"),
+Π: prod: doc(TensorProduct, "Π(x, axis?)", "The product of the elements, over one axis or the whole tensor.", "Π([1, 2, 3, 4]) = 24"),
 scan: TensorScan: doc({ x, f, k |
   ax: cond(guard(identical(k, ◌), { -1 }), { k }),
   y: moveaxis(x, ax, 0), n: #y,
@@ -431,7 +431,7 @@ scan: TensorScan: doc({ x, f, k |
   },
   moveaxis((pass ⍣ cond(guard(n ≤ 1, { 0 }), { ceil(log2(n)) }))((y, 1))_0, 0, ax)
 }, "x scan f", "The running fold: element i combines elements 0 … i with f, along the last axis or the one given – with + a cumulative sum, with ⌈ a running maximum. f must be associative.", "[1, 2, 3, 4] scan + = [1, 3, 6, 10]"),
-(μ): mean: TensorMean: doc({ x, k, keep | s: Σ(x, k, keep), s × (Π(shape(s)) ÷ Π(shape(x))) }, "μ(x, axis?)", "The mean of the elements, over one axis or the whole tensor.", "μ([1, 2, 3, 6]) = 3"),
+μ: mean: TensorMean: doc({ x, k, keep | s: Σ(x, k, keep), s × (Π(shape(s)) ÷ Π(shape(x))) }, "μ(x, axis?)", "The mean of the elements, over one axis or the whole tensor.", "μ([1, 2, 3, 6]) = 3"),
 
 ; Min/max: the word reduces (whole tensor, or one axis like sum) – so
 ; max(x, axis) works. The glyph is APL's ⌈/⌊: ceiling/floor on one tensor,
@@ -499,7 +499,7 @@ mask: TensorMask: doc({ x, keep |
     guard((#shape(keep)) > 1, { Error(StringConcat("mask: the mask must be a vector, got a tensor ", String(shape(keep)), " – flatten it, or index with `_`")) }),
     {
       n: #x, k: keep<0 ⌈ 0<keep,
-      x _ slice(⍋(where(k, 0..<n, n + 0..<n)), [0], [Σ(k)])
+      x _ slice(⍋where(k, 0..<n, n + 0..<n), [0], [Σ(k)])
     }
   )
 }, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]"),
@@ -551,7 +551,7 @@ einsum: doc(TensorEinsum, "einsum(spec, a, b, …)", "Einstein summation: name t
 randn: TensorRandomNormal: doc({ shape | √(-2 × log(1 - ⚄(shape))) × cos(2×π × ⚄(shape)) }, "randn(shape)", "A tensor of the given shape, each element drawn from the standard normal distribution – mean 0, spread 1. A fresh draw every call.", "randn([2, 2])"),
 linspace: TensorLinearSpace: doc({ r, n |
   k: round(n) ⌈ 0, a: r_0, b: r_1, i: 0..<k,
-  cond(guard(k = 1, { [a] }), { where(i = k-1, b, a + ((b - a) × (i ÷ (k-1)))) })
+  cond(guard(k = 1, { [a] }), { where(i = k-1, b, a + (b - a × (i ÷ k-1))) })
 }, "linspace([a, b], n)", "n evenly spaced numbers from a to b, both ends included.", "linspace([0, 1], 5) = [0, 0.25, 0.5, 0.75, 1]"),
 fill: TensorFill: doc({ shape, v | broadcast(v, shape) }, "fill(shape, v)", "A tensor of the given shape with every element v.", "fill([2, 2], 7) = [[7, 7], [7, 7]]"),
 stack: doc(TensorStack, "stack((a, b, …), axis?)", "Tensors of one shape as one tensor, along a new axis.", "stack(([1, 2], [3, 4])) = [[1, 2], [3, 4]]"),
@@ -592,9 +592,9 @@ draw: DrawShape: doc({ shape, color, width |
     d: shape(pixels(picture)),
     ; across the stroke a pixel spans d-0.5 to d+0.5 and the stroke -r to r: the overlap
     ; is how much of the pixel it covers
-    cover: unsqueeze((d+0.5 ⌊ r) - (d-0.5 ⌈ (-r)) ⌈ 0, -1),
+    cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ (-r)) ⌈ 0, -1),
     ; mixed as light mixes – in linear intensity, not in the screen's gamma-encoded values
-    (picture^γ × (1 - cover) + color^γ×cover) ^ (1 ÷ γ)
+    picture^γ × 1-cover + color^γ×cover ^ 1÷γ
   }
 }, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width pixels wide in color, its edges antialiased.", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
 
@@ -671,7 +671,7 @@ clipNorm: OptimizerClipNorm: doc({ rule, c | { g, v, s, t, lr, norm | rule(g × 
   "clipNorm(rule, c)", "A rule with its gradient clipped: scaled so its norm over every variable is at most c.", "opt: optimizer(adamInit, clipNorm(adamRule(0), 1), 0.01)"),
 ; schedules – functions of the step t, for lr
 warmup: ScheduleWarmup: doc({ peak, steps | { t | peak × (t ÷ steps ⌊ 1) } }, "warmup(peak, steps)", "A learning rate rising linearly to peak over the first steps, then staying.", "opt: adam(warmup(0.01, 100))"),
-cosine: ScheduleCosine: doc({ peak, steps | { t | peak × 0.5 × (1 + cos(π × ((t ⌊ steps) ÷ steps))) } }, "cosine(peak, steps)", "A learning rate falling from peak to 0 along half a cosine over steps, then staying at 0.", "opt: adam(cosine(0.01, 1000))"),
+cosine: ScheduleCosine: doc({ peak, steps | { t | peak × 0.5 × (1 + cos(π × (t ⌊ steps ÷ steps))) } }, "cosine(peak, steps)", "A learning rate falling from peak to 0 along half a cosine over steps, then staying at 0.", "opt: adam(cosine(0.01, 1000))"),
 
 sgd: OptimizerSGD: doc({ lr, a, b |
   momentum: TensorOptimizerArg(a, 0),
@@ -723,7 +723,7 @@ radam: OptimizerRAdam: doc({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
   ρmax: 2 ÷ 0.001 - 1, ρ: ρmax - (2 × t × 0.999^t ÷ (1 - 0.999^t)),
   u: cond(
     guard(ρ ≥ 5, {
-      ((ρ - 4) × (ρ - 2) × ρmax ÷ ((ρmax - 4) × (ρmax - 2) × ρ) √ 2)
+      ρ - 4 × (ρ - 2) × ρmax ÷ (ρmax - 4 × (ρmax - 2) × ρ) √ 2
         × (ListGet(q, 2) ÷ ((√ListGet(q, 3)) + 1e-8))
     }),
     { ListGet(q, 2) }),
@@ -745,7 +745,7 @@ yogi: OptimizerYogi: doc({ lr, a | optimizer({ v | (zerosLike(v), fill(shape(v),
 }, lr, a) }, "yogi(lr, vars?)", "Yogi: Adam whose second moment moves additively, so it cannot blow up or vanish suddenly.", "opt: yogi(0.01)"),
 lion: OptimizerLion: doc({ lr, a, b | wd: TensorOptimizerArg(a, 1e-3), optimizer({ v | (zerosLike(v),) }, { g, v, s, t, lr |
   c: ListGet(s, 0) × 0.9 + (g × 0.1),
-  (v + ((sign(c) + (v × wd)) × (-lr)), (ListGet(s, 0) × 0.99 + (g × 0.01),))
+  (v + (sign(c) + (v × wd) × (-lr)), (ListGet(s, 0) × 0.99 + (g × 0.01),))
 }, lr, TensorOptimizerVars(a, b)) }, "lion(lr, weightDecay?, vars?)", "Lion: the sign of an interpolated momentum – every step has the same size, lr; found by program search.", "opt: lion(0.001)"),
 lamb: OptimizerLAMB: doc({ lr, a, b | wd: TensorOptimizerArg(a, 0), optimizer(adamInit, { g, v, s, t, lr |
   q: TensorAdamMoments(g, s, t, 0.9, 0.999),
@@ -762,7 +762,7 @@ TensorNewtonSchulz: { G |
   X1: X0 ÷ (norm(X0) + 1e-7),
   step: { X |
     A: X matmul transpose(X),
-    B: A × -4.775 + ((A matmul A) × 2.0315),
+    B: A × -4.775 + (A matmul A × 2.0315),
     X × 3.4445 + (B matmul X)
   },
   X: (step ⍣ 5)(X1),
