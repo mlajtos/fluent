@@ -604,7 +604,8 @@ describe("language fixes", () => {
     expect(message("sin(◌)")).toContain("◌")
   })
   test("an unknown name reached through a native's call is an Error, never ◌", () => {
-    expect(message("ListMap((oops, 1), (⍨ +))")).toContain("unknown name: oops")
+    const [first] = run("ListMap((oops, 1), (⍨ +))") as Value[]
+    expect((first as Error).message).toContain("unknown name: oops")
     expect(message("((⍨ +) ⍣ 1)(oops)")).toContain("unknown name: oops")
   })
   test("call arguments read the bindings made among them, in reading order", () => {
