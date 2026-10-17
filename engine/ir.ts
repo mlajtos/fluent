@@ -99,8 +99,9 @@ const joinShape = (a: readonly number[], b: readonly number[]): number[] => {
   for (let i = 0; i < n; i++) { const x = a[a.length - n + i] ?? 1, y = b[b.length - n + i] ?? 1; if (x !== y && x !== 1 && y !== 1) err(`elementwise: ${sh(a)} vs ${sh(b)}`); r.push(x === 1 ? y : x); }   // 1 stretches, even to 0
   return r;
 };
-const bc2 = (x: UOp, y: UOp): [UOp, UOp] => { const s = joinShape(x.shape, y.shape); const f = (u: UOp) => sameShape(u.shape, s) ? u : broadcastTo(u, s); return [f(x), f(y)]; };
-const elem = (op: Op) => (x: UOp, y: UOp): UOp => { const [a, b] = bc2(x, y); return node(op, [a, b], null, a.shape); };
+// every operand broadcast to the shape they share
+const bc = (...xs: UOp[]): UOp[] => { const s = xs.map((u) => u.shape).reduce(joinShape); return xs.map((u) => (sameShape(u.shape, s) ? u : broadcastTo(u, s))); };
+const elem = (op: Op) => (x: UOp, y: UOp): UOp => { const s = bc(x, y); return node(op, s, null, s[0]!.shape); };
 export const add = elem("ADD");
 export const mul = elem("MULTIPLY");
 export const cmplt = elem("LESS_THAN");                                       // a < b → 1.0 else 0.0; ∂ = 0
@@ -109,22 +110,12 @@ export const recip = un("RECIPROCAL"); export const exp = un("EXP"); export cons
 
 // ---- the math table: one row per function, its JS and its WGSL ------------------
 // (derivatives live in grad.ts's JVP table, keyed by the same name)
-export const MATHS: Record<string, { arity: 1 | 2; js: (...a: number[]) => number; wgsl: (...a: string[]) => string }> = {
-  sin: { arity: 1, js: Math.sin, wgsl: (x) => `sin(${x})` },
-  cos: { arity: 1, js: Math.cos, wgsl: (x) => `cos(${x})` },
-  tanh: { arity: 1, js: Math.tanh, wgsl: (x) => `tanh(${x})` },
-  asin: { arity: 1, js: Math.asin, wgsl: (x) => `asin(${x})` },
-  acos: { arity: 1, js: Math.acos, wgsl: (x) => `acos(${x})` },
-  atan: { arity: 1, js: Math.atan, wgsl: (x) => `atan(${x})` },
-  asinh: { arity: 1, js: Math.asinh, wgsl: (x) => `asinh(${x})` },
-  acosh: { arity: 1, js: Math.acosh, wgsl: (x) => `acosh(${x})` },
-  atanh: { arity: 1, js: Math.atanh, wgsl: (x) => `atanh(${x})` },
-  floor: { arity: 1, js: Math.floor, wgsl: (x) => `floor(${x})` },
-  ceil: { arity: 1, js: Math.ceil, wgsl: (x) => `ceil(${x})` },
-  trunc: { arity: 1, js: Math.trunc, wgsl: (x) => `trunc(${x})` },
+type MathRow = { arity: 1 | 2; js: (...a: number[]) => number; wgsl: (...a: string[]) => string };
+const same = (fn: string): [string, MathRow] => [fn, { arity: 1, js: (Math as unknown as Record<string, (x: number) => number>)[fn]!, wgsl: (x) => `${fn}(${x})` }];
+export const MATHS: Record<string, MathRow> = {
+  ...Object.fromEntries(["sin", "cos", "tanh", "asin", "acos", "atan", "asinh", "acosh", "atanh", "floor", "ceil", "trunc", "abs"].map(same)),
   round: { arity: 1, js: (x) => { const r = Math.round(x); return r - x === 0.5 && r % 2 !== 0 ? r - 1 : r; }, wgsl: (x) => `round(${x})` },   // half to even
   sign: { arity: 1, js: (x) => (x > 0 ? 1 : x < 0 ? -1 : x), wgsl: (x) => `sign(${x})` },
-  abs: { arity: 1, js: Math.abs, wgsl: (x) => `abs(${x})` },
   isnan: { arity: 1, js: (x) => (x !== x ? 1 : 0), wgsl: (x) => `select(0.0, 1.0, (bitcast<u32>(${x}) & 0x7fffffffu) > 0x7f800000u)` },   // WGSL may fold x != x away
   expm1: { arity: 1, js: Math.expm1, wgsl: (x) => `select(exp(${x}) - 1.0, ${x} * (1.0 + ${x} * (0.5 + ${x} / 6.0)), abs(${x}) < 1e-3)` },
   log1p: { arity: 1, js: Math.log1p, wgsl: (x) => `select(log(1.0 + ${x}), ${x} * (1.0 - ${x} * (0.5 - ${x} / 3.0)), abs(${x}) < 1e-3)` },
@@ -140,9 +131,8 @@ export const MATHS: Record<string, { arity: 1 | 2; js: (...a: number[]) => numbe
 export const math = (fn: string, ...xs: UOp[]): UOp => {
   const m = MATHS[fn] ?? err(`math: unknown function ${fn}`);
   if (xs.length !== m.arity) err(`math: ${fn} takes ${m.arity} operand${m.arity > 1 ? "s" : ""}`);
-  if (xs.length === 1) return node("MATH", xs, { fn }, xs[0]!.shape);
-  const [a, b] = bc2(xs[0]!, xs[1]!);
-  return node("MATH", [a, b], { fn }, a.shape);
+  const s = bc(...xs);
+  return node("MATH", s, { fn }, s[0]!.shape);
 };
 
 // A random tensor's element i is hash(seed, i) — no state, no buffer of its own, so it
@@ -168,10 +158,7 @@ export const WGSL_HASH_UNIFORM = `fn hashUniform(seed: u32, i: u32) -> f32 {
 // element i is i: computed where it is read, like a random draw — ranges, one-hot rows and
 // index tables never upload an array
 export const iota = (n: number): UOp => node("IOTA", [], null, [n]);
-export const where = (c: UOp, a: UOp, b: UOp): UOp => {
-  const s = joinShape(joinShape(c.shape, a.shape), b.shape), f = (u: UOp) => sameShape(u.shape, s) ? u : broadcastTo(u, s);
-  return node("WHERE", [f(c), f(a), f(b)], null, s);
-};
+export const where = (c: UOp, a: UOp, b: UOp): UOp => { const s = bc(c, a, b); return node("WHERE", s, null, s[0]!.shape); };
 
 // ---- reduce ------------------------------------------------------------------
 export const reduceAxis = (a: UOp, axis: number, keepdims = true, op: "ADD" | "MAX" | "MUL" = "ADD"): UOp => {
@@ -300,11 +287,9 @@ export const imod = (a: UOp, b: UOp): UOp => {
   if (a.op === "IMOD" && lo >= 0) { const m = iv(a.src[1]!); if (m !== null && m % c === 0) return imod(a.src[0]!, b); }
   const l = linear(a);
   if (nonneg(l) && (l.k >= c || l.terms.some(([t]) => t >= c))) {           // a coefficient or constant c or more: reduce it mod c
-    {
-      const r = fromLinear({ terms: l.terms.filter(([t]) => t % c !== 0).map(([t, u]) => [t % c, u]), k: l.k % c });
-      const [rl, rh] = bounds(r);
-      return rl >= 0 && rh < c ? r : imod(r, b);
-    }
+    const r = fromLinear({ terms: l.terms.filter(([t]) => t % c !== 0).map(([t, u]) => [t % c, u]), k: l.k % c });
+    const [rl, rh] = bounds(r);
+    return rl >= 0 && rh < c ? r : imod(r, b);
   }
   // (g·x + r) % (g·m) is g·(x % m) + r
   const s = nonneg(l) ? shared(l, c) : null;

@@ -53,13 +53,22 @@ const WGSL: Syntax = {
   named: (uses, size) => uses > 1 && size > 12,
 };
 
+// n inputs a0…, and the output o after them
 const binds = (n: number): string =>
-  Array.from({ length: n }, (_, i) => `@group(0) @binding(${i}) var<storage, read> a${i}: array<f32>;`).join("\n");
+  [...Array.from({ length: n }, (_, i) => `@group(0) @binding(${i}) var<storage, read> a${i}: array<f32>;`), `@group(0) @binding(${n}) var<storage, read_write> o: array<f32>;`].join("\n");
+// a CHAIN of pure ADD-ACCs (a folded weight gradient: sum over w of sum over t) is one
+// flat K; each range is its mixed-radix digit of flat k
+const addChain = (v: UOp): { chain: UOp[]; inner: UOp } => {
+  const chain: UOp[] = [];
+  while (v.op === "ACC" && (v.arg as { op: string }).op === "ADD") { chain.push(v.src[0]!); v = v.src[1]!; }
+  return { chain, inner: v };
+};
+const extent = (r: UOp): number => (r.arg as { extent: number }).extent;
 
 // One thread per output element. Workgroups of 256 for anything that fills them; a grid
 // beyond 65,535 workgroups on one axis folds into two (the browser drops the whole command
 // buffer otherwise).
-export function printFused(u: UOp, nIn: number): { wgsl: string; dispatch: number[] } {
+export function printFused(u: UOp, nIn: number): Printed {
   const n = Math.max(numel(u.shape), 1);
   const WG = n >= 256 ? 256 : 64;
   const groups = Math.ceil(n / WG), GX = Math.min(groups, 32768), ny = Math.ceil(groups / GX);
@@ -68,7 +77,6 @@ export function printFused(u: UOp, nIn: number): { wgsl: string; dispatch: numbe
   const body = render(u.src[1]!, c);
   return {
     wgsl: `${binds(nIn)}
-@group(0) @binding(${nIn}) var<storage, read_write> o: array<f32>;
 @compute @workgroup_size(${WG})
 fn main(@builtin(global_invocation_id) g: vec3<u32>) {
   let i = ${ny > 1 ? `g.y * ${GX * WG}u + g.x` : "g.x"}; if (i >= ${n}u) { return; }
@@ -86,15 +94,11 @@ ${c.scopes[0]!.join("\n")}
 // variables: the index simplifier drops a variable the index does not read, and a read
 // that still names both is declined (a wrong assumption here is a silent miscompile).
 const VALUE = new Set<UOp["op"]>(["CONSTANT", "ADD", "MULTIPLY", "RECIPROCAL", "EXP", "LOG", "SQRT", "LESS_THAN", "WHERE", "MATH"]);
-const extent = (r: UOp): number => (r.arg as { extent: number }).extent;
 const idxKey = (v: UOp): string => `${v.op}${v.op === "RANGE" ? v.id : v.op === "ICONST" ? v.arg : ""}(${v.src.map(idxKey)})`;
-interface SplitK { wgsl: string; dispatch: number[]; pShape: number[]; wgsl2: string; dispatch2: number[] }
-function tileNest(u: UOp, nIn: number): { wgsl: string; dispatch: number[]; split?: SplitK } | null {
-  // a CHAIN of pure ADD-ACCs (a folded weight gradient: sum over w of sum over t)
-  // flattens to one K; each range is its mixed-radix digit of flat k
-  const chain: UOp[] = [];
-  let inner = u.src[1]!;
-  while (inner.op === "ACC" && (inner.arg as { op: string }).op === "ADD") { chain.push(inner.src[0]!); inner = inner.src[1]!; }
+// a kernel's text and grid; a split-K tile adds the partials' shape and the kernel summing them
+interface Printed { wgsl: string; dispatch: number[]; pShape?: number[]; wgsl2?: string; dispatch2?: number[] }
+function tileNest(u: UOp, nIn: number): Printed | null {
+  const { chain, inner } = addChain(u.src[1]!);
   if (!chain.length) return null;
   // the body may be a SUM of terms (Σ-linearity merges ∇'s fork terms), each staged
   // through its own slab pair
@@ -172,7 +176,6 @@ function tileNest(u: UOp, nIn: number): { wgsl: string; dispatch: number[]; spli
     for (let i = 0; i < RT; i++) for (let jj = 0; jj < RT; jj++)
       writes.push(`  if ((rowB + l.y * ${RT}u + ${i}u) < ${M}u && (colB + l.x * ${RT}u + ${jj}u) < ${N}u) { ${outIdx(`(rowB + l.y * ${RT}u + ${i}u)`, `(colB + l.x * ${RT}u + ${jj}u)`, `acc${i}${jj}`)} }`);
     return `${binds(nIn)}
-@group(0) @binding(${nIn}) var<storage, read_write> o: array<f32>;
 ${slabDecls}
 @compute @workgroup_size(${L}, ${L})
 fn main(@builtin(local_invocation_id) l: vec3<u32>, @builtin(workgroup_id) w: vec3<u32>) {
@@ -192,13 +195,10 @@ ${writes.join("\n")}
   };
   if (G === 1) return { wgsl: program("0u", `${steps}u`, (r, c, a) => `o[${r} * ${N}u + ${c}] = ${a};`), dispatch: [GX, GY] };
   return {
-    wgsl: "", dispatch: [],
-    split: {
-      wgsl: program(`w.z * ${SP}u`, `min(${steps}u, (w.z + 1u) * ${SP}u)`, (r, c, a) => `o[w.z * ${MN}u + ${r} * ${N}u + ${c}] = ${a};`),
-      dispatch: [GX, GY, G],
-      pShape: [G, M, N],
-      wgsl2: `${binds(1)}
-@group(0) @binding(1) var<storage, read_write> o: array<f32>;
+    wgsl: program(`w.z * ${SP}u`, `min(${steps}u, (w.z + 1u) * ${SP}u)`, (r, c, a) => `o[w.z * ${MN}u + ${r} * ${N}u + ${c}] = ${a};`),
+    dispatch: [GX, GY, G],
+    pShape: [G, M, N],
+    wgsl2: `${binds(1)}
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) g: vec3<u32>) {
   let i = g.x; if (i >= ${MN}u) { return; }
@@ -206,8 +206,7 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>) {
   for (var z = 0u; z < ${G}u; z = z + 1u) { acc = acc + a0[z * ${MN}u + i]; }
   o[i] = acc;
 }`,
-      dispatch2: [Math.ceil(MN / 64)],
-    },
+    dispatch2: [Math.ceil(MN / 64)],
   };
 }
 
@@ -218,25 +217,15 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>) {
 // threads split the K-loop and tree-reduce in shared memory. It matches the NEST, not a
 // name — matvec, rmsNorm's variance, softmax's sum all take it.
 const GEMV_WG = 128;
-function coopGemv(u: UOp, nIn: number): { wgsl: string; dispatch: number[] } | null {
-  const gid = u.src[0]!, value = u.src[1]!;
-  if (value.op !== "ACC" || (value.arg as { op: string }).op !== "ADD") return null;   // one ADD-reduce IS the whole value (no epilogue)
-  // a CHAIN of pure ADD-reduces (a weight gradient's sum over w of sum over t) flattens
-  // into ONE split K by mixed-radix index decomposition
-  const chainR: UOp[] = [];
-  let inner: UOp = value;
-  while (inner.op === "ACC" && (inner.arg as { op: string }).op === "ADD") { chainR.push(inner.src[0]!); inner = inner.src[1]! }
-  const extents = chainR.map((r) => (r.arg as { extent: number }).extent);
-  const K = extents.reduce((a, b) => a * b, 1), N = Math.max(numel(u.shape), 1), WG = GEMV_WG;
-  if (K < 4 * WG || N < 2) return null;                                        // too little K to split, or too few outputs — the plain nest is fine
+function coopGemv(u: UOp, nIn: number): Printed | null {
+  const { chain, inner } = addChain(u.src[1]!);                               // one ADD-reduce IS the whole value (no epilogue)
+  const K = chain.reduce((p, r) => p * extent(r), 1), N = Math.max(numel(u.shape), 1), WG = GEMV_WG;
+  if (!chain.length || K < 4 * WG || N < 2) return null;                       // too little K to split, or too few outputs — the plain nest is fine
   const hasAcc = (v: UOp): boolean => v.op === "ACC" || v.src.some(hasAcc);
   if (hasAcc(inner)) return null;                                              // reduces below non-ACC ops: the plain printer's job
-  const names = new Map<number, string>([[gid.id, "gid"]]);
+  const names = new Map<number, string>([[u.src[0]!.id, "gid"]]);
   let stride = K;
-  chainR.forEach((r, i) => {
-    stride /= extents[i]!;
-    names.set(r.id, chainR.length === 1 ? "k" : `(((k) / ${stride}u) % ${extents[i]}u)`);
-  });
+  for (const r of chain) { stride /= extent(r); names.set(r.id, chain.length === 1 ? "k" : `(((k) / ${stride}u) % ${extent(r)}u)`); }
   // CSE lets are load-bearing here: a flattened nested reduce reads through mixed-radix
   // index expressions that would otherwise duplicate combinatorially
   const c = nest(WGSL, names);
@@ -245,7 +234,6 @@ function coopGemv(u: UOp, nIn: number): { wgsl: string; dispatch: number[] } | n
   const GX = Math.min(N, 32768);                                               // 2-D workgroup grid fold width
   return {
     wgsl: `${binds(nIn)}
-@group(0) @binding(${nIn}) var<storage, read_write> o: array<f32>;
 var<workgroup> part: array<f32, ${WG}>;
 @compute @workgroup_size(${WG})
 fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid: vec3<u32>) {
@@ -278,9 +266,8 @@ export function lowerMany(roots: UOp[]): UOp[] {
       return node("KERNEL", src, { wgsl: withHelpers(wgsl), dispatch }, shape);
     };
     const k = tileNest(u, ins.length) ?? coopGemv(u, ins.length) ?? printFused(u, ins.length);
-    const sp = (k as { split?: SplitK }).split;
     // split-K tile: partials kernel + G-sum kernel, chained
-    return sp ? kernel([kernel(ins, sp.wgsl, sp.dispatch, sp.pShape)], sp.wgsl2, sp.dispatch2, u.shape) : kernel(ins, k.wgsl, k.dispatch, u.shape);
+    return k.wgsl2 ? kernel([kernel(ins, k.wgsl, k.dispatch, k.pShape!)], k.wgsl2, k.dispatch2!, u.shape) : kernel(ins, k.wgsl, k.dispatch, u.shape);
   }]);
 }
 

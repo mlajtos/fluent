@@ -55,4 +55,3 @@ export function graphRewriteMany(roots: UOp[], rules: Rule[]): UOp[] {
   for (const r of roots) run(r);
   return roots.map((r) => done.get(r.id)!);
 }
-export const graphRewrite = (root: UOp, rules: Rule[]): UOp => graphRewriteMany([root], rules)[0]!;

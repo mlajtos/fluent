@@ -13,24 +13,29 @@ const scale = (coef: UOp, d: UOp | null): UOp | null => d && mul(coef, d);
 const plus = (a: UOp | null, b: UOp | null): UOp | null => (a && b ? add(a, b) : a ?? b ?? null);
 const neg = (a: UOp): UOp => mul(a, konst(-1));
 const sq = (a: UOp): UOp => mul(a, a);
-// d f(x) = f′(x)·dx per MATHS row; a missing row is a function that is flat almost everywhere
-const MATH_JVP: Record<string, (u: UOp, x: UOp) => UOp> = {
-  sin: (_u, x) => math("cos", x),
-  cos: (_u, x) => neg(math("sin", x)),
-  tanh: (u) => add(konst(1), neg(sq(u))),
-  asin: (_u, x) => recip(sqrt(add(konst(1), neg(sq(x))))),
-  acos: (_u, x) => neg(recip(sqrt(add(konst(1), neg(sq(x)))))),
-  atan: (_u, x) => recip(add(konst(1), sq(x))),
-  asinh: (_u, x) => recip(sqrt(add(sq(x), konst(1)))),
-  acosh: (_u, x) => recip(sqrt(add(sq(x), konst(-1)))),
-  atanh: (_u, x) => recip(add(konst(1), neg(sq(x)))),
-  abs: (_u, x) => math("sign", x),
-  expm1: (u) => add(u, konst(1)),
-  log1p: (_u, x) => recip(add(konst(1), x)),
-  cbrt: (u) => recip(mul(konst(3), sq(u))),
+// df = Σ ∂f/∂xᵢ·dxᵢ per MATHS row, the partials listed in operand order; a missing row is
+// a function that is flat almost everywhere
+const MATH_JVP: Record<string, (u: UOp, x: UOp, y: UOp) => UOp[]> = {
+  sin: (_u, x) => [math("cos", x)],
+  cos: (_u, x) => [neg(math("sin", x))],
+  tanh: (u) => [add(konst(1), neg(sq(u)))],
+  asin: (_u, x) => [recip(sqrt(add(konst(1), neg(sq(x)))))],
+  acos: (_u, x) => [neg(recip(sqrt(add(konst(1), neg(sq(x))))))],
+  atan: (_u, x) => [recip(add(konst(1), sq(x)))],
+  asinh: (_u, x) => [recip(sqrt(add(sq(x), konst(1))))],
+  acosh: (_u, x) => [recip(sqrt(add(sq(x), konst(-1))))],
+  atanh: (_u, x) => [recip(add(konst(1), neg(sq(x))))],
+  abs: (_u, x) => [math("sign", x)],
+  expm1: (u) => [add(u, konst(1))],
+  log1p: (_u, x) => [recip(add(konst(1), x))],
+  cbrt: (u) => [recip(mul(konst(3), sq(u)))],
+  atan2: (_u, y, x) => { const r = recip(add(sq(x), sq(y))); return [mul(x, r), neg(mul(y, r))]; },   // (x·dy − y·dx) ÷ (x² + y²)
+  div: (u, _x, y) => { const r = recip(y); return [r, neg(mul(u, r))]; },                            // dx ÷ y − (x ÷ y)·dy ÷ y
+  pow: (u, x, y) => [mul(y, math("pow", x, add(y, konst(-1)))), mul(u, log(x))],                    // y·xʸ⁻¹·dx + xʸ·ln x·dy
 };
 
 type Jvp = (u: UOp, d: (UOp | null)[]) => UOp | null;
+const linear: Jvp = (u, [a = null]) => a && node(u.op, [a], u.arg, u.shape);   // a view of the tangent, the same view
 export const JVP: Partial<Record<UOp["op"], Jvp>> = {
   CONSTANT: () => null, BUFFER: () => null, DETACH: () => null, LESS_THAN: () => null, RANDOM: () => null, IOTA: () => null,
   ADD: (_u, [a = null, b = null]) => plus(a, b),
@@ -40,23 +45,7 @@ export const JVP: Partial<Record<UOp["op"], Jvp>> = {
   LOG: (u, [a = null]) => scale(recip(u.src[0]!), a),
   SQRT: (u, [a = null]) => scale(mul(konst(0.5), recip(u)), a),               // da/(2√x) — reads its own output
   WHERE: (u, [, a = null, b = null]) => (a || b ? where(u.src[0]!, a ?? zeros(u.shape), b ?? zeros(u.shape)) : null),
-  MATH: (u, [a = null, b = null]) => {
-    const fn = (u.arg as { fn: string }).fn;
-    if (fn === "atan2") {                                                      // d atan2(y, x) = (x·dy − y·dx) ÷ (x² + y²)
-      const [y, x] = u.src as [UOp, UOp], r = recip(add(sq(x), sq(y)));
-      return plus(scale(mul(x, r), a), scale(neg(mul(y, r)), b));
-    }
-    if (fn === "div") {                                                        // d(x ÷ y) = dx ÷ y − (x ÷ y)·dy ÷ y
-      const r = recip(u.src[1]!);
-      return plus(scale(r, a), scale(neg(mul(u, r)), b));
-    }
-    if (fn === "pow") {                                                        // d(xʸ) = y·xʸ⁻¹·dx + xʸ·ln x·dy
-      const [x, y] = u.src as [UOp, UOp];
-      return plus(scale(mul(y, math("pow", x, add(y, konst(-1)))), a), scale(mul(u, log(x)), b));
-    }
-    const rule = MATH_JVP[fn];
-    return rule ? scale(rule(u, u.src[0]!), a) : null;
-  },
+  MATH: (u, d) => (MATH_JVP[(u.arg as { fn: string }).fn]?.(u, u.src[0]!, u.src[1]!) ?? []).reduce<UOp | null>((t, c, i) => plus(t, scale(c, d[i] ?? null)), null),
   REDUCE: (u, [a = null]) => {
     if (!a) return null;
     const g = u.arg as { axis: number; keepdims: boolean; op: string };
@@ -69,12 +58,7 @@ export const JVP: Partial<Record<UOp["op"], Jvp>> = {
     const ties = reduceAxis(isMax, g.axis, g.keepdims);                       // tied maxima share the tangent evenly
     return mul(reduceAxis(mul(a, isMax), g.axis, g.keepdims), recip(ties));
   },
-  BROADCAST: (u, [a = null]) => a && node("BROADCAST", [a], u.arg, u.shape),
-  PERMUTE: (u, [a = null]) => a && node("PERMUTE", [a], u.arg, u.shape),
-  RESHAPE: (u, [a = null]) => a && node("RESHAPE", [a], u.arg, u.shape),
-  SLICE: (u, [a = null]) => a && node("SLICE", [a], u.arg, u.shape),
-  PAD: (u, [a = null]) => a && node("PAD", [a], u.arg, u.shape),
-  WINDOW: (u, [a = null]) => a && node("WINDOW", [a], u.arg, u.shape),
+  BROADCAST: linear, PERMUTE: linear, RESHAPE: linear, SLICE: linear, PAD: linear, WINDOW: linear,
   GATHER: (u, [t = null]) => t && node("GATHER", [t, u.src[1]!], u.arg, u.shape),          // linear in the table; idx is primal
   SCATTER_ADD: (u, [, v = null]) => v && node("SCATTER_ADD", [u.src[0]!, v], u.arg, u.shape),
 };
@@ -156,11 +140,8 @@ export function vjp(root: UOp, targets: UOp[], seed: UOp): UOp[] {
   }
   return targets.map((t) => cot.get(dts.get(t.id)!.id) ?? zeros(t.shape));
 }
-export const grad = (root: UOp, target: UOp): UOp => {
-  if (root.shape.length) throw new Error("grad: root must be scalar");
-  return vjp(root, [target], konst(1))[0]!;
-};
 export const gradAll = (root: UOp, targets: UOp[]): UOp[] => {
-  if (root.shape.length) throw new Error("gradAll: root must be scalar");
+  if (root.shape.length) throw new Error("∇: the root must be a scalar");
   return vjp(root, targets, konst(1));
 };
+export const grad = (root: UOp, target: UOp): UOp => gradAll(root, [target])[0]!;

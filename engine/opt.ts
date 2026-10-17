@@ -40,46 +40,21 @@ export const simplifyMany = (roots: UOp[]): UOp[] => graphRewriteMany(roots, SIM
 // shares it with everything else). `materialized` names the nodes the backend allocates.
 export const MEMORY_BUDGET = 2 ** 31;
 export const checkMemory = (roots: readonly UOp[], materialized: Op): void => {
-  let bytes = 0;
-  const seen = new Set<number>();
-  for (const r of roots) for (const u of toposort(r)) {
-    if (seen.has(u.id)) continue;
-    seen.add(u.id);
-    if (u.op === materialized) bytes += numel(u.shape) * 4;
-  }
-  if (bytes > MEMORY_BUDGET) {
-    throw new Error(`this needs ${(bytes / 2 ** 30).toFixed(1)} GB of memory at once – more than the ${MEMORY_BUDGET / 2 ** 30} GB Fluent allows; compute it in smaller pieces`);
-  }
+  const bytes = toposort(roots).reduce((n, u) => n + (u.op === materialized ? numel(u.shape) * 4 : 0), 0);
+  if (bytes > MEMORY_BUDGET) throw new Error(`this needs ${(bytes / 2 ** 30).toFixed(1)} GB of memory at once – more than the ${MEMORY_BUDGET / 2 ** 30} GB Fluent allows; compute it in smaller pieces`);
 };
 
 // Σ-linearity at the SCHEDULE level (reordering float summation is a schedule license —
 // the tile and coop tree-reduces already take it). ∇'s fork-summed cotangents (several
 // reduce chains added per weight) become ONE chain whose sum-of-products body the split-K
-// tile printer catches. The view rules commute identical wrappers inward to expose the
-// reduces.
-const SCHED_REWRITES: Rule[] = [
-  (u) => {                                                                     // ADD(RESHAPE a, RESHAPE b) → RESHAPE(ADD(a, b))
-    if (u.op !== "ADD" || u.src[0]!.op !== "RESHAPE" || u.src[1]!.op !== "RESHAPE") return null;
-    const a = u.src[0]!.src[0]!, b = u.src[1]!.src[0]!;
-    return sameShape(a.shape, b.shape) ? node("RESHAPE", [node("ADD", [a, b], null, a.shape)], u.shape.slice(), u.shape) : null;
-  },
-  (u) => {                                                                     // ADD(PERMUTE_p a, PERMUTE_p b) → PERMUTE_p(ADD(a, b))
-    if (u.op !== "ADD" || u.src[0]!.op !== "PERMUTE" || u.src[1]!.op !== "PERMUTE") return null;
-    const p = u.src[0]!.arg as number[], q = u.src[1]!.arg as number[];
-    if (p.length !== q.length || p.some((v, i) => v !== q[i])) return null;
-    const a = u.src[0]!.src[0]!, b = u.src[1]!.src[0]!;
-    return node("PERMUTE", [node("ADD", [a, b], null, a.shape)], p.slice(), u.shape);
-  },
-  (u) => {                                                                     // ADD(Σ_ax a, Σ_ax b) → Σ_ax(ADD(a, b))
-    if (u.op !== "ADD") return null;
-    const [ra, rb] = [u.src[0]!, u.src[1]!];
-    if (ra.op !== "REDUCE" || rb.op !== "REDUCE") return null;
-    const aa = ra.arg as { axis: number; keepdims: boolean; op: string }, ba = rb.arg as { axis: number; keepdims: boolean; op: string };
-    if (aa.op !== "ADD" || ba.op !== "ADD" || aa.axis !== ba.axis || aa.keepdims !== ba.keepdims) return null;
-    const a = ra.src[0]!, b = rb.src[0]!;
-    return sameShape(a.shape, b.shape) ? node("REDUCE", [node("ADD", [a, b], null, a.shape)], ra.arg, u.shape) : null;
-  },
-];
+// tile printer catches: ADD(W a, W b) → W(ADD(a, b)) for one linear wrapper W – a Σ, or a
+// reshape or permute in the way of one.
+const SCHED_REWRITES: Rule[] = [(u) => {
+  const [x, y] = u.src as [UOp, UOp];
+  if (u.op !== "ADD" || x.op !== y.op || !(x.op === "RESHAPE" || x.op === "PERMUTE" || (x.op === "REDUCE" && (x.arg as { op: string }).op === "ADD"))) return null;
+  const a = x.src[0]!, b = y.src[0]!;
+  return JSON.stringify(x.arg) === JSON.stringify(y.arg) && sameShape(a.shape, b.shape) ? node(x.op, [node("ADD", [a, b], null, a.shape)], x.arg, u.shape) : null;
+}];
 
 // ---- the schedule ----------------------------------------------------------------
 // Measured platform constants (tests/bench re-derive them): inlining a kernel that carries
@@ -91,16 +66,15 @@ const MAX_INPUTS = 6;                                                          /
 const HARD_INPUTS = 8;                                                         // past this a kernel is rebuilt materialize-everything. THE TARGET IS THE BROWSER: Chrome/Dawn caps storage buffers at 10/stage (Deno's Metal wgpu falsely reports 31), so inputs+output ≤ 9+1 = 10
 
 function useCounts(roots: UOp[]): Map<number, number> {
-  const uc = new Map<number, number>(), seen = new Set<number>();
-  const visit = (u: UOp) => { if (seen.has(u.id)) return; seen.add(u.id); for (const s of u.src) { uc.set(s.id, (uc.get(s.id) ?? 0) + 1); visit(s); } };
-  for (const r of roots) visit(r);
+  const uc = new Map<number, number>();
+  for (const u of toposort(roots)) for (const s of u.src) uc.set(s.id, (uc.get(s.id) ?? 0) + 1);
   return uc;
 }
 // Materialize a shared elementwise fork iff computing once + traffic beats recomputing it
 // in each of k consumers. Approximate (region ops ≈ leaves+1 makes its two known errors
 // cancel — measured in the ancestor project); the honest form is a per-kernel cost table.
 function schedule(roots: UOp[], uc: Map<number, number>): Set<number> {
-  const mat = new Set<number>(), seen = new Set<number>();
+  const mat = new Set<number>();
   const regionSize = (u: UOp): number => { let n = 1; for (const s of u.src) if (ELEM.has(s.op) && (uc.get(s.id) ?? 0) <= 1) n += regionSize(s); return n; };
   // A reduction the fork's single-use region reads is recomputed, per element, by every
   // consumer the fork is inlined into — its extent each time. Past the per-element work
@@ -116,8 +90,7 @@ function schedule(roots: UOp[], uc: Map<number, number>): Set<number> {
     }
     return n;
   };
-  for (const r of roots) for (const u of toposort(r)) {
-    if (seen.has(u.id)) continue; seen.add(u.id);
+  for (const u of toposort(roots)) {
     const k = uc.get(u.id) ?? 1;
     if (ELEM.has(u.op) && k > 1 && (regionSize(u) * (k - 1) > k + 1 || regionReduce(u) * (k - 1) > COST.perElem)) mat.add(u.id);
   }
@@ -269,10 +242,9 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
       const inSh = u.src[0]!.shape, inSt = strides(inSh), outSh = u.shape, outSt = strides(outSh);
       const mapped = outSh.map((_, d) => inSt[a.keepdims ? d : (d < a.axis ? d : d + 1)]!);
       const mk = (cap: number) => {
-        const gid = range(Math.max(numel(outSh), 1));
+        const gid = range(Math.max(numel(outSh), 1)), k = range(inSh[a.axis]!);
         let base: UOp = iconst(0);
         for (let d = 0; d < outSh.length; d++) base = iadd(base, imul(imod(idiv(gid, iconst(outSt[d]!)), iconst(outSh[d]!)), iconst(mapped[d]!)));
-        const k = range(inSh[a.axis]!);
         const { inputs, value } = kernel(u.src[0]!, inSh, iadd(base, imul(k, iconst(inSt[a.axis]!))), cap, Math.max(numel(outSh), 1), k);
         return fused(gid, acc(a.op, k, value), inputs, u.shape);
       };
@@ -301,11 +273,7 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
   };
   // Pre-build every node a `read` could reach as a base, in topological order, so build()
   // never recurses deeper than one kernel — real graphs are thousands of nodes deep.
-  const seen = new Set<number>();
-  for (const r of roots) for (const u of toposort(r)) {
-    if (seen.has(u.id)) continue; seen.add(u.id);
-    if (u.op === "REDUCE" || u.op === "GATHER" || u.op === "SCATTER_ADD" || ELEM.has(u.op)) build(u);
-  }
+  for (const u of toposort(roots)) if (u.op === "REDUCE" || u.op === "GATHER" || u.op === "SCATTER_ADD" || ELEM.has(u.op)) build(u);
   return roots.map(build);
 }
 
@@ -314,7 +282,7 @@ export function optimizeMany(roots: UOp[]): UOp[] {
   const s = graphRewriteMany(simplifyMany(roots), SCHED_REWRITES);
   const uc = useCounts(s);
   const g = fuseWith(s, uc, schedule(s, uc));
-  for (const r of g) for (const u of toposort(r))                              // legality: only leaves and kernels may reach the executor
+  for (const u of toposort(g))                                                 // legality: only leaves and kernels may reach the executor
     if (u.op !== "FUSED" && u.op !== "CONSTANT" && u.op !== "BUFFER" && u.shape.length) throw new Error(`optimize: ${u.op} survived to the kernel boundary`);
   return g;
 }
