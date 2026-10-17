@@ -22,6 +22,8 @@ extendEnvironment(loading as Record<string, Value>)
 const run = (source: string) =>
   evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope()))
 
+const symbolOf = (n: any): string | undefined => n?.type === "Symbol" ? (n.content?.value as string) : undefined
+
 // signals unwrap to their current value, tensors to plain JS arrays/numbers
 const value = (source: string): any => {
   let v: any = run(source)
@@ -1454,15 +1456,22 @@ describe("gallery examples smoke suite", () => {
       flushRetirements()
     }, 30_000)
   }
+
+  test("pitch-detector names a tone's note, and silence as none", () => {
+    const microphone = DefaultEnvironment.Microphone
+    const hear = (wave: (i: number) => number) => {
+      extendEnvironment({ Microphone: (n: Value) => SignalCreate(engine.tensor(Array.from({ length: Number(n) }, (_, i) => wave(i)))) } as Record<string, Value>)
+      const scope = createScope()
+      evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(EXAMPLES["pitch-detector"]), scope))
+      return ((scope.detect as Signal<Value[]>).value).map((v) => v instanceof engine.Tensor ? v.js() : String(v))
+    }
+    try {
+      expect(hear(() => 0)).toEqual(["–", "–", "–"])
+      expect(hear((i) => Math.sin(2 * Math.PI * 440 * i / 48000))).toEqual(["A", 4, 439])
+    } finally { extendEnvironment({ Microphone: microphone }) }
+  })
 })
 
-// A name that resolves to nothing is the shape almost every language change
-// leaves behind in shipped Fluent source: `self` was deleted, `-` stopped
-// being an identifier character, a builtin got renamed. Evaluating the source
-// does NOT catch it – the failure is an Error in an intermediate statement,
-// and a Fluent sequence discards those, so `neigh-bours: 3` binds `bours`,
-// leaves `neigh` unbound, and every value in scope still looks fine. That is
-// exactly how the Tour shipped broken with the suite green.
 describe("String is the inverse of CodeEvaluate", () => {
   // The law: CodeEvaluate(String(x)) is x. String emits the SOURCE that
   // reproduces a value, not display text – joining a tensor's elements with
@@ -1505,52 +1514,44 @@ describe("String is the inverse of CodeEvaluate", () => {
   })
 })
 
+// A name that resolves to nothing is the shape almost every language change leaves
+// behind in shipped Fluent source: `self` was deleted, `-` stopped being an identifier
+// character, a builtin got renamed. Evaluating the source does NOT catch it – the
+// failure is an Error in an intermediate statement, and a Fluent sequence discards
+// those, so `neigh-bours: 3` binds `bours`, leaves `neigh` unbound, and every value in
+// scope still looks fine. That is how the Tour shipped broken with the suite green.
+// And a name the source binds must not be a built-in's: a reader takes it for one.
 describe("every name in shipped Fluent source resolves", () => {
-  const symbolOf = (n: any): string | undefined =>
-    n?.type === "Symbol" ? (n.content?.value as string) : undefined
-
-  const unresolvedNames = (source: string): string[] => {
+  // prelude names are own keys of a scope; the natives, widgets and sources are on
+  // its prototype
+  const scope = createScope()
+  const builtins = new Set([...Object.keys(scope), ...Object.keys(DefaultEnvironment)])
+  const names = (source: string) => {
     const tree: any = CodeParse(source)
-    if (tree instanceof Error || tree.type === "Error") { return ["<parse error>"] }
-    // prelude names are own keys of a scope; the natives are on its prototype
-    const scope = createScope()
-    const bound = new Set([...Object.keys(scope), ...Object.keys(DefaultEnvironment)])
-    const used = new Map<string, number>()
+    const bound = new Set<string>(), used = new Set<string>()
     const collect = (n: any) => {
       if (!n || typeof n !== "object") { return }
       if (Array.isArray(n)) { n.forEach(collect); return }
       // a backtick literal is drawn, not run – its free symbols are the point
       if (n.type === "Code") { return }
-      // `name: value` – an Operation over ":" whose first operand is a Symbol
-      if (n.type === "Operation" && symbolOf(n.content?.operator) === ":") {
-        const name = symbolOf(n.content?.args?.content?.value?.[0])
-        if (name) { bound.add(name) }
-      }
-      const s = symbolOf(n)
+      // `name: value` – an Operation over ":" whose first operand is a Symbol – and
+      // a lambda's parameters
+      if (n.type === "Operation" && symbolOf(n.content?.operator) === ":") { bound.add(symbolOf(n.content?.args?.content?.value?.[0]) ?? "") }
+      if (n.type === "Lambda") { for (const a of n.content.args) { bound.add(symbolOf(a) ?? "") } }
       // operators are symbols too; only letter-led names can be "unresolved"
-      if (s && /^[\p{L}\p{N}_]/u.test(s)) { used.set(s, (used.get(s) ?? 0) + 1) }
+      const s = symbolOf(n)
+      if (s && /^[\p{L}\p{N}_]/u.test(s)) { used.add(s) }
       for (const k of Object.keys(n)) { if (k !== "origin") { collect(n[k]) } }
     }
     collect(tree)
-    // lambda parameter lists: `{ a, b | … }`
-    for (const m of source.matchAll(/\{\s*([\p{L}\p{N}_]+(?:\s*,\s*[\p{L}\p{N}_]+)*)\s*\|/gu)) {
-      for (const p of m[1]!.split(",")) { bound.add(p.trim()) }
-    }
-    return [...used.keys()].filter((n) => !bound.has(n))
+    bound.delete("")
+    return { parsed: tree.type !== "Error", unresolved: [...used].filter((n) => !bound.has(n) && !builtins.has(n)), shadowed: [...bound].filter((n) => builtins.has(n)) }
   }
-
-  // the host's widgets and sources are in the environment
-  const unknown = unresolvedNames
-
-  for (const [name, src] of Object.entries(EXAMPLES)) {
-    test(`gallery: ${name}`, () => {
-      expect(unknown((src as string).trim())).toEqual([])
+  for (const [name, src] of [...Object.entries(EXAMPLES), ["the Tour", TOUR_SOURCE]]) {
+    test(name === "the Tour" ? name : `gallery: ${name}`, () => {
+      expect(names(src.trim())).toEqual({ parsed: true, unresolved: [], shadowed: [] })
     })
   }
-
-  test("the Tour", () => {
-    expect(unknown(TOUR_SOURCE)).toEqual([])
-  })
 
   test("the README's names at a glance are each one function", async () => {
     // a row's glyph, word and full name are bound to one function – or, for a glyph
@@ -1586,7 +1587,7 @@ describe("the Tour's checks", () => {
   const checks: [string, Function][] = []
   const find = (n: any) => {
     if (!n || typeof n !== "object") { return }
-    if (n.type === "Operation" && n.content?.operator?.content?.value === "challenge") {
+    if (n.type === "Operation" && symbolOf(n.content?.operator) === "challenge") {
       const [seed, check] = n.content.args.content.value
       checks.push([seed.content.value, evaluateSyntaxTreeNode(check, scope) as Function])
     }

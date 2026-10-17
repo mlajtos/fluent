@@ -72,8 +72,8 @@ headFinal: { label |
 
 ; the cell's code run again, with one more line after it or before it: both
 ; run in this lambda's scope, so each sees the other's names
-appended: { s, line | CodeEvaluate(s), CodeEvaluate(line) },
-prepended: { line, s | CodeEvaluate(line), CodeEvaluate(s) },
+appended: { s, more | CodeEvaluate(s), CodeEvaluate(more) },
+prepended: { first, s | CodeEvaluate(first), CodeEvaluate(s) },
 
 ; character codes the checks look for:
 ; ( 40, . 46, _ 95, 🍌 127820

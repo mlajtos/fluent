@@ -524,14 +524,14 @@ step: { sgd(once(lr) × 0.005)({ 𝓛(θ) }) },
 
 ; the surface: the same 𝓛 evaluated over the whole view via ⊗
 n: 300,
-range: [[-5, 5], [-5, 5]],
-surface: log(linspace(range_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(range_0, n) + 1),
+view: [[-5, 5], [-5, 5]],
+surface: log(linspace(view_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(view_0, n) + 1),
 
 (
   Text("# Touch the Loss Landscape"),
   Grid([1, 5])(Text("lr"), Slider(lr)),
   Button("Descend ×100", { step ⟳ 100 }),
-  Layers(surface, Trail(θ, range), Point2D(θ, range)),
+  Layers(surface, Trail(θ, view), Point2D(θ, view)),
   𝓛(watch(θ)), ; live loss – updates while you drag
 )
 `,
@@ -541,7 +541,7 @@ surface: log(linspace(range_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(range_0
 ; re-optimizing (adam) live as you drag. The field below is that distance,
 ; recomputed each frame; the blue point descends it.
 
-range: [[-2, 2], [-2, 2]],
+view: [[-2, 2], [-2, 2]],
 n: 140,
 soft: 0.02, ; softens the distance at 0 so the gradient stays finite
 
@@ -554,9 +554,7 @@ c: $[0.1, -1.3],
 dist: { p, q | √((p_0 - q_0)^2 + (p_1 - q_1)^2 + soft) },
 F: { p | dist(p, a()) + dist(p, b()) + dist(p, c()) },
 
-; the blue point descends F – the only trainable thing here. Name the loss
-; thunk: the optimizer compiles the step per thunk, so a fresh { } each
-; iteration would recompile the whole program every step.
+; the blue point descends F – the only trainable thing here
 p: ~[1.6, 1.6],
 opt: adam(0.06),
 𝓛: { F(p) },
@@ -577,11 +575,11 @@ field: \${
   Text("Drag the **orange** anchors — the **blue** point keeps finding the spot closest to all three."),
   Layers(
     field,
-    Point2D(a, range, "orange"),
-    Point2D(b, range, "orange"),
-    Point2D(c, range, "orange"),
-    Trail(p, range, "deepskyblue"),
-    Point2D(p, range, "deepskyblue"),
+    Point2D(a, view, "orange"),
+    Point2D(b, view, "orange"),
+    Point2D(c, view, "orange"),
+    Trail(p, view, "deepskyblue"),
+    Point2D(p, view, "deepskyblue"),
   ),
 )
 `,
@@ -615,7 +613,7 @@ opt: adam(0.05), ; optimiser
 joints: $fk(θ), ; live pose for the glow
 { opt(𝓛), joints(fk(θ)) } ⟳ Time()×60, ; 60 steps a second: step, then publish
 
-range: [[-1, 1], [-1, 1]], ; view box
+view: [[-1, 1], [-1, 1]],
 gres: 300, ; glow resolution
 g: linspace([-1, 1], gres), ; grid axis
 arm: \${ ; the glowing arm
@@ -628,7 +626,7 @@ arm: \${ ; the glowing arm
 (
   Text("# 🦾 Differentiable reach"),
   Text("Drag the **orange** target — the arm gradient-descends to it. Drag the **red** obstacle — it bends away. FRP × AD, one graph."),
-  Layers(arm, Point2D(target, range, "orange"), Point2D(obstacle, range, "red")),
+  Layers(arm, Point2D(target, view, "orange"), Point2D(obstacle, view, "red")),
 )
 `,
 "differentiable-aim": `
@@ -647,7 +645,7 @@ opt: adam(0.06), ; optimiser
 path: $fly(vel), ; live trajectory for the glow
 { opt(𝓛), path(fly(vel)) } ⟳ 100000, ; descend the miss, then publish the arc
 
-range: [[-1, 1], [-1, 1]], gres: 280,
+view: [[-1, 1], [-1, 1]], gres: 280,
 gg: linspace([-1, 1], gres),
 shot: \${ ; glow along the trajectory – a Gaussian at every sample
   q: transpose(path()),
@@ -659,7 +657,7 @@ shot: \${ ; glow along the trajectory – a Gaussian at every sample
 (
   Text("# 🎯 Aim by calculus"),
   Text("Drag the **orange** target. The launch velocity gradient-descends *through a physics simulation* until the shot lands on it — no ballistics algebra, just ∇ of the miss. FRP × AD in one graph."),
-  Layers(shot, Point2D(target, range, "orange")),
+  Layers(shot, Point2D(target, view, "orange")),
 )
 `,
 "gradient-paint": `
@@ -691,11 +689,11 @@ opt: adam(0.02),
 shown: $paint(θ, vg, vres), ; the fine picture, for display
 { opt(𝓛), shown(paint(θ, vg, vres)) } ⟳ 100000, ; descend the mismatch, then repaint
 
-range: [[-1, 1], [-1, 1]],
+view: [[-1, 1], [-1, 1]],
 (
   Text("# 🖌 Painting with gradients"),
   Text("Fourteen soft blobs start in a huddle. Gradient descent moves them until the image they *paint* matches a target ring — differentiable rasterisation. Drag the **orange** dot to move the goal; the blobs chase it live."),
-  Layers(shown, Point2D(center, range, "orange")),
+  Layers(shown, Point2D(center, view, "orange")),
 )
 `,
 "differentiable-cloth": `
@@ -736,7 +734,7 @@ opt: adam(0.03),
 pose: $θ,
 { opt(𝓛), pose(θ) } ⟳ 100000, ; descend the energy, then publish the pose
 
-range: [[-1, 1], [-1, 1]],
+view: [[-1, 1], [-1, 1]],
 gres: 240,
 gg: linspace([-1, 1], gres),
 mesh: \${ ; glow at every node + 3 samples along each edge → continuous strands
@@ -755,7 +753,7 @@ mesh: \${ ; glow at every node + 3 samples along each edge → continuous strand
 (
   Text("# 🧵 Differentiable cloth"),
   Text("Drag either **corner** — the whole elastic sheet re-hangs itself. Springs on every edge, shear diagonals to keep it from folding flat, and gravity; gradient descent on the node positions minimises the total energy each frame. IK on a soft body."),
-  Layers(mesh, Point2D(pinL, range, "orange"), Point2D(pinR, range, "cyan")),
+  Layers(mesh, Point2D(pinL, view, "orange"), Point2D(pinR, view, "cyan")),
 )
 `,
 "growing-automata": `
@@ -800,7 +798,7 @@ opt: adam(0.03), ; optimise the local rule …
 grid: $grow(), ; live grown state for the heatmap
 { opt(𝓛), grid(grow()) } ⟳ 100000, ; … one step, then publish what it grows
 
-range: [[-1, 1], [-1, 1]], gres: 192, ; view · heatmap resolution
+view: [[-1, 1], [-1, 1]], gres: 192, ; heatmap resolution
 idx: ⌊(0..<gres × H ÷ gres), ; nearest-neighbour upsample indices
 up: { g | transpose(transpose(g_idx)_idx) }, ; [H, W] → [gres, gres]
 field: \${ up(grid()) + 0.18×up(targetG) }, ; grown shape over a faint target ghost
@@ -818,9 +816,8 @@ field: \${ up(grid()) + 0.18×up(targetG) }, ; grown shape over a faint target g
 
 a: ~[0, -0.3], ; adam, orange
 s: ~[0, -0.3], ; sgd, blue
-; both optimizers and both loss thunks are named, not rebuilt per step – an
-; optimizer compiles its step per thunk, and sgd(0.002) inside the step would
-; be a brand new optimizer, with brand new state, every iteration
+; both optimizers are made once, outside the step – sgd(0.002) inside it would
+; be a new optimizer, with new state, every iteration
 optA: adam(0.08),
 optS: sgd(0.002),
 𝓛a: { 𝓛(a) },
@@ -828,16 +825,16 @@ optS: sgd(0.002),
 step: { optA(𝓛a), optS(𝓛s) },
 
 n: 300,
-range: [[-5, 5], [-5, 5]],
-surface: log(linspace(range_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(range_0, n) + 1),
+view: [[-5, 5], [-5, 5]],
+surface: log(linspace(view_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(view_0, n) + 1),
 
 (
   Text("# ⚔️ adam vs sgd"),
   Button("Race ×300", { step ⟳ 300 }),
   Layers(
     surface,
-    Trail(a, range, "orange"), Trail(s, range, "deepskyblue"),
-    Point2D(a, range, "orange"), Point2D(s, range, "deepskyblue"),
+    Trail(a, view, "orange"), Trail(s, view, "deepskyblue"),
+    Point2D(a, view, "orange"), Point2D(s, view, "deepskyblue"),
   ),
   Grid(2)(Text("**adam**"), Text("**sgd**")),
   Grid(2)(𝓛(watch(a)), 𝓛(watch(s))),
@@ -1174,14 +1171,14 @@ gates: \${ losses(), stack((softmax(t1), softmax(t2), softmax(to))) },
 
 ; --- data: 14×14 binarised MNIST (6000 train, 1000 test) as safetensors ---
 ; the signal is an empty list until the fetch resolves to [Xtrain, Ytrain, Xtest, Ytest]
-data: LoadSafeTensorFromURL("mnist.safetensors"),
-loaded: { ListLength(data()) > 0 },
+mnist: LoadSafeTensorFromURL("mnist.safetensors"),
+loaded: { ListLength(mnist()) > 0 },
 ; train on 3000 of the 6000, score on 500 of the 1000 – keeps each frame light
 ; so the whole thing trains live and smoothly in the browser (pixels × examples)
-Xtr: { transpose(slice(data()_0_1, 0, 3000)) }, ; [196, 3000]
-Ytr: { transpose(slice(data()_1_1, 0, 3000)) }, ; [10, 3000]
-Xte: { transpose(slice(data()_2_1, 0, 500)) }, ; [196, 500]
-Yte: { transpose(slice(data()_3_1, 0, 500)) }, ; [10, 500]
+Xtr: { transpose(slice(mnist()_0_1, 0, 3000)) }, ; [196, 3000]
+Ytr: { transpose(slice(mnist()_1_1, 0, 3000)) }, ; [10, 3000]
+Xte: { transpose(slice(mnist()_2_1, 0, 500)) }, ; [196, 500]
+Yte: { transpose(slice(mnist()_3_1, 0, 500)) }, ; [10, 500]
 
 ; --- fixed random wiring: two source signals per gate ---
 G1: 512, G2: 200,
@@ -1272,12 +1269,12 @@ accuracy: \${
 (++): TensorConcat,
 
 ; --- data: 14×14 binarised MNIST as safetensors (an empty list until it loads) ---
-data: LoadSafeTensorFromURL("mnist.safetensors"),
-loaded: { ListLength(data()) > 0 },
-Xtr: { data()_0_1 }, ; [6000, 196] pixels in {0, 1}
-Ytr: { data()_1_1 }, ; [6000, 10] one-hot labels
-Xte: { data()_2_1 }, ; [1000, 196]
-Yte: { data()_3_1 }, ; [1000, 10]
+mnist: LoadSafeTensorFromURL("mnist.safetensors"),
+loaded: { ListLength(mnist()) > 0 },
+Xtr: { mnist()_0_1 }, ; [6000, 196] pixels in {0, 1}
+Ytr: { mnist()_1_1 }, ; [6000, 10] one-hot labels
+Xte: { mnist()_2_1 }, ; [1000, 196]
+Yte: { mnist()_3_1 }, ; [1000, 10]
 
 Din: 196, C: 10, H1: 200, H2: 100,
 α: 6, lr: 3, B: 128,
@@ -1458,7 +1455,7 @@ W2: ~(randn([F, C]) × 0.1),
 Wu: ~(randn([C, V]) × 0.1),
 
 rms: { x | x ÷ √(mean(x × x, -1, 1) + 0.001) }, ; the 1 keeps the reduced axis
-gelu: { x | x × sigmoid(x × 1.702) },
+quickGelu: { x | x × sigmoid(x × 1.702) }, ; GELU, through a sigmoid
 nmask: where(0..<T ⊗(≥) 0..<T, fill([T, T], 0), fill([T, T], -9999)),
 att: { x |
   q: matmul(x, Wq),
@@ -1470,16 +1467,15 @@ att: { x |
 model: { ids |
   x0: matmul(oneHot(ids, V), E) + P,
   x1: x0 + att(rms(x0)),
-  x2: x1 + matmul(gelu(matmul(rms(x1), W1)), W2),
+  x2: x1 + matmul(quickGelu(matmul(rms(x1), W1)), W2),
   matmul(rms(x2), Wu) ; [batch, T, V] logits
 },
 
 loss: { crossEntropy(oneHot(slice(D, [0, 1], [-1, T]), V), model(slice(D, [0, 0], [-1, T]))) },
 
 ; --- sampling: gumbel-max, with a temperature you can drag ---
-codesF: linspace([0, V-1], V), ; float 0…26 – argmax is int, gather keeps it float
 τ: $0.5,
-pick: { l | codesF _ argmax(l ÷ (once(τ) × 1.5 ⌈ 0.05) - log(-log(rand([V]))), -1) },
+pick: { l | argmax(l ÷ (once(τ) × 1.5 ⌈ 0.05) - log(-log(rand([V]))), -1) },
 grow: { s |
   ctx: slice(s, [-T]),
   l: model(ctx ⍴ [1, T]) ⍴ [T, V] _ T-1,
@@ -1554,7 +1550,7 @@ editable: \${ 1 - training() },
 `,
   "looped-dreamer": `
 ; 🔁 The Looped Dreamer – a transformer that thinks in rounds.
-; Two physical blocks (φ1, φ2), stored once, are revisited R=3 times, so the
+; Two physical blocks (b1, b2), stored once, are revisited R=3 times, so the
 ; unrolled network is N = K·R = 6 blocks deep – for a third of the weights.
 ; Every sublayer visit is post-norm, x ← rms(α·x + f(x)), with the DeepLoop
 ; scaling rule (p = ½): skip α = (2N)^½, per-matrix init gain β = (8N)^-½ –
@@ -1593,7 +1589,7 @@ Wf2: ~(randn([C, F]) × β),
 Wg2: ~(randn([F, C]) × β),
 
 rms: { x | x ÷ √(mean(x × x, -1, 1) + 0.001) }, ; the 1 keeps the reduced axis
-gelu: { x | x × sigmoid(x × 1.702) },
+quickGelu: { x | x × sigmoid(x × 1.702) }, ; GELU, through a sigmoid
 nmask: where(0..<T ⊗(≥) 0..<T, fill([T, T], 0), fill([T, T], -9999)),
 att: { x, Wq, Wk, Wv, Wo |
   q: matmul(x, Wq),
@@ -1604,11 +1600,11 @@ att: { x, Wq, Wk, Wv, Wo |
 },
 b1: { x |
   h: rms(x×α + att(x, Wq1, Wk1, Wv1, Wo1)),
-  rms(h×α + matmul(gelu(matmul(h, Wf1)), Wg1))
+  rms(h×α + matmul(quickGelu(matmul(h, Wf1)), Wg1))
 },
 b2: { x |
   h: rms(x×α + att(x, Wq2, Wk2, Wv2, Wo2)),
-  rms(h×α + matmul(gelu(matmul(h, Wf2)), Wg2))
+  rms(h×α + matmul(quickGelu(matmul(h, Wf2)), Wg2))
 },
 cycle: { x | b2(b1(x)) }, ; one round: the whole stack, once
 
@@ -1619,10 +1615,9 @@ modelAt: { ids, r | matmul((cycle ⍣ r)(embed(ids)), Wu) }, ; dreaming picks it
 loss: { crossEntropy(oneHot(slice(D, [0, 1], [-1, T]), V), model(slice(D, [0, 0], [-1, T]))) },
 
 ; --- sampling: gumbel-max, with temperature and rounds you can drag ---
-codesF: linspace([0, V-1], V), ; float 0…26 – argmax is int, gather keeps it float
 τ: $0.5,
 rounds: $0.4, ; 1 + 0.4×5 = the 3 rounds it is trained at
-pick: { l | codesF _ argmax(l ÷ (once(τ) × 1.5 ⌈ 0.05) - log(-log(rand([V]))), -1) },
+pick: { l | argmax(l ÷ (once(τ) × 1.5 ⌈ 0.05) - log(-log(rand([V]))), -1) },
 grow: { s |
   ctx: slice(s, [-T]),
   l: modelAt(ctx ⍴ [1, T], 1 + once(rounds)×5) ⍴ [T, V] _ T-1,
@@ -1742,19 +1737,19 @@ names: ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"),
 detect: \${
   f: fft(mic()),
   mag: √(f_0^2 + f_1^2),
-  bins: 0 ..< (#mag),
-  freqs: bins × sr ÷ size,
+  freqs: 0 ..< (#mag) × sr ÷ size,
   ; only the musical range, so mic rumble and hiss don't win
   band: mag × (freqs > 55) × (freqs < 2000),
-  ; the loudest bin – kept as a float (argmax would be int)
-  peak: Σ(bins × (band = max(band))),
-  freq: peak × sr ÷ size,
-  midi: round(69 + 12×log2(freq ÷ 440)),
-  (
-    names_(midi % 12),
-    floor(midi ÷ 12) - 1,
-    round(freq),
-  )
+  ; silence has no pitch: the loudest bin must stand out of the noise
+  cond(guard(max(band) < 1, { ("–", "–", "–") }), {
+    freq: freqs_argmax(band),
+    midi: round(69 + 12×log2(freq ÷ 440)),
+    (
+      names_(midi % 12),
+      floor(midi ÷ 12) - 1,
+      round(freq),
+    )
+  })
 },
 
 (
