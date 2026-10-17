@@ -29,9 +29,7 @@ jobs:
           bun-version: 1.3.14
 
       - name: Install dependencies
-        # frozen: install exactly the lockfile so the deployed tree can't
-        # re-resolve @jax-js/jax and re-nest a second jax under optax (which
-        # silently no-ops every optimizer). See the exact-pinned override.
+        # frozen: the deployed tree is exactly the lockfile
         run: bun install --frozen-lockfile
 
       # a red commit must not reach the playground – gate the deploy
@@ -40,6 +38,9 @@ jobs:
 
       - name: Test (language)
         run: bun test ./tests.ts
+
+      - name: Test (engine, CPU)
+        run: bun run test:engine
 
       - name: Install Playwright Chromium
         run: bunx playwright install --with-deps chromium

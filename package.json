@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "test": "bun test ./tests.ts",
+    "test:engine": "bun engine/tests/index.bun.ts && bun engine/tests/fold.bun.ts && bun -e \"for (const f of ['core', 'ops']) if ((await (await import('./engine/tests/' + f + '.ts')).default()).fails) process.exit(1)\"",
     "test:browser": "npx playwright test",
     "hero": "node screenshot.ts"
   },
