@@ -1,5 +1,7 @@
+; Prelude – the standard library, written in Fluent
+
 SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current scope. Glued to its left operand, `:` takes everything to its right – `a: 1 + 2` binds 3.", "a: 1 + 2, a × 10 = 30")),
-(:=): doc(TensorAssign, "θ := value", "Assign a new value to a variable (made with ~ or ~~); optimizers do this every step, watch(θ) sees it. Mid-expression, parenthesize the value: θ := (a + b).", "θ: ~([0, 0]), θ := [1, 2]"),
+(:=): doc(TensorAssign, "θ:= value", "Assign a new value to a variable (made with ~ or ~~); optimizers do this every step, watch(θ) sees it. Mid-expression, parenthesize the value: θ := (a + b).", "θ: ~[0, 0], θ:= [1, 2]"),
 
 ; Functions
 (.): pipe: doc(FunctionPipe, "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]"),
@@ -15,7 +17,7 @@ over: FunctionOver: doc((⍨ into), "(f over g)", "APL's Over, in APL's order: x
 Φ: phi: fork: doc(FunctionFork, "Φ(f, g, h)", "Fork: apply the outer tines f and h to the arguments, combine the results with the middle tine g – x Φ(f, g, h) y = g(f(x, y), h(x, y)). A non-function tine is held constant. The Phoenix; dyadically the Pheasant.", "Φ(Σ, ÷, #)([1, 2, 3, 4]) = 2.5"),
 (⊸): before: doc(FunctionBefore, "(f ⊸ g)", "Before: preprocess the left (or only) argument with f, then combine with g – (f ⊸ g)(x, y) = g(f(x), y); (f ⊸ g)(x) = g(f(x), x). A constant binds the left argument. The Violet Starling; dyadically the Zebra Dove.", "(1 ⊸ +)(41) = 42"),
 (⟜): hook: after: doc(FunctionAfter, "(f ⟜ g)", "After: preprocess the right (or only) argument with g, then combine with f – (f ⟜ g)(x, y) = f(x, g(y)); (f ⟜ g)(x) = f(x, g(x)) – the J hook. A constant binds the right argument. The Starling; dyadically the Dove.", "(÷ ⟜ √)(16) = 4"),
-𝕐: fix: FunctionFix: doc({ f | g: { x | f(x(x)) }, g(g) }, "𝕐(f)", "Fixpoint – anonymous recursion. 𝕐(f) is the x with x = f(x): hand f its own recursion handle so a nameless function can call itself. The Y combinator; equivalently (⍨ @)((⍨ @) ∘ f). Named recursion needs nothing – a binding is visible in its own body.", "𝕐({ rec | { n | cascade((guard(n = 0, { 1 }), { n × rec(n - 1) }))() } })(5) = 120"),
+𝕐: fix: FunctionFix: doc({ f | g: { x | f(x(x)) }, g(g) }, "𝕐(f)", "Fixpoint – anonymous recursion. 𝕐(f) is the x with x = f(x): hand f its own recursion handle so a nameless function can call itself. The Y combinator; equivalently (⍨ @)((⍨ @) ∘ f). Named recursion needs nothing – a binding is visible in its own body.", "𝕐({ rec | { n | cond(guard(n = 0, { 1 }), { n × rec(n-1) }) } })(5) = 120"),
 (⊢): right: doc(FunctionRight, "x ⊢ y", "Right: yield the rightmost argument; with one argument, the identity.", "3 ⊢ 5 = 5"),
 (⊣): left: doc(FunctionLeft, "x ⊣ y", "Left: yield the leftmost argument; with one argument, the identity.", "3 ⊣ 5 = 3"),
 isFunction: doc(FunctionIs, "isFunction(v)", "1 if v is a function, else 0 – the question a combinator asks before treating an operand as a constant. Composes like a comparison.", "isFunction(√) = 1, isFunction(5) = 0"),
@@ -30,15 +32,15 @@ identical: doc(Identical, "identical(a, b)", "1 if a and b are the same value �
 FunctionNewton: newton: doc({ g, y, seed |
   ; back(x, v) carries an output-shaped v back to the inputs it came from –
   ; the transpose of g at x, by ∇
-  back: { x, v | ∇({ z | Σ(v × g(z)) })(x) },
+  back: { x, v | (∇{ z | Σ(v × g(z)) })(x) },
   miss: { x | abs(g(x) - y) ÷ (1 + abs(y)) },
   ; the state is (x, its miss): the miss is computed once per step, not again to
   ; decide whether to stop
   step: { state |
-    x: state _ 0, m: state _ 1,
+    x: state_0, m: state_1,
     ; the smallest move that makes g land on y: s is g's slope when g works
     ; element by element, and how often each element is picked when g selects
-    s: ∇(g)(x),
+    s: (∇g)(x),
     ; nothing moves where g doesn't look or is flat (s = 0)
     Δ0: where(s ≠ 0, back(x, y - g(x)) ÷ (s × s), 0),
     Δ: where(abs(Δ0) < 1e30, Δ0, 0),
@@ -46,10 +48,10 @@ FunctionNewton: newton: doc({ g, y, seed |
     ; an element must get strictly closer, unless it's already well inside the
     ; tolerance – and a step off the function (NaN) never helps. Where the slope
     ; is undefined the flag comes back NaN – nothing moves there, so nothing halves
-    shrink: { σ |
-      mX: miss(x + (σ × Δ)),
-      worse: abs(back(x, isNaN(mX) ∨ ((m > 1e-6) ∧ (mX ≥ m)))) > 0,
-      where(worse, where(σ < 1e-6, 0, σ ÷ 2), σ)
+    shrink: { α |
+      mX: miss(x + (α × Δ)),
+      worse: abs(back(x, isNaN(mX) ∨ (m>1e-6 ∧ mX≥m))) > 0,
+      where(worse, where(α < 1e-6, 0, α ÷ 2), α)
     },
     next: x + ((shrink ⍣ ≡)(Δ × 0 + 1) × Δ),
     (next, miss(next))
@@ -57,7 +59,7 @@ FunctionNewton: newton: doc({ g, y, seed |
   ; each element runs until it lands or stops getting closer – one that is stuck
   ; never stops the others. Outside the tolerance a miss only ever shrinks, so
   ; this ends
-  (step ⍣ { new, old | min(((new _ 1) ≥ (old _ 1)) ∨ ((old _ 1) ≤ 1e-6)) })((seed, miss(seed))) _ 0
+  (step ⍣ { new, old | min(new_1 ≥ old_1 ∨ (old_1 ≤ 1e-6)) })((seed, miss(seed)))_0
 }, "newton(g, y, seed)", "Newton's method from seed toward g(x) = y, with ∇ supplying the slope: where it stops, landed or not. solve checks that it landed.", "newton({ x | x^3 + x }, 10, 1) ≈ 2"),
 FunctionSolve: solve: doc({ g, y, seed |
   x: FunctionNewton(g, y, seed),
@@ -75,23 +77,23 @@ FunctionInverse: inverse: doc({ g | FunctionArity((
     starts: stack((y, y × 0, y × 0 + 1)),
     off: stack((abs(g(y) - y), abs(g(y × 0) - y), abs(g(y × 0 + 1) - y))),
     order: moveaxis(argsort(moveaxis(where(isNaN(off), 1e30, off), 0, -1)), -1, 0),
-    seedAt: { k | Σ(oneHot(order _ k, 3) × moveaxis(starts, 0, -1), -1) },
+    seedAt: { k | Σ(oneHot(order_k, 3) × moveaxis(starts, 0, -1), -1) },
     seeds: (seedAt(0), seedAt(1), seedAt(2), y × 0 - 1),
     landed: { x | abs(g(x) - y) ÷ (1 + abs(y)) ≤ 1e-4 },
     ; a start Newton can't take a single step from – no slope there – says nothing,
     ; so those elements try the next start; one it moved from and still missed is
     ; an answer: no solution near it
     attempt: { k, x, stuck | cond(
-      guard((k < 4) ∧ max(stuck), {
-        seed: seeds _ k,
+      guard(k<4 ∧ max(stuck), {
+        seed: seeds_k,
         fresh: FunctionNewton(g, y, seed),
-        attempt(k + 1, where(stuck, fresh, x), stuck ∧ (fresh = seed) ∧ ¬(landed(fresh)))
+        attempt(k+1, where(stuck, fresh, x), stuck ∧ fresh=seed ∧ (¬landed(fresh)))
       }),
       guard(min(landed(x)), { x }),
       { Error("solve: no solution near the seed", seedAt(0)) }
     ) },
     first: FunctionNewton(g, y, seedAt(0)),
-    attempt(1, first, (first = seedAt(0)) ∧ ¬(landed(first)))
+    attempt(1, first, first=seedAt(0) ∧ (¬landed(first)))
   }
 )) }, "inverse(g)", "g run backwards – the same as g ⍣ -1. Each element starts from whichever of y, 0 and 1 lands closest; where Newton can't take a step from it (no slope there), from the next, then from -1. Dyadic x inverse(g) y solves g(x, ?) = y.", "inverse({ x | x^3 + x })(10) = 2"),
 (⍢): around: FunctionAround: doc({ g, f |
@@ -107,25 +109,36 @@ FunctionInverse: inverse: doc({ g | FunctionArity((
 under: FunctionUnder: doc((⍨ around), "x (f under g) y", "APL's Under, in APL's order: f under g is g around f – f done in g's world. Pythagoras is + under square.", "3 (+ under square) 4 = 5"),
 (≡): match: Match: doc({ a, b |
   cond(
-    guard(isTensor(a) ∧ isTensor(b), { sa: shape(a), sb: shape(b),
-      cond(guard(#(sa) ≠ #(sb), { 0 }), guard(Σ(sa ≠ sb) > 0, { 0 }),
-        { Σ(¬((a = b) ∨ (abs(a - b) ≤ ((2 ^ -20) × (abs(a) ⌈ abs(b)))))) = 0 }) }),
+    guard(isTensor(a) ∧ isTensor(b), {
+      sa: shape(a), sb: shape(b),
+      cond(
+        guard((#sa) ≠ (#sb), { 0 }),
+        guard(Σ(sa ≠ sb) > 0, { 0 }),
+        { Σ(¬(a=b ∨ (abs(a - b) ≤ (2^(-20) × (abs(a) ⌈ abs(b)))))) = 0 }
+      )
+    }),
     guard(isList(a) ∧ isList(b), {
-      cond(guard(ListLength(a) ≠ ListLength(b), { 0 }),
-        { ListReduce(ListMap(a, { v, i | match(v, ListGet(b, i)) }), { p, q | p ∧ q }, 1) }) }),
-    guard(isString(a) ∧ isString(b), { ca: StringToCodes(a), cb: StringToCodes(b),
-      cond(guard(#(ca) ≠ #(cb), { 0 }), { Σ(ca ≠ cb) = 0 }) }),
-    { identical(a, b) })
+      cond(
+        guard(ListLength(a) ≠ ListLength(b), { 0 }),
+        { ListReduce(ListMap(a, { v, i | match(v, ListGet(b, i)) }), { p, q | p ∧ q }, 1) }
+      )
+    }),
+    guard(isString(a) ∧ isString(b), {
+      ca: StringToCodes(a), cb: StringToCodes(b),
+      cond(guard((#ca) ≠ (#cb), { 0 }), { Σ(ca ≠ cb) = 0 })
+    }),
+    { identical(a, b) }
+  )
 }, "x ≡ y", "Match: 1 if x and y are the same value whole – same shape and every element, numbers within a few units of float rounding – else 0. Where = compares element by element and exactly, ≡ answers once. (f ⍣ ≡) iterates f until nothing changes.", "[1, 2] ≡ [1, 2] = 1, [1, 2] ≡ [1, 3] = 0"),
 
-(@): apply: doc(FunctionApply, "f @ x", "Apply the function on the left to the argument on the right – reads as “f at x”. A list spreads as multiple arguments.", "∇({ x | x^2 }) @ 3 = 6"),
+(@): apply: doc(FunctionApply, "f @ x", "Apply the function on the left to the argument on the right – reads as “f at x”. A list spreads as multiple arguments.", "(∇{ x | x^2 }) @ 3 = 6"),
 ; Choosing – a candidate answers or declines (returns NoMatch). A choice takes
 ; the first answer; a failure (an Error) is an answer too, so it surfaces.
-cascade: doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order with the same arguments; the first that answers wins. A candidate declines by returning NoMatch – guard and try make such candidates. An Error is an answer, not a decline: it stops the cascade and surfaces. When every candidate declines, the cascade declines too, so overload sets nest.", "fact: { n | cascade((guard(n = 0, { 1 }), { n × fact(n - 1) }))() }, fact(5) = 120"),
-cond: doc(FunctionCond, "cond(a, b, …)", "A multi-way conditional: run each candidate in order, the first that answers wins – cascade((…))() without the wrapper. A candidate that isn’t a thunk is its own answer, so cond(guard(c, { x }), 0) defaults to 0.", "fact: { n | cond(guard(n = 0, { 1 }), { n × fact(n - 1) }) }, fact(5) = 120"),
+cascade: doc(FunctionCascade, "cascade((f, g, …))", "Try candidates in order with the same arguments; the first that answers wins. A candidate declines by returning NoMatch – guard and try make such candidates. An Error is an answer, not a decline: it stops the cascade and surfaces. When every candidate declines, the cascade declines too, so overload sets nest.", "fact: { n | cascade((guard(n = 0, { 1 }), { n × fact(n-1) }))() }, fact(5) = 120"),
+cond: doc(FunctionCond, "cond(a, b, …)", "A multi-way conditional: run each candidate in order, the first that answers wins – cascade((…))() without the wrapper. A candidate that isn’t a thunk is its own answer, so cond(guard(c, { x }), 0) defaults to 0.", "fact: { n | cond(guard(n = 0, { 1 }), { n × fact(n-1) }) }, fact(5) = 120"),
 guard: doc(FunctionGuard, "guard(cond, { value })", "A candidate that answers with value while cond holds, and declines otherwise. A broken condition – a typo, an Error – is a failure, never a quiet no.", "n: 0, cond(guard(n = 0, { 1 }), 2) = 1"),
 try: doc(FunctionTry, "try({ value })", "A candidate that declines when value fails: the Error becomes a NoMatch, so cascade and cond move on to the next candidate.", "cond(try({ CodeEvaluate(text) }), 0)"),
-when: doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Not a candidate – whatever the thunk returns, an Error included, is the result.", "training: $(1), when(training(), { 42 }) = 42"),
+when: doc(FunctionWhen, "when(cond, { … })", "A conditional effect: run the thunk while cond is truthy, yield ◌ otherwise. Not a candidate – whatever the thunk returns, an Error included, is the result.", "training: $1, when(training(), { 42 }) = 42"),
 Error: doc(ErrorCreate, "Error(message, cause?)", "A failure, as a value: no answer, and why. The cause can be any value – the Error this one grew from, or what was tried. An Error stops a cascade and surfaces.", "x: -4, isError(cond(guard(x ≥ 0, { √(x) }), { Error(\"no real root\", x) })) = 1"),
 ; NoMatch (bound natively) is the decline itself: what a candidate returns to
 ; say “not my case”. cascade and cond skip it; anywhere else it is an Error.
@@ -146,82 +159,104 @@ erf: TensorErrorFunction: doc({ x |
 (_): gather: doc(TensorGather, "x_i", "Index into a string, list, or tensor. `x_i` picks one element; `x_[i, j]` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30"),
 (⍴): reshape: doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]"),
 (..<): range: doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the `<` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]"),
-(...): rangeInclusive: TensorRangeInclusive: doc({ a, b | s: trunc(a), e: trunc(b), s + (where(s ≤ e, 1, -1) × (0 ..< (abs(e - s) + 1))) }, "start ... stop", "Integer range from start through stop, endpoint included.", "1 ... 5 = [1, 2, 3, 4, 5]"),
+(...): rangeInclusive: TensorRangeInclusive: doc({ a, b | s: trunc(a), e: trunc(b), s + (where(s ≤ e, 1, -1) × (0 ..< abs(e - s)+1)) }, "start ... stop", "Integer range from start through stop, endpoint included.", "1 ... 5 = [1, 2, 3, 4, 5]"),
 shape: doc(TensorShape, "shape(x)", "The length of each of x's axes, as a vector.", "shape([[1, 2, 3], [4, 5, 6]]) = [2, 3]"),
 slice: doc(TensorSlice, "slice(x, begins, sizes?)", "A block of x: from begins along the leading axes, sizes long – to the end where a size is -1 or missing. A view: nothing is copied.", "slice([10, 20, 30, 40], [1], [2]) = [20, 30]"),
-transpose: TensorTranspose: doc({ x | r: #(shape(x)), permute(x, (r - 1) - (0 ..< r)) }, "transpose(x)", "x with its axes in reverse order – a matrix's rows become its columns.", "transpose([[1, 2], [3, 4]]) = [[1, 3], [2, 4]]"),
+transpose: TensorTranspose: doc({ x | r: #shape(x), permute(x, r-1 - 0..<r) }, "transpose(x)", "x with its axes in reverse order – a matrix's rows become its columns.", "transpose([[1, 2], [3, 4]]) = [[1, 3], [2, 4]]"),
 permute: doc(TensorPermute, "permute(x, axes)", "Reorder x's axes: axis axes_i of x becomes axis i. A view – nothing moves.", "shape(permute(fill([2, 3, 4], 0), [2, 0, 1])) = [4, 2, 3]"),
 broadcast: doc(TensorBroadcast, "broadcast(x, shape)", "Stretch x's size-1 axes, and add missing leading ones, to shape – without copying.", "broadcast([1, 2], [2, 2]) = [[1, 2], [1, 2]]"),
 padAxis: doc(TensorPadAxis, "padAxis(x, axis, before, after)", "Zeros around x along one axis.", "padAxis([1, 2], 0, 1, 2) = [0, 1, 2, 0, 0]"),
 window: doc(TensorWindow, "window(x, sizes)", "The sliding windows of x's trailing axes, one per position – a view, so a convolution never copies its neighbourhoods.", "window([1, 2, 3, 4], [2]) = [[1, 2], [2, 3], [3, 4]]"),
 take: doc(TensorTake, "take(x, indices)", "The rows of x at indices, any shape of them; a negative index counts from the end, and one out of range is an Error.", "take([10, 20, 30], [2, -3]) = [30, 10]"),
 scatterAdd: doc(TensorScatterAdd, "scatterAdd(indices, values, size)", "size zeros, each value added at its index – take's transpose: histograms, bincounts.", "scatterAdd([0, 2, 0], [1, 1, 1], 3) = [2, 0, 1]"),
-detach: doc(TensorDetach, "detach(x)", "x, with no derivative: ∇ treats it as a constant.", "∇({ x | detach(x) × x })(3) = 3"),
+detach: doc(TensorDetach, "detach(x)", "x, with no derivative: ∇ treats it as a constant.", "(∇{ x | detach(x) × x })(3) = 3"),
 moveaxis: TensorMoveAxis: doc({ x, from, to |
   ; output axis i reads axis f where i = t, else the i-th of the others
-  r: #(shape(x)), f: from % r, t: to % r,
-  i: 0 ..< r, j: i - (i > t),
+  r: #shape(x), f: from % r, t: to % r,
+  i: 0..<r, j: i - (i > t),
   permute(x, where(i = t, f, j + (1 - (j < f))))
 }, "moveaxis(x, from, to)", "x with axis from moved to position to, the others keeping their order. A view.", "shape(moveaxis(fill([2, 3, 4], 0), 0, -1)) = [3, 4, 2]"),
 reverse: TensorReverse: doc({ x, k |
-  one: { y, k | z: moveaxis(y, k, 0), n: #(z), moveaxis(take(z, (n - 1) - (0 ..< n)), 0, k) },
+  one: { y, k | z: moveaxis(y, k, 0), n: #z, moveaxis(take(z, n-1 - 0..<n), 0, k) },
   cond(
     ; every axis reversed is the flat order reversed – one gather
-    guard(identical(k, ◌), { n: Π(shape(x)), take(flat(x), (n - 1) - (0 ..< n)) ⍴ shape(x) }),
-    { ks: k ⍴ [-1], ListReduce(unstack(0 ..< #(ks)), { y, j | one(y, ks_j) }, x) })
+    guard(identical(k, ◌), { n: Π(shape(x)), take(flat(x), n-1 - 0..<n) ⍴ shape(x) }),
+    { ks: k ⍴ [-1], ListReduce(unstack(0..<(#ks)), { y, j | one(y, ks_j) }, x) }
+  )
 }, "reverse(x, axis?)", "x back to front – along every axis, or the ones given.", "reverse([1, 2, 3]) = [3, 2, 1]"),
 (⊗): outer: TensorOuter: doc({ f, rank |
   r: cond(guard(identical(rank, ◌), { [0, 0] }), { broadcast(rank ⍴ [-1], [2]) }),
   rA: r_0, rB: r_1,
   { a, b |
-    sa: shape(a), split: (#(sa) - rA) ⌈ 0, cellA: slice(sa, [split]),
-    extra: ((#(shape(b)) - rB) ⌈ 0) + ((rB - #(cellA)) ⌈ 0),
+    sa: shape(a), split: (#sa) - rA ⌈ 0, cellA: slice(sa, [split]),
+    extra: ((#shape(b)) - rB ⌈ 0) + (rB - (#cellA) ⌈ 0),
     f(a ⍴ concat((slice(sa, [0], [split]), fill([extra], 1), cellA)), b)
-  } }, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "(0 ..< 3) (⊗ ×) (0 ..< 3) = [[0,0,0],[0,1,2],[0,2,4]]"),
+  }
+}, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "0..<3 (⊗ ×) 0..<3 = [[0, 0, 0], [0, 1, 2], [0, 2, 4]]"),
 (⍤): rank: TensorRank: doc({ f, rank |
   k: cond(guard(identical(rank, ◌), { 0 }), { rank }),
-  cells: { a | s: shape(a), r: #(s), split: cond(guard(k ≥ 0, { (r - k) ⌈ 0 }), { -(k) ⌊ r }),
-    frame: slice(s, [0], [split]), (frame, unstack(a ⍴ concat(([Π(frame)], slice(s, [split]))))) },
+  cells: { a |
+    s: shape(a), r: #s,
+    split: cond(guard(k ≥ 0, { r - k ⌈ 0 }), { (-k) ⌊ r }),
+    frame: slice(s, [0], [split]),
+    (frame, unstack(a ⍴ concat(([Π(frame)], slice(s, [split])))))
+  },
   { a, b |
     A: cells(a), ca: ListGet(A, 1), na: ListLength(ca),
     out: cond(
       guard(identical(b, ◌), { (ListGet(A, 0), ListMap(ca, { c | f(c) })) }),
-      { B: cells(b), cb: ListGet(B, 1), nb: ListLength(cb),
-        cond(guard((na ≠ nb) ∧ (na ≠ 1) ∧ (nb ≠ 1), { Error("`(f ⍤ k)`: dyadic rank needs frames that match or broadcast") }),
-          { (cond(guard(na ≥ nb, { ListGet(A, 0) }), { ListGet(B, 0) }),
-             ListMap(unstack(0 ..< (na ⌈ nb)), { i | f(ListGet(ca, where(na = 1, 0, i)), ListGet(cb, where(nb = 1, 0, i))) })) }) }),
+      {
+        B: cells(b), cb: ListGet(B, 1), nb: ListLength(cb),
+        cond(
+          guard(na≠nb ∧ na≠1 ∧ nb≠1, { Error("`(f ⍤ k)`: dyadic rank needs frames that match or broadcast") }),
+          { (
+            cond(guard(na ≥ nb, { ListGet(A, 0) }), { ListGet(B, 0) }),
+            ListMap(unstack(0..<(na ⌈ nb)), { i | f(ListGet(ca, where(na = 1, 0, i)), ListGet(cb, where(nb = 1, 0, i))) })
+          ) }
+        )
+      }
+    ),
     cond(guard(isError(out), { out }), {
       bad: ListReduce(ListMap(ListGet(out, 1), { v | isError(v) }), { p, q | p ⌈ q }, 0),
-      cond(guard(bad, { ListGet(ListGet(out, 1), ListReduce(ListMap(ListGet(out, 1), { v, i | where(isError(v), i, 1e9) }), { p, q | p ⌊ q }, 1e9)) }),
-        { st: stack(ListGet(out, 1)), st ⍴ concat((ListGet(out, 0), slice(shape(st), [1]))) }) })
-  } }, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1,2,3],[4,5,6]]) = [6, 15]"),
+      cond(
+        guard(bad, { ListGet(ListGet(out, 1), ListReduce(ListMap(ListGet(out, 1), { v, i | where(isError(v), i, 1e9) }), { p, q | p ⌊ q }, 1e9)) }),
+        { st: stack(ListGet(out, 1)), st ⍴ concat((ListGet(out, 0), slice(shape(st), [1]))) }
+      )
+    })
+  }
+}, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1, 2, 3], [4, 5, 6]]) = [6, 15]"),
 (∙): inner: TensorInner: doc({ g, f | { a, b |
-  sa: shape(a), sb: shape(b), ra: #(sa), rb: #(sb),
-  cond(guard(sa_(-1) ≠ sb_0, { Error("`(g ∙ f)`: a's last axis and b's first axis must match") }), {
-    t: g(a ⍴ concat((sa, fill([rb - 1], 1))), b ⍴ concat((fill([ra - 1], 1), sb))),
-    reduce(t, f, ra - 1) }) } }, "a (g ∙ f) b", "Inner product: contract a's last axis with b's first – combine with g, then reduce with f, in the order it reads, like a × b reduce +. `× ∙ +` is matrix multiply; swap the ring for others: `+ ∙ ⌊` is shortest paths.", "[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]] = [[19,22],[43,50]]"),
+  sa: shape(a), sb: shape(b), ra: #sa, rb: #sb,
+  cond(
+    guard(sa_(-1) ≠ sb_0, { Error("`(g ∙ f)`: a's last axis and b's first axis must match") }),
+    {
+      t: g(a ⍴ concat((sa, fill([rb-1], 1))), b ⍴ concat((fill([ra-1], 1), sb))),
+      reduce(t, f, ra-1)
+    }
+  )
+} }, "a (g ∙ f) b", "Inner product: contract a's last axis with b's first – combine with g, then reduce with f, in the order it reads, like a × b reduce +. `× ∙ +` is matrix multiply; swap the ring for others: `+ ∙ ⌊` is shortest paths.", "[[1, 2], [3, 4]] (× ∙ +) [[5, 6], [7, 8]] = [[19, 22], [43, 50]]"),
 alongAxis: TensorAlongAxis: doc({ f, k |
   ; f runs on each trailing fibre, with axis k rotated to the end
-  lift: (f ⍤ 1),
+  lift: f ⍤ 1,
   { x |
-    n: #(shape(x)),
-    lifted: lift(moveaxis(x, k, n - 1)),
+    n: #shape(x),
+    lifted: lift(moveaxis(x, k, n-1)),
     ; a shape-preserving f gets its axis rotated home; a reducer has dropped it
-    cond(guard(#(shape(lifted)) = n, { moveaxis(lifted, n - 1, k) }), { lifted })
+    cond(guard((#shape(lifted)) = n, { moveaxis(lifted, n-1, k) }), { lifted })
   }
-}, "(f alongAxis k)", "Apply f along axis k: f runs on each fibre parallel to axis k, mapping over the rest. Any function, any axis; a reducer drops the axis, a shape-preserving f keeps it.", "(Σ alongAxis 0)([[1,2,3],[4,5,6]]) = [5, 7, 9]"),
+}, "(f alongAxis k)", "Apply f along axis k: f runs on each fibre parallel to axis k, mapping over the rest. Any function, any axis; a reducer drops the axis, a shape-preserving f keeps it.", "(Σ alongAxis 0)([[1, 2, 3], [4, 5, 6]]) = [5, 7, 9]"),
 
 ; Shape manipulation
 flat: TensorFlatten: doc((⍴ ⟜ [-1]), "flat(x)", "x as one long vector, in reading order.", "flat([[1, 2], [3, 4]]) = [1, 2, 3, 4]"),
 squeeze: TensorSqueeze: doc({ x |
   s: shape(x),
-  newShape: mask(s, (s ≠ 1)),
+  newShape: mask(s, s ≠ 1),
   x ⍴ newShape
 }, "squeeze(x)", "x without its length-1 axes.", "shape(squeeze(fill([1, 3, 1], 0))) = [3]"),
 unsqueeze: TensorUnsqueeze: doc({ x, axis |
   s: shape(x),
   ; a negative axis counts from the end of the new shape: -1 is a new last axis
-  k: where(axis < 0, axis + #(s) + 1, axis),
+  k: where(axis < 0, axis + (#s) + 1, axis),
   x ⍴ concat((slice(s, 0, k), [1], slice(s, k)))
 }, "unsqueeze(x, axis)", "x with a new length-1 axis at axis; a negative axis counts from the end.", "shape(unsqueeze([1, 2, 3], -1)) = [3, 1]"),
 
@@ -286,7 +321,7 @@ sub: TensorSubtract: doc({ x, y | x + (y × -1) }, "x - y", "Element-wise subtra
 TensorRoot: doc({ x, n |
   r: abs(x) ^ (1 ÷ n),
   ; an odd root of a negative number is negative; an even one has no real value
-  where(x < 0, where((n % 2) = 1, -(r), 0 ÷ 0), r)
+  where(x < 0, where(n % 2 = 1, -r, 0 ÷ 0), r)
 }, "TensorRoot(x, n)", "The n-th root of x – negative for an odd root of a negative number.", "TensorRoot(27, 3) = 3"),
 (√): root: doc(FunctionArity((TensorRoot, TensorSquareRoot)), "x √ n", "The square root of x; with n, the n-th root of x – an odd root of a negative number is negative.", "27 √ 3 = 3, -8 √ 3 = -2"),
 (+): FunctionArity((TensorAdd, TensorAbsolute)),
@@ -302,7 +337,7 @@ sign: doc(TensorSign, "sign(x)", "The sign of each element: -1, 0, or 1.", "sign
 round: doc(TensorRound, "round(x)", "Each element to the nearest integer; a half goes to the even one.", "round([1.5, 2.5, -1.4]) = [2, 2, -1]"),
 trunc: TensorTruncate: doc({ x | where(x < 0, ceil(x), floor(x)) }, "trunc(x)", "Round each element toward zero.", "trunc([-2.7, 2.7]) = [-2, 2]"),
 floor: doc(TensorFloor, "⌊(x)  ·  floor(x)", "Round each element down to the nearest integer.", "⌊(2.7) = 2"),
-ceil: TensorCeil: doc({ x | -(floor(-(x))) }, "⌈(x)  ·  ceil(x)", "Round each element up to the nearest integer.", "⌈(2.3) = 3"),
+ceil: TensorCeil: doc({ x | -floor(-x) }, "⌈(x)  ·  ceil(x)", "Round each element up to the nearest integer.", "⌈(2.3) = 3"),
 reciprocal: doc(TensorReciprocal, "reciprocal(x)", "1 ÷ x, element by element.", "reciprocal([2, 4]) = [0.5, 0.25]"),
 sqrt: doc(TensorSquareRoot, "sqrt(x)", "The square root of each element.", "sqrt([4, 9]) = [2, 3]"),
 square: TensorSquare: doc({ x | x × x }, "square(x)", "Each element times itself.", "square([2, -3]) = [4, 9]"),
@@ -310,7 +345,7 @@ cbrt: doc(TensorCubeRoot, "cbrt(x)", "The cube root of each element – negative
 hypot: TensorHypotenuse: doc({ x, y |
   ; scaled by the larger side, so squaring never overflows
   m: abs(x) ⌈ abs(y), s: where(m = 0, 1, m),
-  m × √(((x ÷ s) × (x ÷ s)) + ((y ÷ s) × (y ÷ s)))
+  m × √((x ÷ s) × (x ÷ s) + ((y ÷ s) × (y ÷ s)))
 }, "hypot(x, y)", "The length of the hypotenuse: √(x² + y²), element by element, without overflowing for large sides.", "hypot(3, 4) = 5"),
 TensorLogarithm: doc({ x, b | TensorNaturalLogarithm(x) ÷ TensorNaturalLogarithm(b) }, "TensorLogarithm(x, base)", "The logarithm of x in the given base.", "TensorLogarithm(8, 2) = 3"),
 log: doc(FunctionArity((TensorLogarithm, TensorNaturalLogarithm)), "log(x, base?)", "The natural logarithm of x; with a base, the logarithm of x in that base.", "8 log 2 = 3"),
@@ -330,14 +365,14 @@ silu: TensorSilu: doc({ x | x × sigmoid(x) }, "silu(x)", "x · sigmoid(x) – a
 rsqrt: TensorReciprocalSquareRoot: doc({ x | 1 ÷ sqrt(x) }, "rsqrt(x)", "1 ÷ √x, element by element.", "rsqrt(4) = 0.5"),
 softmax: TensorSoftmax: doc({ x, k |
   ax: cond(guard(identical(k, ◌), { -1 }), { k }),
-  cond(guard(#(shape(x)) = 0, { 1 + (x × 0) }), { e: exp(x - max(x, ax, 1)), e ÷ Σ(e, ax, 1) })
+  cond(guard((#shape(x)) = 0, { 1 + (x × 0) }), { e: exp(x - max(x, ax, 1)), e ÷ Σ(e, ax, 1) })
 }, "softmax(x, axis?)", "Scores into probabilities: exponentiated and scaled so the values along the last axis (or the one given) are positive and add up to 1.", "softmax([0, 0]) = [0.5, 0.5]"),
 logSoftmax: TensorLogSoftmax: doc({ x, k |
   ax: cond(guard(identical(k, ◌), { -1 }), { k }),
   s: x - max(x, ax, 1), s - log(Σ(exp(s), ax, 1))
 }, "logSoftmax(x, axis?)", "log(softmax(x)), computed without overflow – for losses.", "logSoftmax([0, 0]) ≈ [-0.6931, -0.6931]"),
 oneHot: doc(TensorOneHot, "oneHot(indices, n)", "Each index as a length-n vector: 1 at the index, 0 elsewhere.", "oneHot([0, 2], 3) = [[1, 0, 0], [0, 0, 1]]"),
-crossEntropy: TensorCrossEntropy: doc({ labels, logits | μ(-(Σ(labels × logSoftmax(logits), -1))) }, "crossEntropy(labels, logits)", "How surprised the model's scores are by the true labels (one-hot), averaged – the classification loss.", "crossEntropy([[1, 0]], [[0, 0]]) ≈ 0.6931"),
+crossEntropy: TensorCrossEntropy: doc({ labels, logits | μ(-Σ(labels × logSoftmax(logits), -1)) }, "crossEntropy(labels, logits)", "How surprised the model's scores are by the true labels (one-hot), averaged – the classification loss.", "crossEntropy([[1, 0]], [[0, 0]]) ≈ 0.6931"),
 
 ; Trigonometry
 sin: doc(TensorSine, "sin(x)", "The sine of each element, in radians.", "sin(0) = 0"),
@@ -365,39 +400,41 @@ mish: TensorMish: doc({ x | x × tanh(softplus(x)) }, "mish(x)", "A self-gated a
 ; Comparison
 (<): less: doc(TensorLess, "x < y", "Element-wise less-than: 1 where x is below y, else 0; shapes broadcast.", "([1, 2, 3] < 2) = [1, 0, 0]"),
 (>): greater: TensorGreater: doc({ x, y | y < x }, "x > y", "Element-wise greater-than: 1 where x is above y, else 0; shapes broadcast.", "([1, 2, 3] > 2) = [0, 0, 1]"),
-(≤): (<=): lessEqual: TensorLessEqual: doc({ x, y | (x < y) ⌈ (x = y) }, "x ≤ y", "Element-wise less-than-or-equal: 1 where x is at most y, else 0; shapes broadcast.", "([1, 2, 3] ≤ 2) = [1, 1, 0]"),
-(≥): (>=): greaterEqual: TensorGreaterEqual: doc({ x, y | (y < x) ⌈ (x = y) }, "x ≥ y", "Element-wise greater-than-or-equal: 1 where x is at least y, else 0; shapes broadcast.", "([1, 2, 3] ≥ 2) = [0, 1, 1]"),
+(≤): (<=): lessEqual: TensorLessEqual: doc({ x, y | x<y ⌈ x=y }, "x ≤ y", "Element-wise less-than-or-equal: 1 where x is at most y, else 0; shapes broadcast.", "([1, 2, 3] ≤ 2) = [1, 1, 0]"),
+(≥): (>=): greaterEqual: TensorGreaterEqual: doc({ x, y | y<x ⌈ x=y }, "x ≥ y", "Element-wise greater-than-or-equal: 1 where x is at least y, else 0; shapes broadcast.", "([1, 2, 3] ≥ 2) = [0, 1, 1]"),
 (=): equal: doc(TensorEqual, "x = y", "Element-wise equality: 1 where the operands are equal, else 0; shapes broadcast.", "([1, 2, 3] = 2) = [0, 1, 0]"),
 (≠): (!=): notEqual: TensorNotEqual: doc({ x, y | 1 - (x = y) }, "x ≠ y", "Element-wise inequality: 1 where the operands differ, else 0; shapes broadcast.", "([1, 2, 3] ≠ 2) = [1, 0, 1]"),
 
 ; Logical
-(∨): or: TensorOr: doc({ x, y | ((x < 0) ⌈ (0 < x)) ⌈ ((y < 0) ⌈ (0 < y)) }, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]"),
-(∧): and: TensorAnd: doc({ x, y | ((x < 0) ⌈ (0 < x)) × ((y < 0) ⌈ (0 < y)) }, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]"),
-(¬): not: TensorNot: doc({ x | 1 - ((x < 0) ⌈ (0 < x)) }, "¬(x)", "Logical not: 1 where x is zero, else 0.", "¬([0, 2]) = [1, 0]"),
-(⊻): xor: TensorXor: doc({ x, y | abs(((x < 0) ⌈ (0 < x)) - ((y < 0) ⌈ (0 < y))) }, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]"),
+(∨): or: TensorOr: doc({ x, y | (x<0 ⌈ 0<x) ⌈ (y<0 ⌈ 0<y) }, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]"),
+(∧): and: TensorAnd: doc({ x, y | (x<0 ⌈ 0<x) × (y<0 ⌈ 0<y) }, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]"),
+(¬): not: TensorNot: doc({ x | 1 - (x<0 ⌈ 0<x) }, "¬x", "Logical not: 1 where x is zero, else 0.", "(¬[0, 2]) = [1, 0]"),
+(⊻): xor: TensorXor: doc({ x, y | abs((x<0 ⌈ 0<x) - (y<0 ⌈ 0<y)) }, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]"),
 (⍲): nand: TensorNand: doc({ a, b | ¬(a ∧ b) }, "x ⍲ y", "Element-wise nand: 0 where both operands are nonzero, else 1. Functionally complete – every gate builds from it.", "[0, 1, 1] ⍲ [1, 1, 0] = [1, 0, 1]"),
 (⍱): nor: TensorNor: doc({ a, b | ¬(a ∨ b) }, "x ⍱ y", "Element-wise nor: 1 where both operands are zero, else 0. Functionally complete, like ⍲.", "[0, 1, 0] ⍱ [0, 1, 1] = [1, 0, 0]"),
 
 ; Reductions
-(∇): grad: doc(TensorGradient, "∇(f)", "Gradient of a function: ∇(f)(x) is df/dx at x. Works on any function of smooth numeric ops — reshape and indexing pass through; argmax/round/comparisons read as constant (zero gradient). Nests: ∇(∇(f)) is the second derivative. With no argument, ∇(loss)() differentiates with respect to the ~ variables loss reads and gives (value, variables, gradients) – what an optimizer steps.", "∇({ x | x^2 })(3) = 6"),
+(∇): grad: doc(TensorGradient, "∇f", "Gradient of a function: ∇(f)(x) is df/dx at x. Works on any function of smooth numeric ops — reshape and indexing pass through; argmax/round/comparisons read as constant (zero gradient). Nests: ∇(∇(f)) is the second derivative. With no argument, ∇(loss)() differentiates with respect to the ~ variables loss reads and gives (value, variables, gradients) – what an optimizer steps.", "(∇{ x | x^2 })(3) = 6"),
 (Σ): sum: doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6"),
-reduce: doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so `x reduce ⌈` is max.", "1 ..< 10 reduce + = 45"),
+reduce: doc(TensorReduce, "x reduce fn", "Fold a tensor left-to-right with a binary function, optionally along an axis. Known ops (+, ×, ⌈, ⌊) reduce natively; so `x reduce ⌈` is max.", "1..<10 reduce + = 45"),
 (Π): prod: doc(TensorProduct, "Π(x, axis?)", "The product of the elements, over one axis or the whole tensor.", "Π([1, 2, 3, 4]) = 24"),
 scan: TensorScan: doc({ x, f, k |
   ax: cond(guard(identical(k, ◌), { -1 }), { k }),
-  y: moveaxis(x, ax, 0), n: #(y),
-  i: (0 ..< n) ⍴ concat(([n], fill([#(shape(y)) - 1], 1))),
+  y: moveaxis(x, ax, 0), n: #y,
+  i: 0..<n ⍴ concat(([n], fill([(#shape(y)) - 1], 1))),
   ; log₂(n) passes: each element folds in the partial result d places before it, and d
   ; doubles – so f must be associative, and elements before d keep what they have
-  pass: { s | z: s _ 0, d: s _ 1,
-    before: padAxis(slice(z, [0], [n - d]), 0, d, 0),
-    (where(i ≥ d, f(before, z), z), d × 2) },
-  moveaxis((pass ⍣ cond(guard(n ≤ 1, { 0 }), { ceil(log2(n)) }))((y, 1)) _ 0, 0, ax)
+  pass: { s |
+    z: s_0, d: s_1,
+    earlier: padAxis(slice(z, [0], [n - d]), 0, d, 0),
+    (where(i ≥ d, f(earlier, z), z), d × 2)
+  },
+  moveaxis((pass ⍣ cond(guard(n ≤ 1, { 0 }), { ceil(log2(n)) }))((y, 1))_0, 0, ax)
 }, "x scan f", "The running fold: element i combines elements 0 … i with f, along the last axis or the one given – with + a cumulative sum, with ⌈ a running maximum. f must be associative.", "[1, 2, 3, 4] scan + = [1, 3, 6, 10]"),
 (μ): mean: TensorMean: doc({ x, k, keep | s: Σ(x, k, keep), s × (Π(shape(s)) ÷ Π(shape(x))) }, "μ(x, axis?)", "The mean of the elements, over one axis or the whole tensor.", "μ([1, 2, 3, 6]) = 3"),
 
-; Min/max: the WORD reduces (whole tensor, or one axis like sum) – so
-; max(x, axis) works. The GLYPH is APL's ⌈/⌊: ceiling/floor on one tensor,
+; Min/max: the word reduces (whole tensor, or one axis like sum) – so
+; max(x, axis) works. The glyph is APL's ⌈/⌊: ceiling/floor on one tensor,
 ; pairwise max/min on two. (max and ⌈ can't be one function – max(x, axis)
 ; and pairwise max(a, b) share a shape, so the axis would be eaten as an operand.)
 max: doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor.", "max([3, 1, 2]) = 3"),
@@ -405,106 +442,124 @@ min: doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the
 (⌈): FunctionArity((doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]"), TensorCeil)),
 (⌊): FunctionArity((doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]"), TensorFloor)),
 argmax: TensorArgMax: doc({ x, k |
-  y: cond(guard(identical(k, ◌), { flat(x) }), guard((k % #(shape(x))) = (#(shape(x)) - 1), { x }), { moveaxis(x, k, -1) }),
+  y: cond(
+    guard(identical(k, ◌), { flat(x) }),
+    guard(k % (#shape(x)) = (#shape(x))-1, { x }),
+    { moveaxis(x, k, -1) }
+  ),
   n: #(y, -1),
   ; the first NaN, if there is one – it compares as neither larger nor smaller
   nan: isNaN(y),
   hit: where(max(nan, -1, 1), nan, y = max(y, -1, 1)),
   cond(guard(n = 0, { Error("`argmax`: an empty tensor has no maximal index") }),
-    { min(where(hit, 0 ..< n, n), -1) })
+    { min(where(hit, 0..<n, n), -1) })
 }, "argmax(x, axis?)", "The index of the largest element – the first, on a tie; the first NaN, if there is one.", "argmax([3, 9, 2]) = 1"),
 argmin: TensorArgMin: doc({ x, k |
-  y: cond(guard(identical(k, ◌), { flat(x) }), guard((k % #(shape(x))) = (#(shape(x)) - 1), { x }), { moveaxis(x, k, -1) }),
+  y: cond(
+    guard(identical(k, ◌), { flat(x) }),
+    guard(k % (#shape(x)) = (#shape(x))-1, { x }),
+    { moveaxis(x, k, -1) }
+  ),
   n: #(y, -1),
   nan: isNaN(y),
   hit: where(max(nan, -1, 1), nan, y = min(y, -1, 1)),
   cond(guard(n = 0, { Error("`argmin`: an empty tensor has no minimal index") }),
-    { min(where(hit, 0 ..< n, n), -1) })
+    { min(where(hit, 0..<n, n), -1) })
 }, "argmin(x, axis?)", "The index of the smallest element – the first, on a tie; the first NaN, if there is one.", "argmin([3, 9, 2]) = 2"),
 
 ; Statistics
 𝕍: variance: TensorVariance: doc({ x, k, keep | d: x - μ(x, k, 1), μ(d × d, k, keep) }, "𝕍(x, axis?)", "Mean squared deviation from the mean, μ((x - μx)²), over one axis or the whole tensor.", "variance([1, 2, 3]) ≈ 0.667"),
-σ: std: TensorStandardDeviation: doc({ x, k, keep | √(variance(x, k, keep)) }, "σ(x, axis?)", "Standard deviation, √variance – how far x spreads around its mean, over one axis or the whole tensor.", "σ([2, 4, 4, 4, 5, 5, 7, 9]) = 2"),
-norm: TensorL2Norm: doc({ x, k, keep | √(Σ(x × x, k, keep)) }, "norm(x, axis?)", "Euclidean (L2) norm, √(Σ x²) – the length of x as a vector, or of each vector along an axis.", "norm([3, 4]) = 5"),
+σ: std: TensorStandardDeviation: doc({ x, k, keep | √variance(x, k, keep) }, "σ(x, axis?)", "Standard deviation, √variance – how far x spreads around its mean, over one axis or the whole tensor.", "σ([2, 4, 4, 4, 5, 5, 7, 9]) = 2"),
+norm: TensorL2Norm: doc({ x, k, keep | √Σ(x × x, k, keep) }, "norm(x, axis?)", "Euclidean (L2) norm, √(Σ x²) – the length of x as a vector, or of each vector along an axis.", "norm([3, 4]) = 5"),
 normalize: TensorNormalize: doc({ x | x ÷ norm(x) }, "normalize(x)", "x scaled to unit length, x ÷ norm(x) – same direction, length 1.", "normalize([3, 4]) = [0.6, 0.8]"),
 
 ; Variables
-(~): var: doc(TensorVariable, "~(init)", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad. For data the loss reads but never trains, use ~~.", "θ: ~([0, 0])"),
-(~~): data: doc(TensorData, "~~(init)", "Make a data slot – read like a constant: no gradient flows into it and nothing trains it. Assign with := any time, even to a new shape – training carries on.", "x: ~~([1, 2]), x := [3, 4, 5]"),
-watch: doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~([2]), w: watch(θ), θ := [8], w = [8]"),
+(~): var: doc(TensorVariable, "~init", "Make a trainable variable. Assign with :=; optimise with adam / adamw / sgd / adagrad. For data the loss reads but never trains, use ~~.", "θ: ~[0, 0]"),
+(~~): data: doc(TensorData, "~~init", "Make a data slot – read like a constant: no gradient flows into it and nothing trains it. Assign with := any time, even to a new shape – training carries on.", "x: ~~[1, 2], x:= [3, 4, 5]"),
+watch: doc(TensorWatch, "watch(variable)", "A signal that updates whenever a variable is assigned – by a drag, an optimizer, or :=.", "θ: ~[2], w: watch(θ), θ:= [8], w = [8]"),
 
 ; Tensor ops
 sort: doc(TensorSort, "sort(x)", "Sort a vector into ascending order.", "sort([3, 1, 2]) = [1, 2, 3]"),
 (⍋): argsort: doc(TensorArgSort, "argsort(x)", "The indices that sort a vector into ascending order – grade up. x_argsort(x) is x sorted.", "argsort([3, 1, 2]) = [1, 2, 0]"),
 roll: TensorRoll: doc({ x, s, k |
   one: { y, s, k |
-    z: moveaxis(y, k, 0), n: #(z), t: s % n,
-    cond(guard(t = 0, { y }), { moveaxis(padAxis(slice(z, [n - t]), 0, 0, n - t) + padAxis(slice(z, [0], [n - t]), 0, t, 0), 0, k) })
+    z: moveaxis(y, k, 0), n: #z, t: s % n,
+    cond(
+      guard(t = 0, { y }),
+      { moveaxis(padAxis(slice(z, [n - t]), 0, 0, n - t) + padAxis(slice(z, [0], [n - t]), 0, t, 0), 0, k) }
+    )
   },
   cond(
     guard(identical(k, ◌), { one(flat(x), s, 0) ⍴ shape(x) }),
-    { ss: s ⍴ [-1], ks: k ⍴ [-1], ListReduce(unstack(0 ..< #(ks)), { y, j | one(y, ss_(j % #(ss)), ks_j) }, x) }
+    { ss: s ⍴ [-1], ks: k ⍴ [-1], ListReduce(unstack(0..<(#ks)), { y, j | one(y, ss_(j % (#ss)), ks_j) }, x) }
   )
 }, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]"),
 mask: TensorMask: doc({ x, keep |
-  cond(guard(#(shape(keep)) > 1, { Error(StringConcat("mask: the mask must be a vector, got a tensor ", String(shape(keep)), " – flatten it, or index with `_`")) }), {
-    n: #(x), k: (keep < 0) ⌈ (0 < keep),
-    x _ slice(⍋(where(k, 0 ..< n, n + (0 ..< n))), [0], [Σ(k)]) }) }, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]"),
+  cond(
+    guard((#shape(keep)) > 1, { Error(StringConcat("mask: the mask must be a vector, got a tensor ", String(shape(keep)), " – flatten it, or index with `_`")) }),
+    {
+      n: #x, k: keep<0 ⌈ 0<keep,
+      x _ slice(⍋(where(k, 0..<n, n + 0..<n)), [0], [Σ(k)])
+    }
+  )
+}, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]"),
 where: doc(TensorWhere, "where(cond, a, b)", "Element-wise choice: take a where cond is true, otherwise b.", "where([1, 0, 1], [1, 2, 3], 0) = [1, 0, 3]"),
 isNaN: doc(TensorIsNaN, "isNaN(x)", "Where an element is not a number (like 0 ÷ 0): 1 there, else 0.", "isNaN([1, 0 ÷ 0]) = [0, 1]"),
-𝕀: eye: TensorIdentity: doc({ n | (0 ..< n) ⊗(=) (0 ..< n) }, "𝕀(n)", "The n×n identity matrix – 1 on the diagonal, 0 elsewhere.", "eye(2) = [[1, 0], [0, 1]]"),
+𝕀: eye: TensorIdentity: doc({ n | 0..<n (⊗ =) 0..<n }, "𝕀(n)", "The n×n identity matrix – 1 on the diagonal, 0 elsewhere.", "eye(2) = [[1, 0], [0, 1]]"),
 dot: doc(TensorDotProduct, "dot(a, b)", "The dot product of two vectors, Σ(a × b).", "dot([1, 2], [3, 4]) = 11"),
 matmul: doc(TensorMatrixMultiply, "matmul(a, b)", "Matrix multiplication: each row of a with each column of b; leading axes batch. Also a (× ∙ +) b.", "matmul([[1, 2]], [[3], [4]]) = [[11]]"),
 fft: TensorFFT: doc({ x |
   n: #(x, -1), m: floor(n ÷ 2) + 1,
   ; any length: the DFT as one matrix, n × m
   dft: {
-    w: (2 × π ÷ n) × (((0 ..< n) ⊗(×) (0 ..< m)) % n),
-    stack((x matmul cos(w), x matmul -(sin(w))))
+    w: 2×π ÷ n × (0..<n (⊗ ×) 0..<m % n),
+    stack((x matmul cos(w), x matmul (-sin(w))))
   },
   ; a power of two: a 32-point DFT on interleaved columns, then halving the columns
   ; while doubling the rows, log₂(n ÷ 32) times – each step one butterfly
   radix2: {
     b: 32, c: n ÷ b,
-    ang: (2 × π ÷ b) × (((0 ..< b) ⊗(×) (0 ..< b)) % b),
+    ang: 2×π ÷ b × (0..<b (⊗ ×) 0..<b % b),
     cols: permute(x ⍴ [-1, b, c], [0, 2, 1]),
     stage: { re, im |
       s: shape(re), r: s_1, h: s_2 ÷ 2,
       cond(guard(s_2 = 1, { (re, im) }), {
         evenRe: slice(re, [0, 0, 0], [-1, -1, h]), oddRe: slice(re, [0, 0, h]),
         evenIm: slice(im, [0, 0, 0], [-1, -1, h]), oddIm: slice(im, [0, 0, h]),
-        a: (π ÷ r) × (0 ..< r), twRe: cos(a) ⍴ [r, 1], twIm: -(sin(a)) ⍴ [r, 1],
-        tRe: (twRe × oddRe) - (twIm × oddIm), tIm: (twRe × oddIm) + (twIm × oddRe),
+        a: π ÷ r × 0..<r, twRe: cos(a) ⍴ [r, 1], twIm: (-sin(a)) ⍴ [r, 1],
+        tRe: twRe×oddRe - twIm×oddIm, tIm: twRe×oddIm + twIm×oddRe,
         stage(concat((evenRe + tRe, evenRe - tRe), 1), concat((evenIm + tIm, evenIm - tIm), 1))
       })
     },
-    out: stage(permute(cols matmul cos(ang), [0, 2, 1]), permute(cols matmul -(sin(ang)), [0, 2, 1])),
+    out: stage(permute(cols matmul cos(ang), [0, 2, 1]), permute(cols matmul (-sin(ang)), [0, 2, 1])),
     ; the first m frequencies, back in x's leading shape
-    lead: slice(shape(x), [0], [#(shape(x)) - 1]),
+    lead: slice(shape(x), [0], [(#shape(x)) - 1]),
     half: { z | slice(z ⍴ [-1, n], [0, 0], [-1, m]) ⍴ concat((lead, [m])) },
-    stack((half(out _ 0), half(out _ 1)))
+    stack((half(out_0), half(out_1)))
   },
-  cond(guard((n ≥ 64) ∧ ((2 ^ round(log2(n))) = n), radix2), dft)
+  cond(guard(n≥64 ∧ 2^round(log2(n))=n, radix2), dft)
 }, "fft(x)", "The spectrum of x along its last axis: the m = n ÷ 2 + 1 frequencies of a real signal, stacked as (real, imaginary). A power-of-two length takes the fast path.", "fft([1, 0, 0, 0]) = [[1, 1, 1], [0, 0, 0]]"),
-meshgrid: doc(TensorMeshgrid, "meshgrid(xs, ys, …)", "Coordinate grids: each argument spread over the whole grid – the first varies along the columns, the second down the rows.", "meshgrid([1, 2], [3, 4]) _ 0 = [[1, 2], [1, 2]]"),
-pad: TensorPad: doc({ x, w | ListReduce(unstack(0 ..< #(shape(x))), { y, k | padAxis(y, k, w, w) }, x) }, "pad(x, w)", "w zeros around x, on both sides of every axis.", "pad([1, 2], 1) = [0, 1, 2, 0]"),
-repeat: TensorRepeat: doc({ x, n | f: flat(x), broadcast(f ⍴ [-1, 1], [#(f), n]) ⍴ [-1] }, "repeat(x, n)", "Each element of x, n times in a row.", "repeat([1, 2], 2) = [1, 1, 2, 2]"),
+meshgrid: doc(TensorMeshgrid, "meshgrid(xs, ys, …)", "Coordinate grids: each argument spread over the whole grid – the first varies along the columns, the second down the rows.", "meshgrid([1, 2], [3, 4])_0 = [[1, 2], [1, 2]]"),
+pad: TensorPad: doc({ x, w | ListReduce(unstack(0..<(#shape(x))), { y, k | padAxis(y, k, w, w) }, x) }, "pad(x, w)", "w zeros around x, on both sides of every axis.", "pad([1, 2], 1) = [0, 1, 2, 0]"),
+repeat: TensorRepeat: doc({ x, n | f: flat(x), broadcast(f ⍴ [-1, 1], [#f, n]) ⍴ [-1] }, "repeat(x, n)", "Each element of x, n times in a row.", "repeat([1, 2], 2) = [1, 1, 2, 2]"),
 sinc: TensorSinc: doc({ x | px: π × x, where(x = 0, 1, sin(px) ÷ px) }, "sinc(x)", "sin(πx) ÷ πx, and 1 at 0 – the normalized sinc.", "sinc(0) = 1"),
-topk: doc(TensorTopK, "topk(x, k)", "The k largest elements, largest first, and where they were: (values, indices).", "topk([3, 9, 2], 2) _ 0 = [9, 3]"),
+topk: doc(TensorTopK, "topk(x, k)", "The k largest elements, largest first, and where they were: (values, indices).", "topk([3, 9, 2], 2)_0 = [9, 3]"),
 einsum: doc(TensorEinsum, "einsum(spec, a, b, …)", "Einstein summation: name the axes, and the names that appear in more than one input but not the output are summed – \"ij,jk->ik\" is matrix multiplication.", "einsum(\"ij,jk->ik\", [[1, 2]], [[3], [4]]) = [[11]]"),
 
 ; Creation
 (⚄): rand: doc(TensorRandomUniform, "⚄(shape)  ·  rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "⚄([2, 2])"),
-randn: TensorRandomNormal: doc({ shape | √(-2 × log(1 - ⚄(shape))) × cos(2 × π × ⚄(shape)) }, "randn(shape)", "A tensor of the given shape, each element drawn from the standard normal distribution – mean 0, spread 1. A fresh draw every call.", "randn([2, 2])"),
-linspace: TensorLinearSpace: doc({ r, n | k: round(n) ⌈ 0, a: r_0, b: r_1, i: 0 ..< k,
-  cond(guard(k = 1, { [a] }), { where(i = (k - 1), b, a + ((b - a) × (i ÷ (k - 1)))) }) }, "linspace([a, b], n)", "n evenly spaced numbers from a to b, both ends included.", "linspace([0, 1], 5) = [0, 0.25, 0.5, 0.75, 1]"),
+randn: TensorRandomNormal: doc({ shape | √(-2 × log(1 - ⚄(shape))) × cos(2×π × ⚄(shape)) }, "randn(shape)", "A tensor of the given shape, each element drawn from the standard normal distribution – mean 0, spread 1. A fresh draw every call.", "randn([2, 2])"),
+linspace: TensorLinearSpace: doc({ r, n |
+  k: round(n) ⌈ 0, a: r_0, b: r_1, i: 0..<k,
+  cond(guard(k = 1, { [a] }), { where(i = k-1, b, a + ((b - a) × (i ÷ (k-1)))) })
+}, "linspace([a, b], n)", "n evenly spaced numbers from a to b, both ends included.", "linspace([0, 1], 5) = [0, 0.25, 0.5, 0.75, 1]"),
 fill: TensorFill: doc({ shape, v | broadcast(v, shape) }, "fill(shape, v)", "A tensor of the given shape with every element v.", "fill([2, 2], 7) = [[7, 7], [7, 7]]"),
 stack: doc(TensorStack, "stack((a, b, …), axis?)", "Tensors of one shape as one tensor, along a new axis.", "stack(([1, 2], [3, 4])) = [[1, 2], [3, 4]]"),
-unstack: doc(TensorUnstack, "unstack(x, axis?)", "A tensor taken apart along an axis, as a list – stack undone.", "#(unstack([[1, 2], [3, 4]])) = 2"),
+unstack: doc(TensorUnstack, "unstack(x, axis?)", "A tensor taken apart along an axis, as a list – stack undone.", "(#unstack([[1, 2], [3, 4]])) = 2"),
 concat: doc(TensorConcat, "concat((a, b, …), axis?)", "Tensors joined end to end along an existing axis.", "concat(([1, 2], [3])) = [1, 2, 3]"),
 (⧉): tile: TensorTile: doc({ x, reps |
-  r: reps ⍴ [-1], d: shape(x), n: #(r) ⌈ #(d),
-  sh: concat((fill([n - #(d)], 1), d)), rr: concat((fill([n - #(r)], 1), r)),
+  r: reps ⍴ [-1], d: shape(x), n: (#r) ⌈ (#d),
+  sh: concat((fill([n - (#d)], 1), d)), rr: concat((fill([n - (#r)], 1), r)),
   broadcast(x ⍴ (stack((sh × 0 + 1, sh), -1) ⍴ [-1]), stack((rr, sh), -1) ⍴ [-1]) ⍴ (sh × rr)
 }, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]"),
 
@@ -537,9 +592,9 @@ draw: DrawShape: doc({ shape, color, width |
     d: shape(pixels(picture)),
     ; across the stroke a pixel spans d-0.5 to d+0.5 and the stroke -r to r: the overlap
     ; is how much of the pixel it covers
-    cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ -(r)) ⌈ 0, -1),
+    cover: unsqueeze((d+0.5 ⌊ r) - (d-0.5 ⌈ (-r)) ⌈ 0, -1),
     ; mixed as light mixes – in linear intensity, not in the screen's gamma-encoded values
-    picture^γ × 1-cover + color^γ×cover ^ 1÷γ
+    (picture^γ × (1 - cover) + color^γ×cover) ^ (1 ÷ γ)
   }
 }, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width pixels wide in color, its edges antialiased.", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
 
@@ -551,7 +606,7 @@ draw: DrawShape: doc({ shape, color, width |
 ; variable, made when it first sees its variables; := commits the variables and the
 ; slots together, in one pass.
 TensorOptimizerStep: { loss, only |
-  r: ∇(loss)(),
+  r: (∇loss)(),
   cond(guard(isError(r), { r }), {
     vs: ListGet(r, 1), gs: ListGet(r, 2), n: ListLength(vs),
     reads: { o | ListReduce(ListMap(vs, { v | identical(o, v) }), { p, q | p ⌈ q }, 0) },
@@ -560,11 +615,16 @@ TensorOptimizerStep: { loss, only |
       guard(isList(only), {
         cond(
           guard(ListReduce(ListMap(only, { o | 1 - reads(o) }), { p, q | p ⌈ q }, 0), {
-            Error("a listed variable isn't a ~ the loss reads – a ~~ slot holds data, and nothing trains it") }),
-          { keep: mask(0 ..< n, stack(ListMap(vs, { v | ListReduce(ListMap(only, { o | identical(o, v) }), { p, q | p ⌈ q }, 0) }))),
-            (ListGet(r, 0), ListGather(vs, unstack(keep)), ListGather(gs, unstack(keep))) })
+            Error("a listed variable isn't a ~ the loss reads – a ~~ slot holds data, and nothing trains it")
+          }),
+          {
+            keep: mask(0..<n, stack(ListMap(vs, { v | ListReduce(ListMap(only, { o | identical(o, v) }), { p, q | p ⌈ q }, 0) }))),
+            (ListGet(r, 0), ListGather(vs, unstack(keep)), ListGather(gs, unstack(keep)))
+          }
+        )
       }),
-      { r })
+      { r }
+    )
   })
 },
 ; the slots a step keeps for its variables – made again when the variables change. It
@@ -583,32 +643,34 @@ TensorOptimizerSlots: FunctionNoAutoLift({ held, vs, make |
 ; variable; lr is a number or a function of t – a schedule. Any rule written this way
 ; is an optimizer, a value like the ones below.
 optimizer: Optimizer: doc({ init, rule, lr, only |
-  held: $(◌),
+  held: $◌,
   { loss |
     s: TensorOptimizerStep(loss, only),
     cond(guard(isError(s), { s }), {
       vs: ListGet(s, 1), gs: ListGet(s, 2),
-      slots: TensorOptimizerSlots(held, vs, { v | ListConcat((~~(0),), ListMap(init(v), { x | ~~(x) })) }),
+      slots: TensorOptimizerSlots(held, vs, { v | ListConcat((~~0,), ListMap(init(v), { x | ~~x })) }),
       t: ListGet(ListGet(slots, 0), 0) + 1,
       rate: cond(guard(isFunction(lr), { lr(t) }), { lr }),
-      norm: √(ListReduce(ListMap(gs, { g | Σ(g × g) }), { p, q | p + q })),
+      norm: √ListReduce(ListMap(gs, { g | Σ(g × g) }), { p, q | p + q }),
       next: ListMap(vs, { v, i | rule(ListGet(gs, i), v, ListDrop(ListGet(slots, i), 1), t, rate, norm) }),
       ; each variable, its count and its slots, assigned together
-      flat: { ls | ListReduce(ls, { p, q | ListConcat(p, q) }) },
-      flat(ListMap(vs, { v, i | ListConcat((v,), ListGet(slots, i)) })) := flat(ListMap(next, { n | ListConcat((ListGet(n, 0), t), ListGet(n, 1)) })),
-      ListGet(s, 0) })
+      joined: { ls | ListReduce(ls, { p, q | ListConcat(p, q) }) },
+      joined(ListMap(vs, { v, i | ListConcat((v,), ListGet(slots, i)) }))
+        := joined(ListMap(next, { n | ListConcat((ListGet(n, 0), t), ListGet(n, 1)) })),
+      ListGet(s, 0)
+    })
   }
-}, "optimizer(init, rule, lr, vars?)", "Make an optimizer from its rule. init(v) gives a variable's slots (a list of tensors); rule(g, v, slots, t, lr, norm) gives (v′, slots′) – the variable's next value and its slots'. t counts steps from 1, norm is the gradient's norm over every variable, and lr is a number or a schedule – a function of t.", "opt: optimizer({ v | List() }, { g, v, s, t, lr | (v - (lr × g), List()) }, 0.1)"),
+}, "optimizer(init, rule, lr, vars?)", "Make an optimizer from its rule. init(v) gives a variable's slots (a list of tensors); rule(g, v, slots, t, lr, norm) gives (v′, slots′) – the variable's next value and its slots'. t counts steps from 1, norm is the gradient's norm over every variable, and lr is a number or a schedule – a function of t.", "opt: optimizer({ v | List() }, { g, v, s, t, lr | (v - lr×g, List()) }, 0.1)"),
 zerosLike: TensorZerosLike: doc({ v | fill(shape(v), 0) }, "zerosLike(x)", "Zeros in x's shape.", "zerosLike([1, 2, 3]) = [0, 0, 0]"),
 ; the hyperparameters a constructor takes: a number in place of the default, and a
 ; trailing list picks the variables to train
 TensorOptimizerArg: { a, default | cond(guard(isTensor(a), { a }), { default }) },
 TensorOptimizerVars: { a, b, c | cond(guard(isList(a), { a }), guard(isList(b), { b }), { c }) },
 ; scale a gradient down so the norm over every variable is at most c, then run the rule
-clipNorm: OptimizerClipNorm: doc({ rule, c | { g, v, s, t, lr, norm | rule(g × ((c ÷ (norm ⌈ c)) ⌊ 1), v, s, t, lr, norm) } },
+clipNorm: OptimizerClipNorm: doc({ rule, c | { g, v, s, t, lr, norm | rule(g × (c ÷ (norm ⌈ c) ⌊ 1), v, s, t, lr, norm) } },
   "clipNorm(rule, c)", "A rule with its gradient clipped: scaled so its norm over every variable is at most c.", "opt: optimizer(adamInit, clipNorm(adamRule(0), 1), 0.01)"),
 ; schedules – functions of the step t, for lr
-warmup: ScheduleWarmup: doc({ peak, steps | { t | peak × ((t ÷ steps) ⌊ 1) } }, "warmup(peak, steps)", "A learning rate rising linearly to peak over the first steps, then staying.", "opt: adam(warmup(0.01, 100))"),
+warmup: ScheduleWarmup: doc({ peak, steps | { t | peak × (t ÷ steps ⌊ 1) } }, "warmup(peak, steps)", "A learning rate rising linearly to peak over the first steps, then staying.", "opt: adam(warmup(0.01, 100))"),
 cosine: ScheduleCosine: doc({ peak, steps | { t | peak × 0.5 × (1 + cos(π × ((t ⌊ steps) ÷ steps))) } }, "cosine(peak, steps)", "A learning rate falling from peak to 0 along half a cosine over steps, then staying at 0.", "opt: adam(cosine(0.01, 1000))"),
 
 sgd: OptimizerSGD: doc({ lr, a, b |
@@ -616,77 +678,81 @@ sgd: OptimizerSGD: doc({ lr, a, b |
   optimizer(
     { v | cond(guard(momentum = 0, { List() }), { (zerosLike(v),) }) },
     { g, v, s, t, lr | cond(
-      guard(momentum = 0, { (v + (g × -(lr)), List()) }),
-      { m: (ListGet(s, 0) × momentum) + g, (v + (m × -(lr)), (m,)) }) },
+      guard(momentum = 0, { (v + (g × (-lr)), List()) }),
+      { m: ListGet(s, 0) × momentum + g, (v + (m × (-lr)), (m,)) }) },
     lr, TensorOptimizerVars(a, b))
 }, "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)"),
 ; Adam's moments and their bias correction, shared by its family: m and n, the running
 ; averages of the gradient and its square, divided back up for their head start at 0
 adamInit: OptimizerAdamInit: doc({ v | (zerosLike(v), zerosLike(v)) }, "adamInit", "Adam's slots for a variable – its two moments, zero to start – for optimizer(adamInit, …).", "opt: optimizer(adamInit, adamRule(0), 0.01)"),
 TensorAdamMoments: { g, s, t, b1, b2 |
-  m: (g × (1 - b1)) + (ListGet(s, 0) × b1), n: ((g × g) × (1 - b2)) + (ListGet(s, 1) × b2),
-  (m, n, m ÷ (1 - (b1 ^ t)), n ÷ (1 - (b2 ^ t)))
+  m: g × (1 - b1) + (ListGet(s, 0) × b1),
+  n: g × g × (1 - b2) + (ListGet(s, 1) × b2),
+  (m, n, m ÷ (1 - b1^t), n ÷ (1 - b2^t))
 },
 adamRule: OptimizerAdamRule: doc({ wd | { g, v, s, t, lr |
   q: TensorAdamMoments(g, s, t, 0.9, 0.999),
-  u: (ListGet(q, 2) ÷ (√(ListGet(q, 3)) + 1e-8)) × -(lr),
+  u: ListGet(q, 2) ÷ ((√ListGet(q, 3)) + 1e-8) × (-lr),
   (v + cond(guard(wd = 0, { u }), { u + (v × -(lr × wd)) }), (ListGet(q, 0), ListGet(q, 1)))
 } }, "adamRule(weightDecay)", "Adam's update rule, for optimizer(adamInit, …): the moments of the gradient and its square, bias-corrected, and decoupled weight decay.", "opt: optimizer(adamInit, adamRule(0), 0.01)"),
 adam: OptimizerAdam: doc({ lr, a | optimizer(adamInit, adamRule(0), lr, a) }, "adam(lr, vars?)", "Adam: per-variable step sizes from running averages of the gradient and its square. A trailing list picks the variables to train.", "opt: adam(0.01)"),
 adamw: OptimizerAdamW: doc({ lr, a, b | optimizer(adamInit, adamRule(TensorOptimizerArg(a, 1e-4)), lr, TensorOptimizerVars(a, b)) },
   "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)"),
 adagrad: OptimizerAdaGrad: doc({ lr, a | optimizer({ v | (zerosLike(v),) }, { g, v, s, t, lr |
-  acc: (g × g) + ListGet(s, 0), (v + ((g ÷ (√(acc) + 1e-7)) × -(lr)), (acc,))
+  acc: g × g + ListGet(s, 0), (v + (g ÷ ((√acc) + 1e-7) × (-lr)), (acc,))
 }, lr, a) }, "adagrad(lr, vars?)", "AdaGrad: each variable's step shrinks with the gradients it has seen. A trailing list picks the variables to train.", "opt: adagrad(0.5)"),
 rmsprop: OptimizerRMSProp: doc({ lr, a | optimizer({ v | (zerosLike(v),) }, { g, v, s, t, lr |
-  n: (ListGet(s, 0) × 0.9) + ((g × g) × 0.1), (v + ((g ÷ (√(n) + 1e-8)) × -(lr)), (n,))
+  n: ListGet(s, 0) × 0.9 + (g × g × 0.1), (v + (g ÷ ((√n) + 1e-8) × (-lr)), (n,))
 }, lr, a) }, "rmsprop(lr, vars?)", "RMSprop: steps divided by a running root-mean-square of the gradient.", "opt: rmsprop(0.01)"),
 adadelta: OptimizerAdaDelta: doc({ lr, a | optimizer({ v | (zerosLike(v), zerosLike(v)) }, { g, v, s, t, lr |
-  e: (ListGet(s, 0) × 0.9) + ((g × g) × 0.1),
+  e: ListGet(s, 0) × 0.9 + (g × g × 0.1),
   Δ: g × (√(ListGet(s, 1) + 1e-6) ÷ √(e + 1e-6)),
-  (v + (Δ × -(lr)), (e, (ListGet(s, 1) × 0.9) + ((Δ × Δ) × 0.1)))
+  (v + (Δ × (-lr)), (e, ListGet(s, 1) × 0.9 + (Δ × Δ × 0.1)))
 }, lr, a) }, "adadelta(lr, vars?)", "Adadelta: steps in the units of the variable, from running averages of past gradients and past steps; lr 1 is the classic method.", "opt: adadelta(1)"),
 adamax: OptimizerAdaMax: doc({ lr, a | optimizer({ v | (zerosLike(v), zerosLike(v)) }, { g, v, s, t, lr |
-  m: (g × 0.1) + (ListGet(s, 0) × 0.9), u: (ListGet(s, 1) × 0.999) ⌈ abs(g),
-  (v + (((m ÷ (1 - (0.9 ^ t))) ÷ (u + 1e-8)) × -(lr)), (m, u))
+  m: g × 0.1 + (ListGet(s, 0) × 0.9), u: ListGet(s, 1) × 0.999 ⌈ abs(g),
+  (v + (m ÷ (1 - 0.9^t) ÷ (u + 1e-8) × (-lr)), (m, u))
 }, lr, a) }, "adamax(lr, vars?)", "Adamax: Adam with the infinity norm – steps divided by the largest recent gradient.", "opt: adamax(0.01)"),
 nadam: OptimizerNAdam: doc({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
   q: TensorAdamMoments(g, s, t, 0.9, 0.999),
-  mh: ((ListGet(q, 0) × 0.9) ÷ (1 - (0.9 ^ (t + 1)))) + ((g × 0.1) ÷ (1 - (0.9 ^ t))),
-  (v + ((mh ÷ (√(ListGet(q, 3)) + 1e-8)) × -(lr)), (ListGet(q, 0), ListGet(q, 1)))
+  mh: ListGet(q, 0) × 0.9 ÷ (1 - 0.9^(t+1)) + (g × 0.1 ÷ (1 - 0.9^t)),
+  (v + (mh ÷ ((√ListGet(q, 3)) + 1e-8) × (-lr)), (ListGet(q, 0), ListGet(q, 1)))
 }, lr, a) }, "nadam(lr, vars?)", "NAdam: Adam with Nesterov momentum – the first moment looks one step ahead.", "opt: nadam(0.01)"),
 radam: OptimizerRAdam: doc({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
   q: TensorAdamMoments(g, s, t, 0.9, 0.999),
-  ρmax: (2 ÷ 0.001) - 1, ρ: ρmax - ((2 × t × (0.999 ^ t)) ÷ (1 - (0.999 ^ t))),
+  ρmax: 2 ÷ 0.001 - 1, ρ: ρmax - (2 × t × 0.999^t ÷ (1 - 0.999^t)),
   u: cond(
-    guard(ρ ≥ 5, { ((((ρ - 4) × (ρ - 2) × ρmax) ÷ ((ρmax - 4) × (ρmax - 2) × ρ)) √ 2) × (ListGet(q, 2) ÷ (√(ListGet(q, 3)) + 1e-8)) }),
+    guard(ρ ≥ 5, {
+      ((ρ - 4) × (ρ - 2) × ρmax ÷ ((ρmax - 4) × (ρmax - 2) × ρ) √ 2)
+        × (ListGet(q, 2) ÷ ((√ListGet(q, 3)) + 1e-8))
+    }),
     { ListGet(q, 2) }),
-  (v + (u × -(lr)), (ListGet(q, 0), ListGet(q, 1)))
+  (v + (u × (-lr)), (ListGet(q, 0), ListGet(q, 1)))
 }, lr, a) }, "radam(lr, vars?)", "RAdam: Adam whose adaptive step is switched in as its variance estimate becomes reliable – no warmup needed.", "opt: radam(0.01)"),
 amsgrad: OptimizerAMSGrad: doc({ lr, a | optimizer({ v | (zerosLike(v), zerosLike(v), zerosLike(v)) }, { g, v, s, t, lr |
   q: TensorAdamMoments(g, s, t, 0.9, 0.999), top: ListGet(s, 2) ⌈ ListGet(q, 3),
-  (v + ((ListGet(q, 2) ÷ (√(top) + 1e-8)) × -(lr)), (ListGet(q, 0), ListGet(q, 1), top))
+  (v + (ListGet(q, 2) ÷ ((√top) + 1e-8) × (-lr)), (ListGet(q, 0), ListGet(q, 1), top))
 }, lr, a) }, "amsgrad(lr, vars?)", "AMSGrad: Adam that divides by the largest second moment seen so far, so a step never grows from a forgotten large gradient.", "opt: amsgrad(0.01)"),
 adabelief: OptimizerAdaBelief: doc({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
-  m: (g × 0.1) + (ListGet(s, 0) × 0.9), d: g - m,
-  b: ((d × d) × 0.001) + (ListGet(s, 1) × 0.999) + 1e-16,
-  (v + (((m ÷ (1 - (0.9 ^ t))) ÷ (√(b ÷ (1 - (0.999 ^ t))) + 1e-16)) × -(lr)), (m, b))
+  m: g × 0.1 + (ListGet(s, 0) × 0.9), d: g - m,
+  b: d × d × 0.001 + (ListGet(s, 1) × 0.999) + 1e-16,
+  (v + (m ÷ (1 - 0.9^t) ÷ (√(b ÷ (1 - 0.999^t)) + 1e-16) × (-lr)), (m, b))
 }, lr, a) }, "adabelief(lr, vars?)", "AdaBelief: Adam that divides by how far the gradient strays from its running average – large steps where the gradient is predictable.", "opt: adabelief(0.01)"),
 yogi: OptimizerYogi: doc({ lr, a | optimizer({ v | (zerosLike(v), fill(shape(v), 1e-6)) }, { g, v, s, t, lr |
-  m: (g × 0.1) + (ListGet(s, 0) × 0.9), g2: g × g,
-  n: ListGet(s, 1) - ((sign(ListGet(s, 1) - g2) × g2) × 0.001),
-  (v + ((m ÷ (√(n) + 1e-3)) × -(lr)), (m, n))
+  m: g × 0.1 + (ListGet(s, 0) × 0.9), g2: g × g,
+  n: ListGet(s, 1) - (sign(ListGet(s, 1) - g2) × g2 × 0.001),
+  (v + (m ÷ ((√n) + 1e-3) × (-lr)), (m, n))
 }, lr, a) }, "yogi(lr, vars?)", "Yogi: Adam whose second moment moves additively, so it cannot blow up or vanish suddenly.", "opt: yogi(0.01)"),
 lion: OptimizerLion: doc({ lr, a, b | wd: TensorOptimizerArg(a, 1e-3), optimizer({ v | (zerosLike(v),) }, { g, v, s, t, lr |
-  c: (ListGet(s, 0) × 0.9) + (g × 0.1),
-  (v + ((sign(c) + (v × wd)) × -(lr)), ((ListGet(s, 0) × 0.99) + (g × 0.01),))
+  c: ListGet(s, 0) × 0.9 + (g × 0.1),
+  (v + ((sign(c) + (v × wd)) × (-lr)), (ListGet(s, 0) × 0.99 + (g × 0.01),))
 }, lr, TensorOptimizerVars(a, b)) }, "lion(lr, weightDecay?, vars?)", "Lion: the sign of an interpolated momentum – every step has the same size, lr; found by program search.", "opt: lion(0.001)"),
 lamb: OptimizerLAMB: doc({ lr, a, b | wd: TensorOptimizerArg(a, 0), optimizer(adamInit, { g, v, s, t, lr |
   q: TensorAdamMoments(g, s, t, 0.9, 0.999),
-  u: (ListGet(q, 2) ÷ (√(ListGet(q, 3)) + 1e-6)) + (v × wd),
+  u: ListGet(q, 2) ÷ ((√ListGet(q, 3)) + 1e-6) + (v × wd),
   pv: norm(v), pu: norm(u),
-  trust: where((pv > 0) ∧ (pu > 0), pv ÷ (pu ⌈ 1e-30), 1),
-  (v + ((u × trust) × -(lr)), (ListGet(q, 0), ListGet(q, 1)))
+  trust: where(pv>0 ∧ pu>0, pv ÷ (pu ⌈ 1e-30), 1),
+  (v + (u × trust × (-lr)), (ListGet(q, 0), ListGet(q, 1)))
 }, lr, TensorOptimizerVars(a, b)) }, "lamb(lr, weightDecay?, vars?)", "LAMB: Adam rescaled per variable by the ratio of the variable's norm to its update's – large batches train stably.", "opt: lamb(0.01)"),
 ; Muon: momentum, then for a matrix its update made orthogonal – five Newton–Schulz
 ; steps to the nearest semi-orthogonal matrix; anything else steps as momentum SGD
@@ -694,16 +760,20 @@ TensorNewtonSchulz: { G |
   tall: shape(G)_0 > shape(G)_1,
   X0: cond(guard(tall, { transpose(G) }), { G }),
   X1: X0 ÷ (norm(X0) + 1e-7),
-  step: { X | A: X matmul transpose(X), B: (A × -4.775) + ((A matmul A) × 2.0315), (X × 3.4445) + (B matmul X) },
+  step: { X |
+    A: X matmul transpose(X),
+    B: A × -4.775 + ((A matmul A) × 2.0315),
+    X × 3.4445 + (B matmul X)
+  },
   X: (step ⍣ 5)(X1),
   cond(guard(tall, { transpose(X) }), { X })
 },
 muon: OptimizerMuon: doc({ lr, a, b | momentum: TensorOptimizerArg(a, 0.95), optimizer({ v | (zerosLike(v),) }, { g, v, s, t, lr |
-  m: (ListGet(s, 0) × momentum) + g, look: g + (m × momentum),
+  m: ListGet(s, 0) × momentum + g, look: g + (m × momentum),
   u: cond(
-    guard(#(shape(v)) = 2, { TensorNewtonSchulz(look) × √((shape(v)_0 ÷ shape(v)_1) ⌈ 1) }),
+    guard((#shape(v)) = 2, { TensorNewtonSchulz(look) × √(shape(v)_0 ÷ shape(v)_1 ⌈ 1) }),
     { look }),
-  (v + (u × -(lr)), (m,))
+  (v + (u × (-lr)), (m,))
 }, lr, TensorOptimizerVars(a, b)) }, "muon(lr, momentum?, vars?)", "Muon: momentum whose update, for a matrix, is orthogonalized by Newton–Schulz steps – every direction of the matrix moves at the same rate. Other variables step as momentum SGD.", "opt: muon(0.02)"),
 
 ; Strings
@@ -718,17 +788,17 @@ StringConcat: doc(StringConcat, "StringConcat(a, b, …)", "Strings joined end t
 StringLength: doc(StringLength, "StringLength(s)", "How many characters s has.", "StringLength(\"abc\") = 3"),
 CodeParse: doc(CodeParse, "CodeParse(text)", "Fluent source text as a syntax tree – a program as a value.", "CodeParse(\"1 + 2\")"),
 CodeEvaluate: doc(CodeEvaluate, "CodeEvaluate(code)", "Run Fluent source text – or a quoted program – and give its value.", "CodeEvaluate(\"1 + 2\") = 3"),
-FunctionArity: doc(FunctionArity, "FunctionArity((two, one))", "One function from two, chosen by how many arguments it gets: the first takes two, the second one – how + is add and abs.", "FunctionArity(({ x, y | x + y }, { x | -(x) }))(5) = -5"),
+FunctionArity: doc(FunctionArity, "FunctionArity((two, one))", "One function from two, chosen by how many arguments it gets: the first takes two, the second one – how + is add and abs.", "FunctionArity(({ x, y | x + y }, { x | -x }))(5) = -5"),
 FunctionNoAutoLift: doc(FunctionNoAutoLift, "FunctionNoAutoLift(f)", "f, marked so a signal passed to it arrives as the signal itself – not its value, with the call re-run on every change.", "FunctionNoAutoLift({ s | s })"),
 doc: FunctionDoc: doc(doc, "doc(f, signature, description, example)", "Attach a doc card to f – what hover shows – and give f back.", "double: doc({ x | x × 2 }, \"double(x)\", \"x twice\", \"double(2) = 4\")"),
 SignalCreate: doc(SignalCreate, "SignalCreate(value)", "A signal holding value – read it with s(), write it with s(v). $(value) is the short form.", "s: SignalCreate(1), s()"),
-SignalComputed: doc(SignalComputed, "SignalComputed(thunk)", "A signal whose value is the thunk's, computed again whenever a signal the thunk reads changes. $({ … }) is the short form.", "a: $(1), b: SignalComputed({ a() × 10 }), b()"),
-SignalRead: doc(SignalRead, "SignalRead(s)", "A signal's value – the same as s().", "s: $(3), SignalRead(s)"),
-SignalUpdate: doc(SignalUpdate, "SignalUpdate(s, v)", "Write v into the signal s – the same as s(v).", "s: $(3), SignalUpdate(s, 4), s()"),
+SignalComputed: doc(SignalComputed, "SignalComputed(thunk)", "A signal whose value is the thunk's, computed again whenever a signal the thunk reads changes. $({ … }) is the short form.", "a: $1, b: SignalComputed({ a() × 10 }), b()"),
+SignalRead: doc(SignalRead, "SignalRead(s)", "A signal's value – the same as s().", "s: $3, SignalRead(s)"),
+SignalUpdate: doc(SignalUpdate, "SignalUpdate(s, v)", "Write v into the signal s – the same as s(v).", "s: $3, SignalUpdate(s, 4), s()"),
 SignalEffect: doc(SignalEffect, "SignalEffect(thunk)", "Run the thunk now, and again whenever a signal it reads changes – for side effects.", "SignalEffect({ ◌ })"),
 
 ; Misc
-($): doc(Reactive, "$(value)", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $(0.5), x ^ 2"),
+($): doc(Reactive, "$value", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $0.5, x^2"),
 ; ← is defined here in the prelude, so its doc lives here too
-(←): SignalWrite: doc(FunctionNoAutoLift({ s, v | s(v) }), "signal ← value", "Write a value into a signal – same as signal(value), but reads left-to-right. Chains like any spaced operator: parenthesize compound values, s ← (a + b).", "x: $(1), x ← 9, x() = 9"),
-once: doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $(4), once(x) + 1 = 5"),
+(←): SignalWrite: doc(FunctionNoAutoLift({ s, v | s(v) }), "signal← value", "Write a value into a signal – same as signal(value), but reads left-to-right. Chains like any spaced operator: parenthesize compound values, s ← (a + b).", "x: $1, x← 9, x() = 9"),
+once: doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $4, once(x) + 1 = 5"),

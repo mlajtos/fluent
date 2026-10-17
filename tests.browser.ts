@@ -475,7 +475,7 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
 
   // 7 · operators are functions – a name in operator position, no parens, no +
   await room("Operators aren")
-  await typeInCell(page, "now put plus in the MIDDLE", "plus: add, 40 plus 2")
+  await typeInCell(page, "now put plus in the middle", "plus: add, 40 plus 2")
   await solved("You taught the language a word")
   await next()
 
