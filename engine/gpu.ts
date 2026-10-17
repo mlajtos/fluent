@@ -5,8 +5,7 @@
 import type { UOp } from "./ir.ts";
 import { node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM, range, iconst, iadd, imul, idiv, imod, load, rebuild } from "./ir.ts";
 import { graphRewriteMany } from "./rewrite.ts";
-import { optimizeMany, COST, canonical, placeholders, checkMemory, rangesIn } from "./opt.ts";
-import type { HostData } from "./cpu.ts";
+import { optimizeMany, COST, planner, checkMemory, rangesIn, MEMORY_BUDGET } from "./opt.ts";
 
 // Dispatches per queue.submit. Submitting each kernel alone costs ~15× in dispatch
 // overhead; one submit per step wedges some drivers and starves the compositor. 16–32 is
@@ -397,10 +396,10 @@ class SyncReader {
 }
 
 // ── the executor: plans, buffers, bind groups, dispatches in chunked submits ──────────
+const USAGE = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
 export class GPU {
   readonly name = "gpu";
   #dev: GPUDevice;
-  #pipes = new Map<string, GPUComputePipeline>();
   #timestamps: boolean;                                                        // the device can time passes (profiling)
   constructor(dev: GPUDevice, timestamps: boolean) { this.#dev = dev; this.#timestamps = timestamps; }
   static async create(): Promise<GPU | null> {
@@ -420,33 +419,56 @@ export class GPU {
     });
     return new GPU(dev, ts);
   }
-  #pipe(code: string): GPUComputePipeline {
-    let p = this.#pipes.get(code);
-    if (!p) { p = this.#dev.createComputePipeline({ layout: "auto", compute: { module: this.#dev.createShaderModule({ code }), entryPoint: "main" } }); this.#pipes.set(code, p); }
-    return p;
-  }
-  #bytes = (u: UOp): number => Math.max(numel(u.shape), 1) * 4;
   get device(): GPUDevice { return this.#dev; }
+  #bytes = (u: UOp): number => Math.max(numel(u.shape), 1) * 4;
 
-  // ── the live path: synchronous, results stay on the device ────────────────────────
-  // computeSync runs the graph and returns one fresh buffer per root, which the caller owns
-  // (free it with release). A BUFFER leaf binds the buffer `resolve` names; a CONSTANT is
-  // uploaded once and kept as long as its node lives. Validation errors arrive late and are
-  // raised by the next call.
-  #reader: SyncReader | null = null;
-  #uploaded = new WeakMap<UOp, GPUBuffer>();
-  #freeOnCollect = new FinalizationRegistry<GPUBuffer>((b) => b.destroy());
-  #late: Error | null = null;
-  #raiseLate(): void { const e = this.#late; if (e) { this.#late = null; throw e; } }
+  // A plan is its kernels in waves (a wave reads only earlier waves, so it runs as one pass)
+  // and its leaves. A pipeline lives while some plan runs its text.
+  #pipes = new Map<string, { pipe: GPUComputePipeline; plans: number }>();
+  #plan = planner((roots) => {
+    const lowered = lowerMany(roots), waves: UOp[][] = [], wave = new Map<number, number>(), leaves: UOp[] = [];
+    checkMemory(lowered, "KERNEL");
+    for (const u of toposort(lowered)) {
+      if (u.op === "BUFFER" || u.op === "CONSTANT") { leaves.push(u); continue; }
+      if (u.op !== "KERNEL") throw new Error(`gpu: ${u.op} at the kernel boundary`);
+      const w = Math.max(0, ...u.src.map((x) => (wave.get(x.id) ?? -1) + 1));
+      wave.set(u.id, w);
+      (waves[w] ??= []).push(u);
+    }
+    const codes = [...new Set(waves.flat().map((k) => (k.arg as { wgsl: string }).wgsl))];
+    for (const code of codes) {
+      const p = this.#pipes.get(code);
+      if (p) p.plans++;
+      else this.#pipes.set(code, { pipe: this.#dev.createComputePipeline({ layout: "auto", compute: { module: this.#dev.createShaderModule({ code }), entryPoint: "main" } }), plans: 1 });
+    }
+    return { lowered, waves, leaves, codes };
+  }, (plan) => { for (const code of plan.codes) if (--this.#pipes.get(code)!.plans === 0) this.#pipes.delete(code); });
+
   // Buffers are recycled by size: a fresh buffer is zero-cleared by the browser before its
   // first use – a pass over memory every step for nothing – and queue order makes reusing
-  // a buffer in a later submission safe.
+  // a buffer in a later submission safe. The pool holds one plan's worth at most: past
+  // MEMORY_BUDGET it destroys the sizes released longest ago.
   #spare = new Map<number, GPUBuffer[]>();
+  #pooled = 0;
   #take(bytes: number): GPUBuffer {
     const b = this.#spare.get(bytes)?.pop();
-    return b ?? this.#dev.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+    if (b) this.#pooled -= bytes;
+    return b ?? this.#dev.createBuffer({ size: bytes, usage: USAGE() });
   }
-  release(b: GPUBuffer): void { const list = this.#spare.get(b.size); if (list) list.push(b); else this.#spare.set(b.size, [b]); }
+  release(b: GPUBuffer): void {
+    const list = this.#spare.get(b.size) ?? [];
+    this.#spare.delete(b.size);
+    this.#spare.set(b.size, list);
+    list.push(b);
+    this.#pooled += b.size;
+    for (const [size, l] of this.#spare) {
+      while (this.#pooled > MEMORY_BUDGET && l.length) { l.pop()!.destroy(); this.#pooled -= size; }
+      if (!l.length) this.#spare.delete(size);
+      if (this.#pooled <= MEMORY_BUDGET) break;
+    }
+  }
+
+  #reader: SyncReader | null = null;
   readSync(b: GPUBuffer, n: number): Float32Array {
     this.#raiseLate();
     this.#reader ??= new SyncReader(this.#dev);
@@ -455,43 +477,46 @@ export class GPU {
   }
   async readAsync(b: GPUBuffer, n: number): Promise<Float32Array> {
     this.#raiseLate();
-    return (await this.#readBack([[b, [Math.max(n, 1)]]]))[0]!.data.slice(0, n);
+    const size = Math.max(n, 1) * 4, staging = this.#dev.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }), enc = this.#dev.createCommandEncoder();
+    enc.copyBufferToBuffer(b, 0, staging, 0, size);
+    this.#dev.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const out = new Float32Array(staging.getMappedRange()).slice(0, n);
+    staging.unmap(); staging.destroy();
+    return out;
   }
   // Profiling: while `profile` collects, each kernel runs in a pass of its own between two
   // timestamps, labelled by its shape and form – measured attribution of a step's GPU time.
   profile: { label: string; ms: number; wgsl: string }[] | null = null;
   #pending: Promise<void>[] = [];
   async profiled(): Promise<{ label: string; ms: number; wgsl: string }[]> { await Promise.all(this.#pending); this.#pending = []; const p = this.profile ?? []; this.profile = null; return p; }
-  #plans = new Map<string, { lowered: UOp[]; slots: UOp[] }>();
-  // Work in flight, one promise per computeSync. A display frame waits behind whatever is
-  // queued ahead of it, so a loop that keeps submitting starves the screen: it should wait
-  // for `drained(depth)` before its next step.
-  #inflight: Promise<unknown>[] = [];
-  async drained(depth: number): Promise<void> { while (this.#inflight.length > depth) await this.#inflight.shift(); }
+  // Work in flight, one promise per computeSync until it is done. A display frame waits
+  // behind whatever is queued ahead of it, so a loop that keeps submitting starves the
+  // screen: it should wait for `drained(depth)` before its next step.
+  #inflight = new Set<Promise<void>>();
+  async drained(depth: number): Promise<void> { while (this.#inflight.size > depth) await Promise.race(this.#inflight); }
+  #uploaded = new WeakMap<UOp, GPUBuffer>();
+  #freeOnCollect = new FinalizationRegistry<GPUBuffer>((b) => b.destroy());
+  #late: Error | null = null;
+  #raiseLate(): void { const e = this.#late; if (e) { this.#late = null; throw e; } }
+
+  // ── the live path: synchronous, results stay on the device ────────────────────────
+  // computeSync runs the graph and returns one fresh buffer per root, which the caller owns
+  // (free it with release). A BUFFER leaf binds the buffer `resolve` names; a CONSTANT is
+  // uploaded once and kept as long as its node lives. Validation errors arrive late and are
+  // raised by the next call.
   computeSync(roots: UOp[], resolve: (name: string) => GPUBuffer | undefined): GPUBuffer[] {
     this.#raiseLate();
-    const dev = this.#dev, U = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
-    const { key, leaves } = canonical(roots);
-    let plan = this.#plans.get(key);
-    if (!plan) {
-      if (this.#plans.size > 512) this.#plans.delete(this.#plans.keys().next().value!);
-      const p = placeholders(roots, leaves);
-      plan = { lowered: lowerMany(p.roots), slots: p.slots };
-      checkMemory(plan.lowered, "KERNEL");
-      this.#plans.set(key, plan);
-    } else { this.#plans.delete(key); this.#plans.set(key, plan); }               // most recently used last
-    const lowered = plan.lowered;
-    const current = new Map(plan.slots.map((s, i) => [s.id, leaves[i]!]));       // the plan's slots, bound to this run's leaves
+    const { plan, bind } = this.#plan(roots), dev = this.#dev;
     dev.pushErrorScope("validation");
-    const outputs = new Map<number, GPUBuffer>(), transient: GPUBuffer[] = [];
-    const store = new Map<number, GPUBuffer>();
+    const store = new Map<number, GPUBuffer>(), transient: GPUBuffer[] = [];
     const bufOf = (u0: UOp): GPUBuffer => {
-      const u = current.get(u0.id) ?? u0;
+      const u = bind.get(u0.id) ?? u0;
       if (u.op === "BUFFER") return resolve(bufName(u)) ?? ((): never => { throw new Error(`gpu: unbound leaf '${bufName(u)}'`); })();
       if (u.op === "CONSTANT") {
         let b = this.#uploaded.get(u);
         if (!b) {
-          b = dev.createBuffer({ size: this.#bytes(u), usage: U });
+          b = dev.createBuffer({ size: this.#bytes(u), usage: USAGE() });
           dev.queue.writeBuffer(b, 0, u.arg as unknown as GPUAllowSharedBufferSource);
           this.#uploaded.set(u, b); this.#freeOnCollect.register(u, b);
         }
@@ -501,32 +526,19 @@ export class GPU {
       if (!b) { b = this.#take(this.#bytes(u)); store.set(u.id, b); transient.push(b); }
       return b;
     };
-    for (const r of lowered) if (r.op === "KERNEL" && !outputs.has(r.id)) {   // the roots' buffers outlive the call
-      const b = this.#take(this.#bytes(r));
-      outputs.set(r.id, b); store.set(r.id, b);
-    }
-    const kernels: UOp[] = [], wave = new Map<number, number>(), seen = new Set<number>();
-    for (const g of lowered) for (const u of toposort(g)) {
-      if (seen.has(u.id)) continue; seen.add(u.id);
-      if (u.op === "BUFFER" || u.op === "CONSTANT") { bufOf(u); continue; }
-      if (u.op !== "KERNEL") throw new Error(`gpu: ${u.op} at the kernel boundary`);
-      let w = 0; for (const x of u.src) if (x.op === "KERNEL") w = Math.max(w, wave.get(x.id)! + 1);
-      wave.set(u.id, w); kernels.push(u);
-    }
-    const byWave = new Map<number, UOp[]>();
-    for (const u of kernels) { const w = wave.get(u.id)!; (byWave.get(w) ?? byWave.set(w, []).get(w)!).push(u); }
+    for (const r of plan.lowered) if (r.op === "KERNEL" && !store.has(r.id)) store.set(r.id, this.#take(this.#bytes(r)));   // the roots' buffers outlive the call
+    for (const u of plan.leaves) bufOf(u);
+    const kernels = plan.waves.flat();
     let enc = dev.createCommandEncoder(), dispatched = 0;
     const flush = () => { dev.queue.submit([enc.finish()]); enc = dev.createCommandEncoder(); dispatched = 0; };
     const timed = this.profile && this.#timestamps && kernels.length ? { qs: dev.createQuerySet({ type: "timestamp", count: Math.min(4096, 2 * kernels.length) }), labels: [] as string[], wgsl: [] as string[] } : null;
-    for (const w of [...byWave.keys()].sort((a, b) => a - b)) {
-      const ks = byWave.get(w)!;
+    for (const ks of plan.waves) {
       const tw = (j: number) => (timed ? { timestampWrites: { querySet: timed.qs, beginningOfPassWriteIndex: 2 * (timed.labels.length + j), endOfPassWriteIndex: 2 * (timed.labels.length + j) + 1 } } : undefined);
       let p = enc.beginComputePass(tw(0));
       ks.forEach((u, j) => {
         if (timed && j) { p.end(); p = enc.beginComputePass(tw(j)); }
-        const a = u.arg as { wgsl: string; dispatch: number[] }, pipe = this.#pipe(a.wgsl);
-        const entries: GPUBindGroupEntry[] = u.src.map((x, i) => ({ binding: i, resource: { buffer: bufOf(x) } }));
-        entries.push({ binding: u.src.length, resource: { buffer: bufOf(u) } });
+        const a = u.arg as { wgsl: string; dispatch: number[] }, pipe = this.#pipes.get(a.wgsl)!.pipe;
+        const entries: GPUBindGroupEntry[] = [...u.src, u].map((x, i) => ({ binding: i, resource: { buffer: bufOf(x) } }));
         p.setPipeline(pipe); p.setBindGroup(0, dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries }));
         p.dispatchWorkgroups(a.dispatch[0]!, a.dispatch[1] ?? 1, a.dispatch[2] ?? 1); dispatched++;
       });
@@ -534,12 +546,15 @@ export class GPU {
       if (timed) for (const u of ks) { const w = (u.arg as { wgsl: string }).wgsl; timed.wgsl.push(w); timed.labels.push(`[${u.shape}] ${w.includes("var<workgroup> As") ? "tile" : w.includes("var<workgroup> part") ? "gemv" : "map"}/${u.src.length}in`); }
       if (dispatched >= SUBMIT_CHUNK) flush();
     }
-    // a root that is a leaf (the graph simplified to its input) still returns a buffer of its own
-    const result = lowered.map((r) => {
-      if (outputs.has(r.id)) return outputs.get(r.id)!;
-      const b = this.#take(this.#bytes(r));
-      enc.copyBufferToBuffer(bufOf(r), 0, b, 0, this.#bytes(r));
-      return b;
+    // every root returns a buffer of its own: a root that is a leaf (the graph simplified to
+    // its input), or a second root equal to the first, is copied into one
+    const given = new Set<GPUBuffer>();
+    const result = plan.lowered.map((r) => {
+      const b = r.op === "KERNEL" ? store.get(r.id)! : null;
+      if (b && !given.has(b)) { given.add(b); return b; }
+      const own = this.#take(this.#bytes(r));
+      enc.copyBufferToBuffer(bufOf(r), 0, own, 0, this.#bytes(r));
+      return own;
     });
     if (timed) {
       const n = timed.labels.length, resolve = dev.createBuffer({ size: 16 * n, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
@@ -554,24 +569,11 @@ export class GPU {
       })());
     }
     flush();
-    this.#inflight.push(dev.queue.onSubmittedWorkDone());
+    const done: Promise<void> = dev.queue.onSubmittedWorkDone().then(() => { this.#inflight.delete(done); });
+    this.#inflight.add(done);
     // a pop rejects only when its device is gone (a reload, a GPU reset): nothing is left to validate
     dev.popErrorScope().then((e) => { if (e) this.#late = new Error(`gpu validation: ${e.message}`); }, () => {});
     for (const b of transient) this.release(b);
     return result;
-  }
-
-  async #readBack(bufs: readonly (readonly [GPUBuffer, readonly number[]])[]): Promise<HostData[]> {
-    const sizes = bufs.map(([, sh]) => Math.max(numel(sh), 1)), offs: number[] = [];
-    let total = 0; for (const n of sizes) { offs.push(total); total += n; }
-    const staging = this.#dev.createBuffer({ size: Math.max(total, 1) * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    const enc = this.#dev.createCommandEncoder();
-    bufs.forEach(([b], i) => enc.copyBufferToBuffer(b, 0, staging, offs[i]! * 4, sizes[i]! * 4));
-    this.#dev.queue.submit([enc.finish()]);
-    await staging.mapAsync(GPUMapMode.READ);
-    const mapped = staging.getMappedRange();
-    const out = bufs.map(([, sh], i) => ({ data: new Float32Array(mapped, offs[i]! * 4, sizes[i]!).slice(), shape: sh }));
-    staging.unmap(); staging.destroy();
-    return out;
   }
 }

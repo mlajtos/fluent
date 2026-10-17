@@ -4,7 +4,7 @@
 
 import type { UOp } from "./ir.ts";
 import { numel, kInputs, bufName, toposort, MATHS, hashUniform, bounds } from "./ir.ts";
-import { optimizeMany, canonical, placeholders, checkMemory } from "./opt.ts";
+import { optimizeMany, planner, checkMemory } from "./opt.ts";
 
 export interface HostData { data: Float32Array; shape: readonly number[] }
 
@@ -94,61 +94,42 @@ export function printKernel(k: UOp): string {
   const loads = Array.from({ length: nIn }, (_, i) => `const a${i} = ins[${i}];`).join(" ");
   return `(ins, o) => {\n${loads}\nfor (let i = 0; i < ${n}; i++) {\n${c.scopes[0]!.join("\n")}\no[i] = ${body};\n}\n}`;
 }
-const kernelFn = new WeakMap<UOp, Compiled>();                                 // a plan's kernels are printed once
 const compile = (k: UOp): Compiled => {
-  let fn = kernelFn.get(k);
-  if (fn) return fn;
   const src = printKernel(k);
-  fn = compiled.get(src);
+  let fn = compiled.get(src);
   if (!fn) {
     if (compiled.size > 4096) compiled.clear();
     fn = new Function("f", "M", "H", `return ${src}`)(Math.fround, MATH_JS, hashUniform) as Compiled;
     compiled.set(src, fn);
   }
-  kernelFn.set(k, fn);
   return fn;
 };
+const inputsOf = (u: UOp): readonly UOp[] => (u.op === "FUSED" ? kInputs(u) : u.src);
 
 export class CPU {
   readonly name = "cpu";
-  #eval(opt: UOp[], inputs: Map<string, HostData>, bind: Map<number, UOp>): HostData[] {
-    // one global evaluation order + last-use, so a freed intermediate is reclaimed the moment
-    // its last consumer runs — peak memory becomes max-live, not the sum of all intermediates.
-    const order: UOp[] = [], seen = new Set<number>();
-    for (const root of opt) for (const u of toposort(root)) if (!seen.has(u.id)) { seen.add(u.id); order.push(u); }
-    const lastUse = new Map<number, number>();
-    order.forEach((u, i) => { for (const s of u.src) { const p = lastUse.get(s.id); if (p === undefined || p < i) lastUse.set(s.id, i); } });
-    const keep = new Set(opt.map((r) => r.id));                               // outputs must survive to the end
-    const deaths: number[][] = Array.from({ length: order.length }, () => []);
-    for (const u of order) { const d = lastUse.get(u.id); if (d !== undefined && !keep.has(u.id)) deaths[d]!.push(u.id); }
-    const memo = new Map<number, HostData>();
-    order.forEach((u, i) => {
-      if (u.op === "CONSTANT") memo.set(u.id, { data: u.arg as Float32Array, shape: u.shape });
-      else if (u.op === "BUFFER") {
-        const l = bind.get(u.id) ?? u;
-        memo.set(u.id, l.op === "CONSTANT" ? { data: l.arg as Float32Array, shape: l.shape } : inputs.get(bufName(l)) ?? ((): never => { throw new Error(`cpu: missing input '${bufName(l)}'`); })());
-      }
-      else if (u.op === "FUSED") {
-        const out = new Float32Array(Math.max(numel(u.shape), 1));
-        compile(u)(kInputs(u).map((s) => memo.get(s.id)!.data), out);
-        memo.set(u.id, { data: out, shape: u.shape });
-      }
-      for (const id of deaths[i]!) memo.delete(id);                            // free the dead
-    });
-    return opt.map((r) => memo.get(r.id)!);
-  }
-  // a graph seen before, by structure, runs its plan with this run's leaves bound in
-  #plans = new Map<string, { opt: UOp[]; slots: UOp[] }>();
+  // A plan is its kernels compiled, in one evaluation order with each value's last use, so an
+  // intermediate is freed the moment its last reader has run: peak memory is the most alive
+  // at once, not the sum of all intermediates.
+  #plan = planner((roots) => {
+    const opt = optimizeMany(roots);
+    checkMemory(opt, "FUSED");
+    const order = toposort(opt, inputsOf), last = new Map<number, number>(), free = order.map((): number[] => []), keep = new Set(opt.map((r) => r.id));
+    order.forEach((u, i) => { for (const s of inputsOf(u)) last.set(s.id, i); });
+    for (const [id, i] of last) if (!keep.has(id)) free[i]!.push(id);
+    return { roots: opt, steps: order.map((u, i) => ({ u, run: u.op === "FUSED" ? compile(u) : null, free: free[i]! })) };
+  });
   realizeSync(roots: UOp[], inputs = new Map<string, HostData>()): HostData[] {
-    const { key, leaves } = canonical(roots);
-    let plan = this.#plans.get(key);
-    if (!plan) {
-      if (this.#plans.size > 512) this.#plans.delete(this.#plans.keys().next().value!);
-      const p = placeholders(roots, leaves);
-      plan = { opt: optimizeMany(p.roots), slots: p.slots };
-      checkMemory(plan.opt, "FUSED");
-      this.#plans.set(key, plan);
-    } else { this.#plans.delete(key); this.#plans.set(key, plan); }
-    return this.#eval(plan.opt, inputs, new Map(plan.slots.map((s, i) => [s.id, leaves[i]!])));
+    const { plan, bind } = this.#plan(roots), memo = new Map<number, HostData>();
+    for (const { u, run, free } of plan.steps) {
+      const l = bind.get(u.id) ?? u;
+      if (run) {
+        const out = new Float32Array(Math.max(numel(u.shape), 1));
+        run(kInputs(u).map((s) => memo.get(s.id)!.data), out);
+        memo.set(u.id, { data: out, shape: u.shape });
+      } else memo.set(u.id, l.op === "CONSTANT" ? { data: l.arg as Float32Array, shape: l.shape } : inputs.get(bufName(l)) ?? ((): never => { throw new Error(`cpu: missing input '${bufName(l)}'`); })());
+      for (const id of free) memo.delete(id);
+    }
+    return plan.roots.map((r) => memo.get(r.id)!);
   }
 }

@@ -1874,6 +1874,44 @@ describe("the engine", () => {
     expect(toposort(optimizeMany([joined.node])[0]!).filter((u) => u.op === "FUSED").length).toBeLessThan(40)
     expect(joined.slice(200).js()).toEqual(pieces[200]!.slice(0).js())
   })
+  // a WebGPU device that only counts what the GPU executor asks of it
+  const fakeGpu = async () => {
+    const { GPU } = await import("./engine/gpu.ts")
+    const log = { pipelines: 0, destroyed: 0, done: [] as WeakRef<Promise<void>>[] }
+    const buffer = (size: number) => ({ size, destroy: () => { log.destroyed++ } }) as unknown as GPUBuffer
+    const pass = { setPipeline() {}, setBindGroup() {}, dispatchWorkgroups() {}, end() {} }
+    const dev = {
+      createBuffer: ({ size }: { size: number }) => buffer(size), createShaderModule: () => ({}), createBindGroup: () => ({}),
+      createComputePipeline: () => { log.pipelines++; return { getBindGroupLayout: () => ({}) } },
+      createCommandEncoder: () => ({ beginComputePass: () => pass, copyBufferToBuffer() {}, finish: () => ({}) }),
+      queue: { writeBuffer() {}, submit() {}, onSubmittedWorkDone: () => { const p = Promise.resolve(); log.done.push(new WeakRef(p)); return p } },
+      pushErrorScope() {}, popErrorScope: async () => null,
+    }
+    ;(globalThis as any).GPUBufferUsage ??= { STORAGE: 128, COPY_SRC: 4, COPY_DST: 8 }
+    return { gpu: new GPU(dev as unknown as GPUDevice, false), log, buffer }
+  }
+  test("roots that compute one value still get a buffer each", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { gpu, buffer } = await fakeGpu(), W = ir.buffer("W", [64]), w = buffer(256)
+    const [a, b] = gpu.computeSync([ir.mul(W, ir.konst(0.9)), ir.mul(W, ir.konst(0.9))], () => w)
+    expect(a).not.toBe(b)
+  })
+  test("the GPU's caches shrink: buffers past the budget, pipelines with their plans, finished work", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { gpu, log, buffer } = await fakeGpu(), x = ir.buffer("x", [8]), xb = buffer(32)
+    for (let i = 0; i < 40; i++) gpu.release(buffer(2 ** 26))           // 40 × 64 MB: 2 GB are kept
+    expect(log.destroyed).toBe(8)
+    const run = (c: number) => gpu.computeSync([ir.mul(x, ir.konst(c))], () => xb)
+    run(1.5)
+    run(1.5)
+    expect(log.pipelines).toBe(1)
+    for (let c = 2; c < 2 + 512; c++) run(c)                             // 512 other plans push the first out
+    run(1.5)
+    expect(log.pipelines).toBe(514)                                    // and its pipeline with it
+    await new Promise((r) => setTimeout(r, 0))
+    Bun.gc(true)
+    expect(log.done.filter((d) => d.deref()).length).toBe(0)
+  })
 })
 
 describe("doc cards", () => {

@@ -331,16 +331,19 @@ export const bcIndex = (st: readonly number[], outSh: readonly number[], gid: UO
   return off;
 };
 
-export function toposort(root: UOp): UOp[] {                                   // iterative: real graphs are thousands deep
-  const out: UOp[] = [], seen = new Set<number>(), stack: [UOp, number][] = [[root, 0]];
+// every node the roots reach, each once, sources first; `srcOf` picks the edges to follow.
+// Iterative: real graphs are thousands deep.
+export function toposort(roots: UOp | readonly UOp[], srcOf = (u: UOp): readonly UOp[] => u.src): UOp[] {
+  const out: UOp[] = [], seen = new Set<number>(), stack: [UOp, boolean][] = [];
+  for (const root of Array.isArray(roots) ? [...roots].reverse() : [roots as UOp]) stack.push([root, false]);
   while (stack.length) {
-    const top = stack[stack.length - 1]!;
-    if (top[1] === 0) {
-      top[1] = 1;
-      if (seen.has(top[0].id)) { stack.pop(); continue; }
-      seen.add(top[0].id);
-      for (let i = top[0].src.length - 1; i >= 0; i--) if (!seen.has(top[0].src[i]!.id)) stack.push([top[0].src[i]!, 0]);
-    } else { out.push(top[0]); stack.pop(); }
+    const top = stack[stack.length - 1]!, [u, expanded] = top;
+    if (expanded) { out.push(u); stack.pop(); continue; }
+    top[1] = true;
+    if (seen.has(u.id)) { stack.pop(); continue; }
+    seen.add(u.id);
+    const src = srcOf(u);
+    for (let i = src.length - 1; i >= 0; i--) if (!seen.has(src[i]!.id)) stack.push([src[i]!, false]);
   }
   return out;
 }
