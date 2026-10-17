@@ -25,6 +25,42 @@ test("evaluates a program and renders the result", async ({ page }) => {
   await expect(panel(page)).toContainText("2")
 })
 
+test("typing re-renders the editor, not the output", async ({ page }) => {
+  // regression: the playground read the program, so every keystroke re-rendered the
+  // whole output (12 keystrokes redrew 4 plots 52 times). React reports each commit to
+  // a devtools hook; the output panel got new props exactly when its parent re-rendered it.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __outputRenders: number, __REACT_DEVTOOLS_GLOBAL_HOOK__: unknown }
+    w.__outputRenders = 0
+    let props: unknown
+    type Fiber = { type?: { name?: string }, memoizedProps: unknown, child: Fiber | null, sibling: Fiber | null }
+    const find = (f: Fiber | null): Fiber | null => {
+      for (; f; f = f.sibling) {
+        if (f.type?.name === "ResultPanel") { return f }
+        const inner = find(f.child)
+        if (inner) { return inner }
+      }
+      return null
+    }
+    w.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+      supportsFiber: true, renderers: new Map(), inject: () => 1, onCommitFiberUnmount() { }, onPostCommitFiberRoot() { },
+      onCommitFiberRoot(_: number, root: { current: Fiber }) {
+        const panel = find(root.current)
+        if (panel && props !== undefined && panel.memoizedProps !== props) { w.__outputRenders++ }
+        props = panel?.memoizedProps
+      },
+    }
+  })
+  await open(page, "1 + 1")
+  await expect(panel(page)).toContainText("2")
+  await page.locator(".monaco-editor .view-line").first().click()
+  await page.keyboard.press("End")
+  const before = await page.evaluate(() => (window as unknown as { __outputRenders: number }).__outputRenders)
+  await page.keyboard.type(" ; abcdef", { delay: 30 })
+  await page.waitForTimeout(500)
+  expect(await page.evaluate(() => (window as unknown as { __outputRenders: number }).__outputRenders)).toBe(before)
+})
+
 test("a typo'd axis renders an Error, not a silently wrong number", async ({ page }) => {
   await open(page, "sum([[1, 2], [3, 4]], axs)")
   await expect(panel(page)).toContainText("expected a tensor, got unbound symbol 'axs'")

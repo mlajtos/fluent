@@ -74,14 +74,14 @@
 
 // MARK: Imports
 
-import { Signal, signal, computed } from "@preact/signals-core"
+import { Signal, signal, computed, effect } from "@preact/signals-core"
 import {
   getParseErrors, PRELUDE,
   identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
 } from "./language"
 import { tensorView, documentHash, type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where } from "./protocol"
 import { Documentation } from "./documentation"
-import { useSignals, useSignal } from '@preact/signals-react/runtime';
+import { useSignals } from '@preact/signals-react/runtime';
 import { ErrorBoundary } from 'react-error-boundary';
 import { useEffect, type CSSProperties, type JSX, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client"
@@ -2232,10 +2232,23 @@ window.addEventListener("error", (e) => {
   if (String(e.message).includes("ResizeObserver loop")) { e.stopImmediatePropagation(); e.preventDefault() }
 }, true)
 
-export function Playground() {
+// The program: from the URL – ?code=, or a gallery ?example= – then every edit. The worker
+// runs the latest.
+const programInUrl = (): string | null => {
+  const params = new URLSearchParams(window.location.search)
+  const code = StringDeserialize(params.get("code") ?? ""), example = params.get("example")
+  return code !== "" ? code : example !== null ? exampleSource(example) : null
+}
+const program = signal(programInUrl() ?? "1 + 1")
+effect(() => toWorker({ t: "code", source: program.value }))
 
+// the main editor follows the program: an edit re-renders it, and nothing else
+function MainEditor(): JSX.Element {
   useSignals()
+  return <CodeEditorView value={program.value} onChange={(next) => { program.value = next }} auto={false} />
+}
 
+function Playground(): JSX.Element {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const shortcut = (e.metaKey || e.ctrlKey) && !e.altKey ? GLOBAL_SHORTCUTS[e.code] : undefined
@@ -2245,67 +2258,25 @@ export function Playground() {
       mainEditorRef.editor.focus()
       mainEditorRef.editor.getAction(shortcut.action)?.run()
     }
+    // back and forward restore the program from the URL; pushState (⌘S) fires nothing,
+    // and the editor already holds that program
+    const onPopState = () => { program.value = programInUrl() ?? program.peek() }
     window.addEventListener("keydown", onKeyDown, true)
-    return () => window.removeEventListener("keydown", onKeyDown, true)
-  }, [])
-
-  useEffect(() => {
-    // back/forward navigation restores the code from the URL. (popstate is the
-    // only history event the browser fires – programmatic pushState/replaceState,
-    // like Ctrl+S, emit nothing, which is what we want: the editor already
-    // holds that code.)
-    const handleUrlChange = () => {
-      const params = new URLSearchParams(window.location.search);
-      const codeFromUrl = StringDeserialize(params.get("code") ?? "");
-      const exampleName = params.get("example");
-      if (codeFromUrl !== "") {
-        code.value = codeFromUrl
-      } else if (exampleName !== null) {
-        code.value = exampleSource(exampleName)
-      }
-    };
-    window.addEventListener("popstate", handleUrlChange);
+    window.addEventListener("popstate", onPopState)
     return () => {
-      window.removeEventListener("popstate", handleUrlChange);
-    };
+      window.removeEventListener("keydown", onKeyDown, true)
+      window.removeEventListener("popstate", onPopState)
+    }
   }, [])
-
-  const urlParams = new URLSearchParams(window.location.search);
-  const codeFromUrl = StringDeserialize(urlParams.get("code") ?? "");
-  const exampleFromUrl = urlParams.get("example");
-  const code = useSignal<string>(
-    codeFromUrl !== "" ? codeFromUrl
-      : exampleFromUrl !== null ? exampleSource(exampleFromUrl)
-        : "1 + 1"
-  )
-  // every edit goes to the worker; it runs the latest
-  const source = code.value
-  useEffect(() => { toWorker({ t: "code", source }) }, [source])
 
   return (
     <div className="absolute inset-0 z-50 p-2 bg-neutral-900 grid text-white">
       <div className="grid gap-2 overflow-scroll h-full" style={{ gridTemplateColumns: "repeat(2, minmax(auto, 1fr))", gridTemplateRows: "repeat(1, minmax(auto, 1fr))" }}>
         <div className="contents"><ResultPanel /></div>
-        <div className="contents"><CodeEditorView value={source} onChange={(next) => { code.value = next }} auto={false} /></div>
+        <div className="contents"><MainEditor /></div>
       </div>
     </div>
-  );
+  )
 }
 
-// Module evaluation finishes after the backends initialize, which can be
-// later than DOMContentLoaded – mount immediately when the DOM is ready.
-const mountPlayground = () => {
-  const root = document.getElementById("root")
-
-  if (!root) {
-    throw new Error("Root element not found")
-  }
-
-  createRoot(root).render(<Playground />)
-}
-
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", mountPlayground)
-} else {
-  mountPlayground()
-}
+createRoot(document.getElementById("root")!).render(<Playground />)
