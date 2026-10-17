@@ -207,6 +207,31 @@ x: linspace([-PI, PI], points),
 
 (Slider(resolution), sin(x))
 `,
+  "drawing": `
+; Drawing as values – a picture is colors, a shape is a distance
+W: 640, H: 400,
+t: Time(),
+
+; the playground's own colors
+blue: [10, 129, 239] ÷ 255,
+magenta: [242, 56, 227] ÷ 255,
+gray: [68, 68, 68] ÷ 255,
+
+; y = sin(x + t) over a full turn, in pixels (the screen's y runs down)
+x: linspace([0, 2×π], 128),
+y: sin(x + t),
+curve: stack((x×W ÷ 2×π, H÷2 - y×H÷2.4), -1),
+axis: [[0, H÷2], [W, H÷2]],
+marks: curve_(0..<8 × 18),
+
+(
+  Text("# ✏️ Drawing as values"),
+  canvas(W, H)
+    . draw(line(axis), gray, 1)
+    . draw(line(curve), blue, 2.5)
+    . draw(dots(marks), magenta, 7),
+)
+`,
   "tasks": `
 ; TODO App - reactive task management
 

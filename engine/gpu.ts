@@ -73,7 +73,20 @@ function render(u: UOp, c: Ctx): string {
     case "SQRT": e = `sqrt(${r(u.src[0]!)})`; break;
     case "LESS_THAN": e = `select(0.0, 1.0, ${r(u.src[0]!)} < ${r(u.src[1]!)})`; break;
     case "WHERE": e = `select(${r(u.src[2]!)}, ${r(u.src[1]!)}, ${r(u.src[0]!)} != 0.0)`; break;
-    case "MATH": e = MATHS[(u.arg as { fn: string }).fn]!.wgsl(...u.src.map(r)); break;
+    case "MATH": {
+      // a template may spell an operand more than once – pow's does five times – so an
+      // operand that isn't a name or a number is computed once, as a `let`
+      const operand = (s: UOp): string => {
+        const a = r(s);
+        if (/^-?[\w.]+$/.test(a)) return a;
+        const name = `v${c.ctr.n++}`;
+        c.scopes[scopeIdx(s, c)]!.push(`  let ${name} = ${a};`);
+        c.bound.set(s.id, name);
+        return name;
+      };
+      e = MATHS[(u.arg as { fn: string }).fn]!.wgsl(...u.src.map(operand));
+      break;
+    }
     case "RAND": e = `hashUniform(u32(${r(u.src[1]!)}), ${r(u.src[0]!)})`; break;
     case "ACC": {
       const k = c.ctr.n++, rg = u.src[0]!, n = (rg.arg as { extent: number }).extent, op = (u.arg as { op: string }).op;

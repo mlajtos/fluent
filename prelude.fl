@@ -220,9 +220,10 @@ squeeze: TensorSqueeze: doc({ x |
 }, "squeeze(x)", "x without its length-1 axes.", "shape(squeeze(fill([1, 3, 1], 0))) = [3]"),
 unsqueeze: TensorUnsqueeze: doc({ x, axis |
   s: shape(x),
-  newShape: concat(concat(slice(s, 0, axis), [1]), slice(s, axis)),
-  x ⍴ newShape
-}, "unsqueeze(x, axis)", "x with a new length-1 axis at axis.", "shape(unsqueeze([1, 2, 3], 0)) = [1, 3]"),
+  ; a negative axis counts from the end of the new shape: -1 is a new last axis
+  k: where(axis < 0, axis + #(s) + 1, axis),
+  x ⍴ concat((slice(s, 0, k), [1], slice(s, k)))
+}, "unsqueeze(x, axis)", "x with a new length-1 axis at axis; a negative axis counts from the end.", "shape(unsqueeze([1, 2, 3], -1)) = [3, 1]"),
 
 windows: TensorWindows: doc({ w, arr |
   ; the leading axis's windows, as a view – nothing is copied
@@ -506,6 +507,41 @@ concat: doc(TensorConcat, "concat((a, b, …), axis?)", "Tensors joined end to e
   sh: concat((fill([n - #(d)], 1), d)), rr: concat((fill([n - #(r)], 1), r)),
   broadcast(x ⍴ (stack((sh × 0 + 1, sh), -1) ⍴ [-1]), stack((rr, sh), -1) ⍴ [-1]) ⍴ (sh × rr)
 }, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]"),
+
+; Drawing – a picture is a tensor of colors, [height, width, 3]; a shape is the
+; distance from a point to it, a function. draw(shape, color, width) takes a
+; picture to a picture, so a drawing reads as a pipe:
+;   canvas(640, 400) . draw(axis, gray, 1) . draw(curve, blue, 2)
+canvas: DrawCanvas: doc({ width, height, color |
+  fill([height, width, 3], 1) × cond(guard(identical(color, ◌), { 0.09 }), { color })
+}, "canvas(width, height, color?)", "A picture of width × height pixels, all one color – the playground's background unless given.", "canvas(2, 1, [1, 0, 0]) = [[[1, 0, 0], [1, 0, 0]]]"),
+pixels: DrawPixels: doc({ picture |
+  h: shape(picture)_0, w: shape(picture)_1,
+  stack(meshgrid(0..<w + 0.5, 0..<h + 0.5), -1)
+}, "pixels(picture)", "Where each pixel's center is, as [x, y] from the top left – a picture's shape with 2 in place of its colors.", "pixels(canvas(2, 1)) = [[[0.5, 0.5], [1.5, 0.5]]]"),
+dots: DrawDots: doc({ points |
+  { p | min(norm(unsqueeze(p, -2) - points, -1), -1) }
+}, "dots(points)", "The shape of n points, [n, 2]: from p, the distance to the nearest one. Drawn wide, a dot is a disk.", "dots([[0, 0], [9, 9]])([3, 4]) = 5"),
+line: DrawLine: doc({ points |
+  n: length(points) - 1,
+  a: points_(0..<n),
+  ab: points_(1 ..< n+1) - a,
+  ; how far along each segment p's nearest point lies: 0 at its start, 1 at its end
+  along: { ap | clamp(Σ(ap × ab, -1, 1) ÷ (Σ(ab × ab, -1, 1) ⌈ 1e-12), 0, 1) },
+  { p | ap: unsqueeze(p, -2) - a, min(norm(ap - along(ap)×ab, -1), -1) }
+}, "line(points)", "The shape of the line through n points, [n, 2], one segment after another: from p, the distance to the nearest segment.", "line([[0, 0], [10, 0]])([5, 3]) = 3"),
+draw: DrawShape: doc({ shape, color, width |
+  r: width ÷ 2,
+  γ: 2.2,
+  { picture |
+    d: shape(pixels(picture)),
+    ; across the stroke a pixel spans d-0.5 to d+0.5 and the stroke -r to r: the overlap
+    ; is how much of the pixel it covers
+    cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ -(r)) ⌈ 0, -1),
+    ; mixed as light mixes – in linear intensity, not in the screen's gamma-encoded values
+    picture^γ × 1-cover + color^γ×cover ^ 1÷γ
+  }
+}, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width pixels wide in color, its edges antialiased.", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
 
 ; Optimization
 ; Optimizers. A step differentiates the loss with respect to the variables it reads –

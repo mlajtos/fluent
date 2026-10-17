@@ -83,7 +83,7 @@ import { tensorView, documentHash, type Desc, type Doc, type Payload, type Sourc
 import { Documentation } from "./documentation"
 import { useSignals, useSignal } from '@preact/signals-react/runtime';
 import { ErrorBoundary } from 'react-error-boundary';
-import { useEffect, type JSX, useMemo, useRef, useState } from "react";
+import { useEffect, type CSSProperties, type JSX, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client"
 import { type BeforeMount, type Monaco, type OnMount, Editor, loader } from '@monaco-editor/react';
 import * as monaco from "monaco-editor";
@@ -1232,7 +1232,7 @@ function ViewInner({ d }: { d: Desc }): JSX.Element {
           // the origin wrapper sits outside the row box – hovering a row's empty space
           // highlights that item's source, not the whole list
           <WithOrigin key={key} o={item.o}>
-            <div className={`${frameStyle} !border-0 grid hover:bg-neutral-900 mix-blend-screen`}><View d={item} /></div>
+            <div className={`${frameStyle} !border-0 grid hover:bg-neutral-900`}><View d={item} /></div>
           </WithOrigin>
         ))}
       </div>
@@ -1336,11 +1336,40 @@ function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
     const z = Array.from({ length: rows }, (_, i) => Array.from(shown.payload.subarray(i * cols, (i + 1) * cols)))
     return <HeatPlot z={z} />
   }
-  const [height = 1, width = 1] = (shown ?? { shape: d.shape }).shape
+  const [height = 1, width = 1] = (d.paint ? d : shown ?? d).shape
   // small heatmaps (a 27×32 embedding) upscale by an integer factor to ~256px, so the
   // cells stay crisp; images and large grids show at their own size
   const displayWidth = view === "heatImage" && width < 256 ? width * Math.ceil(256 / width) : width
+  if (d.paint) { return <PaintedCanvas id={d.id} width={width} height={height} displayWidth={displayWidth} /> }
   return <PixelCanvas rgba={shown?.payload as Uint8ClampedArray | undefined} width={width} height={height} displayWidth={displayWidth} />
+}
+
+// A picture shown at its own size or magnified by a whole number keeps its pixels square
+// and sharp; scaled by anything else – to fit a narrower panel – it is smoothed, so no
+// row or column of pixels drops out
+const canvasStyle = (width: number, height: number, displayWidth: number): CSSProperties => ({
+  width: "100%",
+  maxWidth: `${displayWidth}px`,
+  aspectRatio: `${width / height}`,
+  imageRendering: displayWidth > width && displayWidth % width === 0 ? "pixelated" : "auto",
+})
+
+// A canvas the worker paints: handed over once, then told which picture to paint as each
+// new one arrives
+let nextSlot = 0
+const PaintedCanvas = ({ id, width, height, displayWidth }: { id: number, width: number, height: number, displayWidth: number }) => {
+  const ref = useRef<HTMLCanvasElement>(null)
+  const slot = useRef(0)
+  useEffect(() => {
+    const canvas = ref.current!.transferControlToOffscreen()
+    const mine = ++nextSlot
+    slot.current = mine
+    toWorker({ t: "canvas", slot: mine, canvas }, [canvas])
+    return () => toWorker({ t: "canvasGone", slot: mine })
+  }, [])
+  useEffect(() => { toWorker({ t: "paint", slot: slot.current, id }) }, [id])
+  // its size is the worker's to set: a canvas handed over can't be resized here
+  return <canvas ref={ref} style={canvasStyle(width, height, displayWidth)} />
 }
 
 const formatNumber = (value: number, digits: number) =>
@@ -1425,7 +1454,7 @@ const PixelCanvas = ({ rgba, width, height, displayWidth }: { rgba?: Uint8Clampe
   return (
     <canvas
       ref={ref}
-      style={{ width: "100%", maxWidth: `${displayWidth}px`, aspectRatio: `${width / height}`, imageRendering: "pixelated" }}
+      style={canvasStyle(width, height, displayWidth)}
     />
   )
 }

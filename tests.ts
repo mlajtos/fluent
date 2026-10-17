@@ -1776,6 +1776,19 @@ describe("the engine", () => {
     const data = new CPU().realizeSync([sum])[0]!.data
     expect(Array.from(data).every((v, i) => v === i)).toBe(true)
   }, 60_000)
+  test("the GPU's kernel text grows with the computation, not with how often a template repeats an operand", async () => {
+    // pow's WGSL spells its operand five times; nested, an unshared operand would grow 5ⁿ
+    const ir = await import("./engine/ir.ts")
+    const { optimizeMany } = await import("./engine/opt.ts")
+    const { printFused } = await import("./engine/gpu.ts")
+    const wgslOf = (depth: number): number => {
+      let v = ir.buffer("x", [64])
+      for (let i = 0; i < depth; i++) v = ir.math("pow", ir.add(v, ir.konst(1)), ir.konst(2.2))
+      const [k] = optimizeMany([v])
+      return printFused(k!, 1).wgsl.length
+    }
+    expect(wgslOf(8) / wgslOf(4)).toBeLessThan(3)
+  })
   test("a distance-field drawing runs each pixel's loop over segments in place", async () => {
     // pixels × segments is the drawing's whole work; written out, it is the frame rate
     const { canonical, placeholders, optimizeMany } = await import("./engine/opt.ts")

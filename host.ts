@@ -20,6 +20,7 @@ import {
 } from "./protocol"
 import { Documentation } from "./documentation"
 import { TOUR_SOURCE } from "./tour"
+import { Painter } from "./painter"
 
 type Post = (message: ToPage, transfer?: Transferable[]) => void
 let post: Post = () => { }
@@ -133,7 +134,8 @@ const where = (origin: Origin | undefined): Where | undefined => {
 // A live value the page shows: a signal or a variable. Its effect marks it dirty when it
 // changes, and the next frame sends its new description – one per frame however often it
 // changes, none while the tensors of the last one are still being read, and none while
-// the page is still drawing the last batch.
+// the page is still drawing the last batch. The pictures it showed last are let go when
+// it shows new ones.
 type Live = {
   id: number,
   target: Signal<Value> | FluentVariable,
@@ -141,6 +143,7 @@ type Live = {
   stop: () => void,
   reading: number,
   ack: number,
+  pictures: number[],
 }
 const ids = new WeakMap<object, number>()
 const idOf = (o: object): number => {
@@ -156,6 +159,10 @@ const callbacks = new Map<number, { fn: Function, refs: number }>()
 const dirty = new Set<Live>()
 // the live whose value is being described: reads of its tensors pace its updates
 let owner: Live | null = null
+// With a GPU, the worker paints pictures into canvases the page hands it: a picture's
+// tensor waits here, by id, until the page asks for it
+let painter: Painter | null = null
+const pictures = new Map<number, { tensor: engine.Tensor, heat: boolean }>()
 const describing = new Set<number>()
 // the transferable memory of the description being built
 let transfers: Transferable[] = []
@@ -183,7 +190,8 @@ const scheduleFlush = () => {
 }
 const flush = () => {
   flushScheduled = false
-  if (pageDrawing) { return }
+  // the frame before the last is still on the GPU: the next waits for it
+  if (pageDrawing || (painter?.pending ?? 0) > 1) { return }
   const batch: { id: number, desc: Desc, ack: number }[] = []
   for (const live of dirty) {
     if (lives.get(live.id) !== live) { dirty.delete(live); continue }
@@ -201,6 +209,8 @@ const markDirty = (live: Live) => {
 }
 
 const describeNow = (live: Live): Desc => {
+  for (const id of live.pictures) { pictures.delete(id) }
+  live.pictures = []
   const outer = owner
   owner = live
   describing.add(live.id)
@@ -216,7 +226,7 @@ const describeLive = (target: Signal<Value> | FluentVariable): Desc => {
   const id = idOf(target)
   let live = lives.get(id)
   if (!live) {
-    const fresh: Live = { id, target, refs: 0, stop: () => { }, reading: 0, ack: 0 }
+    const fresh: Live = { id, target, refs: 0, stop: () => { }, reading: 0, ack: 0, pictures: [] }
     let first = true
     fresh.stop = effect(() => {
       if (target instanceof FluentVariable) { target.version.value } else { valueOf(target) }
@@ -242,6 +252,16 @@ const describeCallback = (fn: Function): Desc => {
 const describeTensor = (t: engine.Tensor): Desc => {
   const id = ++nextId, shape = [...t.shape], view = tensorView(shape)
   if (view === "shape") { return { k: "tensor", id, shape } }
+  if (painter && (view === "image" || view === "heatImage")) {
+    const heat = view === "heatImage"
+    try {
+      pictures.set(id, { tensor: painter.prepare(t, heat), heat })
+    } catch (e) {
+      return describeError(e instanceof Error ? e : new Error(String(e)))
+    }
+    owner?.pictures.push(id)
+    return { k: "tensor", id, shape, paint: true }
+  }
   let onHost: Float32Array | undefined
   try {
     onHost = engine.hostValue(t)
@@ -686,6 +706,7 @@ const releaseAll = () => {
   callbacks.clear()
   dirty.clear()
   documentIds.clear()
+  pictures.clear()
 }
 
 // The program runs inside an effect: a signal it reads at its top level – not inside a
@@ -770,6 +791,23 @@ const receive = (m: ToWorker) => {
       receiveFrame(m.id, { bitmap: m.bitmap, samples: m.samples })
       return
     }
+    case "canvas": {
+      painter?.attach(m.slot, m.canvas)
+      return
+    }
+    case "canvasGone": {
+      painter?.detach(m.slot)
+      return
+    }
+    case "paint": {
+      const picture = pictures.get(m.id)
+      if (!painter || !picture) { return }
+      painter.paint(m.slot, picture.tensor, picture.heat).then(
+        () => { if (dirty.size) { flush() } },
+        (e) => { post({ t: "tensor", id: m.id, error: e instanceof Error ? e.message : String(e) }) },
+      )
+      return
+    }
     case "drawn": {
       // the page answers once a frame, so the next batch can go now
       pageDrawing = false
@@ -800,6 +838,8 @@ const environmentNames = (): [string, string, Doc | null][] => {
 
 export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
   post = postMessage
+  const gpu = engine.engineGpu()
+  painter = gpu ? new Painter(gpu.device) : null
   setCodeNodePrinter((node) => new CodeTree(node) as unknown as Value)
   extendEnvironment({
     Documentation: Text(Documentation),

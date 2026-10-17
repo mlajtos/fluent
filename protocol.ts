@@ -36,8 +36,9 @@ export type Desc = { o?: Where } & (
   // a quoted program: one tree per statement
   | { k: "tree", roots: Tree[] }
   // the payload is here when the values were on the host; otherwise it follows as a
-  // "tensor" message
-  | { k: "tensor", id: number, shape: number[], payload?: Payload }
+  // "tensor" message. A picture with `paint` never crosses: the page hands the worker a
+  // canvas and asks it to paint the picture there
+  | { k: "tensor", id: number, shape: number[], payload?: Payload, paint?: true }
   // a signal or a variable and its value now; later values arrive as "live" messages
   | { k: "live", id: number, now?: Desc }
   | { k: "callback", id: number }
@@ -69,6 +70,11 @@ export type ToWorker =
   | { t: "sampleRate", value: number }
   // the last batch of live values is drawn: send the next
   | { t: "drawn" }
+  // a canvas the worker paints pictures into, by a slot the page numbers it with; and
+  // the picture to paint there now
+  | { t: "canvas", slot: number, canvas: OffscreenCanvas }
+  | { t: "canvasGone", slot: number }
+  | { t: "paint", slot: number, id: number }
 
 export type SourceKind = "camera" | "microphone" | "spectrum" | "pointer"
 
