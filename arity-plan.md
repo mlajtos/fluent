@@ -1,112 +1,118 @@
-# Arity — design plan
+# Arity – design plan
 
-Status: **planned, not implemented.** Today's behaviour is a documented wart (see below and the comment in `safeApply`, language.ts).
+Status: planned, not implemented. Today's behaviour is a documented wart (below, and the comment in `safeApply` in `language.ts`).
 
 ## The wart
 
 ```clojure
-+(1, 2, 4)      ; 3   — the 4 is silently dropped
-add(1, 2, 3)    ; 3
-{ x, y | x + y }(1, 2, 3)   ; 3
++(1, 2, 4)                ; 3 – the 4 is dropped
+add(1, 2, 3)              ; 3
+{ x, y | x + y }(1, 2, 3) ; 3
 ```
 
-A binary function called with too many arguments ignores the surplus, because the underlying JS function ignores extra args and nothing checks the count. It's a typo-class bug (a stray or mis-counted argument vanishes with no error).
+A function called with more arguments than it takes ignores the surplus: the JS function underneath ignores extra arguments, and nothing checks the count. A stray or mis-counted argument vanishes with no error.
 
-## Why the quick fix was rejected
+## Two facts the design must respect
 
-The tempting fix — check `argsValue.length` against `fn.length` in `safeApply` — rests on a foundation that can't hold:
+1. **A missing argument is ◌.** A lambda called with fewer arguments than parameters binds the rest to ◌ (`args[i] ?? null` in the lambda factory), and the prelude relies on it: `softmax` is `{ x, k | … }`, `μ` is `{ x, k, keep | … }`, `adam` is `{ lr, a | … }`, and each reads a missing argument as its default (`softmax` tests `identical(k, ◌)`). `softmax([1, 2])`, `μ(x)` and `adam(0.01)` are valid calls. Natives follow the same rule. So under-application is not an error in Fluent: a function that needs an argument answers ◌ with its own Error.
+2. **Some natives offer optional extra arguments.** `ListMap(list, f)` calls `f(value, index)` through `FunctionApply`, and the prelude passes it one-parameter lambdas (`ListMap(vs, { v | make(v) })`, 11 of them in `prelude.fl`). A check on every call would reject these.
 
-- **`fn.length` is a JS reflection artifact, not a Fluent arity contract.** It reports the count of parameters before the first default/rest — an accident of how each wrapper was written, not a declaration of intent.
-- **It can't represent Fluent's arity space.** `()` (nullary) and `(...args)` (variadic) both report `0`, so it structurally cannot distinguish "takes nothing" from "takes anything". Every function built with the `(...args)` idiom — **lambdas, the `compose`/`fork`/`over` combinators, variadic builtins, curried builtins** — reports `0`. A naive `args > fn.length` check would false-positive and reject valid tacit code like `(+ ∘ √)(9, 16)`.
-- Patching around this (`length || Infinity`, a `variadic` flag, a `meta.arity ?? fn.length` fallback, special-casing `0`) is a pile of shims over a mismatch. It also gives incomplete, surprising coverage.
+So the only error is over-application: more arguments than the function takes.
 
-The principled position: **arity is a semantic contract that must be *declared*, not inferred from JS.**
+## Why not `fn.length`
+
+- `fn.length` is a JS reflection artifact, not a Fluent contract. It counts the parameters before the first default or rest parameter.
+- It cannot tell nullary `()` from variadic `(...args)`: both report 0. Lambdas, the combinators, the curried builtins and the variadic natives are all written with `(...args)` and report 0, so `args > fn.length` would reject valid tacit code like `(+ ∘ √)(9, 16)`.
+- Patching around it (`length || Infinity`, a `variadic` flag, a `meta.arity ?? fn.length` fallback, special-casing 0) piles shims on a mismatch.
+
+Arity is a contract that must be declared, not inferred from JS.
 
 ## The design
 
-Arity is a **declared, first-class attribute of every Fluent function value**, set at construction, composed by the combinators, and enforced once at the application choke point.
+Arity is a declared attribute of a Fluent function value, set where the function is made, derived by the combinators, and checked once in `safeApply`.
 
 ### The contract
 
-A range, stored in the existing function-metadata (`FunctionMeta`, via `getMeta`/`setMeta`):
+The most arguments a function takes, stored in `FunctionMeta` (`getMeta`/`setMeta`):
 
 ```ts
-type Arity = { min: number, max: number }   // max may be Infinity
+type Arity = number // the most arguments; Infinity for variadic
 ```
 
-- Fixed: `{2, 2}`. Optional: `{1, 2}`. Variadic: `{0, Infinity}`. Nullary: `{0, 0}` — now distinct from variadic. Overloaded (`+`): `{1, 2}`.
-- **Ranges, not sets:** every real Fluent arity is a contiguous range, so `{min, max}` suffices. If a genuinely non-contiguous arity ever appears, widen to a predicate `(n) => boolean` — not now.
-- **Absent metadata = unknown = unchecked.** Declaration is the only source of truth; nothing is read from `fn.length`. A function with no declared arity is never rejected (so no phase can false-positive).
+- Fixed binary: 2. Optional arguments (`sum(x, axis?, keep?)`): 3. Variadic (`List`): Infinity. Nullary (`Time`): 0, distinct from variadic. Overloaded `+`: 2.
+- No minimum: by fact 1, fewer arguments are always legal.
+- No arity in the metadata means unknown, and unknown is never checked. Nothing is read from `fn.length`, so no phase can reject a call it did not declare.
 
-### Where arity is declared (construction sites)
+### Where arity is declared
 
-1. **Lambdas** — at the lambda factory: `setMeta(fn, { arity: { min: n, max: n } })`, `n = LambdaArgs.length`. (Fluent lambdas are fixed-arity today; a future rest-param would set `max: Infinity`.)
-2. **`FunctionArity((binary, unary))`** — `{ min: min(candidate mins), max: max(candidate maxes) }`, i.e. `{1, 2}`, derived from the candidates' own declared arities.
-3. **Builtins** — declared next to `doc()`. The doc signatures already encode arity (`"x - y"` → `{2,2}`, `"sum(x, axis?)"` → `{1,2}`, `"conv(arr, kernel)"` → `{2,2}`). Add an explicit `arity` field to `doc()` rather than parsing the string (robust > cute). Undocumented builtins stay unchecked.
-4. **Combinators** — derive the result's arity from the operands (rules below). This is just making explicit what each combinator already does.
-5. **Curried builtins** — the returned function (e.g. `sgd(0.1)`) declares its own arity where it's built.
+1. **Lambdas**, in the lambda factory: arity = the number of parameters (`LambdaArgs`). A future rest parameter would give Infinity.
+2. **`FunctionArity((binary, unary))`**: the larger of its candidates' arities, so 2 for `+`.
+3. **Natives**, beside their definitions (`language.ts`; `host.ts` for the widgets and sources), with `setMeta`. Prelude built-ins are lambdas and get theirs from (1). The signature strings in the doc cards are not parsed.
+4. **Combinators** derive the result's arity from their operands (table below).
+5. **Curried results** (a function a function returns) declare their own arity where they are built. A lambda that returns a lambda already does, by (1).
 
-### Combinator arity rules (these *are* the combinators' semantics)
+### Callers that offer extra arguments
 
-Given the operand arities, the result arity is derived. Function operands contribute their arity; a **constant** operand (a non-function tine — combinators already gate on `isFunction`) binds an argument and so *lowers* the effective arity.
+A native that offers an optional argument passes it only when the callee takes it. `ListMap` passes `(value, index)` when `f`'s arity is 2 or more, or unknown, and `(value)` when it is 1. This lands with the lambda declarations in Phase 1, since those are what would otherwise reject `ListMap`'s one-parameter callbacks. `ListReduce` and `ListScan` call `f` directly, outside `safeApply`, and are not checked.
+
+### Combinator arity rules
 
 | combinator | law | result arity |
 |---|---|---|
-| `f ∘ g` | `g(f(args))` | `arity(f)` (args go to `f`; `g` must accept 1) |
-| `⍨ f` | `f(y, x)` / `f(x, x)` | `{1, 2}` (needs `2 ∈ arity(f)`) |
-| `g ⍥ f` | `f(g(x), g(y))` | `arity(f)` (`g` accepts 1) |
-| `Φ(f, g, h)` | `g(f(args), h(args))` | `arity(f) ∩ arity(h)` (`g` accepts 2) |
-| `f ⊸ g` | `g(f(x), y)` / `g(f(x), x)` | `{1, 2}` |
-| `f ⟜ g` | `f(x, g(y))` / `f(x, g(x))` | `{1, 2}` |
+| `f ∘ g` | `g(f(args))` | arity(f); g gets 1 |
+| `⍨ f` | `f(y, x)` / `f(x, x)` | 2 |
+| `g ⍥ f` | `f(g(x), g(y))` | arity(f); g gets 1 |
+| `Φ(f, g, h)` | `g(f(args), h(args))` | the smaller of arity(f) and arity(h); g gets 2 |
+| `f ⊸ g` | `g(f(x), y)` / `g(f(x), x)` | 2 |
+| `f ⟜ g` | `f(x, g(y))` / `f(x, g(x))` | 2 |
 
-Constant-operand nuance: `(1 ⊸ +)` binds `+`'s left argument, so `(1 ⊸ +)(41) = +(1, 41)` — the result is unary. The rules above assume function operands; the constant case shifts the range down by the number of bound arguments. The combinators already track function-vs-constant, so the arity derivation lives beside that logic.
+A constant operand (a non-function tine, which the combinators already detect with `isFn`) binds an argument and lowers the result's arity: `(1 ⊸ +)(41)` is `+(1, 41)`, so `(1 ⊸ +)` takes 1, and `(1 ⊸ +)(x, y)`, which today drops x, becomes an error. In `Φ`, a constant tine takes any number of arguments and does not limit the result. The derivation sits beside the existing function-or-constant logic.
 
 ### Enforcement
 
-In `safeApply`, after the "is not a function" guard, before the apply:
+In `safeApply`, after the "is not a function" guard and before the apply:
 
 ```ts
-const spec = getMeta(fnValue).arity            // undefined = unknown = skip
-if (spec && (argsValue.length < spec.min || argsValue.length > spec.max))
-  return new Error(`${nameOf(fnValue)} takes ${spec.min}–${spec.max} arguments, got ${argsValue.length}`)
+const most = getMeta(fnValue).arity // undefined: unknown, not checked
+if (most !== undefined && argsValue.length > most)
+  return new Error(`${nameOf(fnValue)} takes at most ${most} arguments, got ${argsValue.length}`)
 ```
 
-- Errors are **values** (Fluent's errors-as-values), consistent with the rest.
-- The message uses the function's name/signature from meta for a good error.
-- Both bounds checked — the range gives lower-bound (`+()`, too few) for free.
+The Error is a value, like every Fluent failure. The message names the function from its metadata.
 
-## What this buys beyond the check
+## What this replaces
 
-The codebase already hand-rolls arity reasoning in several places — a first-class arity **replaces** it rather than adding to it:
+The code reasons about arity by hand in several places, and a declared arity replaces that reasoning:
 
-- `FunctionArity`: `(a, b) => b === undefined ? unary(a) : binary(a, b)`
-- `⍨`: `b === undefined ? f(a, a) : f(b, a)`
-- `⊸` / `⟜`: `b === undefined ? a : b`
-- combinators' "a non-function tine is held constant"
+- `FunctionArity`: `b == null ? unary(a) : binary(a, b)`
+- `⍨`: `b == null ? f(a, a) : f(b, a)`
+- `⊸` / `⟜`: `b == null ? a : b`
+- the combinators' "a non-function tine is held constant"
 
-Once arity is a declared attribute, dispatch becomes "match the count against the contract", and over-application errors fall out for free. This lines up with the algebra-of-programs direction: arity is another lawful attribute the combinators transform.
+With a declared arity, dispatch matches the count against the contract, and over-application errors come with it. Arity becomes one more attribute the combinators transform lawfully.
 
-## Rollout (each phase is independently shippable and only *adds* coverage — undeclared = unchecked, so no phase can false-positive)
+## Rollout
 
-- **Phase 0 (done):** document the wart; no behaviour change. This file + the `safeApply` comment.
-- **Phase 1:** add the `Arity` type, the `meta.arity` field, and the `safeApply` guard. Declare arity on **lambdas** and **`FunctionArity`**. Ships the `+(1, 2, 4)` fix and `{x, y | …}(1, 2, 3)` for the declared set. Nothing else is checked.
-- **Phase 2:** declare arity on all documented builtins (add the field to `doc()`).
-- **Phase 3:** combinator propagation rules — now combinator results are checked too.
-- **Phase 4 (optional):** refactor `FunctionArity`/combinator dispatch to be arity-driven, deleting the ad-hoc `b === undefined` branches.
+Each phase only adds coverage. Undeclared functions stay unchecked, so no phase can reject a valid call.
 
-## Tests (per phase)
+- **Phase 0 (done):** the wart is documented in this file and in `safeApply`.
+- **Phase 1:** the `arity` field, the `safeApply` guard, arity on lambdas and `FunctionArity`, and `ListMap` passing the index only to a function that takes it. Fixes `+(1, 2, 4)` and `{ x, y | … }(1, 2, 3)`.
+- **Phase 2:** arity on the natives.
+- **Phase 3:** the combinator rules, so combinator results are checked too.
+- **Phase 4 (optional):** `FunctionArity` and the combinators dispatch by arity, and the ad hoc `b == null` branches go.
 
-- Over-application errors for the newly-declared set: `+(1, 2, 4)`, `sum(x, 0, 1, 2)`, `{x, y | …}(1, 2, 3)`.
-- Under-application errors: `+()`.
-- No regression on valid calls: optional-arg builtins (`sum(x)`, `1 ..< 5` = `TensorRange` with 1 or 2), combinators (`(+ ∘ √)(9, 16)`), variadics (`List(…20 items…)`, `stack(a, b)`), nullary (`Time()`), and — until each is declared — everything undeclared stays silently accepted.
-- Nullary vs variadic: `Time(5)` errors (`{0,0}`), `List(1, 2, 3)` does not (`{0, ∞}`).
+## Tests, per phase
 
-## Decisions locked
+- Over-application is an Error for the declared set: `+(1, 2, 4)`, `sum(x, 0, 1, 2)`, `{ x, y | … }(1, 2, 3)`, `Time(5)`.
+- Under-application stays legal: `softmax([1, 2])`, `μ(x)`, `adam(0.01)`, `sum(x)`, `{ x, y | y }(1)` is ◌.
+- `ListMap` with a one-parameter and a two-parameter lambda, and with an undeclared native.
+- Valid calls do not change: `1 ..< 5`, `(+ ∘ √)(9, 16)`, `List(…20 items…)`, `meshgrid(xs, ys, zs)`, `Time()`, and every undeclared function.
 
-- `{min, max}` range, not a set or predicate. Revisit only if a non-contiguous arity appears.
-- Explicit `arity` field on `doc()`, not signature-string parsing.
-- Both bounds enforced from the start (the range has `min` for free).
-- Declaration is opt-in coverage; **`fn.length` is never consulted.** Undeclared functions are unchecked, never rejected.
+## Decisions
+
+- The contract is a maximum, a number or Infinity. There is no minimum, because a missing argument is ◌.
+- Natives declare arity with `setMeta` beside their definitions; doc signature strings are not parsed.
+- Coverage is opt-in: `fn.length` is never consulted, and an undeclared function is never rejected.
 
 ## Non-goals
 

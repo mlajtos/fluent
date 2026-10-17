@@ -1,111 +1,38 @@
-# Copilot Instructions for Fluent
+# Copilot instructions for Fluent
 
-## Project Overview
+Fluent is a small array language with autodiff and an IDE that runs in the browser. Tensors run on Fluent's own engine. There is no TensorFlow.js and no jax-js.
 
-Fluent is a tiny language + IDE for differentiable tensors and reactive UIs. It combines math, automatic differentiation, and interactivity in a playful way for programmers, researchers, and tinkerers.
+## Layout
 
-## Tech Stack
+- `language.ts`: grammar (Ohm, `CodeGrammar`), evaluator, the native built-ins (`DefaultEnvironment`), and loading of the prelude. No DOM, no React.
+- `prelude.fl`: the standard library, written in Fluent. `createScope` in `language.ts` evaluates it into every program's scope.
+- `engine/`: the tensor engine. `ir.ts` (one immutable graph from tensors to loop nests, every value f32), `rewrite.ts` (the rewrite engine), `opt.ts` (exact simplification laws, fusion, plan keys), `grad.ts` (∇ = transpose ∘ linearize), `gpu.ts` (WGSL printers and the WebGPU executor), `cpu.ts` (the CPU backend: each kernel printed as a JS function), `tensor.ts` (the Tensor type the language calls, and the choice of backend). `einsum.fl` is a Fluent einsum that is not loaded.
+- `worker.ts`: the evaluation worker. It starts the engine (WebGPU where the platform has it, the CPU everywhere else) and runs the host.
+- `host.ts`: the evaluation host, on the worker side. It evaluates the program, binds the widgets and live sources into the environment, and describes values to the page.
+- `protocol.ts`: the plain-data messages between the page and the worker.
+- `client.tsx`: the IDE page (React, Monaco). It parses with the language and draws what the worker describes. It never touches the engine.
+- `painter.ts`: paints pictures in the worker, on the GPU, into a canvas the page handed over.
+- `tour.ts` (the Tour), `examples.ts` (the gallery), `documentation.ts` (the `Documentation` page).
+- `server.ts`: the dev server, with a `/proxy` CORS relay.
 
-- **Runtime**: Bun (JavaScript runtime)
-- **Language**: TypeScript with strict mode enabled
-- **Frontend**: React (via transitive dependencies) with Preact Signals for reactivity
-- **Editor**: Monaco Editor (from VS Code)
-- **Grammar**: Ohm.js for parsing the Fluent language
-- **ML/Tensors**: TensorFlow.js (with CPU, WASM, and WebGL backends)
-- **Styling**: Tailwind CSS v4.x
-- **Build**: Bun's built-in bundler with Tailwind plugin
+## Adding to the language
 
-## Project Structure
+- Prelude first: write a new built-in in Fluent in `prelude.fl`, with a `doc(…)` card.
+- Only a true primitive goes native: define it in `language.ts`, add it to `DefaultEnvironment`, and give it its doc card in `prelude.fl`. Tensor work belongs in `engine/tensor.ts`.
+- A glyph operator must be inside `OPERATOR_RANGES` in `language.ts`, or the grammar rejects it.
 
-```
-.
-├── server.ts        # Bun development server (+ /proxy CORS relay)
-├── language.ts      # Fluent language core: grammar, evaluator, environment, prelude
-├── client.tsx       # IDE: components, printers, plots, editor, playground
-├── tests.ts         # End-to-end tests (source → evaluated result), `bun test ./tests.ts`
-├── index.html       # HTML entry point
-├── index.css        # Global styles
-├── package.json     # Dependencies and scripts
-├── tsconfig.json    # TypeScript configuration
-└── bunfig.toml      # Bun configuration with Tailwind plugin
-```
+## Commands
 
-## Development Setup
+- `bun install`, then `bun dev` (http://localhost:3000; `?code=<base64>` opens a program).
+- `bun test ./tests.ts` (also `bun run test`): the language end to end, on the CPU backend.
+- `bun run test:engine`: the engine gates in `engine/tests/` (`index.bun.ts`, `fold.bun.ts`, `core.ts`, `ops.ts`) on the CPU. `bun engine/tests/run.ts` runs the gates in headless Chrome on WebGPU.
+- `bun run test:browser`: Playwright IDE tests (`tests.browser.ts`).
+- `bun run typecheck`: `tsc --noEmit`.
 
-1. **Install dependencies**: `bun install`
-2. **Start dev server**: `bun dev`
-3. **Access IDE**: Open `http://localhost:3000` in browser
-4. **With example code**: Use `?code=<base64>` query parameter
+Bun 1.3.14 or newer (`engines` in `package.json`). `bun.lock` is a text lockfile.
 
-## Code Style and Conventions
+## Style
 
-### TypeScript
-
-- Use strict TypeScript settings (all strict options enabled)
-- Target ESNext with module preservation
-- JSX transform: `react-jsx`
-- No unused locals/parameters checking is disabled for flexibility
-- Index signatures allow property access without checking
-
-### Language Design (Fluent)
-
-The Fluent language has unique characteristics:
-
-- **Left-to-right evaluation**: NO numeric operator precedence (`1 + 2 * 3` = 9, not 7)
-- **Whitespace IS precedence**:
-  - glued operators bind tighter than spaced ones: `1 + 2*3` = 7
-  - operator glued only to its left operand takes everything to its right:
-    `b: a + 1` parses as `b: (a + 1)` — assignment needs no parentheses
-  - fully spaced (`a : b + 1`) or fully glued (`a:b + 1`) operators chain left-to-right
-- **Symbols**: Can use Unicode (α, β, θ, ∇, √, etc.)
-- **Comments**: Single-line with `;`
-- **Functions**: Lambda syntax with `{ params | body }` or `{ body }`
-- **Tensors**: Multi-dimensional arrays with broadcasting
-- **Reactive**: Signals created with `$(value)`, accessed with `x()`
-- **Differentiable**: Gradient operator `∇` for automatic differentiation
-
-### Code Organization
-
-- **language.ts** is the Fluent language: grammar (Ohm.js), parser,
-  evaluator, built-in functions/operators, prelude, evaluation generations
-- **client.tsx** is the IDE: documentation, UI components (Slider, Button,
-  Text, Grid, Layers, Point2D, ...), printers/plots, Monaco integration,
-  examples, playground
-- **server.ts** is minimal: serves the app with Bun + a /proxy CORS relay
-
-## Key Features to Preserve
-
-1. **Live evaluation**: Code evaluates as you type
-2. **Automatic visualization**: Values display automatically
-3. **GPU acceleration**: Tensor ops use TensorFlow.js backends
-4. **Shareable URLs**: Code can be shared via base64-encoded URLs
-5. **Auto-completion**: Monaco Editor provides suggestions
-6. **Syntax highlighting**: Custom language definition
-
-## Dependencies Management
-
-- Use `bun install` (not npm/yarn)
-- Lock file: `bun.lock` (binary format)
-- Keep TensorFlow.js backends synchronized (all at same version)
-
-## Testing and Building
-
-- **End-to-end tests**: `bun run test` – Fluent source in, evaluated result out (CPU backend)
-- **Manual testing**: Run `bun dev` and test in browser
-- **Type checking**: `bun tsc --noEmit` (TypeScript compiler check)
-
-## Important Notes
-
-- Two-file architecture: the language lives in `language.ts` (headless,
-  testable), the IDE in `client.tsx` (registers UI into the environment
-  via `extendEnvironment`)
-- Grammar changes require updating Ohm.js definitions
-- UI components are built with React and Preact Signals
-- Tensor operations delegate to TensorFlow.js
-
-## Common Tasks
-
-- **Add built-in function**: add to DefaultEnvironment in language.ts (UI components extend it from client.tsx)
-- **Modify syntax**: Update Ohm.js grammar definition
-- **Add UI component**: Create React component with signal support
-- **Change styling**: Use Tailwind utility classes (v4 syntax)
+- Fluent code follows `Style.md`: layout is grammar (glued binds tighter than spaced, spaced runs left to right, no precedence).
+- Comments describe the code as it is now. History goes in the commit message.
+- No space padding to align code or comments.

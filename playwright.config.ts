@@ -7,13 +7,13 @@ export default defineConfig({
   testMatch: "tests.browser.ts",
   fullyParallel: true,
   timeout: 60_000,
-  expect: { timeout: 15_000 },      // first load compiles the wasm backend
+  expect: { timeout: 15_000 }, // the first load waits for the dev server's bundle
   retries: process.env.CI ? 2 : 0,
   use: {
     baseURL: "http://localhost:3210",
     launchOptions: {
       args: [
-        "--use-fake-ui-for-media-stream",     // auto-grant camera/mic prompts
+        "--use-fake-ui-for-media-stream", // auto-grant camera/mic prompts
         "--use-fake-device-for-media-stream", // synthetic video/audio feed
       ],
     },
