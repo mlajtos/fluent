@@ -23,10 +23,8 @@ import { CpuPainter, GpuPainter, prepare, type Painter, type Picture } from "./p
 type Post = (message: ToPage, transfer?: Transferable[]) => void
 let post: Post = () => { }
 
-const nextFrame: (cb: () => void) => void =
-  typeof (globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame === "function"
-    ? (cb) => (globalThis as unknown as { requestAnimationFrame: (cb: () => void) => void }).requestAnimationFrame(cb)
-    : (cb) => { setTimeout(cb, 16) }
+const nextFrame = (cb: () => void) => { typeof requestAnimationFrame === "function" ? requestAnimationFrame(cb) : setTimeout(cb, 16) }
+const asError = (e: unknown): Error => e instanceof Error ? e : new Error(String(e))
 
 let nextId = 0
 
@@ -56,10 +54,7 @@ let pixelCanvas: OffscreenCanvas | null = null
 const fromPixels = (image: ImageBitmap): engine.Tensor => {
   const { width, height } = image
   pixelCanvas ??= new OffscreenCanvas(1, 1)
-  if (pixelCanvas.width !== width || pixelCanvas.height !== height) {
-    pixelCanvas.width = width
-    pixelCanvas.height = height
-  }
+  if (pixelCanvas.width !== width || pixelCanvas.height !== height) { Object.assign(pixelCanvas, { width, height }) }
   const context = pixelCanvas.getContext("2d", { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D
   // drawImage composites source-over: clear first, or an image with alpha shows the
   // previous one through
@@ -78,17 +73,14 @@ const fromPixels = (image: ImageBitmap): engine.Tensor => {
 
 // MARK: Descriptions
 
-// A document is named by its hash; hashing each once per evaluation
+// A document is named by its hash, each hashed once per evaluation; no document is the
+// main program, 0
 const documentIds = new Map<string, number>()
 const where = (origin: Origin | undefined): Where | undefined => {
   if (!origin) { return undefined }
   const text = origin.document
-  // no document: the main program
   let d = text === undefined ? 0 : documentIds.get(text)
-  if (d === undefined) {
-    d = documentHash(text!)
-    documentIds.set(text!, d)
-  }
+  if (d === undefined) { documentIds.set(text!, d = documentHash(text!)) }
   return { s: [origin.start.line, origin.start.column], e: [origin.end.line, origin.end.column], d }
 }
 
@@ -108,12 +100,8 @@ type Live = {
 }
 const ids = new WeakMap<object, number>()
 const idOf = (o: object): number => {
-  let id = ids.get(o)
-  if (id === undefined) {
-    id = ++nextId
-    ids.set(o, id)
-  }
-  return id
+  if (!ids.has(o)) { ids.set(o, ++nextId) }
+  return ids.get(o)!
 }
 const lives = new Map<number, Live>()
 const callbacks = new Map<number, { fn: Function, refs: number }>()
@@ -127,8 +115,6 @@ const pictures = new Map<number, Picture>()
 const describing = new Set<number>()
 // the transferable memory of the description being built
 let transfers: Transferable[] = []
-
-const asError = (e: unknown): Error => e instanceof Error ? e : new Error(String(e))
 
 const send = (message: ToPage) => {
   const t = transfers
@@ -146,7 +132,8 @@ const valueOf = (target: Signal<Value> | FluentVariable): Value => {
 
 let flushScheduled = false
 let pageDrawing = false
-const scheduleFlush = () => {
+const markDirty = (live: Live) => {
+  dirty.add(live)
   if (flushScheduled || pageDrawing) { return }
   flushScheduled = true
   nextFrame(flush)
@@ -165,10 +152,6 @@ const flush = () => {
   if (!batch.length) { return }
   send({ t: "lives", lives: batch })
   pageDrawing = true
-}
-const markDirty = (live: Live) => {
-  dirty.add(live)
-  scheduleFlush()
 }
 
 const describeNow = (live: Live): Desc => {
@@ -189,7 +172,7 @@ const describeLive = (target: Signal<Value> | FluentVariable): Desc => {
   const id = idOf(target)
   let live = lives.get(id)
   if (!live) {
-    const fresh: Live = { id, target, refs: 0, stop: () => { }, reading: 0, ack: 0, pictures: [] }
+    const fresh: Live = live = { id, target, refs: 0, stop: () => { }, reading: 0, ack: 0, pictures: [] }
     let first = true
     fresh.stop = effect(() => {
       if (target instanceof FluentVariable) { target.version.value } else { valueOf(target) }
@@ -197,17 +180,14 @@ const describeLive = (target: Signal<Value> | FluentVariable): Desc => {
       markDirty(fresh)
     })
     lives.set(id, fresh)
-    live = fresh
   }
   live.refs++
   // a value that contains itself is described once
-  if (describing.has(id)) { return { k: "live", id } }
-  return { k: "live", id, now: describeNow(live) }
+  return describing.has(id) ? { k: "live", id } : { k: "live", id, now: describeNow(live) }
 }
 
 const describeCallback = (fn: Function): Desc => {
-  const id = idOf(fn)
-  const known = callbacks.get(id)
+  const id = idOf(fn), known = callbacks.get(id)
   if (known) { known.refs++ } else { callbacks.set(id, { fn, refs: 1 }) }
   return { k: "callback", id }
 }
@@ -229,10 +209,9 @@ const numbersOf = (id: number, t: engine.Tensor): { payload?: Float32Array } => 
     },
     (e) => { post({ t: "tensor", id, error: asError(e).message }) },
   ).finally(() => {
-    if (live) {
-      live.reading--
-      if (dirty.has(live)) { flush() }
-    }
+    if (!live) { return }
+    live.reading--
+    if (dirty.has(live)) { flush() }
   })
   return {}
 }
@@ -256,7 +235,7 @@ const describeError = (error: Error): Desc => {
   for (let e: unknown = error.cause; e instanceof Error; e = e.cause) { chain.push(e) }
   // an Error's cause can be any value – what was tried, say – and it reads as the source
   // that reproduces it, ahead of the messages
-  const payload = chain[chain.length - 1]!.cause
+  const payload = chain.at(-1)!.cause
   return {
     k: "error",
     chain: chain.reverse().map((e) => ({ message: e.message, o: where(getOrigin(e)) })),
@@ -264,13 +243,15 @@ const describeError = (error: Error): Desc => {
   }
 }
 
-const describeFunction = (fn: Function): Desc => {
-  const meta = getMeta(fn)
-  // Fluent lambdas carry their source; a built-in's JS internals help nobody
-  const source = Object.prototype.hasOwnProperty.call(fn, "toString") ? fn.toString() : undefined
-  const doc: Doc | undefined = meta.doc ? { signature: meta.signature, doc: meta.doc, example: meta.example } : undefined
-  return { k: "function", name: fn.name || "function", source, doc }
+// a built-in's doc card, from its metadata
+const docOf = (value: unknown): Doc | undefined => {
+  const meta = typeof value === "function" ? getMeta(value) : {}
+  return meta.doc ? { signature: meta.signature, doc: meta.doc, example: meta.example } : undefined
 }
+
+// Fluent lambdas carry their source; a built-in's JS internals help nobody
+const describeFunction = (fn: Function): Desc =>
+  ({ k: "function", name: fn.name || "function", source: Object.hasOwn(fn, "toString") ? fn.toString() : undefined, doc: docOf(fn) })
 
 const labelOf = (node: SyntaxTreeNode): string => {
   switch (node.type) {
@@ -290,28 +271,22 @@ const labelOf = (node: SyntaxTreeNode): string => {
 const childrenOf = (node: SyntaxTreeNode): SyntaxTreeNode[] => {
   switch (node.type) {
     case "Program": return node.content
-    case "Operation":
-      return node.content.operator.type === "Operation"
-        ? [node.content.args, node.content.operator]
-        : node.content.args.content.value
+    case "Operation": return node.content.operator.type === "Operation" ? [node.content.args, node.content.operator] : node.content.args.content.value
     case "Tensor": return node.content.value
-    case "Lambda":
-      return [
-        { type: "List", content: { value: node.content.args }, origin: node.origin },
-        ...(node.content.expr as SyntaxTreeNode & { type: "Program" }).content,
-      ]
+    case "Lambda": return [
+      { type: "List", content: { value: node.content.args }, origin: node.origin },
+      ...(node.content.expr as SyntaxTreeNode & { type: "Program" }).content,
+    ]
     case "List": return node.content.value
     default: return []
   }
 }
-const treeOf = (node: SyntaxTreeNode): Tree =>
-  ({ label: labelOf(node), o: where(node.origin)!, children: childrenOf(node).map(treeOf) })
+const treeOf = (node: SyntaxTreeNode): Tree => ({ label: labelOf(node), o: where(node.origin)!, children: childrenOf(node).map(treeOf) })
 
 const describeTree = (node: SyntaxTreeNode): Desc => {
   // a backtick literal whose program failed to parse holds an Error node
   if (node?.type !== "Program") {
-    const message = node?.type === "Error" ? node.content : `CodePrint: expected a program, got ${(node as { type?: string })?.type ?? String(node)}`
-    return describeError(new Error(message))
+    return describeError(new Error(node?.type === "Error" ? node.content : `CodePrint: expected a program, got ${(node as { type?: string })?.type ?? String(node)}`))
   }
   try {
     return { k: "tree", roots: node.content.map(treeOf) }
@@ -320,30 +295,25 @@ const describeTree = (node: SyntaxTreeNode): Desc => {
   }
 }
 
-const describeWidget = (w: Widget, depth: number): Desc => ({
-  k: "ui",
-  uid: idOf(w),
-  type: w.type,
-  props: w.props,
-  slots: Object.fromEntries(Object.entries(w.slots).map(([k, v]) => [k, describe(v, depth + 1)])),
-  children: w.children.map((c) => describe(c, depth + 1)),
-})
-
 const describeBare = (value: unknown, depth: number): Desc => {
+  const inner = (v: unknown) => describe(v as Value, depth + 1)
   if (depth > 64) { return { k: "other", v: "…" } }
   if (value === null || value === undefined) { return { k: "null" } }
   if (typeof value === "string" || value instanceof String) { return { k: "string", v: String(value) } }
-  if (Array.isArray(value)) { return { k: "list", items: value.map((x) => describe(x, depth + 1)) } }
+  if (Array.isArray(value)) { return { k: "list", items: value.map(inner) } }
   if (typeof value === "function") { return describeFunction(value) }
   if (typeof value !== "object") { return { k: "other", v: String(value) } }
   if (value instanceof Signal || value instanceof FluentVariable) { return describeLive(value as Signal<Value> | FluentVariable) }
   if (isTensor(value)) { return describeTensor(value) }
   if (value instanceof Error) { return describeError(value) }
-  if (value instanceof Widget) { return describeWidget(value, depth) }
+  if (value instanceof Widget) {
+    const slots = Object.fromEntries(Object.entries(value.slots).map(([k, v]) => [k, inner(v)]))
+    return { k: "ui", uid: idOf(value), type: value.type, props: value.props, slots, children: value.children.map(inner) }
+  }
   if (value instanceof Callback) { return describeCallback(value.fn) }
   if (value instanceof CodeTree) { return describeTree(value.node) }
   if (value instanceof Promise) { return { k: "other", v: "! Promise" } }
-  return { k: "record", entries: Object.entries(value).map(([key, v]) => [key, describe(v as Value, depth + 1)]) }
+  return { k: "record", entries: Object.entries(value).map(([key, v]) => [key, inner(v)]) }
 }
 
 const describe = (value: Value, depth = 0): Desc => {
@@ -396,19 +366,34 @@ const pageSource = (kind: SourceKind, size: number[], initial: engine.Tensor, re
   })
   return computed(() => source.value) as unknown as Value
 }
+// frames of samples – the pointer's position, the microphone's waveform or spectrum
+const samples = (f: Frame) => (f.samples ? engine.tensor(f.samples) : null)
 
 const numberOr = (v: Value | undefined, fallback: number): number => (v === undefined || v === null ? fallback : getAsSyncList(v) as number)
 
-// Async sources resolve after an arbitrary delay; if the evaluation that created them has
-// been retired by then, the result is dropped.
-const generationRetired = (): (() => boolean) => {
+// A value that arrives later: the signal holds `initial` until then, or an Error if it
+// can't arrive. An evaluation retired by the time it arrives drops it.
+const arriving = (failure: string, initial: unknown, load: () => Promise<unknown>) => {
+  const value = SignalCreate<unknown>(initial)
   let retired = false
   registerDisposable(() => { retired = true })
-  return () => retired
+  load().then(
+    (v) => { if (!retired) { SignalUpdate(value, v) } },
+    (e) => { if (!retired) { value.value = new Error(`${failure}: ${e?.message ?? e}`) } },
+  )
+  return value as unknown as Value
 }
 
-// CORS fallback: retry a blocked cross-origin load through the dev server
-const proxied = (url: string) => `/proxy?url=${encodeURIComponent(url)}`
+// a response that is not ok is an Error
+const fetched = async (url: string): Promise<Response> => {
+  const response = await fetch(url)
+  if (!response.ok) { throw new Error(`${response.status} ${url}`) }
+  return response
+}
+// CORS fallback: a blocked cross-origin load is retried through the dev server; when the
+// proxy can't help either, the first failure is the one that says why
+const withProxy = <T>(url: string, load: (url: string) => Promise<T>): Promise<T> =>
+  load(url).catch((first) => load(`/proxy?url=${encodeURIComponent(url)}`).catch(() => { throw first }))
 
 // A download kept in the origin's private file system (OPFS), so reloads and hot updates
 // don't fetch large weight files again; without OPFS it is a plain fetch.
@@ -420,9 +405,7 @@ const cachedFetch = async (url: string): Promise<Uint8Array> => {
   if (dir) {
     try { return new Uint8Array(await (await (await dir.getFileHandle(name)).getFile()).arrayBuffer()) } catch { /* not cached yet */ }
   }
-  const response = await fetch(url)
-  if (!response.ok) { throw new Error(`${response.status} ${url}`) }
-  const bytes = new Uint8Array(await response.arrayBuffer())
+  const bytes = new Uint8Array(await (await fetched(url)).arrayBuffer())
   if (dir) {
     try { const w = await (await dir.getFileHandle(name, { create: true })).createWritable(); await w.write(bytes); await w.close() } catch { /* cache is best effort */ }
   }
@@ -435,24 +418,22 @@ const halfToFloat = (h: number): number => {
   const e = (h >> 10) & 0x1f, m = h & 0x3ff, sign = h & 0x8000 ? -1 : 1
   return sign * (e === 0 ? m * 2 ** -24 : e === 31 ? (m ? NaN : Infinity) : (1 + m / 1024) * 2 ** (e - 15))
 }
-const SAFETENSOR_READERS: Record<string, (b: ArrayBuffer, at: number, n: number) => ArrayLike<number | bigint>> = {
-  F32: (b, at, n) => new Float32Array(b.slice(at, at + 4 * n)), F64: (b, at, n) => new Float64Array(b.slice(at, at + 8 * n)),
-  I32: (b, at, n) => new Int32Array(b.slice(at, at + 4 * n)), I64: (b, at, n) => new BigInt64Array(b.slice(at, at + 8 * n)),
-  I16: (b, at, n) => new Int16Array(b.slice(at, at + 2 * n)), I8: (b, at, n) => new Int8Array(b, at, n),
-  U8: (b, at, n) => new Uint8Array(b, at, n), BOOL: (b, at, n) => new Uint8Array(b, at, n),
-  F16: (b, at, n) => Array.from(new Uint16Array(b.slice(at, at + 2 * n)), halfToFloat),
-  BF16: (b, at, n) => Array.from(new Uint16Array(b.slice(at, at + 2 * n)), (h) => new Float32Array(new Uint32Array([h << 16]).buffer)[0]!),
+const bfloatToFloat = (h: number): number => new Float32Array(Uint32Array.of(h << 16).buffer)[0]!
+const SAFETENSOR_DTYPES: Record<string, [{ new(b: ArrayBuffer): ArrayLike<number | bigint>, BYTES_PER_ELEMENT: number }, (x: number) => number]> = {
+  F32: [Float32Array, Number], F64: [Float64Array, Number], I32: [Int32Array, Number], I64: [BigInt64Array, Number],
+  I16: [Int16Array, Number], I8: [Int8Array, Number], U8: [Uint8Array, Number], BOOL: [Uint8Array, Number],
+  F16: [Uint16Array, halfToFloat], BF16: [Uint16Array, bfloatToFloat],
 }
 const parseSafetensors = (bytes: Uint8Array): [string, engine.Tensor][] => {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  const headerLength = Number(view.getBigUint64(0, true))
+  const headerLength = Number(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(0, true))
   const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + headerLength))) as Record<string, { dtype: string, shape: number[], data_offsets: [number, number] }>
   const body = bytes.slice(8 + headerLength).buffer
   return Object.entries(header).filter(([key]) => key !== "__metadata__").map(([key, t]) => {
-    const read = SAFETENSOR_READERS[t.dtype]
-    if (!read) { throw new Error(`safetensors: unsupported dtype ${t.dtype} for '${key}'`) }
-    const n = t.shape.reduce((a, b) => a * b, 1)
-    return [key, engine.tensor(Float32Array.from(read(body, t.data_offsets[0], n) as ArrayLike<number>, Number), { shape: t.shape })]
+    const dtype = SAFETENSOR_DTYPES[t.dtype]
+    if (!dtype) { throw new Error(`safetensors: unsupported dtype ${t.dtype} for '${key}'`) }
+    const [View, decode] = dtype, at = t.data_offsets[0], n = t.shape.reduce((a, b) => a * b, 1)
+    const raw = new View(body.slice(at, at + n * View.BYTES_PER_ELEMENT)) as ArrayLike<number>
+    return [key, engine.tensor(Float32Array.from(raw, decode), { shape: t.shape })]
   })
 }
 
@@ -478,22 +459,14 @@ const pointMapping = (range?: Value) => {
   return { x0, y0, spanX: x1 - x0 || 1, spanY: y1 - y0 || 1 }
 }
 
-const Text = (value: Value) => {
-  if (typeof value !== "string" && !(value instanceof String)) {
-    return new Error(`Text: expected string, got ${typeof value}`)
-  }
-  return widget("Text", { text: String(value) })
-}
+const Text = (value: Value) =>
+  typeof value === "string" || value instanceof String ? widget("Text", { text: String(value) }) : new Error(`Text: expected string, got ${typeof value}`)
 
 const Button = (label?: Value, onClick?: Value) =>
-  widget("Button", {}, {
-    label: label ?? "Button",
-    ...(typeof onClick === "function" && { onClick: new Callback(onClick) as unknown as Value }),
-  })
+  widget("Button", {}, { label: label ?? "Button", ...(typeof onClick === "function" && { onClick: new Callback(onClick) as unknown as Value }) })
 
 // TextEditor(text) – editable always; TextEditor(text, enabled) – read-only while `enabled` is falsy
-const TextEditor = (target: Value, enabled?: Value) =>
-  widget("TextEditor", {}, { target, ...(enabled !== undefined && { enabled }) })
+const TextEditor = (target: Value, enabled?: Value) => widget("TextEditor", {}, { target, ...(enabled !== undefined && { enabled }) })
 const Slider = (target: Value) => widget("Slider", {}, { target })
 const Checkbox = (target: Value) => widget("Checkbox", {}, { target })
 // sensitivity: 0 is stuck, negative is flipped
@@ -533,35 +506,24 @@ const PointPlot = (x: Value, y?: Value) => {
   const axis = (v: Value, what: string): number[] | Error => {
     const data = getAsSyncList(v)
     if (typeof data === "number") { return [data] }
-    if (!Array.isArray(data)) {
-      return new Error(`\`PointPlot\`: ${what} must be a tensor – write a list as [ … ]`)
-    }
-    return data as number[]
+    return Array.isArray(data) ? data as number[] : new Error(`\`PointPlot\`: ${what} must be a tensor – write a list as [ … ]`)
   }
   const ys = axis(y ?? x, y === undefined ? "the argument" : "y")
   if (ys instanceof Error) { return ys }
   const xs = y === undefined ? ys.map((_, i) => i) : axis(x, "x")
-  if (xs instanceof Error) { return xs }
-  return widget("PointPlot", { xs, ys })
+  return xs instanceof Error ? xs : widget("PointPlot", { xs, ys })
 }
 
 const Code = (source: Value) => widget("Code", {}, { source })
 // CodeEditor(code) fills its container; CodeEditor(code, "auto") sizes itself to its
 // content and grows as you type – for editors in auto-sized rows
-const CodeEditor = (source: Value, sizing?: Value) =>
-  widget("CodeEditor", { auto: String(sizing ?? "") === "auto" }, { source })
+const CodeEditor = (source: Value, sizing?: Value) => widget("CodeEditor", { auto: String(sizing ?? "") === "auto" }, { source })
 
 const Print = (value: Value) => widget("Print", {}, {}, [value])
 const PrettyPrint = (value: Value) => widget("PrettyPrint", {}, {}, [value])
 const CodePrint = (node: Value) => new CodeTree(node as unknown as SyntaxTreeNode) as unknown as Value
 
-for (const f of [Button, TextEditor, Slider, Checkbox, Scrubber, ImageUpload, Center, Layers, Point2D, Trail, Code, CodeEditor, Print]) {
-  setMeta(f, { noAutoLift: true })
-}
-
-const MousePosition = () =>
-  pageSource("pointer", [2], engine.tensor([0.5, 0.5]), (f) => (f.samples ? engine.tensor(f.samples) : null))
-
+const MousePosition = () => pageSource("pointer", [2], engine.tensor([0.5, 0.5]), samples)
 const Camera = (width?: Value, height?: Value, fps?: Value) => {
   const w = numberOr(width, 640), h = numberOr(height, 480)
   // black until the camera starts, so the program's math has a frame to work on
@@ -569,12 +531,12 @@ const Camera = (width?: Value, height?: Value, fps?: Value) => {
 }
 const Microphone = (bufferSize?: Value) => {
   const size = numberOr(bufferSize, 2048)
-  return pageSource("microphone", [size], engine.zeros([size]), (f) => (f.samples ? engine.tensor(f.samples) : null))
+  return pageSource("microphone", [size], engine.zeros([size]), samples)
 }
 // the spectrum's magnitudes, normalized to 0–1
 const MicrophoneSpectrum = (bufferSize?: Value) => {
   const size = numberOr(bufferSize, 1024)
-  return pageSource("spectrum", [size], engine.zeros([size]), (f) => (f.samples ? engine.tensor(f.samples) : null))
+  return pageSource("spectrum", [size], engine.zeros([size]), samples)
 }
 
 // seconds since the program started, every frame
@@ -598,58 +560,18 @@ const SampleRate = () => {
   return TensorScalarLive(sampleRate)
 }
 
-const Fetch = (url: Value) => {
-  const text = SignalCreate<Value>(null)
-  const retired = generationRetired()
-  fetch(String(url))
-    .then((r) => {
-      if (!r.ok) { throw new Error(`${r.status} ${String(url)}`) }
-      return r.text()
-    })
-    .then(
-      (data) => { if (!retired()) { text.value = data } },
-      (e) => { if (!retired()) { text.value = new Error(`Error fetching data: ${e?.message ?? e}`) } },
-    )
-  return text
-}
+const Fetch = (url: Value) => arriving("Error fetching data", null, () => fetched(String(url)).then((r) => r.text()))
+// the loaders resolve later – lifting would re-invoke them (and re-fetch) on every change
+const LoadTensorFromImageUrl = (url: Value) => arriving("LoadTensorFromImageUrl", null, () =>
+  withProxy(String(url), (u) => fetched(u).then((r) => r.blob()).then((blob) => createImageBitmap(blob))).then(fromPixels))
+// an empty list until it loads – readers can gate on `#(data()) > 0` – and an Error if it can't
+const LoadSafeTensorFromURL = (url?: Value) => url == null
+  ? new Error("loadSafeTensorFromURL: url is required")
+  : arriving("LoadSafeTensorFromURL", [], () => withProxy(String(url), cachedFetch).then(parseSafetensors))
 
-const LoadTensorFromImageUrl = (url: Value) => {
-  const image = SignalCreate<engine.Tensor | null>(null)
-  const retired = generationRetired()
-  const load = (u: string) => fetch(u).then((r) => {
-    if (!r.ok) { throw new Error(`${r.status} ${u}`) }
-    return r.blob()
-  }).then((blob) => createImageBitmap(blob))
-  // when the proxy can't help either, the first failure is the one that says why
-  load(String(url))
-    .catch((first) => load(proxied(String(url))).catch(() => { throw first }))
-    .then((bitmap) => {
-      if (retired()) { bitmap.close(); return }
-      SignalUpdate(image, fromPixels(bitmap))
-    })
-    .catch((e) => { if (!retired()) { image.value = new Error(`LoadTensorFromImageUrl: ${e?.message ?? e}`) as unknown as engine.Tensor } })
-  return image
+for (const f of [Button, TextEditor, Slider, Checkbox, Scrubber, ImageUpload, Center, Layers, Point2D, Trail, Code, CodeEditor, Print, LoadSafeTensorFromURL, LoadTensorFromImageUrl]) {
+  setMeta(f, { noAutoLift: true })
 }
-
-const LoadSafeTensorFromURL = (rawUrl?: Value) => {
-  if (rawUrl == null) { return new Error("loadSafeTensorFromURL: url is required") }
-  const url = String(rawUrl)
-  // an empty list until it loads – readers can gate on `#(data()) > 0` – and an Error
-  // if it can't
-  const tensors = SignalCreate<unknown>([])
-  const retired = generationRetired()
-  cachedFetch(url)
-    .catch((first) => cachedFetch(proxied(url)).catch(() => { throw first }))
-    .then((bytes) => {
-      if (retired()) { return }
-      tensors.value = parseSafetensors(bytes)
-    })
-    .catch((e) => { if (!retired()) { tensors.value = new Error(`LoadSafeTensorFromURL: ${e?.message ?? e}`) } })
-  return tensors
-}
-// both resolve later – lifting would re-invoke them (and re-fetch) on every change
-setMeta(LoadSafeTensorFromURL, { noAutoLift: true })
-setMeta(LoadTensorFromImageUrl, { noAutoLift: true })
 
 // MARK: Running the program
 
@@ -664,16 +586,6 @@ const scheduleRun = () => {
   setTimeout(run, 0)
 }
 
-// Every value of the last program is let go: its lives stop sending, and the page drops
-// what it shows of them when the new result arrives.
-const releaseAll = () => {
-  pageDrawing = false
-  lives.forEach(forget)
-  callbacks.clear()
-  documentIds.clear()
-  pictures.clear()
-}
-
 // a live nothing shows any more stops, and lets go of the pictures it showed
 const forget = (live: Live) => {
   live.stop()
@@ -683,12 +595,18 @@ const forget = (live: Live) => {
 }
 
 // The program runs inside an effect: a signal it reads at its top level – not inside a
-// $ or a lambda – runs it again when it changes. once() reads without that.
+// $ or a lambda – runs it again when it changes. once() reads without that. Every value
+// of the last program is let go: its lives stop sending, and the page drops what it
+// shows of them when the new result arrives.
 const run = () => {
   runScheduled = false
   if (source === null) { return }
   stopProgram?.()
-  releaseAll()
+  pageDrawing = false
+  lives.forEach(forget)
+  callbacks.clear()
+  documentIds.clear()
+  pictures.clear()
   const code = source
   let first = true
   stopProgram = effect(() => {
@@ -732,11 +650,7 @@ const receive = (m: ToWorker) => {
         return
       }
       const value = fromPage(m.value)
-      if (live.target instanceof FluentVariable) {
-        if (isTensor(value)) { live.target.assign(value) }
-      } else {
-        SignalUpdate(live.target, value)
-      }
+      if (!(live.target instanceof FluentVariable)) { SignalUpdate(live.target, value) } else if (isTensor(value)) { live.target.assign(value) }
       // answered even when the write changed nothing (a read-only signal): the page
       // stops showing its own value once it hears back
       live.ack = m.seq
@@ -744,33 +658,18 @@ const receive = (m: ToWorker) => {
       return
     }
     case "call": {
-      const callback = callbacks.get(m.id)
-      if (!callback) { return }
-      try { callback.fn() } catch (e) { console.error(e) }
+      try { callbacks.get(m.id)?.fn() } catch (e) { console.error(e) }
       return
     }
     case "drop": {
-      const live = lives.get(m.id)
+      const live = lives.get(m.id), callback = callbacks.get(m.id)
       if (live && (live.refs -= m.count) <= 0) { forget(live) }
-      const callback = callbacks.get(m.id)
-      if (callback) {
-        callback.refs -= m.count
-        if (callback.refs <= 0) { callbacks.delete(m.id) }
-      }
+      if (callback && (callback.refs -= m.count) <= 0) { callbacks.delete(m.id) }
       return
     }
-    case "frame": {
-      receiveFrame(m.id, { bitmap: m.bitmap, samples: m.samples })
-      return
-    }
-    case "canvas": {
-      painter.attach(m.slot, m.canvas)
-      return
-    }
-    case "canvasGone": {
-      painter.detach(m.slot)
-      return
-    }
+    case "frame": { receiveFrame(m.id, { bitmap: m.bitmap, samples: m.samples }); return }
+    case "canvas": { painter.attach(m.slot, m.canvas); return }
+    case "canvasGone": { painter.detach(m.slot); return }
     case "paint": {
       const picture = pictures.get(m.id)
       if (!picture) { return }
@@ -796,18 +695,6 @@ const receive = (m: ToWorker) => {
   }
 }
 
-// every name in the environment, with its doc card – for hover and completion on the page
-const environmentNames = (): [string, string, Doc | null][] => {
-  const scope = createScope(), names: [string, string, Doc | null][] = []
-  for (const key in scope) {
-    const value = scope[key]
-    const meta = typeof value === "function" ? getMeta(value) : {}
-    const detail = meta.signature ?? (typeof value === "function" ? "function" : String(value).slice(0, 50))
-    names.push([key, detail, meta.doc ? { signature: meta.signature, doc: meta.doc, example: meta.example } : null])
-  }
-  return names
-}
-
 export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
   post = postMessage
   const gpu = engine.engineGpu()
@@ -829,6 +716,12 @@ export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
     enumerable: false,
     configurable: true,
   })
-  post({ t: "ready", names: environmentNames(), prelude: PRELUDE })
+  // every name in the environment, with its doc card – for hover and completion on the page
+  const scope = createScope(), names: [string, string, Doc | null][] = []
+  for (const key in scope) {
+    const value = scope[key], meta = typeof value === "function" ? getMeta(value) : {}
+    names.push([key, meta.signature ?? (typeof value === "function" ? "function" : String(value).slice(0, 50)), docOf(value) ?? null])
+  }
+  post({ t: "ready", names, prelude: PRELUDE })
   return receive
 }
