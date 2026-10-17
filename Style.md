@@ -121,4 +121,4 @@ trailing comma.
 | `√x + 1`, `-x + 3` | an error | `(√x) + 1`, `(-x) + 3` |
 | `3×-2`, `2^-1` | one unknown glyph | `3 × -2`, `2^(-1)` |
 | `2π`, `Σx` | a call of 2; one name | `2×π`, `Σ(x)` |
-| `{ x }` | a thunk that returns the name x | `{ x | x }` |
+| `{ x }` | a thunk that returns the name x | `{ x \| x }` |
