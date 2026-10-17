@@ -79,7 +79,7 @@ import {
   getParseErrors, PRELUDE,
   identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
 } from "./language"
-import { tensorView, documentHash, type Desc, type Doc, type Payload, type SourceKind, type TensorView, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where } from "./protocol"
+import { tensorView, documentHash, type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where } from "./protocol"
 import { Documentation } from "./documentation"
 import { useSignals, useSignal } from '@preact/signals-react/runtime';
 import { ErrorBoundary } from 'react-error-boundary';
@@ -94,7 +94,6 @@ import { renderMarkdown } from "monaco-editor/esm/vs/base/browser/markdownRender
 import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/common/quickInput"
 import dedent from "ts-dedent";
 import { Base64 } from 'js-base64'
-import { type Annotations } from "plotly.js"
 
 
 // Web Worker setup for monaco-editor
@@ -140,7 +139,7 @@ type Mirror = {
 }
 const mirrors = new Map<number, Mirror>()
 // a tensor's values, or the message saying why they couldn't be computed
-const payloads = new Map<number, Signal<Payload | string | undefined>>()
+const payloads = new Map<number, Signal<Float32Array | string | undefined>>()
 const result = signal<Desc | null>(null)
 const environmentNames = signal(new Map<string, { detail: string, doc: Doc | null }>())
 
@@ -258,7 +257,7 @@ const resolve = (d: Desc | undefined): Desc | undefined => {
   for (let i = 0; d?.k === "live" && i < 64; i++) { d = mirrors.get(d.id)?.desc.value }
   return d
 }
-const payloadOf = (d: Desc | undefined): Payload | undefined => {
+const payloadOf = (d: Desc | undefined): Float32Array | undefined => {
   const p = d?.k === "tensor" ? payloads.get(d.id)?.value : undefined
   return typeof p === "string" ? undefined : p
 }
@@ -389,10 +388,6 @@ const startSource = (id: number, kind: SourceKind, size: number[], fps = 30) => 
     send({ samples })
   })
 }
-
-// react-plotly is weirdly packaged - need to access default twice
-// @ts-ignore
-const Plot = (await import("react-plotly.js")).default.default as Plot
 
 import "./index.css"
 
@@ -788,29 +783,18 @@ const TrailView = ({ d }: { d: UIDesc }) => {
   )
 }
 
+// y against x, the points joined in order
 const PointPlotView = ({ d }: { d: UIDesc }) => {
   const { xs, ys } = d.props as { xs: number[], ys: number[] }
+  const [x0, x1] = extent(xs), [y0, y1] = extent(ys)
+  const at = xs.map((x, i) => `${(x - x0) / (x1 - x0 || 1) * 100},${(y1 - ys[i]!) / (y1 - y0 || 1) * 100}`)
   return (
-    <Plot
-      data={[{
-        x: xs,
-        y: ys,
-        type: "scatter",
-        mode: "lines+markers",
-        line: { color: "#666", width: 1 },
-        marker: { color: ys, colorscale: "Viridis", size: 9, line: { color: "black", width: 1 } },
-      }]}
-      layout={{
-        paper_bgcolor: "transparent",
-        plot_bgcolor: "transparent",
-        font: { color: "#D4D4D4" },
-        xaxis: { gridcolor: "#444444", zeroline: false, automargin: true },
-        yaxis: { gridcolor: "#444444", zeroline: false, automargin: true },
-        margin: { pad: 6, t: 6, l: 0, r: 6, b: 0 },
-      }}
-      config={{ staticPlot: true, responsive: false }}
-      style={{ width: "100%", height: "12em" }}
-    />
+    <Axes y={[y0, y1]} x={[x0, x1]}>
+      <svg className="absolute inset-0 w-full h-full overflow-visible" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <polyline points={at.join(" ")} fill="none" stroke="#666" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+        <path d={at.map((p) => `M${p}h0`).join("")} stroke={`#${tokenColors.number}`} strokeWidth={7} strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </Axes>
   )
 }
 
@@ -1321,156 +1305,131 @@ function ErrorView({ d }: { d: Extract<Desc, { k: "error" }> }): JSX.Element {
 }
 
 // MARK: Plots
-// A tensor draws by its shape (tensorView): a number, bars, a heatmap, an image. Its
-// values arrive with its description or right after it; until they do, the view keeps
-// showing the last ones it had.
+// A tensor draws by its rank (tensorView): a number, bars, a heatmap, an image. The worker
+// paints the pictures; a number, or a few bars, shows its values, which arrive with its
+// description or right after it. Until new values arrive, the view keeps the last.
+
+const formatNumber = (value: number, digits: number) =>
+  value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: digits, useGrouping: true }).replace(/,/g, "_")
+// three significant digits, for labels
+const short = (value: number) => formatNumber(Number(value.toPrecision(3)), 20)
+
+// the smallest and the largest, NaN aside
+const extent = (values: ArrayLike<number>): [number, number] => {
+  let lo = Infinity, hi = -Infinity
+  for (let i = 0; i < values.length; i++) { const v = values[i]!; if (v < lo) { lo = v } if (v > hi) { hi = v } }
+  return lo > hi ? [0, 0] : [lo, hi]
+}
+
+// A plot's frame: the y range to its left, the x range below
+const Axes = ({ y, x, children }: { y?: [number, number], x?: [number, number], children: JSX.Element }) => (
+  <div className="grid gap-x-2 text-xs text-neutral-500 font-mono" style={{ gridTemplateColumns: "auto 1fr" }}>
+    <div className="flex flex-col justify-between text-right">{y && <><span>{short(y[1])}</span><span>{short(y[0])}</span></>}</div>
+    <div className="relative" style={{ height: "10em" }}>{children}</div>
+    {x && <><div /><div className="flex justify-between"><span>{short(x[0])}</span><span>{short(x[1])}</span></div></>}
+  </div>
+)
+
+// A few bars, drawn here, each with its value
+const Bars = ({ values }: { values: Float32Array }) => {
+  const [lo, hi] = extent([...values, 0])
+  const y = (v: number) => (hi - v) / (hi - lo || 1) * 100, n = values.length
+  return (
+    <Axes>
+      <div className="absolute inset-x-0 top-4 bottom-4">
+        <svg className="absolute inset-0 w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+          {[...values].map((v, i) => (
+            <rect key={i} x={(i + 0.1) / n * 100} width={0.8 / n * 100} y={y(Math.max(v, 0))} height={Math.abs(y(v) - y(0))} fill={`#${tokenColors.number}`} />
+          ))}
+          <line x1={0} x2={100} y1={y(0)} y2={y(0)} stroke="#444444" vectorEffect="non-scaling-stroke" />
+        </svg>
+        {[...values].map((v, i) => (
+          <span key={i} className="absolute text-neutral-300" style={{ left: `${(i + 0.5) / n * 100}%`, top: `${y(v)}%`, transform: `translate(-50%, ${v < 0 ? 0 : -100}%)` }}>{short(v)}</span>
+        ))}
+      </div>
+    </Axes>
+  )
+}
+
+const VIRIDIS_CSS = "linear-gradient(to right, #440154, #3b528b, #21918c, #5ec962, #fde725)"
 
 function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
   useSignals()
-  const view = tensorView(d.shape)
+  const view = tensorView(d.shape), key = `${view}${d.paint}`
   const fresh = payloads.get(d.id)?.value
-  const last = useRef<{ view: TensorView, shape: number[], payload: Payload } | null>(null)
+  const last = useRef<{ key: string, values: Float32Array } | null>(null)
   if (typeof fresh === "string") { return <ErrorView d={{ k: "error", chain: [{ message: fresh }] }} /> }
-  if (fresh) { last.current = { view, shape: d.shape, payload: fresh } }
-  const shown = last.current?.view === view ? last.current : null
+  if (fresh) { last.current = { key, values: fresh } }
+  // for a picture, the range it spans
+  const values = last.current?.key === key ? last.current.values : undefined
+  const [height = 1, width = 1] = d.shape
 
-  if (view === "shape") {
-    return (
+  switch (view) {
+    case "shape": return (
       <div>
         <span className="font-bold">Tensor:</span> {d.shape.join(", ")}<br />
         <span className="text-neutral-500">rank {d.shape.length} – reshape or slice it to plot</span>
       </div>
     )
+    case "number": return <ScalarView value={values?.[0]} />
+    case "bars":
+      if (!d.paint) { return values ? <Bars values={values} /> : <Axes><span /></Axes> }
+      return <Axes y={values && [Math.min(values[0]!, 0), Math.max(values[1]!, 0)]}><PaintedCanvas id={d.id} fill /></Axes>
   }
-  if (view === "number") { return <ScalarView value={shown ? shown.payload[0] : undefined} /> }
-  if (view === "bars") { return <BarPlot values={shown ? Array.from(shown.payload) : null} /> }
-  if (view === "heatPlot") {
-    if (!shown) { return <div style={{ width: "100%", height: "12em" }} /> }
-    const [rows = 1, cols = 1] = shown.shape
-    const z = Array.from({ length: rows }, (_, i) => Array.from(shown.payload.subarray(i * cols, (i + 1) * cols)))
-    return <HeatPlot z={z} />
-  }
-  const [height = 1, width = 1] = (d.paint ? d : shown ?? d).shape
-  // small heatmaps (a 27×32 embedding) upscale by an integer factor to ~256px, so the
-  // cells stay crisp; images and large grids show at their own size
-  const displayWidth = view === "heatImage" && width < 256 ? width * Math.ceil(256 / width) : width
-  if (d.paint) { return <PaintedCanvas id={d.id} width={width} height={height} displayWidth={displayWidth} /> }
-  return <PixelCanvas rgba={shown?.payload as Uint8ClampedArray | undefined} width={width} height={height} displayWidth={displayWidth} />
+  // a small heatmap is magnified by a whole number, to about 256 pixels; images and large
+  // heatmaps show at their own size
+  const displayWidth = view === "heat" ? width * Math.ceil(256 / Math.max(width, height)) : width
+  return (
+    <div className="grid gap-1">
+      <PaintedCanvas id={d.id} style={canvasStyle(width, height, displayWidth)} />
+      {view === "heat" && values && (
+        <div className="flex items-center gap-2 text-xs text-neutral-500 font-mono">
+          {short(values[0]!)}<div className="h-1.5 w-16 rounded-full" style={{ background: VIRIDIS_CSS }} />{short(values[1]!)}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // A picture shown at its own size or magnified by a whole number keeps its pixels square
 // and sharp; scaled by anything else – to fit a narrower panel – it is smoothed, so no
-// row or column of pixels drops out
+// row or column of pixels drops out. A picture a few pixels high still shows.
 const canvasStyle = (width: number, height: number, displayWidth: number): CSSProperties => ({
   width: "100%",
   maxWidth: `${displayWidth}px`,
+  minHeight: "4px",
   aspectRatio: `${width / height}`,
   imageRendering: displayWidth > width && displayWidth % width === 0 ? "pixelated" : "auto",
 })
 
 // A canvas the worker paints: handed over once, then told which picture to paint as each
-// new one arrives
+// new one arrives. Its pixels are the worker's to size: a picture's own, or – filling its
+// box, as bars do – the box's device pixels, sent again whenever they change.
 let nextSlot = 0
-const PaintedCanvas = ({ id, width, height, displayWidth }: { id: number, width: number, height: number, displayWidth: number }) => {
+const PaintedCanvas = ({ id, style, fill = false }: { id: number, style?: CSSProperties, fill?: boolean }) => {
   const ref = useRef<HTMLCanvasElement>(null)
-  const slot = useRef(0)
+  const slot = useRef(0), shown = useRef(id), size = useRef<[number, number]>([0, 0])
+  shown.current = id
   useEffect(() => {
-    const canvas = ref.current!.transferControlToOffscreen()
-    const mine = ++nextSlot
-    slot.current = mine
+    const element = ref.current!, canvas = element.transferControlToOffscreen(), mine = slot.current = ++nextSlot
     toWorker({ t: "canvas", slot: mine, canvas }, [canvas])
-    return () => toWorker({ t: "canvasGone", slot: mine })
+    const observer = new ResizeObserver(([entry]) => {
+      size.current = [entry!.contentRect.width * devicePixelRatio, entry!.contentRect.height * devicePixelRatio]
+      toWorker({ t: "paint", slot: mine, id: shown.current, size: size.current })
+    })
+    if (fill) { observer.observe(element) }
+    return () => {
+      observer.disconnect()
+      toWorker({ t: "canvasGone", slot: mine })
+    }
   }, [])
-  useEffect(() => { toWorker({ t: "paint", slot: slot.current, id }) }, [id])
-  // its size is the worker's to set: a canvas handed over can't be resized here
-  return <canvas ref={ref} style={canvasStyle(width, height, displayWidth)} />
+  useEffect(() => { if (!fill || size.current[0]) { toWorker({ t: "paint", slot: slot.current, id, size: size.current }) } }, [id])
+  return <canvas ref={ref} style={fill ? { width: "100%", height: "100%" } : style} />
 }
-
-const formatNumber = (value: number, digits: number) =>
-  value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: digits, useGrouping: true }).replace(/,/g, "_")
 
 const ScalarView = ({ value }: { value: number | undefined }) => {
   if (value === undefined) { return <span style={{ color: `#${tokenColors.number}`, opacity: 0.5 }}>…</span> }
   return <span style={{ color: `#${tokenColors.number}` }}>{formatNumber(value, 6)}</span>
-}
-
-const BarPlot = ({ values }: { values: number[] | null }) => {
-  if (values === null) { return <div style={{ width: "100%", height: "12em" }} /> }
-  const annotations: Partial<Annotations>[] = values.length < 20
-    ? values.map((value, i) => ({
-      xref: "x1", yref: "y1", yanchor: "bottom", x: i, y: value,
-      text: formatNumber(value, 2),
-      font: { color: "#D4D4D4", shadow: "0px 0px 1px black" },
-      showarrow: false,
-    }) as unknown as Partial<Annotations>)
-    : []
-  return (
-    <Plot
-      data={[{ y: values, type: "bar", marker: { color: values, colorscale: "Viridis" } }]}
-      layout={{
-        paper_bgcolor: "transparent",
-        plot_bgcolor: "transparent",
-        font: { color: "#D4D4D4" },
-        annotations,
-        xaxis: { automargin: true },
-        yaxis: { gridcolor: "#444444", automargin: true },
-        margin: { pad: 10, t: 0, l: 0, r: 0, b: 0 },
-      }}
-      // responsive plots flash in a random position when they update
-      config={{ staticPlot: true, responsive: false }}
-      style={{ width: "100%", height: "10em" }}
-    />
-  )
-}
-
-const HeatPlot = ({ z }: { z: number[][] }) => {
-  const annotations: Partial<Annotations>[] = z.length * (z[0]?.length ?? 0) < 20
-    ? z.flatMap((row, i) => row.map((value, j) => ({
-      xref: "x1", yref: "y1", x: j, y: i,
-      text: value.toFixed(2),
-      font: { color: "#D4D4D4", shadow: "0px 0px 1px black" },
-      showarrow: false,
-    }) as unknown as Partial<Annotations>))
-    : []
-  return (
-    <Plot
-      data={[{ z, type: "heatmap", colorscale: "Viridis" }]}
-      layout={{
-        margin: { pad: 10, t: 0, l: 0, r: 0, b: 0 },
-        paper_bgcolor: "transparent",
-        plot_bgcolor: "transparent",
-        font: { color: "#D4D4D4" },
-        annotations,
-        xaxis: { automargin: true, side: "top" },
-        yaxis: { gridcolor: "#444444", automargin: true, autorange: "reversed" },
-      }}
-      config={{ staticPlot: true, autosizable: true, responsive: true }}
-      // height: 100% of an auto-sized parent is circular and sometimes resolves to 0 –
-      // the min-height floor breaks the cycle
-      style={{ width: "100%", height: "100%", minHeight: "16em" }}
-    />
-  )
-}
-
-// RGBA pixels, colored in the worker, drawn as they arrive
-const PixelCanvas = ({ rgba, width, height, displayWidth }: { rgba?: Uint8ClampedArray, width: number, height: number, displayWidth: number }) => {
-  const ref = useRef<HTMLCanvasElement>(null)
-  useEffect(() => {
-    const canvas = ref.current
-    if (!canvas || !rgba || rgba.length !== width * height * 4) { return }
-    // resizing clears the canvas: only when the size changes
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width
-      canvas.height = height
-    }
-    canvas.getContext("2d")?.putImageData(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, width, height), 0, 0)
-  }, [rgba, width, height])
-  return (
-    <canvas
-      ref={ref}
-      style={canvasStyle(width, height, displayWidth)}
-    />
-  )
 }
 
 // the program's value – the playground's output panel

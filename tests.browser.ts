@@ -110,7 +110,7 @@ test("a checkbox bound to a ~ variable writes to it", async ({ page }) => {
 
 test("PointPlot says what it wanted instead of plotting the index", async ({ page }) => {
   // regression: getAsSyncList returns undefined for a list, so a list axis
-  // reached plotly as undefined and it silently plotted against the point
+  // reached the plot as undefined and it silently plotted against the point
   // index; the single-argument form threw a raw TypeError out of .map
   await open(page, "PointPlot((1, 2, 3))")
   await expect(panel(page)).toContainText("must be a tensor")
@@ -126,7 +126,7 @@ test("a rank-4 tensor reports its shape instead of plotting a flattened lie", as
   await open(page, "reshape(0 ..< 16, [2, 2, 2, 2])")
   await expect(panel(page)).toContainText("2, 2, 2, 2")
   await expect(panel(page)).toContainText("reshape or slice it to plot")
-  await expect(panel(page).locator(".js-plotly-plot")).toHaveCount(0)
+  await expect(panel(page).locator("canvas, svg")).toHaveCount(0)
 })
 
 test("a 2-channel image renders instead of reading past its buffer", async ({ page }) => {
@@ -213,7 +213,7 @@ test("?example= with an unknown name spells 404 in a binary tensor", async ({ pa
   await page.goto("/?example=no-such-bird")
   await expect(page.getByText('example "no-such-bird" not found')).toBeVisible()
   // the 5×11 bit matrix renders as a heatmap in the output panel
-  await expect(panel(page).locator(".js-plotly-plot, canvas").first()).toBeVisible()
+  await expect(panel(page).locator("canvas").first()).toBeVisible()
 })
 
 test("printing a documented built-in shows its doc card, never JS internals", async ({ page }) => {
@@ -281,7 +281,7 @@ edges
 
 test("PointPlot draws an x/y plot (custom x axis)", async ({ page }) => {
   await open(page, "PointPlot(2 ^ (0...7), [2.7, 1.98, 1.08, 0.82, 0.68, 0.62, 0.59, 0.57])")
-  await expect(panel(page).locator(".js-plotly-plot").first()).toBeVisible({ timeout: 20_000 })
+  await expect(panel(page).locator("svg polyline").first()).toBeVisible({ timeout: 20_000 })
 })
 
 test("PointPlot surfaces an error argument, not a blank chart", async ({ page }) => {
@@ -326,10 +326,10 @@ test("a reactive cell: lifts inside CodeEvaluate survive slider drags", async ({
   // constants captured by a lift created inside another computed survive replay,
   // and nested lifts evaluate
   await open(page, `x: $(0.5),\ncode: $("(Slider(x), 0 ... 100*x)"),\nCodeEvaluate(code)`)
-  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+  await expect(panel(page).locator("canvas").first()).toBeVisible()
   await page.locator('input[type="range"]').first().fill("0.9")
   await expect(page.getByText(/disposed|freed|expected a tensor/)).toHaveCount(0)
-  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+  await expect(panel(page).locator("canvas").first()).toBeVisible()
 })
 
 test("CodeEditor auto mode sizes to its content", async ({ page }) => {
@@ -385,8 +385,8 @@ test("an overflowing panel scrolls instead of crushing its plots", async ({ page
   // scroll container's min-content height is ~zero – plots and button rows
   // were squeezed to 28px slivers
   await open(page, `(\nText("one"), 0 ... 8,\nText("two"), (1 ... 6) ⊗(×) (1 ... 6),\nText("three"), [0, 1, 4, 9, 16, 25],\nText("four"), [25, 16, 9, 4, 1, 0],\nText("five"), 8 ... 0\n)`)
-  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
-  for (const plot of await page.locator(".js-plotly-plot").all()) {
+  await expect(panel(page).locator("canvas").first()).toBeVisible()
+  for (const plot of await panel(page).locator("canvas, svg").all()) {
     const panelBox = await plot.evaluate(el => el.closest(".rounded-xl")!.getBoundingClientRect().height)
     expect(panelBox).toBeGreaterThan(100)
   }
@@ -499,7 +499,7 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
 
   // 11 · the slope, drawn – no challenge, both curves must plot
   await room("The slope, drawn")
-  await expect(page.locator(".js-plotly-plot").first()).toBeVisible()
+  await expect(panel(page).locator("canvas").first()).toBeVisible()
   await next()
 
   // 12 · find the bottom by feel – scrub the guess from 10 to 42.

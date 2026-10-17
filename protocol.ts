@@ -15,10 +15,6 @@
 // document they index into – the page finds the editor whose text hashes the same.
 export type Where = { s: [number, number], e: [number, number], d: number }
 
-// A tensor's values as its view draws them: the numbers, or the pixels of an image or
-// a heatmap, colored in the worker
-export type Payload = Float32Array | Uint8ClampedArray
-
 // A syntax tree as the tree view draws it
 export type Tree = { label: string, o: Where, children: Tree[] }
 
@@ -35,10 +31,10 @@ export type Desc = { o?: Where } & (
   | { k: "error", chain: { message: string, o?: Where }[], carried?: string }
   // a quoted program: one tree per statement
   | { k: "tree", roots: Tree[] }
-  // the payload is here when the values were on the host; otherwise it follows as a
-  // "tensor" message. A picture with `paint` never crosses: the page hands the worker a
-  // canvas and asks it to paint the picture there
-  | { k: "tensor", id: number, shape: number[], payload?: Payload, paint?: true }
+  // A number, or a few bars, shows its values: here when they were on the host, otherwise
+  // in a "tensor" message that follows. A picture with `paint` never crosses: the page
+  // hands the worker a canvas to paint it in, and gets the range it spans as its values.
+  | { k: "tensor", id: number, shape: number[], payload?: Float32Array, paint?: true }
   // a signal or a variable and its value now; later values arrive as "live" messages
   | { k: "live", id: number, now?: Desc }
   | { k: "callback", id: number }
@@ -47,19 +43,18 @@ export type Desc = { o?: Where } & (
   | { k: "ui", uid: number, type: string, props: Record<string, unknown>, slots: Record<string, Desc>, children: Desc[] }
 )
 
-// How a tensor shows, by its shape – both sides agree: the worker sends what the view needs
-export type TensorView = "number" | "bars" | "heatPlot" | "heatImage" | "image" | "shape"
-export const tensorView = (shape: readonly number[]): TensorView => {
-  if (shape.length === 0) { return "number" }
-  if (shape.length === 1) { return "bars" }
-  if (shape.length === 2) { return (shape[0] ?? 0) * (shape[1] ?? 0) > 400 ? "heatImage" : "heatPlot" }
-  if (shape.length === 3) { return "image" }
-  return "shape"
-}
+// How a tensor shows, by its rank – both sides agree: the worker sends what the view needs
+export type TensorView = "number" | "bars" | "heat" | "image" | "shape"
+export const tensorView = (shape: readonly number[]): TensorView =>
+  (["number", "bars", "heat", "image"] as const)[shape.length] ?? "shape"
+// bars this few show their values, so they cross as numbers
+export const FEW_BARS = 20
 
 // page → worker
 export type ToWorker =
   | { t: "code", source: string }
+  // parse a document for its editor's markers
+  | { t: "parse", source: string }
   // write a live value: a number, numbers, text, or an image. `seq` comes back as the
   // "live" message's `ack`, so the page knows when the worker has seen its writes
   | { t: "set", id: number, value: number | number[] | string | ImageBitmap, seq: number }
@@ -71,26 +66,31 @@ export type ToWorker =
   // the last batch of live values is drawn: send the next
   | { t: "drawn" }
   // a canvas the worker paints pictures into, by a slot the page numbers it with; and
-  // the picture to paint there now
+  // the picture to paint there now, with the canvas's size in device pixels
   | { t: "canvas", slot: number, canvas: OffscreenCanvas }
   | { t: "canvasGone", slot: number }
-  | { t: "paint", slot: number, id: number }
+  | { t: "paint", slot: number, id: number, size: [number, number] }
 
 export type SourceKind = "camera" | "microphone" | "spectrum" | "pointer"
 
 // worker → page
 export type ToPage =
-  // the environment's documented names, for hover cards and completion
-  | { t: "ready", names: [string, string, Doc | null][] }
+  // the environment's documented names, for hover cards and completion, and the prelude's
+  // source
+  | { t: "ready", names: [string, string, Doc | null][], prelude: string }
   | { t: "result", desc: Desc }
+  // a document's parse errors, by its hash
+  | { t: "parsed", d: number, errors: { message: string, o: Where }[] }
   // live values that changed, as they are now; `ack` is the page's last write each has seen
   | { t: "lives", lives: { id: number, desc: Desc, ack: number }[] }
   // a tensor's values, or why they couldn't be computed
-  | { t: "tensor", id: number, payload?: Payload, error?: string }
+  | { t: "tensor", id: number, payload?: Float32Array, error?: string }
   // start or stop a source on the page: the camera, the microphone, the pointer
   | { t: "source", id: number, kind: SourceKind, size: number[], fps?: number }
   | { t: "stop", id: number }
   | { t: "needSampleRate" }
+  // the GPU is gone: the page starts another worker
+  | { t: "lost", message: string }
 
 // A short hash of a document's text (cyrb53): an origin names its document by it
 export const documentHash = (text: string): number => {
@@ -104,3 +104,54 @@ export const documentHash = (text: string): number => {
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
   return 4294967296 * (2097151 & h2) + (h1 >>> 0)
 }
+
+// MARK: Lexicon
+// The characters each kind of token is made of: the grammar is built from these tables,
+// and the editor highlights with the expressions below, so the two never drift apart.
+
+export const OPERATOR_RANGES: Record<string, [string, string]> = {
+  BASIC_OPERATORS: ["!", "~"],
+  MATH_OPERATORS: ["∀", "⋿"],
+  MISCELLANEOUS_TECHNICAL: ["⌀", "⏿"],
+  SUPPLEMENTAL_MATH_OPERATORS: ["⨀", "⫿"],
+  ARROWS: ["←", "⇿"],
+  SUPPLEMENTAL_ARROWS_A: ["⟰", "⟿"],
+  SUPPLEMENTAL_ARROWS_B: ["⤀", "⥿"],
+  MULTIPLICATION_SIGN: ["×", "×"],
+  DIVISION_SIGN: ["÷", "÷"],
+  NOT_SIGN: ["¬", "¬"],
+  // ⟜ is U+27DC
+  MISCELLANEOUS_MATH_SYMBOLS_A: ["⟀", "⟯"],
+  MISCELLANEOUS_MATH_SYMBOLS_B: ["⦀", "⧿"],
+  // ⚀–⚅; ⚄ is rand
+  DIE_FACES: ["⚀", "⚅"],
+  MIDDLE_DOT: ["·", "·"],
+  // the norm, ‖
+  DOUBLE_VERTICAL_LINE: ["‖", "‖"],
+  // ↔︎ is ↔ and U+FE0E
+  VARIATION_SELECTORS: ["︀", "️"],
+}
+
+export const RESERVED_SYMBOLS = "[|,{}()\\[\\];]"
+
+export const IDENTIFIER_RANGES: Record<string, [string, string]> = {
+  MATHEMATICAL_ALPHANUMERIC_SYMBOLS: [String.fromCodePoint(0x1D400), String.fromCodePoint(0x1D7FF)],
+  EMOJIS: [String.fromCodePoint(0x1F300), String.fromCodePoint(0x1FFFF)],
+}
+
+const charClass = (ranges: Record<string, [string, string]>): string =>
+  Object.values(ranges).map(([lo, hi]) => {
+    const a = `\\u{${lo.codePointAt(0)!.toString(16)}}`
+    return lo === hi ? a : `${a}-\\u{${hi.codePointAt(0)!.toString(16)}}`
+  }).join("")
+const IDENTIFIER_CHARS = charClass(IDENTIFIER_RANGES)
+
+// a letter or an identifier-range symbol, then letters, digits and those symbols – the
+// grammar's `identifier`
+export const identifierRegexp = new RegExp(`[\\p{L}${IDENTIFIER_CHARS}][\\p{L}\\p{N}${IDENTIFIER_CHARS}]*`, "u")
+export const numberRegexp = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/
+export const stringRegexp = /"(?:[^"\\]|\\.)*"/
+// one operator symbol – the grammar's `specialChar`; identifiers, numbers, strings and
+// delimiters are taken first, so the ASCII letters and digits it covers never reach it
+export const operatorRegexp = new RegExp(`[${charClass(OPERATOR_RANGES)}]`, "u")
+export const delimiterRegexp = new RegExp(RESERVED_SYMBOLS, "u")

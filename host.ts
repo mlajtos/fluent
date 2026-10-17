@@ -5,22 +5,20 @@
 // back through ids.
 
 import { Signal, computed, effect, untracked } from "@preact/signals-core"
-import { interpolateViridis } from "d3-scale-chromatic"
-import { rgb } from "d3-color"
 import {
   CodeParse, evaluateSyntaxTreeNode, CodeEvaluate, createScope, DefaultEnvironment,
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, getOrigin, SignalCreate, SignalUpdate, StringLiteral,
-  engine, FluentVariable, isTensor, TensorScalarLive,
+  engine, FluentVariable, isTensor, TensorScalarLive, PRELUDE,
   type Value, type SyntaxTreeNode, type Origin,
 } from "./language"
 import {
-  tensorView, documentHash,
-  type Desc, type Doc, type Payload, type SourceKind, type ToPage, type ToWorker, type Tree, type TensorView, type Where,
+  tensorView, documentHash, FEW_BARS,
+  type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
 import { TOUR_SOURCE } from "./tour"
-import { Painter } from "./painter"
+import { CpuPainter, GpuPainter, prepare, type Painter, type Picture } from "./painter"
 
 type Post = (message: ToPage, transfer?: Transferable[]) => void
 let post: Post = () => { }
@@ -52,7 +50,7 @@ const widget = (type: string, props?: Record<string, unknown>, slots?: Record<st
   new Widget(type, props, slots, children) as unknown as Value
 
 // MARK: Pixels
-// Pixels enter the language as float32 RGB in 0–1, and leave as RGBA bytes.
+// Pixels enter the language as float32 RGB in 0–1.
 
 let pixelCanvas: OffscreenCanvas | null = null
 const fromPixels = (image: ImageBitmap): engine.Tensor => {
@@ -76,43 +74,6 @@ const fromPixels = (image: ImageBitmap): engine.Tensor => {
     flat[j + 2] = data[i + 2]! / 255
   }
   return engine.tensor(flat, { shape: [height, width, 3] })
-}
-
-const VIRIDIS = Uint8Array.from(Array.from({ length: 256 }, (_, i) => {
-  const c = rgb(interpolateViridis(i / 255))
-  return [c.r, c.g, c.b]
-}).flat())
-
-// what a tensor's view draws, from its values – always fresh memory, so it can be transferred
-const payloadOf = (view: TensorView, shape: readonly number[], data: Float32Array): Payload => {
-  if (view === "heatImage") {
-    // normalized to the tensor's own range, colored through viridis
-    let lo = Infinity, hi = -Infinity
-    for (const v of data) { if (v < lo) { lo = v } if (v > hi) { hi = v } }
-    const span = Math.max(hi - lo, 1e-6), out = new Uint8ClampedArray(data.length * 4)
-    for (let i = 0; i < data.length; i++) {
-      const t = (data[i]! - lo) / span
-      const j = (t > 0 ? Math.round(Math.min(t, 1) * 255) : 0) * 3
-      out[4 * i] = VIRIDIS[j]!
-      out[4 * i + 1] = VIRIDIS[j + 1]!
-      out[4 * i + 2] = VIRIDIS[j + 2]!
-      out[4 * i + 3] = 255
-    }
-    return out
-  }
-  if (view === "image") {
-    // one channel is gray, three are RGB; anything else shows its first channel
-    const [height = 1, width = 1, channels = 1] = shape
-    const out = new Uint8ClampedArray(height * width * 4)
-    for (let p = 0, s = 0; p < out.length; p += 4, s += channels) {
-      out[p] = data[s]! * 255
-      out[p + 1] = data[channels === 3 ? s + 1 : s]! * 255
-      out[p + 2] = data[channels === 3 ? s + 2 : s]! * 255
-      out[p + 3] = 255
-    }
-    return out
-  }
-  return data.slice()
 }
 
 // MARK: Descriptions
@@ -159,13 +120,15 @@ const callbacks = new Map<number, { fn: Function, refs: number }>()
 const dirty = new Set<Live>()
 // the live whose value is being described: reads of its tensors pace its updates
 let owner: Live | null = null
-// With a GPU, the worker paints pictures into canvases the page hands it: a picture's
-// tensor waits here, by id, until the page asks for it
-let painter: Painter | null = null
-const pictures = new Map<number, { tensor: engine.Tensor, heat: boolean }>()
+// The worker paints pictures into canvases the page hands it: a picture waits here, by
+// id, until the page asks for it
+let painter: Painter = new CpuPainter()
+const pictures = new Map<number, Picture>()
 const describing = new Set<number>()
 // the transferable memory of the description being built
 let transfers: Transferable[] = []
+
+const asError = (e: unknown): Error => e instanceof Error ? e : new Error(String(e))
 
 const send = (message: ToPage) => {
   const t = transfers
@@ -177,7 +140,7 @@ const valueOf = (target: Signal<Value> | FluentVariable): Value => {
   try {
     return target instanceof FluentVariable ? target.current : target.value
   } catch (e) {
-    return e instanceof Error ? e : new Error(String(e))
+    return asError(e)
   }
 }
 
@@ -191,7 +154,7 @@ const scheduleFlush = () => {
 const flush = () => {
   flushScheduled = false
   // the frame before the last is still on the GPU: the next waits for it
-  if (pageDrawing || (painter?.pending ?? 0) > 1) { return }
+  if (pageDrawing || painter.pending > 1) { return }
   const batch: { id: number, desc: Desc, ack: number }[] = []
   for (const live of dirty) {
     if (lives.get(live.id) !== live) { dirty.delete(live); continue }
@@ -249,45 +212,43 @@ const describeCallback = (fn: Function): Desc => {
   return { k: "callback", id }
 }
 
-const describeTensor = (t: engine.Tensor): Desc => {
-  const id = ++nextId, shape = [...t.shape], view = tensorView(shape)
-  if (view === "shape") { return { k: "tensor", id, shape } }
-  if (painter && (view === "image" || view === "heatImage")) {
-    const heat = view === "heatImage"
-    try {
-      pictures.set(id, { tensor: painter.prepare(t, heat), heat })
-    } catch (e) {
-      return describeError(e instanceof Error ? e : new Error(String(e)))
-    }
-    owner?.pictures.push(id)
-    return { k: "tensor", id, shape, paint: true }
-  }
-  let onHost: Float32Array | undefined
-  try {
-    onHost = engine.hostValue(t)
-  } catch (e) {
-    return describeError(e instanceof Error ? e : new Error(String(e)))
-  }
+// A tensor's numbers, as they cross: here when they are on the host, otherwise read and
+// sent after – fresh memory either way, so they can be transferred
+const numbersOf = (id: number, t: engine.Tensor): { payload?: Float32Array } => {
+  const onHost = engine.hostValue(t)?.slice()
   if (onHost) {
-    const payload = payloadOf(view, shape, onHost)
-    transfers.push(payload.buffer as ArrayBuffer)
-    return { k: "tensor", id, shape, payload }
+    transfers.push(onHost.buffer)
+    return { payload: onHost }
   }
   const live = owner
   if (live) { live.reading++ }
   t.read().then(
     (data) => {
-      const payload = payloadOf(view, shape, data)
-      post({ t: "tensor", id, payload }, [payload.buffer as ArrayBuffer])
+      const payload = data.slice()
+      post({ t: "tensor", id, payload }, [payload.buffer])
     },
-    (e) => { post({ t: "tensor", id, error: e instanceof Error ? e.message : String(e) }) },
+    (e) => { post({ t: "tensor", id, error: asError(e).message }) },
   ).finally(() => {
     if (live) {
       live.reading--
       if (dirty.has(live)) { flush() }
     }
   })
-  return { k: "tensor", id, shape }
+  return {}
+}
+
+const describeTensor = (t: engine.Tensor): Desc => {
+  const id = ++nextId, shape = [...t.shape], view = tensorView(shape)
+  try {
+    if (view === "shape") { return { k: "tensor", id, shape } }
+    if (view === "number" || (view === "bars" && t.size < FEW_BARS)) { return { k: "tensor", id, shape, ...numbersOf(id, t) } }
+    const picture = prepare(view, t)
+    pictures.set(id, picture)
+    owner?.pictures.push(id)
+    return { k: "tensor", id, shape, paint: true, ...(picture.range && numbersOf(id, picture.range)) }
+  } catch (e) {
+    return describeError(asError(e))
+  }
 }
 
 const describeError = (error: Error): Desc => {
@@ -355,7 +316,7 @@ const describeTree = (node: SyntaxTreeNode): Desc => {
   try {
     return { k: "tree", roots: node.content.map(treeOf) }
   } catch (e) {
-    return describeError(e instanceof Error ? e : new Error(String(e)))
+    return describeError(asError(e))
   }
 }
 
@@ -726,7 +687,7 @@ const run = () => {
     try {
       value = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(code), createScope()) ?? null)
     } catch (e) {
-      value = e instanceof Error ? e : new Error(String(e))
+      value = asError(e)
     }
     untracked(() => send({ t: "result", desc: describe(value) }))
   })
@@ -792,19 +753,19 @@ const receive = (m: ToWorker) => {
       return
     }
     case "canvas": {
-      painter?.attach(m.slot, m.canvas)
+      painter.attach(m.slot, m.canvas)
       return
     }
     case "canvasGone": {
-      painter?.detach(m.slot)
+      painter.detach(m.slot)
       return
     }
     case "paint": {
       const picture = pictures.get(m.id)
-      if (!painter || !picture) { return }
-      painter.paint(m.slot, picture.tensor, picture.heat).then(
+      if (!picture) { return }
+      painter.paint(m.slot, picture, m.size).then(
         () => { if (dirty.size) { flush() } },
-        (e) => { post({ t: "tensor", id: m.id, error: e instanceof Error ? e.message : String(e) }) },
+        (e) => { post({ t: "tensor", id: m.id, error: asError(e).message }) },
       )
       return
     }
@@ -839,7 +800,7 @@ const environmentNames = (): [string, string, Doc | null][] => {
 export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
   post = postMessage
   const gpu = engine.engineGpu()
-  painter = gpu ? new Painter(gpu.device) : null
+  painter = gpu ? new GpuPainter(gpu.device) : new CpuPainter()
   setCodeNodePrinter((node) => new CodeTree(node) as unknown as Value)
   extendEnvironment({
     Documentation: Text(Documentation),
@@ -857,6 +818,6 @@ export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
     enumerable: false,
     configurable: true,
   })
-  post({ t: "ready", names: environmentNames() })
+  post({ t: "ready", names: environmentNames(), prelude: PRELUDE })
   return receive
 }
