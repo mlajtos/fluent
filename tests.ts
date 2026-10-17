@@ -1890,6 +1890,12 @@ describe("the engine", () => {
     ;(globalThis as any).GPUBufferUsage ??= { STORAGE: 128, COPY_SRC: 4, COPY_DST: 8 }
     return { gpu: new GPU(dev as unknown as GPUDevice, false), log, buffer }
   }
+  test("a scatter-add sums each row's own values: an ∞ in one row is not NaN in another", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { CPU } = await import("./engine/cpu.ts")
+    const inputs = new Map([["i", { data: Float32Array.of(0, 1, 1), shape: [3] }], ["v", { data: Float32Array.of(Infinity, 1, 2), shape: [3] }]])
+    expect(Array.from(new CPU().realizeSync([ir.scatterAdd(ir.buffer("i", [3]), ir.buffer("v", [3]), 2)], inputs)[0]!.data)).toEqual([Infinity, 3])
+  })
   test("roots that compute one value still get a buffer each", async () => {
     const ir = await import("./engine/ir.ts")
     const { gpu, buffer } = await fakeGpu(), W = ir.buffer("W", [64]), w = buffer(256)

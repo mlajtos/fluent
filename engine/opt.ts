@@ -286,13 +286,14 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
       let addr = iadd(iconst(tv.offset), imul(row, iconst(tv.strides[0]!)));
       for (let d = 0; d < rest.length; d++) addr = iadd(addr, imul(imod(idiv(imod(gid, iconst(R)), iconst(rs[d]!)), iconst(rest[d]!)), iconst(tv.strides[d + 1]!)));
       out = fused(gid, load(0, addr), [tb, ib], u.shape);                      // slots: 0 = table base, 1 = idx
-    } else if (u.op === "SCATTER_ADD") {                                       // out[v,c] = Σ_i (idx[i]==v)·values[i,c] — GATHER's transpose, as one nest
+    } else if (u.op === "SCATTER_ADD") {                                       // out[v,c] = Σ_i (idx[i]==v ? values[i,c] : 0) — GATHER's transpose, as one nest
       const rest = u.shape.slice(1), R = Math.max(numel(rest), 1), N = u.src[0]!.shape[0]!;
       const gid = range(Math.max(numel(u.shape), 1));
       const i = range(N), v = ival(idiv(gid, iconst(R))), e = load(0, i);
       const nlt = (x: UOp, y: UOp) => node("ADD", [konst(1), node("MULTIPLY", [node("LESS_THAN", [x, y], null, []), konst(-1)], null, [])], null, []);
       const eq = node("MULTIPLY", [nlt(e, v), nlt(v, e)], null, []);           // (¬a<b)·(¬b<a) = [a==b]
-      const body = node("MULTIPLY", [eq, load(1, iadd(imul(i, iconst(R)), imod(gid, iconst(R))))], null, []);
+      // selected, not multiplied: an ∞ in another row's values is not 0·∞ here
+      const body = node("WHERE", [eq, load(1, iadd(imul(i, iconst(R)), imod(gid, iconst(R)))), konst(0)], null, []);
       out = fused(gid, acc("ADD", i, body), [build(u.src[0]!), build(u.src[1]!)], u.shape);
     } else throw new Error(`fuse: no kernel form for ${u.op}`);
     built.set(u.id, out);
