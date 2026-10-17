@@ -1840,6 +1840,104 @@ describe("the engine", () => {
     const kernels = optimizeMany(placeholders([drawing.node], leaves).roots).flatMap((r) => toposort(r)).filter((u) => u.op === "FUSED")
     expect(Math.max(...kernels.map((k) => numel(k.shape)))).toBeLessThanOrEqual(640 * 400 * 2)
   })
+  test("index ramps of different lengths stay different", () => {
+    expect(value("concat((0 ..< 300, 0 ..< 500))_600")).toBe(300)
+  })
+  test("a reshape into a fractional or negative axis is an Error", () => {
+    expect(run("[1, 2, 3, 4, 5] ⍴ [-1, 2]")).toBeInstanceOf(Error)
+    expect(run("[1, 2, 3, 4, 5, 6] ⍴ [-2, -3]")).toBeInstanceOf(Error)
+    expect(value("[1, 2, 3, 4, 5, 6] ⍴ [-1, 2]")).toEqual([[1, 2], [3, 4], [5, 6]])
+  })
+  test("−0 is a constant of its own, whatever was compiled before", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { CPU } = await import("./engine/cpu.ts")
+    const x = ir.buffer("x", [2]), inputs = new Map([["x", { data: Float32Array.of(1, 2), shape: [2] }]])
+    const cpu = new CPU(), at = (z: number) => cpu.realizeSync([ir.recip(ir.mul(x, ir.konst(z)))], inputs)[0]!.data[0]
+    expect([at(0), at(-0)]).toEqual([Infinity, -Infinity])
+    // x + 0 is not x where x is −0
+    expect(Object.is(cpu.realizeSync([ir.add(ir.mul(x, ir.konst(-0)), ir.konst(0))], inputs)[0]!.data[0], 0)).toBe(true)
+  })
+  test("a kernel computes a value it reads twice once", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { optimize } = await import("./engine/opt.ts")
+    let x = ir.buffer("x", [4096])
+    for (let i = 0; i < 6; i++) x = ir.mul(x, x)                          // x^64: 6 multiplies
+    const kernels = ir.toposort(optimize(x)).filter((u) => u.op === "FUSED")
+    const count = (op: string) => ir.toposort(kernels[0]!.src[1]!).filter((u) => u.op === op).length
+    expect([kernels.length, count("MULTIPLY"), count("LOAD")]).toEqual([1, 6, 1])
+  })
+  const lowered = async (root: any) => {
+    const ir = await import("./engine/ir.ts")
+    const { lowerMany } = await import("./engine/gpu.ts")
+    return ir.toposort(lowerMany([root])[0]!).filter((u) => u.op === "KERNEL").map((u) => u.arg as { wgsl: string; dispatch: number[] })
+  }
+  const tiled = (kernels: { wgsl: string }[]) => kernels.some((k) => k.wgsl.includes("var<workgroup> As"))
+  test("the backward matmuls tile like the forward one", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { gradAll } = await import("./engine/grad.ts")
+    const { matmul } = await import("./engine/tests/vocab.ts")
+    const X = ir.buffer("X", [256, 128]), W = ir.buffer("W", [128, 64]), y = matmul(X, W)
+    const [dW, dX] = gradAll(ir.sum(ir.mul(y, y)), [W, X])               // ∇'s products are guarded where the cotangent is 0
+    expect([tiled(await lowered(y)), tiled(await lowered(dW)), tiled(await lowered(dX))]).toEqual([true, true, true])
+  })
+  test("a tile grid past 65,535 workgroups on an axis folds into two", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { matmul } = await import("./engine/tests/vocab.ts")
+    const tall = await lowered(matmul(ir.buffer("A", [1 << 20, 64]), ir.buffer("B", [64, 16])))
+    expect(tiled(tall) && tall.every((k) => k.dispatch.every((d) => d <= 65535))).toBe(true)
+  })
+  test("joining n pieces the host does not hold takes about n/7 kernels, not n", async () => {
+    const { optimizeMany } = await import("./engine/opt.ts")
+    const { toposort } = await import("./engine/ir.ts")
+    const pieces = Array.from({ length: 256 }, (_, i) => engine.uniform(i, [1, 300]))
+    const joined = engine.concatenate(pieces)
+    expect(toposort(optimizeMany([joined.node])[0]!).filter((u) => u.op === "FUSED").length).toBeLessThan(40)
+    expect(joined.slice(200).js()).toEqual(pieces[200]!.slice(0).js())
+  })
+  // a WebGPU device that only counts what the GPU executor asks of it
+  const fakeGpu = async () => {
+    const { GPU } = await import("./engine/gpu.ts")
+    const log = { pipelines: 0, destroyed: 0, done: [] as WeakRef<Promise<void>>[] }
+    const buffer = (size: number) => ({ size, destroy: () => { log.destroyed++ } }) as unknown as GPUBuffer
+    const pass = { setPipeline() {}, setBindGroup() {}, dispatchWorkgroups() {}, end() {} }
+    const dev = {
+      createBuffer: ({ size }: { size: number }) => buffer(size), createShaderModule: () => ({}), createBindGroup: () => ({}),
+      createComputePipeline: () => { log.pipelines++; return { getBindGroupLayout: () => ({}) } },
+      createCommandEncoder: () => ({ beginComputePass: () => pass, copyBufferToBuffer() {}, finish: () => ({}) }),
+      queue: { writeBuffer() {}, submit() {}, onSubmittedWorkDone: () => { const p = Promise.resolve(); log.done.push(new WeakRef(p)); return p } },
+      pushErrorScope() {}, popErrorScope: async () => null,
+    }
+    ;(globalThis as any).GPUBufferUsage ??= { STORAGE: 128, COPY_SRC: 4, COPY_DST: 8 }
+    return { gpu: new GPU(dev as unknown as GPUDevice, false), log, buffer }
+  }
+  test("a scatter-add sums each row's own values: an ∞ in one row is not NaN in another", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { CPU } = await import("./engine/cpu.ts")
+    const inputs = new Map([["i", { data: Float32Array.of(0, 1, 1), shape: [3] }], ["v", { data: Float32Array.of(Infinity, 1, 2), shape: [3] }]])
+    expect(Array.from(new CPU().realizeSync([ir.scatterAdd(ir.buffer("i", [3]), ir.buffer("v", [3]), 2)], inputs)[0]!.data)).toEqual([Infinity, 3])
+  })
+  test("roots that compute one value still get a buffer each", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { gpu, buffer } = await fakeGpu(), W = ir.buffer("W", [64]), w = buffer(256)
+    const [a, b] = gpu.computeSync([ir.mul(W, ir.konst(0.9)), ir.mul(W, ir.konst(0.9))], () => w)
+    expect(a).not.toBe(b)
+  })
+  test("the GPU's caches shrink: buffers past the budget, pipelines with their plans, finished work", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { gpu, log, buffer } = await fakeGpu(), x = ir.buffer("x", [8]), xb = buffer(32)
+    for (let i = 0; i < 40; i++) gpu.release(buffer(2 ** 26))           // 40 × 64 MB: 2 GB are kept
+    expect(log.destroyed).toBe(8)
+    const run = (c: number) => gpu.computeSync([ir.mul(x, ir.konst(c))], () => xb)
+    run(1.5)
+    run(1.5)
+    expect(log.pipelines).toBe(1)
+    for (let c = 2; c < 2 + 512; c++) run(c)                             // 512 other plans push the first out
+    run(1.5)
+    expect(log.pipelines).toBe(514)                                    // and its pipeline with it
+    await new Promise((r) => setTimeout(r, 0))
+    Bun.gc(true)
+    expect(log.done.filter((d) => d.deref()).length).toBe(0)
+  })
 })
 
 describe("doc cards", () => {

@@ -66,6 +66,13 @@ export default async function (): Promise<{ fails: number }> {
     const Wd = i2.get("W")!.data;
     check("gather values", [0, 1, 2, 3].every((c) => tbl[c] === Wd[2 * 4 + c]));
   }
+  { // −0 is a constant of its own: 1 ÷ (p·0) is ∞, 1 ÷ (p·−0) is −∞
+    const p = buffer("p", [2]), at = new Map([["p", T(Float32Array.of(1, 2), [2])]]);
+    for (const z of [0, -0]) {
+      const g = recip(mul(p, konst(z))), a = (await realize(cpu, g, at)).data, b = gpu ? (await realize(gpu, g, at)).data : a;
+      check(`parity: 1 ÷ (p·${Object.is(z, -0) ? "−0" : "0"})`, a[0] === 1 / z && b[0] === 1 / z, `cpu ${a[0]} gpu ${b[0]}`);
+    }
+  }
   // framed matmul vs looped reference
   {
     const B = 3, m = 4, k = 5, n = 6;
@@ -100,6 +107,37 @@ export default async function (): Promise<{ fails: number }> {
     const thin = wgslOf(matmul(buffer("h", [1, 1024]), buffer("W", [1024, 512])));
     check("fat-M matmul is TILED (As/Bs tiles)", fat.length === 1 && fat[0]!.includes("var<workgroup> As"));
     check("M=1 matvec is NOT tiled — it's coop split-K GEMV (part[] tree-reduce, 1 wg/output)", thin.length === 1 && !thin[0]!.includes("var<workgroup> As") && thin[0]!.includes("var<workgroup> part") && thin[0]!.includes("workgroup_id"));
+  }
+  { // a tile's term is any function of its two reads: ∇'s guarded products, and exp(a·b), which is not 0 where the staged reads are 0 past K
+    const Xb = buffer("X", [256, 128]), Wb = buffer("W", [128, 64]), y = matmul(Xb, Wb), P = buffer("P", [128, 72]), Q = buffer("Q", [72, 96]);
+    const [dW, dX] = gradAll(sum(mul(y, y)), [Wb, Xb]) as [UOp, UOp];
+    const e = reduceAxis(exp(mul(broadcastTo(reshape(P, [128, 72, 1]), [128, 72, 96]), broadcastTo(reshape(Q, [1, 72, 96]), [128, 72, 96]))), 1, false);
+    const at = new Map<string, HostData>([["X", T(rv(256 * 128), [256, 128])], ["W", T(rv(128 * 64), [128, 64])], ["P", T(rv(128 * 72, 0.3), [128, 72])], ["Q", T(rv(72 * 96, 0.3), [72, 96])]]);
+    const tiles = (g: UOp) => wgslOf(g).some((w) => w.includes("var<workgroup> As"));
+    check("∇W, ∇X and Σ exp(a·b) tile", tiles(dW) && tiles(dX) && tiles(e));
+    if (gpu) for (const [nm, g] of [["∇W", dW], ["∇X", dX], ["Σ exp(a·b), K % 16 ≠ 0", e]] as const) {
+      const a = await realize(cpu, g, at), b = await realize(gpu, g, at);
+      check(`parity: tiled ${nm}`, rel(b.data, a.data) < 1e-5, `relΔ ${rel(b.data, a.data).toExponential(1)}`);
+    }
+  }
+  if (gpu) { // the synchronous read, through canvases: a whole canvas, whole rows and a partial row
+    const n = 256 * 256 + 17 * 256 + 112, d = Float32Array.from({ length: n }, (_, i) => Math.sin(i) * 1e3);
+    d[5] = NaN; d[6] = -Infinity; d[7] = -0;
+    const src = gpu.device.createBuffer({ size: n * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+    gpu.device.queue.writeBuffer(src, 0, d);
+    const got = gpu.readSync(src, n);
+    check("readSync returns the buffer's bits", got.every((v, i) => Object.is(v, d[i]) || (Number.isNaN(v) && Number.isNaN(d[i]!))));
+    src.destroy();
+  }
+  if (gpu) { // a tile grid past 32,768 workgroups folds into two axes, the last workgroups idle
+    const m = 8208, k = 64, n = 1024, Ad = rv(m * k), Bd = rv(k * n);
+    const out = (await realize(gpu, matmul(buffer("A", [m, k]), buffer("B", [k, n])), new Map([["A", T(Ad, [m, k])], ["B", T(Bd, [k, n])]]))).data;
+    let worst = 0;
+    for (const i of [0, 1, 4095, 8191, 8192, 8200, m - 1]) for (const j of [0, 17, n - 1]) {
+      let s = 0; for (let q = 0; q < k; q++) s += Ad[i * k + q]! * Bd[q * n + j]!;
+      worst = Math.max(worst, Math.abs(out[i * n + j]! - s));
+    }
+    check("a folded tile grid computes every row", worst < 1e-4, `worst ${worst.toExponential(1)}`);
   }
   { // the same program built twice prints the same WGSL — the browser's shader cache is keyed by text
     const prog = () => {
@@ -216,7 +254,8 @@ export default async function (): Promise<{ fails: number }> {
 
   // ── 5. the algebra says hello ─────────────────────────────────────────────────────
   check("provablyEq: x·(2·3) ≡ 6·x", provablyEq((t) => mul(t, mul(konst(2), konst(3))), (t) => mul(t, konst(6)), [[M, N]]));
-  check("provablyEq: x·1+0 ≡ x", provablyEq((t) => add(mul(t, konst(1)), konst(0)), (t) => t, [[M, N]]));
+  check("provablyEq: x·1+(−0) ≡ x", provablyEq((t) => add(mul(t, konst(1)), konst(-0)), (t) => t, [[M, N]]));
+  check("provablyEq: x+0 ≢ x (negative: −0 + 0 is 0)", !provablyEq((t) => add(t, konst(0)), (t) => t, [[M, N]]));
   check("provablyEq: rmsNorm ≡ rmsNorm∘reshape", provablyEq((t, w) => rmsNorm(t, w), (t, w) => rmsNorm(reshape(t, [M, N]), w), [[M, N], [N]]));
   check("provablyEq: x·2 ≢ x·3 (negative)", !provablyEq((t) => mul(t, konst(2)), (t) => mul(t, konst(3)), [[M, N]]));
 

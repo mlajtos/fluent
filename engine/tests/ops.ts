@@ -99,6 +99,10 @@ export default async function (): Promise<{ fails: number }> {
     check("Π over an axis (cpu, gpu)", maxDiff(pr.a, [6, -2]) === 0 && maxDiff(pr.b, [6, -2]) === 0);
     const g = (await realize(cpu, grad(sum(reduceAxis(x, 1, false, "MUL")), x), inp)).data;
     check("∇Π = Π ÷ x", maxDiff(g, [6, 3, 2, 2, -4, -0.5]) < 1e-6);
+    // a max starts below every number, and a NaN anywhere in a row wins
+    const r = buffer("r", [4, 3]), rd = Float32Array.from([-Infinity, -Infinity, -Infinity, NaN, 1, 2, 1, NaN, 2, 1, 2, NaN]);
+    const mx = await both(reduceAxis(r, 1, false, "MAX"), new Map([["r", T(rd, [4, 3])]])), want = [-Infinity, NaN, NaN, NaN];
+    check("max over a row of −∞ is −∞, over a row with a NaN is NaN (cpu, gpu)", maxDiff(mx.a, want) === 0 && maxDiff(mx.b, want) === 0);
   }
 
   // ── 6. sorting on the device: the bitonic network == the host's stable, NaN-last order ─

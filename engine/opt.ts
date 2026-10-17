@@ -17,12 +17,14 @@ import { graphRewriteMany, type Rule } from "./rewrite.ts";
 // ---- simplify: the generators' law table (EXACT only — bit-preserving) --------
 const scalarOf = (u: UOp): number | null =>
   u.op === "CONSTANT" && u.shape.length === 0 ? (u.arg as Float32Array)[0]! : u.op === "BROADCAST" ? scalarOf(u.src[0]!) : null;
+const is = (u: UOp, v: number): boolean => Object.is(scalarOf(u), v);
 const SIMPLIFY: Rule[] = [
   (u) => (u.op === "DETACH" ? u.src[0]! : null),                              // ∇ captured this already; identity forward
-  (u) => (u.op === "MULTIPLY" && scalarOf(u.src[0]!) === 1 ? u.src[1]! : null),
-  (u) => (u.op === "MULTIPLY" && scalarOf(u.src[1]!) === 1 ? u.src[0]! : null),
-  (u) => (u.op === "ADD" && scalarOf(u.src[0]!) === 0 ? u.src[1]! : null),
-  (u) => (u.op === "ADD" && scalarOf(u.src[1]!) === 0 ? u.src[0]! : null),
+  (u) => (u.op === "MULTIPLY" && is(u.src[0]!, 1) ? u.src[1]! : null),
+  (u) => (u.op === "MULTIPLY" && is(u.src[1]!, 1) ? u.src[0]! : null),
+  // x + −0 is x for every x; x + 0 is not where x is −0
+  (u) => (u.op === "ADD" && is(u.src[0]!, -0) ? u.src[1]! : null),
+  (u) => (u.op === "ADD" && is(u.src[1]!, -0) ? u.src[0]! : null),
   (u) => ((u.op === "ADD" || u.op === "MULTIPLY") && u.src[0]!.op === "CONSTANT" && u.src[1]!.op === "CONSTANT" && !u.shape.length
     ? konst(u.op === "ADD" ? (u.src[0]!.arg as Float32Array)[0]! + (u.src[1]!.arg as Float32Array)[0]! : (u.src[0]!.arg as Float32Array)[0]! * (u.src[1]!.arg as Float32Array)[0]!) : null),
   // the view laws — pure indexing, so they may run in the default (bit-exact) pipeline
@@ -38,46 +40,21 @@ export const simplifyMany = (roots: UOp[]): UOp[] => graphRewriteMany(roots, SIM
 // shares it with everything else). `materialized` names the nodes the backend allocates.
 export const MEMORY_BUDGET = 2 ** 31;
 export const checkMemory = (roots: readonly UOp[], materialized: Op): void => {
-  let bytes = 0;
-  const seen = new Set<number>();
-  for (const r of roots) for (const u of toposort(r)) {
-    if (seen.has(u.id)) continue;
-    seen.add(u.id);
-    if (u.op === materialized) bytes += numel(u.shape) * 4;
-  }
-  if (bytes > MEMORY_BUDGET) {
-    throw new Error(`this needs ${(bytes / 2 ** 30).toFixed(1)} GB of memory at once – more than the ${MEMORY_BUDGET / 2 ** 30} GB Fluent allows; compute it in smaller pieces`);
-  }
+  const bytes = toposort(roots).reduce((n, u) => n + (u.op === materialized ? numel(u.shape) * 4 : 0), 0);
+  if (bytes > MEMORY_BUDGET) throw new Error(`this needs ${(bytes / 2 ** 30).toFixed(1)} GB of memory at once – more than the ${MEMORY_BUDGET / 2 ** 30} GB Fluent allows; compute it in smaller pieces`);
 };
 
 // Σ-linearity at the SCHEDULE level (reordering float summation is a schedule license —
 // the tile and coop tree-reduces already take it). ∇'s fork-summed cotangents (several
 // reduce chains added per weight) become ONE chain whose sum-of-products body the split-K
-// tile printer catches. The view rules commute identical wrappers inward to expose the
-// reduces.
-const SCHED_REWRITES: Rule[] = [
-  (u) => {                                                                     // ADD(RESHAPE a, RESHAPE b) → RESHAPE(ADD(a, b))
-    if (u.op !== "ADD" || u.src[0]!.op !== "RESHAPE" || u.src[1]!.op !== "RESHAPE") return null;
-    const a = u.src[0]!.src[0]!, b = u.src[1]!.src[0]!;
-    return sameShape(a.shape, b.shape) ? node("RESHAPE", [node("ADD", [a, b], null, a.shape)], u.shape.slice(), u.shape) : null;
-  },
-  (u) => {                                                                     // ADD(PERMUTE_p a, PERMUTE_p b) → PERMUTE_p(ADD(a, b))
-    if (u.op !== "ADD" || u.src[0]!.op !== "PERMUTE" || u.src[1]!.op !== "PERMUTE") return null;
-    const p = u.src[0]!.arg as number[], q = u.src[1]!.arg as number[];
-    if (p.length !== q.length || p.some((v, i) => v !== q[i])) return null;
-    const a = u.src[0]!.src[0]!, b = u.src[1]!.src[0]!;
-    return node("PERMUTE", [node("ADD", [a, b], null, a.shape)], p.slice(), u.shape);
-  },
-  (u) => {                                                                     // ADD(Σ_ax a, Σ_ax b) → Σ_ax(ADD(a, b))
-    if (u.op !== "ADD") return null;
-    const [ra, rb] = [u.src[0]!, u.src[1]!];
-    if (ra.op !== "REDUCE" || rb.op !== "REDUCE") return null;
-    const aa = ra.arg as { axis: number; keepdims: boolean; op: string }, ba = rb.arg as { axis: number; keepdims: boolean; op: string };
-    if (aa.op !== "ADD" || ba.op !== "ADD" || aa.axis !== ba.axis || aa.keepdims !== ba.keepdims) return null;
-    const a = ra.src[0]!, b = rb.src[0]!;
-    return sameShape(a.shape, b.shape) ? node("REDUCE", [node("ADD", [a, b], null, a.shape)], ra.arg, u.shape) : null;
-  },
-];
+// tile printer catches: ADD(W a, W b) → W(ADD(a, b)) for one linear wrapper W – a Σ, or a
+// reshape or permute in the way of one.
+const SCHED_REWRITES: Rule[] = [(u) => {
+  const [x, y] = u.src as [UOp, UOp];
+  if (u.op !== "ADD" || x.op !== y.op || !(x.op === "RESHAPE" || x.op === "PERMUTE" || (x.op === "REDUCE" && (x.arg as { op: string }).op === "ADD"))) return null;
+  const a = x.src[0]!, b = y.src[0]!;
+  return JSON.stringify(x.arg) === JSON.stringify(y.arg) && sameShape(a.shape, b.shape) ? node(x.op, [node("ADD", [a, b], null, a.shape)], x.arg, u.shape) : null;
+}];
 
 // ---- the schedule ----------------------------------------------------------------
 // Measured platform constants (tests/bench re-derive them): inlining a kernel that carries
@@ -89,16 +66,15 @@ const MAX_INPUTS = 6;                                                          /
 const HARD_INPUTS = 8;                                                         // past this a kernel is rebuilt materialize-everything. THE TARGET IS THE BROWSER: Chrome/Dawn caps storage buffers at 10/stage (Deno's Metal wgpu falsely reports 31), so inputs+output ≤ 9+1 = 10
 
 function useCounts(roots: UOp[]): Map<number, number> {
-  const uc = new Map<number, number>(), seen = new Set<number>();
-  const visit = (u: UOp) => { if (seen.has(u.id)) return; seen.add(u.id); for (const s of u.src) { uc.set(s.id, (uc.get(s.id) ?? 0) + 1); visit(s); } };
-  for (const r of roots) visit(r);
+  const uc = new Map<number, number>();
+  for (const u of toposort(roots)) for (const s of u.src) uc.set(s.id, (uc.get(s.id) ?? 0) + 1);
   return uc;
 }
 // Materialize a shared elementwise fork iff computing once + traffic beats recomputing it
 // in each of k consumers. Approximate (region ops ≈ leaves+1 makes its two known errors
 // cancel — measured in the ancestor project); the honest form is a per-kernel cost table.
 function schedule(roots: UOp[], uc: Map<number, number>): Set<number> {
-  const mat = new Set<number>(), seen = new Set<number>();
+  const mat = new Set<number>();
   const regionSize = (u: UOp): number => { let n = 1; for (const s of u.src) if (ELEM.has(s.op) && (uc.get(s.id) ?? 0) <= 1) n += regionSize(s); return n; };
   // A reduction the fork's single-use region reads is recomputed, per element, by every
   // consumer the fork is inlined into — its extent each time. Past the per-element work
@@ -114,8 +90,7 @@ function schedule(roots: UOp[], uc: Map<number, number>): Set<number> {
     }
     return n;
   };
-  for (const r of roots) for (const u of toposort(r)) {
-    if (seen.has(u.id)) continue; seen.add(u.id);
+  for (const u of toposort(roots)) {
     const k = uc.get(u.id) ?? 1;
     if (ELEM.has(u.op) && k > 1 && (regionSize(u) * (k - 1) > k + 1 || regionReduce(u) * (k - 1) > COST.perElem)) mat.add(u.id);
   }
@@ -136,7 +111,7 @@ const accCost = (v: UOp): number => {
 
 // the loop variables an index reads
 const rangeMemo = new WeakMap<UOp, ReadonlySet<UOp>>();
-const rangesIn = (u: UOp): ReadonlySet<UOp> => {
+export const rangesIn = (u: UOp): ReadonlySet<UOp> => {
   const m = rangeMemo.get(u); if (m) return m;
   const out = new Set<UOp>(u.op === "RANGE" ? [u] : []);
   for (const s of u.src) for (const r of rangesIn(s)) out.add(r);
@@ -233,16 +208,21 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
       const at = iadd(srcIdx, iconst(-before * sst[axis]!));                 // wraps below 0 only where `inside` is 0
       return node("WHERE", [inside, read(src, at, src.shape), konst(0)], null, []);
     };
-    const val = (v: UOp, ix: UOp, whole = false): UOp => {
+    // every value is read at `at`, so a node reached twice is one value: x·x·x·x is 2 multiplies
+    const vals = new Map<number, UOp>();
+    const val = (v: UOp, whole = false): UOp => {
+      let o = vals.get(v.id);
+      if (o) return o;
       const s = scalarOf(v);
-      if (s !== null) return konst(s);                                         // a scalar constant is a literal — no buffer, no slot
-      if (ELEM.has(v.op) && !mat.has(v.id) && grown < cap * 3) {               // a fork the schedule did NOT materialize is recomputed in place
+      if (s !== null) o = konst(s);                                            // a scalar constant is a literal — no buffer, no slot
+      else if (ELEM.has(v.op) && !mat.has(v.id) && grown < cap * 3) {          // a fork the schedule did NOT materialize is recomputed in place
         grown++;
-        return node(v.op, v.src.map((x) => val(x, ix)), v.arg, []);
-      }
-      return read(v, ix, regionShape, whole);
+        o = node(v.op, v.src.map((x) => val(x)), v.arg, []);
+      } else o = read(v, at, regionShape, whole);
+      vals.set(v.id, o);
+      return o;
     };
-    const value = ELEM.has(top.op) ? node(top.op, top.src.map((x) => val(x, at)), top.arg, []) : val(top, at, true);
+    const value = ELEM.has(top.op) ? node(top.op, top.src.map((x) => val(x)), top.arg, []) : val(top, true);
     return { inputs, value };
   };
 
@@ -262,10 +242,9 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
       const inSh = u.src[0]!.shape, inSt = strides(inSh), outSh = u.shape, outSt = strides(outSh);
       const mapped = outSh.map((_, d) => inSt[a.keepdims ? d : (d < a.axis ? d : d + 1)]!);
       const mk = (cap: number) => {
-        const gid = range(Math.max(numel(outSh), 1));
+        const gid = range(Math.max(numel(outSh), 1)), k = range(inSh[a.axis]!);
         let base: UOp = iconst(0);
         for (let d = 0; d < outSh.length; d++) base = iadd(base, imul(imod(idiv(gid, iconst(outSt[d]!)), iconst(outSh[d]!)), iconst(mapped[d]!)));
-        const k = range(inSh[a.axis]!);
         const { inputs, value } = kernel(u.src[0]!, inSh, iadd(base, imul(k, iconst(inSt[a.axis]!))), cap, Math.max(numel(outSh), 1), k);
         return fused(gid, acc(a.op, k, value), inputs, u.shape);
       };
@@ -279,13 +258,14 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
       let addr = iadd(iconst(tv.offset), imul(row, iconst(tv.strides[0]!)));
       for (let d = 0; d < rest.length; d++) addr = iadd(addr, imul(imod(idiv(imod(gid, iconst(R)), iconst(rs[d]!)), iconst(rest[d]!)), iconst(tv.strides[d + 1]!)));
       out = fused(gid, load(0, addr), [tb, ib], u.shape);                      // slots: 0 = table base, 1 = idx
-    } else if (u.op === "SCATTER_ADD") {                                       // out[v,c] = Σ_i (idx[i]==v)·values[i,c] — GATHER's transpose, as one nest
+    } else if (u.op === "SCATTER_ADD") {                                       // out[v,c] = Σ_i (idx[i]==v ? values[i,c] : 0) — GATHER's transpose, as one nest
       const rest = u.shape.slice(1), R = Math.max(numel(rest), 1), N = u.src[0]!.shape[0]!;
       const gid = range(Math.max(numel(u.shape), 1));
       const i = range(N), v = ival(idiv(gid, iconst(R))), e = load(0, i);
       const nlt = (x: UOp, y: UOp) => node("ADD", [konst(1), node("MULTIPLY", [node("LESS_THAN", [x, y], null, []), konst(-1)], null, [])], null, []);
       const eq = node("MULTIPLY", [nlt(e, v), nlt(v, e)], null, []);           // (¬a<b)·(¬b<a) = [a==b]
-      const body = node("MULTIPLY", [eq, load(1, iadd(imul(i, iconst(R)), imod(gid, iconst(R))))], null, []);
+      // selected, not multiplied: an ∞ in another row's values is not 0·∞ here
+      const body = node("WHERE", [eq, load(1, iadd(imul(i, iconst(R)), imod(gid, iconst(R)))), konst(0)], null, []);
       out = fused(gid, acc("ADD", i, body), [build(u.src[0]!), build(u.src[1]!)], u.shape);
     } else throw new Error(`fuse: no kernel form for ${u.op}`);
     built.set(u.id, out);
@@ -293,11 +273,7 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
   };
   // Pre-build every node a `read` could reach as a base, in topological order, so build()
   // never recurses deeper than one kernel — real graphs are thousands of nodes deep.
-  const seen = new Set<number>();
-  for (const r of roots) for (const u of toposort(r)) {
-    if (seen.has(u.id)) continue; seen.add(u.id);
-    if (u.op === "REDUCE" || u.op === "GATHER" || u.op === "SCATTER_ADD" || ELEM.has(u.op)) build(u);
-  }
+  for (const u of toposort(roots)) if (u.op === "REDUCE" || u.op === "GATHER" || u.op === "SCATTER_ADD" || ELEM.has(u.op)) build(u);
   return roots.map(build);
 }
 
@@ -306,7 +282,7 @@ export function optimizeMany(roots: UOp[]): UOp[] {
   const s = graphRewriteMany(simplifyMany(roots), SCHED_REWRITES);
   const uc = useCounts(s);
   const g = fuseWith(s, uc, schedule(s, uc));
-  for (const r of g) for (const u of toposort(r))                              // legality: only leaves and kernels may reach the executor
+  for (const u of toposort(g))                                                 // legality: only leaves and kernels may reach the executor
     if (u.op !== "FUSED" && u.op !== "CONSTANT" && u.op !== "BUFFER" && u.shape.length) throw new Error(`optimize: ${u.op} survived to the kernel boundary`);
   return g;
 }
@@ -318,32 +294,42 @@ export const optimize = (root: UOp): UOp => optimizeMany([root])[0]!;
 // a training step built afresh each tick finds the plan it compiled on the first. A scalar
 // constant is part of the structure: the printer folds it into the kernel text.
 export function canonical(roots: UOp[]): { key: string; leaves: UOp[] } {
-  const index = new Map<number, number>(), leaves: UOp[] = [], parts: string[] = [];
-  for (const root of roots) {
-    const stack: [UOp, boolean][] = [[root, false]];
-    while (stack.length) {
-      const [u, expanded] = stack.pop()!;
-      if (index.has(u.id)) continue;
-      if (!expanded && u.src.length) { stack.push([u, true]); for (let i = u.src.length - 1; i >= 0; i--) if (!index.has(u.src[i]!.id)) stack.push([u.src[i]!, false]); continue; }
-      let part: string;
-      if (u.op === "BUFFER" || (u.op === "CONSTANT" && u.shape.length)) { part = `L${leaves.length}[${u.shape}]`; leaves.push(u); }
-      else if (u.op === "CONSTANT") part = `C${(u.arg as Float32Array)[0]}`;
-      else part = `${u.op}${u.arg === null || u.arg === undefined ? "" : JSON.stringify(u.arg)}[${u.shape}](${u.src.map((x) => index.get(x.id)).join(",")})`;
-      index.set(u.id, parts.length); parts.push(part);
-    }
-  }
-  return { key: `${parts.join(";")}|${roots.map((r) => index.get(r.id)).join(",")}`, leaves };
+  const index = new Map<number, number>(), leaves: UOp[] = [];
+  const parts = toposort(roots).map((u, i) => {
+    index.set(u.id, i);
+    if (u.op === "BUFFER" || (u.op === "CONSTANT" && u.shape.length)) return `L${leaves.push(u) - 1}[${u.shape}]`;
+    if (u.op === "CONSTANT") { const v = (u.arg as Float32Array)[0]!; return `C${Object.is(v, -0) ? "-0" : v}`; }
+    return `${u.op}${u.arg === null || u.arg === undefined ? "" : JSON.stringify(u.arg)}[${u.shape}](${u.src.map((x) => index.get(x.id))})`;
+  });
+  return { key: `${parts.join(";")}|${roots.map((r) => index.get(r.id))}`, leaves };
 }
 
 // A plan is built over placeholder leaves, never a run's own: a cached plan holds no data,
 // and every run binds its leaves by position.
 export const placeholders = (roots: UOp[], leaves: UOp[]): { roots: UOp[]; slots: UOp[] } => {
   const slots = leaves.map((l, i) => buffer(`%slot${i}`, l.shape)), memo = new Map<number, UOp>(leaves.map((l, i) => [l.id, slots[i]!]));
-  for (const r of roots) for (const u of toposort(r)) {
+  for (const u of toposort(roots)) {
     if (memo.has(u.id)) continue;
     const src = u.src.map((s) => memo.get(s.id)!);
     memo.set(u.id, src.every((s, i) => s === u.src[i]) ? u : node(u.op, src, u.arg, u.shape));
   }
   return { roots: roots.map((r) => memo.get(r.id)!), slots };
 };
+// A backend's plans, the 512 used last: for a graph, its plan and the run's leaves bound to
+// the plan's slots. A plan pushed out is handed to `drop`.
+export function planner<P>(build: (roots: UOp[]) => P, drop: (plan: P) => void = () => {}): (roots: UOp[]) => { plan: P; bind: Map<number, UOp> } {
+  const plans = new Map<string, { plan: P; slots: UOp[] }>();
+  return (roots) => {
+    const { key, leaves } = canonical(roots);
+    let hit = plans.get(key);
+    if (hit) plans.delete(key);                                                // most recently used last
+    else {
+      const p = placeholders(roots, leaves);
+      hit = { plan: build(p.roots), slots: p.slots };
+      if (plans.size >= 512) { const [k, old] = plans.entries().next().value!; plans.delete(k); drop(old.plan); }
+    }
+    plans.set(key, hit);
+    return { plan: hit.plan, bind: new Map(hit.slots.map((s, i) => [s.id, leaves[i]!])) };
+  };
+}
 

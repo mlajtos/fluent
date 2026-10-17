@@ -99,8 +99,9 @@ const joinShape = (a: readonly number[], b: readonly number[]): number[] => {
   for (let i = 0; i < n; i++) { const x = a[a.length - n + i] ?? 1, y = b[b.length - n + i] ?? 1; if (x !== y && x !== 1 && y !== 1) err(`elementwise: ${sh(a)} vs ${sh(b)}`); r.push(x === 1 ? y : x); }   // 1 stretches, even to 0
   return r;
 };
-const bc2 = (x: UOp, y: UOp): [UOp, UOp] => { const s = joinShape(x.shape, y.shape); const f = (u: UOp) => sameShape(u.shape, s) ? u : broadcastTo(u, s); return [f(x), f(y)]; };
-const elem = (op: Op) => (x: UOp, y: UOp): UOp => { const [a, b] = bc2(x, y); return node(op, [a, b], null, a.shape); };
+// every operand broadcast to the shape they share
+const bc = (...xs: UOp[]): UOp[] => { const s = xs.map((u) => u.shape).reduce(joinShape); return xs.map((u) => (sameShape(u.shape, s) ? u : broadcastTo(u, s))); };
+const elem = (op: Op) => (x: UOp, y: UOp): UOp => { const s = bc(x, y); return node(op, s, null, s[0]!.shape); };
 export const add = elem("ADD");
 export const mul = elem("MULTIPLY");
 export const cmplt = elem("LESS_THAN");                                       // a < b → 1.0 else 0.0; ∂ = 0
@@ -109,22 +110,12 @@ export const recip = un("RECIPROCAL"); export const exp = un("EXP"); export cons
 
 // ---- the math table: one row per function, its JS and its WGSL ------------------
 // (derivatives live in grad.ts's JVP table, keyed by the same name)
-export const MATHS: Record<string, { arity: 1 | 2; js: (...a: number[]) => number; wgsl: (...a: string[]) => string }> = {
-  sin: { arity: 1, js: Math.sin, wgsl: (x) => `sin(${x})` },
-  cos: { arity: 1, js: Math.cos, wgsl: (x) => `cos(${x})` },
-  tanh: { arity: 1, js: Math.tanh, wgsl: (x) => `tanh(${x})` },
-  asin: { arity: 1, js: Math.asin, wgsl: (x) => `asin(${x})` },
-  acos: { arity: 1, js: Math.acos, wgsl: (x) => `acos(${x})` },
-  atan: { arity: 1, js: Math.atan, wgsl: (x) => `atan(${x})` },
-  asinh: { arity: 1, js: Math.asinh, wgsl: (x) => `asinh(${x})` },
-  acosh: { arity: 1, js: Math.acosh, wgsl: (x) => `acosh(${x})` },
-  atanh: { arity: 1, js: Math.atanh, wgsl: (x) => `atanh(${x})` },
-  floor: { arity: 1, js: Math.floor, wgsl: (x) => `floor(${x})` },
-  ceil: { arity: 1, js: Math.ceil, wgsl: (x) => `ceil(${x})` },
-  trunc: { arity: 1, js: Math.trunc, wgsl: (x) => `trunc(${x})` },
+type MathRow = { arity: 1 | 2; js: (...a: number[]) => number; wgsl: (...a: string[]) => string };
+const same = (fn: string): [string, MathRow] => [fn, { arity: 1, js: (Math as unknown as Record<string, (x: number) => number>)[fn]!, wgsl: (x) => `${fn}(${x})` }];
+export const MATHS: Record<string, MathRow> = {
+  ...Object.fromEntries(["sin", "cos", "tanh", "asin", "acos", "atan", "asinh", "acosh", "atanh", "floor", "ceil", "trunc", "abs"].map(same)),
   round: { arity: 1, js: (x) => { const r = Math.round(x); return r - x === 0.5 && r % 2 !== 0 ? r - 1 : r; }, wgsl: (x) => `round(${x})` },   // half to even
   sign: { arity: 1, js: (x) => (x > 0 ? 1 : x < 0 ? -1 : x), wgsl: (x) => `sign(${x})` },
-  abs: { arity: 1, js: Math.abs, wgsl: (x) => `abs(${x})` },
   isnan: { arity: 1, js: (x) => (x !== x ? 1 : 0), wgsl: (x) => `select(0.0, 1.0, (bitcast<u32>(${x}) & 0x7fffffffu) > 0x7f800000u)` },   // WGSL may fold x != x away
   expm1: { arity: 1, js: Math.expm1, wgsl: (x) => `select(exp(${x}) - 1.0, ${x} * (1.0 + ${x} * (0.5 + ${x} / 6.0)), abs(${x}) < 1e-3)` },
   log1p: { arity: 1, js: Math.log1p, wgsl: (x) => `select(log(1.0 + ${x}), ${x} * (1.0 - ${x} * (0.5 - ${x} / 3.0)), abs(${x}) < 1e-3)` },
@@ -140,9 +131,8 @@ export const MATHS: Record<string, { arity: 1 | 2; js: (...a: number[]) => numbe
 export const math = (fn: string, ...xs: UOp[]): UOp => {
   const m = MATHS[fn] ?? err(`math: unknown function ${fn}`);
   if (xs.length !== m.arity) err(`math: ${fn} takes ${m.arity} operand${m.arity > 1 ? "s" : ""}`);
-  if (xs.length === 1) return node("MATH", xs, { fn }, xs[0]!.shape);
-  const [a, b] = bc2(xs[0]!, xs[1]!);
-  return node("MATH", [a, b], { fn }, a.shape);
+  const s = bc(...xs);
+  return node("MATH", s, { fn }, s[0]!.shape);
 };
 
 // A random tensor's element i is hash(seed, i) — no state, no buffer of its own, so it
@@ -168,10 +158,7 @@ export const WGSL_HASH_UNIFORM = `fn hashUniform(seed: u32, i: u32) -> f32 {
 // element i is i: computed where it is read, like a random draw — ranges, one-hot rows and
 // index tables never upload an array
 export const iota = (n: number): UOp => node("IOTA", [], null, [n]);
-export const where = (c: UOp, a: UOp, b: UOp): UOp => {
-  const s = joinShape(joinShape(c.shape, a.shape), b.shape), f = (u: UOp) => sameShape(u.shape, s) ? u : broadcastTo(u, s);
-  return node("WHERE", [f(c), f(a), f(b)], null, s);
-};
+export const where = (c: UOp, a: UOp, b: UOp): UOp => { const s = bc(c, a, b); return node("WHERE", s, null, s[0]!.shape); };
 
 // ---- reduce ------------------------------------------------------------------
 export const reduceAxis = (a: UOp, axis: number, keepdims = true, op: "ADD" | "MAX" | "MUL" = "ADD"): UOp => {
@@ -191,7 +178,7 @@ export const scatterAdd = (idx: UOp, values: UOp, size: number): UOp =>
 
 // ---- the kernel language: a loop nest, as UOps --------------------------------
 // Index builders simplify as they build, so an index expression stays the closed form a
-// human would write; the printer (gpu.ts) and the walker (cpu.ts) both just read it.
+// human would write; both backends print it as it is.
 // Every range knows its extent, so every index knows its bounds, and the division laws
 // apply where they hold: x / c is 0 and x % c is x when 0 ≤ x < c; (c·q + r) / c is
 // q + r / c and (c·q + r) % c is r % c for r ≥ 0; (x / a) / b is x / (a·b); x % (c·k) / c
@@ -300,11 +287,9 @@ export const imod = (a: UOp, b: UOp): UOp => {
   if (a.op === "IMOD" && lo >= 0) { const m = iv(a.src[1]!); if (m !== null && m % c === 0) return imod(a.src[0]!, b); }
   const l = linear(a);
   if (nonneg(l) && (l.k >= c || l.terms.some(([t]) => t >= c))) {           // a coefficient or constant c or more: reduce it mod c
-    {
-      const r = fromLinear({ terms: l.terms.filter(([t]) => t % c !== 0).map(([t, u]) => [t % c, u]), k: l.k % c });
-      const [rl, rh] = bounds(r);
-      return rl >= 0 && rh < c ? r : imod(r, b);
-    }
+    const r = fromLinear({ terms: l.terms.filter(([t]) => t % c !== 0).map(([t, u]) => [t % c, u]), k: l.k % c });
+    const [rl, rh] = bounds(r);
+    return rl >= 0 && rh < c ? r : imod(r, b);
   }
   // (g·x + r) % (g·m) is g·(x % m) + r
   const s = nonneg(l) ? shared(l, c) : null;
@@ -331,16 +316,73 @@ export const bcIndex = (st: readonly number[], outSh: readonly number[], gid: UO
   return off;
 };
 
-export function toposort(root: UOp): UOp[] {                                   // iterative: real graphs are thousands deep
-  const out: UOp[] = [], seen = new Set<number>(), stack: [UOp, number][] = [[root, 0]];
+// ---- printing a loop nest: one printer, a syntax per backend ----------------------
+// Each op prints from its operands' text (`r(i)` prints operand i, where the syntax reads
+// it). A shared subexpression the syntax names becomes a `let` at the OUTERMOST scope its
+// loop variables allow: a loop-invariant value hoists out of the loops below it.
+export interface Syntax {
+  op: Partial<Record<Op, (r: (i: number) => string, u: UOp, c: Nest) => string>>;
+  acc: (name: string, op: string, r: string, n: number, body: string[], v: string) => string;
+  let: (name: string, e: string) => string;
+  named: (uses: number, size: number) => boolean;
+}
+export interface Nest { syn: Syntax; names: Map<number, string>; ctr: { n: number }; uses: Map<number, number>; deps: Map<number, Set<number>>; size: Map<number, number>; scopeOf: Map<number, number>; scopes: string[][]; bound: Map<number, string> }
+export const nest = (syn: Syntax, names: Map<number, string>, ctr = { n: 0 }): Nest =>
+  ({ syn, names, ctr, uses: new Map(), deps: new Map(), size: new Map(), scopeOf: new Map(), scopes: [[]], bound: new Map() });
+export const infix = (o: string) => (r: (i: number) => string) => `(${r(0)} ${o} ${r(1)})`;
+export const INDEX_SYNTAX: Syntax["op"] = { IADD: infix("+"), IMUL: infix("*"), IMOD: infix("%"), LOAD: (r, u) => `a${(u.arg as { slot: number }).slot}[${r(0)}]` };
+// one pre-pass over a value: use counts, the RANGEs each node needs, subtree sizes
+export const planUses = (value: UOp, c: Nest): void => {
+  const seen = new Set<number>();
+  const walk = (v: UOp): void => {
+    c.uses.set(v.id, (c.uses.get(v.id) ?? 0) + 1);
+    if (seen.has(v.id)) return;
+    seen.add(v.id);
+    const d = new Set<number>(v.op === "RANGE" ? [v.id] : []);
+    let size = 1;
+    for (const s of v.src) { walk(s); for (const x of c.deps.get(s.id)!) d.add(x); size += c.size.get(s.id)!; }
+    if (v.op === "ACC") d.delete(v.src[0]!.id);                                // an ACC's own range is bound inside it
+    c.deps.set(v.id, d); c.size.set(v.id, size);
+  };
+  walk(value);
+};
+const scopeIdx = (u: UOp, c: Nest): number => { let s = 0; for (const r of c.deps.get(u.id)!) s = Math.max(s, c.scopeOf.get(r) ?? 0); return s; };
+export const bind = (u: UOp, e: string, c: Nest): string => {
+  const name = `v${c.ctr.n++}`;
+  c.scopes[scopeIdx(u, c)]!.push(c.syn.let(name, e));
+  c.bound.set(u.id, name);
+  return name;
+};
+export function render(u: UOp, c: Nest): string {
+  const hit = c.bound.get(u.id);
+  if (hit) return hit;
+  if (u.op === "RANGE") return c.names.get(u.id) ?? err("print: unbound RANGE");
+  if (u.op === "ACC") {
+    const k = c.ctr.n++, rg = u.src[0]!;
+    c.names.set(rg.id, `r${k}`); c.scopes.push([]); c.scopeOf.set(rg.id, c.scopes.length - 1);
+    const v = render(u.src[1]!, c), body = c.scopes.pop()!;
+    c.names.delete(rg.id); c.scopeOf.delete(rg.id);
+    c.scopes[scopeIdx(u, c)]!.push(c.syn.acc(`acc${k}`, (u.arg as { op: string }).op, `r${k}`, (rg.arg as { extent: number }).extent, body, v));
+    c.bound.set(u.id, `acc${k}`);
+    return `acc${k}`;
+  }
+  const e = (c.syn.op[u.op] ?? err(`print: cannot print ${u.op}`))((i) => render(u.src[i]!, c), u, c);
+  return u.op !== "ICONST" && u.op !== "CONSTANT" && c.syn.named(c.uses.get(u.id) ?? 1, c.size.get(u.id) ?? 1) ? bind(u, e, c) : e;
+}
+
+// every node the roots reach, each once, sources first; `srcOf` picks the edges to follow.
+// Iterative: real graphs are thousands deep.
+export function toposort(roots: UOp | readonly UOp[], srcOf = (u: UOp): readonly UOp[] => u.src): UOp[] {
+  const out: UOp[] = [], seen = new Set<number>(), stack: [UOp, boolean][] = [];
+  for (const root of Array.isArray(roots) ? [...roots].reverse() : [roots as UOp]) stack.push([root, false]);
   while (stack.length) {
-    const top = stack[stack.length - 1]!;
-    if (top[1] === 0) {
-      top[1] = 1;
-      if (seen.has(top[0].id)) { stack.pop(); continue; }
-      seen.add(top[0].id);
-      for (let i = top[0].src.length - 1; i >= 0; i--) if (!seen.has(top[0].src[i]!.id)) stack.push([top[0].src[i]!, 0]);
-    } else { out.push(top[0]); stack.pop(); }
+    const top = stack[stack.length - 1]!, [u, expanded] = top;
+    if (expanded) { out.push(u); stack.pop(); continue; }
+    top[1] = true;
+    if (seen.has(u.id)) { stack.pop(); continue; }
+    seen.add(u.id);
+    const src = srcOf(u);
+    for (let i = src.length - 1; i >= 0; i--) if (!seen.has(src[i]!.id)) stack.push([src[i]!, false]);
   }
   return out;
 }

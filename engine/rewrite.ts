@@ -16,7 +16,7 @@ const argKey = (u: UOp): string => {
     return u.shape.length === 0 ? (Number.isNaN(u.arg[0]!) ? "C:NaN" : Object.is(u.arg[0], -0) ? "C:-0" : `C:${u.arg[0]}`) : `#${u.id}`;
   return JSON.stringify(u.arg ?? null);
 };
-const structKey = (u: UOp) => `${u.op}|${u.src.map((s) => s.id).join(",")}|${argKey(u)}`;
+const structKey = (u: UOp) => `${u.op}|${u.src.map((s) => s.id).join(",")}|${argKey(u)}|${u.shape}`;
 
 // Innermost bottom-up rewrite to fixpoint. `done` memoizes by INPUT id (each node of a
 // shared DAG rewrites once — without it, diamonds go exponential); `cache` by structure
@@ -55,4 +55,3 @@ export function graphRewriteMany(roots: UOp[], rules: Rule[]): UOp[] {
   for (const r of roots) run(r);
   return roots.map((r) => done.get(r.id)!);
 }
-export const graphRewrite = (root: UOp, rules: Rule[]): UOp => graphRewriteMany([root], rules)[0]!;

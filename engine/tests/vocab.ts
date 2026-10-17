@@ -18,21 +18,10 @@ export const relu = (a: UOp): UOp => max(a, konst(0));
 export const silu = (a: UOp): UOp => mul(a, recip(add(konst(1), exp(neg(a)))));   // x·σ(x)
 export { konst, data, buffer, add, mul, recip, exp, sqrt, detach, where, cmplt, reshape, permute, broadcastTo, slice, reduceAxis, reduceMax, sum, gather };
 
-// A·B at any rank: the defining law Σₖ A[…,i,k]·B[…,k,j] over the view algebra. A frame
-// on either operand maps the cell over it; an unframed operand is shared across the frame
-// (its ∇ sums the frame away — broadcast's transpose is reduce, for free).
-export const matmul = (A: UOp, B: UOp): UOp => {
-  const as = A.shape, bs = B.shape;
-  if (as.length < 2 || bs.length < 2) throw new Error(`matmul: rank ≥ 2 operands, got [${as}]·[${bs}]`);
-  const [m, k] = as.slice(-2), [k2, n] = bs.slice(-2);
-  if (k !== k2) throw new Error(`matmul: cell [m,k]·[k,n] expected, got [${as.slice(-2)}]·[${bs.slice(-2)}]`);
-  const aF = as.slice(0, -2), bF = bs.slice(0, -2);
-  if (aF.length && bF.length && String(aF) !== String(bF)) throw new Error(`matmul: frames disagree, [${aF}] vs [${bF}]`);
-  const F = aF.length ? aF : bF, T = [...F, m!, k!, n!];
-  const p = mul(broadcastTo(reshape(A, as.length > 2 ? [...aF, m!, k!, 1] : [m!, k!, 1]), T),
-    broadcastTo(reshape(B, bs.length > 2 ? [...bF, 1, k!, n!] : [1, k!, n!]), T));
-  return reshape(reduceAxis(p, F.length + 1, true), [...F, m!, n!]);
-};
+// A·B at any rank: the defining law Σₖ A[…,i,k]·B[…,k,j] over the view algebra, as the
+// tensors' matmul builds it (its ∇ sums a shared operand's frame away — broadcast's
+// transpose is reduce, for free).
+export { cellMatmul as matmul } from "../tensor.ts";
 // RMSNorm over the last axis of x[m,d] with scale g[d]
 export const rmsNorm = (x: UOp, g: UOp, eps = 1e-6): UOp => {
   const d = x.shape.at(-1)!;
