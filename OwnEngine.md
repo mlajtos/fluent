@@ -12,7 +12,7 @@ forward to catch drift, GPU times from timestamp queries (≈3.5 µs resolution)
 
 ## 1. Size
 
-| | on jax-js (2026-10-14) | now |
+| | on jax-js (2026-10-14) | own engine (2026-10-17) |
 |---|---|---|
 | language core | `language.ts` 3,966, of which the prelude 367 | `language.ts` 2,495 + `prelude.fl` 804 |
 | tensor engine | jax-js 0.1.18: 17,369 shipped (20,628 source) | `engine/` 2,336 |
