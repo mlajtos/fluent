@@ -676,9 +676,10 @@ describe("training: ∇ follows what the loss reads", () => {
     expect(a).toBeGreaterThan(0.5)
     expect(b).toBeCloseTo(-1, 2)
   })
-  test("every optimizer in the prelude fits a quadratic", () => {
-    for (const opt of ["sgd(0.1)", "sgd(0.02, 0.9)", "adam(0.1)", "adamw(0.2, 0.0001)", "adagrad(1)", "rmsprop(0.05)", "adamax(0.1)", "nadam(0.1)",
-      "radam(0.1)", "amsgrad(0.1)", "adabelief(0.1)", "yogi(0.1)", "lion(0.01)", "muon(0.02)"]) {
+  test("every optimizer and schedule in the prelude fits a quadratic", () => {
+    // lamb steps relative to the variable's norm, so it settles only as its rate cools
+    for (const opt of ["sgd(0.1)", "sgd(0.02, 0.9)", "adam(0.1)", "adamw(0.2, 0.0001)", "adagrad(1)", "rmsprop(0.05)", "adadelta(10)", "adamax(0.1)", "nadam(0.1)",
+      "radam(0.1)", "amsgrad(0.1)", "adabelief(0.1)", "yogi(0.1)", "lion(0.01)", "lamb(cosine(0.05, 300))", "muon(0.02)", "adam(warmup(0.1, 50))"]) {
       const θ = value(`θ: ~([0, 0]), 𝓛: { Σ((θ - [3, -1]) ^ 2) }, opt: ${opt}, ({ s | opt(𝓛) } ⍣ 300)(0), θ`) as number[]
       expect([opt, Math.abs(θ[0]! - 3) < 0.02 && Math.abs(θ[1]! + 1) < 0.02]).toEqual([opt, true])
     }
@@ -688,6 +689,9 @@ describe("training: ∇ follows what the loss reads", () => {
     expect(value("θ: ~([0]), 𝓛: { (θ_0 - 2) ^ 2 }, opt: optimizer({ v | List() }, { g, v, s, t, lr | (v - (lr × g), List()) }, 0.25), opt(𝓛), θ")).toEqual([1])
     // a schedule is a function of the step; the rule sees t from 1
     expect(value("θ: ~([0]), 𝓛: { θ_0 }, opt: optimizer({ v | List() }, { g, v, s, t, lr | (v - lr, List()) }, { t | t × 10 }), opt(𝓛), opt(𝓛), θ")).toEqual([-30])
+    // warmup rises to its peak and stays; cosine falls to 0 and stays
+    expect(value("θ: ~([0]), 𝓛: { θ_0 }, opt: sgd(warmup(1, 4)), ({ s | opt(𝓛) } ⍣ 6)(0), θ")).toEqual([-4.5])
+    expect(value("θ: ~([0]), 𝓛: { θ_0 }, opt: sgd(cosine(1, 2)), ({ s | opt(𝓛) } ⍣ 3)(0), θ")).toEqual([expect.closeTo(-0.5, 6)])
   })
   test("clipNorm scales the gradient to a norm of at most c", () => {
     const θ = value("θ: ~([0, 0]), 𝓛: { Σ(θ × [30, 40]) }, opt: optimizer({ v | List() }, clipNorm({ g, v | (v - g, List()) }, 5), 1), opt(𝓛), θ") as number[]
