@@ -29,13 +29,13 @@ const MATH_JVP: Record<string, (u: UOp, x: UOp, y: UOp) => UOp[]> = {
   expm1: (u) => [add(u, konst(1))],
   log1p: (_u, x) => [recip(add(konst(1), x))],
   cbrt: (u) => [recip(mul(konst(3), sq(u)))],
-  atan2: (_u, y, x) => { const r = recip(add(sq(x), sq(y))); return [mul(x, r), neg(mul(y, r))]; },   // (x·dy − y·dx) ÷ (x² + y²)
-  div: (u, _x, y) => { const r = recip(y); return [r, neg(mul(u, r))]; },                            // dx ÷ y − (x ÷ y)·dy ÷ y
-  pow: (u, x, y) => [mul(y, math("pow", x, add(y, konst(-1)))), mul(u, log(x))],                    // y·xʸ⁻¹·dx + xʸ·ln x·dy
+  atan2: (_u, y, x) => { const r = recip(add(sq(x), sq(y))); return [mul(x, r), neg(mul(y, r))]; },  // (x·dy − y·dx) ÷ (x² + y²)
+  div: (u, _x, y) => { const r = recip(y); return [r, neg(mul(u, r))]; },  // dx ÷ y − (x ÷ y)·dy ÷ y
+  pow: (u, x, y) => [mul(y, math("pow", x, add(y, konst(-1)))), mul(u, log(x))],  // y·xʸ⁻¹·dx + xʸ·ln x·dy
 };
 
 type Jvp = (u: UOp, d: (UOp | null)[]) => UOp | null;
-const linear: Jvp = (u, [a = null]) => a && node(u.op, [a], u.arg, u.shape);   // a view of the tangent, the same view
+const linear: Jvp = (u, [a = null]) => a && node(u.op, [a], u.arg, u.shape);  // a view of the tangent, the same view
 export const JVP: Partial<Record<UOp["op"], Jvp>> = {
   CONSTANT: () => null, BUFFER: () => null, DETACH: () => null, LESS_THAN: () => null, RANDOM: () => null, IOTA: () => null,
   ADD: (_u, [a = null, b = null]) => plus(a, b),
