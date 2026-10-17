@@ -769,7 +769,6 @@ rr: 0..<H ⊗(+) fill([W], 0), ; row of each cell [H, W]
 xs: fill([H], 0) ⊗(+) 0..<W, ; column of each cell [H, W]
 dxc: xs - cx, dyc: rr - cy,
 targetG: dxc^2 + dyc^2 < rad^2, ; the disk as an [H, W] mask
-target: targetG ⍴ [S], ; flattened, for the loss
 
 seedOne: oneHot(H×cy + cx, S), ; one lit cell in the middle …
 seed: seedOne ⊗(×) fill([C], 1) ⍴ [H, W, C], ; … all channels on [H, W, C]
@@ -788,11 +787,8 @@ step: { s |
   s + (0.2×delta ⍴ [H, W, C]) ; residual update – the cell nudges itself
 },
 
-grow: { transpose((step ⍣ N)(seed) ⍴ [S, C])_0 ⍴ [H, W] }, ; run N ticks, read visible channel
-𝓛: {
-  fin: (step ⍣ N)(seed), ; grow, then …
-  Σ((transpose(fin ⍴ [S, C])_0 - target)^2) ; … how far the shape is from the disk
-},
+grow: { transpose((step ⍣ N)(seed) ⍴ [S, C])_0 ⍴ [H, W] }, ; run N ticks, read the visible channel
+𝓛: { Σ((grow() - targetG)^2) }, ; how far the grown shape is from the disk
 
 opt: adam(0.03), ; optimise the local rule …
 grid: $grow(), ; live grown state for the heatmap
@@ -888,16 +884,12 @@ sY3: sPoleY ⍴ [1, 1, numMagnets],
 rN: √((X3 - nX3)^2 + (Y3 - nY3)^2) + ε,
 rS: √((X3 - sX3)^2 + (Y3 - sY3)^2) + ε,
 
-; Potential
-; k: 0.5,
-; Pulsing strength
+; Potential, with a pulsing strength
 k: sin(t × 2) × 0.2 + 0.5,
 potential: sum(k/rN - k/rS, 2),
 
 ; Visualization
 lines: abs(sin(potential × 25))^0.25,
-glow: 1 / (abs(potential) + 0.2),
-field: lines×0.7 + glow×0.3,
 
 (
   Text("# 🧲 Spinning Magnets"),
@@ -1189,25 +1181,8 @@ IB1: floor(rand([G1]) × 196),
 IA2: floor(rand([G2]) × G1),
 IB2: floor(rand([G2]) × G1),
 
-; the 16 two-input truth tables (row i = binary of i = [f00, f01, f10, f11])
-TT: [
-  [0, 0, 0, 0],
-  [0, 0, 0, 1],
-  [0, 0, 1, 0],
-  [0, 0, 1, 1],
-  [0, 1, 0, 0],
-  [0, 1, 0, 1],
-  [0, 1, 1, 0],
-  [0, 1, 1, 1],
-  [1, 0, 0, 0],
-  [1, 0, 0, 1],
-  [1, 0, 1, 0],
-  [1, 0, 1, 1],
-  [1, 1, 0, 0],
-  [1, 1, 0, 1],
-  [1, 1, 1, 0],
-  [1, 1, 1, 1]
-],
+; the 16 two-input truth tables: row i is i in binary, [f00, f01, f10, f11]
+TT: floor(0..<16 (⊗ ÷) [8, 4, 2, 1]) % 2,
 ; pool 20 gates per class: GROUP[c, g] = 1 where gate g belongs to class c
 GROUP: 0..<10 ⊗(=) floor(0..<G2 ÷ (G2 ÷ 10)),
 
@@ -1293,18 +1268,12 @@ M1: route(H1), M2: route(H2),
 ; asymmetric non-negative init: U[0,1)/√fan-in, excitatory ×1.5, inhibitory ×0.5
 ; (a 3:1 E/I head start); the output layer stays symmetric to avoid saturation.
 ini: { fan, s | rand([fan, s]) ÷ (√fan) },
-Wpp1: $(ini(Din, H1) × 1.5),
-Wnp1: $(ini(Din, H1) × 0.5),
-Wnn1: $(ini(Din, H1) × 1.5),
-Wpn1: $(ini(Din, H1) × 0.5),
-Wpp2: $(ini(H1, H2) × 1.5),
-Wnp2: $(ini(H1, H2) × 0.5),
-Wnn2: $(ini(H1, H2) × 1.5),
-Wpn2: $(ini(H1, H2) × 0.5),
-Wppo: $ini(H2, C),
-Wnpo: $ini(H2, C),
-Wnno: $ini(H2, C),
-Wpno: $ini(H2, C),
+Wpp1: $(ini(Din, H1) × 1.5), Wnp1: $(ini(Din, H1) × 0.5),
+Wnn1: $(ini(Din, H1) × 1.5), Wpn1: $(ini(Din, H1) × 0.5),
+Wpp2: $(ini(H1, H2) × 1.5), Wnp2: $(ini(H1, H2) × 0.5),
+Wnn2: $(ini(H1, H2) × 1.5), Wpn2: $(ini(H1, H2) × 0.5),
+Wppo: $ini(H2, C), Wnpo: $ini(H2, C),
+Wnno: $ini(H2, C), Wpno: $ini(H2, C),
 
 ; one dual-stream layer: positive stream is excited by p, inhibited by n; the
 ; negative stream mirrors it. The −signs are structural (Dale), never learned.
@@ -1348,18 +1317,12 @@ train: {
   Upo: dφ(po) × S,
   Uno: dφ(no) × (-S),
   ; twelve local updates (inhibitory pathways carry the opposite-sign drive)
-  Wpp1(edUp(Wpp1(), X, Up1)),
-  Wnp1(edUp(Wnp1(), X, -Up1)),
-  Wnn1(edUp(Wnn1(), X, Un1)),
-  Wpn1(edUp(Wpn1(), X, -Un1)),
-  Wpp2(edUp(Wpp2(), p1, Up2)),
-  Wnp2(edUp(Wnp2(), n1, -Up2)),
-  Wnn2(edUp(Wnn2(), n1, Un2)),
-  Wpn2(edUp(Wpn2(), p1, -Un2)),
-  Wppo(edUp(Wppo(), p2, Upo)),
-  Wnpo(edUp(Wnpo(), n2, -Upo)),
-  Wnno(edUp(Wnno(), n2, Uno)),
-  Wpno(edUp(Wpno(), p2, -Uno)),
+  Wpp1(edUp(Wpp1(), X, Up1)), Wnp1(edUp(Wnp1(), X, -Up1)),
+  Wnn1(edUp(Wnn1(), X, Un1)), Wpn1(edUp(Wpn1(), X, -Un1)),
+  Wpp2(edUp(Wpp2(), p1, Up2)), Wnp2(edUp(Wnp2(), n1, -Up2)),
+  Wnn2(edUp(Wnn2(), n1, Un2)), Wpn2(edUp(Wpn2(), p1, -Un2)),
+  Wppo(edUp(Wppo(), p2, Upo)), Wnpo(edUp(Wnpo(), n2, -Upo)),
+  Wnno(edUp(Wnno(), n2, Uno)), Wpno(edUp(Wpno(), p2, -Uno)),
   mean(abs(S)) ; how much blame is left to diffuse
 },
 
