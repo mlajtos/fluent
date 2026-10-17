@@ -4,8 +4,8 @@ SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current sco
 (:=): doc(TensorAssign, "θ:= value", "Assign a new value to a variable (made with ~ or ~~); optimizers do this every step, watch(θ) sees it. Mid-expression, parenthesize the value: θ := (a + b).", "θ: ~[0, 0], θ:= [1, 2]"),
 
 ; Functions
-(.): pipe: doc(FunctionPipe, "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]"),
-(⟳): iter: doc(FunctionIterate, "step ⟳ n", "Run a thunk n times, paced between display frames so the UI stays live – the loop for training and simulation. Async: a re-evaluation cancels it.", "opt: sgd(0.1), { opt(𝓛) } ⟳ 100"),
+(.): pipe: FunctionPipe: doc(FunctionCommute(FunctionApply), "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]"),
+(⟳): iter: doc(FunctionIterate, "step ⟳ n", "Run a thunk n times, paced between display frames so the UI stays live – the loop for training and simulation. Async: a re-evaluation cancels it. Its value is a signal: ◌ while the steps succeed, the Error of the first step that fails, which stops the loop.", "opt: sgd(0.1), { opt(𝓛) } ⟳ 100"),
 (⍣): power: FunctionPower: doc({ f, n | FunctionRepeat(f, n, FunctionInverse) }, "(f ⍣ n)(x)", "Power: f applied n times – f(f(…f(x))). A negative n runs f backwards, through its inverse. A predicate in place of n runs f until predicate(new, old) holds – (f ⍣ ≡) iterates to a fixed point. Dyadic x (f ⍣ n) y iterates f(x, ·), as in APL. Synchronous; for a frame-paced loop use ⟳.", "({ x | x × 2 } ⍣ 5)(1) = 32, 2 (^ ⍣ -1) 8 = 3, (cos ⍣ ≡)(1) ≈ 0.739"),
 
 ; Combinators – glyph, array-language name, mainstream name
@@ -145,7 +145,7 @@ erf: TensorErrorFunction: doc({ x |
 }, "erf(x)", "Gauss error function – the area under a normal curve out to x, saturating at ±1. Smooth and differentiable everywhere.", "erf(1) ≈ 0.8427"),
 
 ; Tensor shape/indexing
-(#): length: doc(Length, "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\"abc\") = 3"),
+(#): length: Length: doc(cascade((TensorLength, ListLength, StringLength)), "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\"abc\") = 3"),
 (_): gather: doc(TensorGather, "x_i", "Index into a string, list, or tensor. `x_i` picks one element; `x_[i, j]` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30"),
 (⍴): reshape: doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]"),
 (..<): range: doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the `<` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]"),

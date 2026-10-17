@@ -891,7 +891,6 @@ setMeta(SymbolAssign, { quotedArgs: [0] })
 const FunctionApply = function (this: CurrentScope, fn: Value, args: Value) {
   return safeApply(fn, Array.isArray(args) ? args : [args], this)
 }
-const FunctionPipe = function (this: CurrentScope, args: Value, fn: Value) { return FunctionApply.call(this, fn, args) }
 
 // f, as a new function whose signal arguments arrive as the signals themselves – f
 // itself, which every evaluation shares, stays as it is
@@ -1383,7 +1382,6 @@ const StringLength = (a: Value) => isText(a) ? engine.tensor([...String(a)].leng
 
 // length works on whatever it's handed – a tensor's leading axis, a list's element
 // count, or a string's characters – by trying each in turn
-const Length = FunctionCascade([TensorLength, ListLength, StringLength])
 
 // Text ↔ tensor: the door between strings and token land. Codes are float32 – small
 // integers are exact in float, and float spares downstream math from int-promotion
@@ -1422,13 +1420,13 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   SymbolAssign, CodeParse, CodeEvaluate,
   FunctionIterate, FunctionRepeat, FunctionThen, FunctionCommute, FunctionInto, FunctionFork, FunctionBefore, FunctionAfter,
   FunctionRight, FunctionLeft, FunctionIs, TensorIs, ListIs, StringIs, ErrorIs, Identical,
-  FunctionCascade, FunctionCond, FunctionArity, FunctionApply, FunctionPipe, FunctionNoAutoLift,
+  FunctionCascade, FunctionCond, FunctionArity, FunctionApply, FunctionNoAutoLift,
   FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, NoMatch: NoMatchValue, doc,
   Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalEffect, SignalOnce,
   ...UNARY, ...BINARY, ...REDUCTIONS,
   TensorStack, TensorUnstack, TensorConcat, TensorReduce, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
   TensorPermute, TensorBroadcast, TensorPadAxis, TensorWindow, TensorTake, TensorScatterAdd, TensorRange,
-  TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorLength, Length, TensorShape, TensorGather,
+  TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorLength, TensorShape, TensorGather,
   TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorWatch, TensorRandomUniform, TensorEinsum,
   List, ListLength, ListConcat, ListGet, ListMap, ListReduce, ListScan,
   StringConcat, StringLiteral, StringLength, StringToCodes, CodesToString,
