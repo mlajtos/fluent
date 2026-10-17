@@ -76,16 +76,15 @@
 
 import { Signal, signal, computed, effect } from "@preact/signals-core"
 import {
-  getParseErrors, PRELUDE,
-  identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
-} from "./language"
-import { tensorView, documentHash, type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where } from "./protocol"
+  tensorView, documentHash, FEW_BARS, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
+  type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where,
+} from "./protocol"
 import { Documentation } from "./documentation"
 import { useSignals } from '@preact/signals-react/runtime';
 import { ErrorBoundary } from 'react-error-boundary';
 import { useEffect, type CSSProperties, type JSX, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client"
-import { type BeforeMount, type Monaco, type OnMount, Editor, loader } from '@monaco-editor/react';
+import { type Monaco, type OnMount, Editor, loader } from '@monaco-editor/react';
 import * as monaco from "monaco-editor";
 import { type editor } from "monaco-editor";
 // @ts-ignore
@@ -142,6 +141,7 @@ const mirrors = new Map<number, Mirror>()
 const payloads = new Map<number, Signal<Float32Array | string | undefined>>()
 const result = signal<Desc | null>(null)
 const environmentNames = signal(new Map<string, { detail: string, doc: Doc | null }>())
+let prelude = ""
 
 // A hot update starts a fresh evaluator and stops the old one's sources
 const hot = globalThis as { __fluentWorker?: Worker, __fluentSources?: Map<number, () => void> }
@@ -204,8 +204,10 @@ worker.onmessage = ({ data: m }: MessageEvent<ToPage>) => {
   switch (m.t) {
     case "ready": {
       environmentNames.value = new Map(m.names.map(([name, detail, doc]) => [name, { detail, doc }]))
+      prelude = m.prelude
       return
     }
+    case "parsed": { showParseErrors(m); return }
     case "result": {
       // the worker let go of everything the last result held
       mirrors.clear()
@@ -474,7 +476,7 @@ const convertTextToHTML = async (value: string) => {
   const inlineCodeElements = element.querySelectorAll('code:not(.code code)')
 
   if (inlineCodeElements.length > 0) {
-    const colorize = (await getEditor()).colorize
+    const colorize = monaco.editor.colorize
 
     await Promise.all(Array.from(inlineCodeElements).map(async (el) => {
       const text = el.textContent ?? ''
@@ -497,7 +499,7 @@ const convertTextToHTML = async (value: string) => {
 }
 
 const colorizeCodeAsync = async (language: string, value: string) => {
-  const colorize = (await getEditor()).colorize
+  const colorize = monaco.editor.colorize
   const e = document.createElement("div")
   e.className = "overflow-hidden"
   e.style.fontFamily = "monospace"
@@ -873,46 +875,35 @@ const editorRegistry = new Set<editor.IStandaloneCodeEditor>()
 const hoverCollections = new WeakMap<editor.IStandaloneCodeEditor, editor.IEditorDecorationsCollection>()
 let hoverTarget: editor.IStandaloneCodeEditor | null = null
 
-const editorForDocument = (document: number): editor.IStandaloneCodeEditor | null => {
-  // an origin without a document is the main program's
-  if (document === 0) { return mainEditorRef?.editor ?? null }
-  for (const ed of editorRegistry) {
-    const model = ed.getModel()
-    if (!model) { editorRegistry.delete(ed); continue }
-    if (documentHash(model.getValue()) === document) { return ed }
-  }
-  // the document is known but no editor shows it (e.g. a value from an
-  // already-edited cell) – better no highlight than the right range in the
-  // wrong text
-  return null
-}
+// The editors whose text is a document. One the text has moved on from shows none of
+// its ranges: better no highlight than the right range in the wrong text.
+const editorsShowing = (document: number): editor.IStandaloneCodeEditor[] => [...editorRegistry].filter((ed) => {
+  const model = ed.getModel()
+  if (!model) { editorRegistry.delete(ed) }
+  return model && documentHash(model.getValue()) === document
+})
+const rangeOf = (o: Where) => ({ startLineNumber: o.s[0], startColumn: o.s[1], endLineNumber: o.e[0], endColumn: o.e[1] })
 
 const setHoverHighlight = (origin: Where | null) => {
-  const target = origin ? editorForDocument(origin.d) : null
+  // an origin without a document is the main program's
+  const target = !origin ? null : origin.d === 0 ? mainEditorRef?.editor ?? null : editorsShowing(origin.d)[0] ?? null
   if (hoverTarget && hoverTarget !== target) {
     hoverCollections.get(hoverTarget)?.set([])
   }
   hoverTarget = target
   if (!target || !origin) { return }
-
   let collection = hoverCollections.get(target)
   if (!collection) {
     collection = target.createDecorationsCollection()
     hoverCollections.set(target, collection)
   }
+  collection.set([{ range: rangeOf(origin), options: { className: "ast-hover-highlight" } }])
+}
 
-  collection.set([{
-    range: {
-      startLineNumber: origin.s[0],
-      startColumn: origin.s[1],
-      endLineNumber: origin.e[0],
-      endColumn: origin.e[1],
-    },
-    options: {
-      className: 'ast-hover-highlight',
-      isWholeLine: false,
-    }
-  }])
+// The worker parses every edit: its errors mark each editor that shows the document
+const showParseErrors = ({ d, errors }: Extract<ToPage, { t: "parsed" }>) => {
+  const markers = errors.map(({ message, o }) => ({ message, severity: monaco.MarkerSeverity.Error, ...rangeOf(o) }))
+  for (const ed of editorsShowing(d)) { monaco.editor.setModelMarkers(ed.getModel()!, "fluent-syntax", markers) }
 }
 
 function nodeWidth(label: string): number {
@@ -1502,7 +1493,7 @@ ${[...environmentNames.peek().keys()].join(", ")}
 ## Operator Definitions (Prelude)
 The following operators are defined as aliases to canonical functions:
 \`\`\`fluent
-${PRELUDE.trim()}
+${prelude.trim()}
 \`\`\`
 `
 
@@ -1602,7 +1593,7 @@ const getEditorOptions: (type: "editable" | "readonly") => editor.IStandaloneEdi
   minimap: { enabled: false },
   wordWrap: "on",
   fontSize: 14,
-  // BQN386 serves only the symbol blocks (unicode-range in index.css) – both
+  // BQN386 serves only the symbol blocks (its FontFace unicodeRange, below) – both
   // hook glyphs ⊸/⟜ come from one face instead of two mismatched fallbacks
   fontFamily: '"BQN386", Menlo, Monaco, "Courier New", monospace',
   fixedOverflowWidgets: true,
@@ -1681,27 +1672,11 @@ function CodeEditorView({ value, onChange, auto }: { value: string, onChange: (c
   const shownHeight = useRef(height)
   const changed = useRef(onChange)
   changed.current = onChange
-
-  // each editor validates its own model (REPL cells stay independent)
-  const editorRef = useRef<{ editor: editor.IStandaloneCodeEditor; monaco: Monaco } | null>(null)
-  const validateCode = (code: string) => {
-    const mounted = editorRef.current
-    const model = mounted?.editor.getModel()
-    if (!mounted || !model) { return }
-    const markers = getParseErrors(code).map(error => ({
-      startLineNumber: error.start.line,
-      startColumn: error.start.column,
-      endLineNumber: error.end.line,
-      endColumn: error.end.column,
-      message: error.message,
-      severity: mounted.monaco.MarkerSeverity.Error,
-    }))
-    mounted.monaco.editor.setModelMarkers(model, "fluent-syntax", markers)
-  }
+  // each editor's text is parsed on its own (REPL cells stay independent)
+  const validateCode = (source: string) => toWorker({ t: "parse", source })
 
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorOnMount(editor, monaco)
-    editorRef.current = { editor, monaco }
     editorRegistry.add(editor)
     // Global shortcuts (⌘O gallery, ⌘S share) target the app's MAIN editor – the one
     // that fills its panel. Auto-grown editors are embedded cells that mount first and
@@ -1725,13 +1700,11 @@ function CodeEditorView({ value, onChange, auto }: { value: string, onChange: (c
       requestAnimationFrame(() => requestAnimationFrame(fit))
     }
 
-    const model = editor.getModel()
-    if (model) { validateCode(model.getValue()) }
+    validateCode(editor.getValue())
   }
 
   return (
     <Editor
-      beforeMount={editorBeforeMount}
       onMount={handleEditorMount}
       height={height}
       defaultLanguage="fluent"
@@ -1755,15 +1728,6 @@ function CodeEditorView({ value, onChange, auto }: { value: string, onChange: (c
       options={getEditorOptions("editable")}
     />
   )
-}
-
-let EditorInstance: Monaco["editor"] | null = null
-
-async function getEditor() {
-  while (EditorInstance === null) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  return EditorInstance;
 }
 
 // The token under the cursor: a letter-identifier (Greek included) via Monaco's
@@ -1805,326 +1769,317 @@ const docCardBody = (m: Doc): string =>
   [m.doc, m.example && "```fluent\n" + m.example + "\n```"]
     .filter(Boolean).join("\n\n")
 
-// Monaco-global setup below runs once per page, NOT once per editor:
-// beforeMount fires for every <Editor>, and register*Provider calls
-// ACCUMULATE – each extra registration stacks one more identical doc card
-// onto every hover. The disposables live on globalThis so a hot-reloaded
-// module replaces its predecessor's providers instead of stacking on them.
+// Monaco's language setup is global, so it runs once, as the page loads – before any
+// editor mounts or any text is colorized. register*Provider calls accumulate, each one
+// stacking another doc card onto every hover: the providers live on globalThis, and a
+// hot-reloaded module replaces its predecessor's instead of adding to them.
 const registeredProviders: { dispose(): void }[] =
   ((globalThis as Record<string, unknown>).__fluentMonacoProviders ??= []) as { dispose(): void }[]
-let monacoConfigured = false
-
-const editorBeforeMount: BeforeMount = (monaco) => {
-  EditorInstance = monaco.editor
-  if (monacoConfigured) { return }
-  monacoConfigured = true
-  for (const p of registeredProviders.splice(0)) {
-    try { p.dispose() } catch { /* already gone */ }
-  }
-
-  monaco.languages.register({ id: "fluent" });
-
-  registeredProviders.push(monaco.languages.registerHoverProvider("fluent", {
-    provideHover(model, position) {
-      const meta = metaFor(fluentTokenAt(model, position))
-      return meta ? { contents: [{ value: docCard(meta) }] } : null
-    },
-  }));
-
-  monaco.languages.setMonarchTokensProvider("fluent", {
-    defaultToken: "",
-    unicode: true,
-    tokenizer: {
-      root: [
-        [/;.*$/, { token: "comment" }],
-        [numberRegexp, { token: "number" }],
-        // https://github.com/microsoft/monaco-editor/issues/5026
-        [/"/, { token: "string", next: "@string", /*nextEmbedded: 'markdown'*/ }],
-        // [/-/, "operator"],
-        [identifierRegexp, { token: "identifier" }],
-        [delimiterRegexp, { token: "delimiter" }],
-        [operatorRegexp, { token: "operator" }],
-      ],
-      string: [
-        [/[^"]+/, { token: "string" }],
-        [/"/, { /* token: '@rematch',*/ token: "string", next: '@pop', /*nextEmbedded: '@pop'*/ }],
-
-      ],
-    },
-  });
-
-  monaco.languages.setLanguageConfiguration("fluent", {
-    brackets: [
-      ["{", "}"],
-      ["[", "]"],
-      ["(", ")"],
-    ],
-    autoClosingPairs: [
-      { open: "{", close: "}" },
-      { open: "[", close: "]" },
-      { open: "(", close: ")" },
-      { open: '"', close: '"' },
-    ],
-    surroundingPairs: [
-      { open: "{", close: "}" },
-      { open: "[", close: "]" },
-      { open: "(", close: ")", },
-      { open: '"', close: '"' },
-    ],
-    indentationRules: {
-      increaseIndentPattern: /^\s*[\(\{\[]/,
-      decreaseIndentPattern: /^\s*[\)\}\]]/,
-    },
-    // TODO: unify this with RESERVED_SYMBOLS
-    // Word pattern for identifiers (letter-based symbols)
-    wordPattern: /(?:\p{L})[\p{L}\p{N}\-]*/gu,
-    comments: {
-      lineComment: ";",
-    },
-  });
-
-  monaco.editor.defineTheme("fluentTheme", {
-    base: "vs-dark",
-    inherit: true,
-    rules: COLORS,
-    colors: {
-      "editor.foreground": "#" + (COLORS.find(rule => rule.token === "string")?.foreground ?? "FFFFFF"),
-      "editorSuggestWidget.foreground": "#D8D8D8",
-      "editorSuggestWidget.background": "#1C1C1C",
-      "editor.background": "#1C1C1C",
-      "focusBorder": "#FF000000",
-    },
-  });
-
-  monaco.editor.defineTheme("fluentThemeReadOnly", {
-    base: "vs-dark",
-    inherit: true,
-    rules: COLORS,
-    colors: {
-      "editor.foreground": "#" + (COLORS.find(rule => rule.token === "string")?.foreground ?? "FFFFFF"),
-      "editorSuggestWidget.foreground": "#D8D8D8",
-      "editorSuggestWidget.background": "#1C1C1C",
-      "editor.background": "#1C1C1C00",
-      "focusBorder": "#FF000000",
-    },
-  });
-
-  // BQN386 (dzaima/BQN386, APL385-derived, free for any use) supplies the
-  // tacit/APL glyph blocks as one matched set – system monospace fonts miss
-  // ⟜ (U+27DC) and pull its mirror ⊸ (U+22B8) from a different fallback, so
-  // the pair renders at two sizes. Registered via the FontFace API instead of
-  // a CSS @font-face because Bun's bundler fails hot-swapping CSS that
-  // carries a binary asset; /BQN386.ttf is served as a plain static file.
-  // The unicode-range keeps ASCII and letters on the system mono.
-  // relative URL, like mnist.safetensors: GitHub Pages serves the app from
-  // /fluent/, so an absolute /BQN386.ttf would 404 and silently drop the font
-  const symbolFont = new FontFace("BQN386", 'url("BQN386.ttf")', {
-    unicodeRange: "U+2016, U+2190-23FF, U+27C0-27FF, U+2980-29FF, U+2A00-2AFF",
-  })
-  document.fonts.add(symbolFont)
-  // Monaco measures glyph widths at mount – remeasure once the font arrives
-  // or cursor/selection x-positions drift on lines with ⊸ ⟜ ⍨ ⍥. A failed
-  // load (e.g. a dev server started before the /BQN386.ttf route existed)
-  // must degrade to the system fallback fonts, not an error overlay.
-  symbolFont.load()
-    .then(() => monaco.editor.remeasureFonts())
-    .catch(() => console.warn("BQN386 failed to load – symbol glyphs fall back to system fonts"))
-
-  monaco.editor.addKeybindingRule({
-    keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF,
-    command: "editor.action.formatDocument",
-  });
-
-  monaco.editor.addKeybindingRule({
-    keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK,
-    command: 'editor.action.quickCommand',
-    when: 'editorTextFocus'
-  });
-
-  monaco.editor.addKeybindingRule({
-    keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP,
-    command: 'editor.action.quickCommand',
-    when: 'editorTextFocus'
-  });
-
-  monaco.editor.addKeybindingRule({
-    keybinding: monaco.KeyCode.F1,
-    command: '-editor.action.quickCommand',
-    when: 'editorTextFocus'
-  });
-
-  // [symbol, name, detail, filter terms] – rendered into completion items below
-  const SYMBOL_TABLE: [string, string, string, string][] = [
-    // Greek lowercase
-    ["α", "alpha", "Greek lowercase alpha", "alpha a"],
-    ["β", "beta", "Greek lowercase beta", "beta b"],
-    ["γ", "gamma", "Greek lowercase gamma", "gamma g"],
-    ["δ", "delta", "Greek lowercase delta", "delta d"],
-    ["ε", "epsilon", "Greek lowercase epsilon", "epsilon e"],
-    ["ζ", "zeta", "Greek lowercase zeta", "zeta z"],
-    ["η", "eta", "Greek lowercase eta", "eta"],
-    ["θ", "theta", "Greek lowercase theta", "theta"],
-    ["ι", "iota", "Greek lowercase iota", "iota i"],
-    ["κ", "kappa", "Greek lowercase kappa", "kappa k"],
-    ["λ", "lambda", "Greek lowercase lambda", "lambda l"],
-    ["μ", "mu", "Greek lowercase mu", "mu m"],
-    ["ν", "nu", "Greek lowercase nu", "nu n"],
-    ["ξ", "xi", "Greek lowercase xi", "xi x"],
-    ["π", "pi", "Greek lowercase pi", "pi p"],
-    ["ρ", "rho", "Greek lowercase rho", "rho r"],
-    ["σ", "sigma", "Greek lowercase sigma", "sigma s"],
-    ["τ", "tau", "Greek lowercase tau", "tau t"],
-    ["υ", "upsilon", "Greek lowercase upsilon", "upsilon u"],
-    ["φ", "phi", "Greek lowercase phi", "phi f"],
-    ["χ", "chi", "Greek lowercase chi", "chi c"],
-    ["ψ", "psi", "Greek lowercase psi", "psi"],
-    ["ω", "omega", "Greek lowercase omega", "omega o"],
-    // Greek uppercase
-    ["Γ", "Gamma", "Greek uppercase Gamma", "Gamma G"],
-    ["Δ", "Delta", "Greek uppercase Delta", "Delta D"],
-    ["Θ", "Theta", "Greek uppercase Theta", "Theta"],
-    ["Λ", "Lambda", "Greek uppercase Lambda", "Lambda L"],
-    ["Ξ", "Xi", "Greek uppercase Xi", "Xi X"],
-    ["Π", "Pi", "Greek uppercase Pi / Product", "Pi P product"],
-    ["Σ", "Sigma", "Greek uppercase Sigma / Sum", "Sigma S sum summation"],
-    ["Φ", "Phi", "Greek uppercase Phi", "Phi F"],
-    ["Ψ", "Psi", "Greek uppercase Psi", "Psi"],
-    ["Ω", "Omega", "Greek uppercase Omega", "Omega O"],
-    // Calculus & Analysis
-    ["∇", "nabla", "Nabla / Gradient", "nabla gradient grad del"],
-    ["∂", "partial", "Partial derivative", "partial derivative"],
-    ["∫", "integral", "Integral", "integral int"],
-    ["∮", "contour", "Contour integral", "contour integral oint"],
-    ["∬", "double integral", "Double integral", "double integral iint"],
-    ["∞", "infinity", "Infinity", "infinity inf"],
-    ["′", "prime", "Prime (derivative)", "prime derivative"],
-    ["″", "double prime", "Double prime", "double prime pprime"],
-    // Arithmetic operators
-    ["×", "times", "Multiplication / Cross product", "times cross multiply x"],
-    ["÷", "divide", "Division", "divide division"],
-    ["±", "plus-minus", "Plus-minus", "plus minus pm plusminus"],
-    ["∓", "minus-plus", "Minus-plus", "minus plus mp minusplus"],
-    ["√", "sqrt", "Square root", "sqrt square root"],
-    ["∛", "cbrt", "Cube root", "cbrt cube root"],
-    ["·", "dot", "Dot product / Multiplication", "dot cdot multiply"],
-    ["∘", "compose", "Function composition", "compose circ circle"],
-    // Comparison & Relations
-    ["≠", "not equal", "Not equal", "not equal neq !="],
-    ["≈", "approx", "Approximately equal", "approx approximately"],
-    ["≡", "match", "Match – same value, whole", "match equiv equivalent identical same"],
-    ["≢", "not equiv", "Not equivalent", "not equiv nequiv"],
-    ["≤", "leq", "Less than or equal", "leq less equal <="],
-    ["≥", "geq", "Greater than or equal", "geq greater equal >="],
-    ["≪", "much less", "Much less than", "much less ll"],
-    ["≫", "much greater", "Much greater than", "much greater gg"],
-    ["∝", "proportional", "Proportional to", "proportional propto"],
-    ["≅", "congruent", "Congruent / Isomorphic", "congruent cong isomorphic"],
-    ["∼", "similar", "Similar to", "similar sim tilde"],
-    // Set theory
-    ["∈", "element of", "Element of", "element of in"],
-    ["∉", "not element", "Not element of", "not element notin"],
-    ["∋", "contains", "Contains as member", "contains ni"],
-    ["⊂", "subset", "Subset", "subset sub"],
-    ["⊃", "superset", "Superset", "superset sup"],
-    ["⊆", "subseteq", "Subset or equal", "subseteq subset equal"],
-    ["⊇", "supseteq", "Superset or equal", "supseteq superset equal"],
-    ["∪", "union", "Union", "union cup"],
-    ["∩", "intersection", "Intersection", "intersection cap"],
-    ["∅", "empty set", "Empty set", "empty set emptyset null"],
-    ["∖", "set minus", "Set minus", "set minus setminus difference"],
-    // Logic
-    ["∀", "forall", "For all", "forall for all universal"],
-    ["∃", "exists", "There exists", "exists exist existential"],
-    ["∄", "not exists", "There does not exist", "not exists nexists"],
-    ["¬", "not", "Logical not", "not neg lnot"],
-    ["∧", "and", "Logical and", "and land wedge"],
-    ["∨", "or", "Logical or", "or lor vee"],
-    ["⊕", "xor", "Exclusive or / Direct sum", "xor oplus direct sum"],
-    ["⊗", "tensor", "Tensor product", "tensor otimes product"],
-    ["⊥", "perpendicular", "Perpendicular / Bottom", "perpendicular perp bottom false"],
-    ["⊤", "top", "Top / True", "top true tautology"],
-    ["⊢", "proves", "Proves / Entails", "proves vdash entails turnstile"],
-    ["⊨", "models", "Models / Satisfies", "models vDash satisfies"],
-    // Arrows
-    ["→", "right arrow", "Right arrow", "right arrow to ->"],
-    ["←", "left arrow", "Left arrow / Signal write", "left arrow from <- assign write"],
-    ["↔", "bidir arrow", "Bidirectional arrow", "bidir arrow leftrightarrow <->"],
-    ["⇒", "implies", "Implies", "implies Rightarrow =>"],
-    ["⇐", "implied by", "Implied by", "implied by Leftarrow <="],
-    ["⇔", "iff", "If and only if", "iff Leftrightarrow biconditional <=>"],
-    ["↑", "up arrow", "Up arrow", "up arrow uparrow"],
-    ["↓", "down arrow", "Down arrow", "down arrow downarrow"],
-    ["↦", "maps to", "Maps to", "maps to mapsto"],
-    ["⟳", "loop", "Loop / Repeat", "loop repeat cycle"],
-    ["⍣", "power", "Power / Inverse / Until", "power iterate repeat star inverse until fixpoint"],
-    ["⍢", "under", "Under – do it in g's world", "under dual conjugate"],
-    // Number sets
-    ["ℕ", "naturals", "Natural numbers", "naturals N natural numbers"],
-    ["ℤ", "integers", "Integers", "integers Z integer numbers"],
-    ["ℚ", "rationals", "Rational numbers", "rationals Q rational numbers"],
-    ["ℝ", "reals", "Real numbers", "reals R real numbers"],
-    ["ℂ", "complex", "Complex numbers", "complex C complex numbers"],
-    // Other useful symbols
-    ["°", "degree", "Degree", "degree deg"],
-    ["‖", "norm", "Norm", "norm parallel Vert"],
-    ["∥", "parallel", "Parallel", "parallel"],
-    ["⟨", "langle", "Left angle bracket", "langle left angle bracket"],
-    ["⟩", "rangle", "Right angle bracket", "rangle right angle bracket"],
-    ["⌊", "floor", "Floor (left)", "floor lfloor"],
-    ["⌋", "floor", "Floor (right)", "floor rfloor"],
-    ["⌈", "ceil", "Ceiling (left)", "ceil ceiling lceil"],
-    ["⌉", "ceil", "Ceiling (right)", "ceil ceiling rceil"],
-    ["ℏ", "hbar", "Reduced Planck constant", "hbar planck"],
-    ["ℓ", "ell", "Script small l", "ell script l"],
-    ["℘", "wp", "Weierstrass p", "wp weierstrass"],
-    ["ℵ", "aleph", "Aleph (cardinal)", "aleph cardinal"],
-  ]
-  const symbolSuggestions = SYMBOL_TABLE.map(([symbol, name, detail, filterText]) => ({
-    label: `${symbol} ${name}`,
-    insertText: symbol,
-    detail,
-    filterText,
-  }));
-  registeredProviders.push(monaco.languages.registerCompletionItemProvider('fluent', {
-    provideCompletionItems: (model, position) => {
-      const word = model.getWordUntilPosition(position);
-
-      const range = {
-        startLineNumber: position.lineNumber,
-        endLineNumber: position.lineNumber,
-        startColumn: word.startColumn,
-        endColumn: word.endColumn,
-      };
-
-      const symbolSuggestionItems = symbolSuggestions.map(item => ({
-        label: item.label,
-        kind: monaco.languages.CompletionItemKind.Text,
-        insertText: item.insertText,
-        detail: item.detail,
-        range,
-        filterText: item.filterText,
-      }));
-
-      // Every name in scope – the canonical binding (SignalOnce) and its
-      // prelude alias (once) both list. The doc lives on the value, so aliases
-      // share it: both cards read the same because they resolve to one object.
-      return ({
-        suggestions: [
-          ...symbolSuggestionItems,
-          ...[...environmentNames.peek()].map(([key, { detail, doc }]) => ({
-            label: key,
-            kind: monaco.languages.CompletionItemKind.Function,
-            insertText: key,
-            documentation: doc ? { value: docCardBody(doc) } : `Function: ${key}`,
-            detail,
-            range,
-            filterText: key,
-          })),
-        ]
-      })
-    }
-  }));
+for (const p of registeredProviders.splice(0)) {
+  try { p.dispose() } catch { /* already gone */ }
 }
+
+monaco.languages.register({ id: "fluent" });
+
+registeredProviders.push(monaco.languages.registerHoverProvider("fluent", {
+  provideHover(model, position) {
+    const meta = metaFor(fluentTokenAt(model, position))
+    return meta ? { contents: [{ value: docCard(meta) }] } : null
+  },
+}));
+
+monaco.languages.setMonarchTokensProvider("fluent", {
+  defaultToken: "",
+  unicode: true,
+  tokenizer: {
+    root: [
+      [/;.*$/, { token: "comment" }],
+      [numberRegexp, { token: "number" }],
+      // https://github.com/microsoft/monaco-editor/issues/5026
+      [/"/, { token: "string", next: "@string", /*nextEmbedded: 'markdown'*/ }],
+      // [/-/, "operator"],
+      [identifierRegexp, { token: "identifier" }],
+      [delimiterRegexp, { token: "delimiter" }],
+      [operatorRegexp, { token: "operator" }],
+    ],
+    string: [
+      [/[^"]+/, { token: "string" }],
+      [/"/, { token: "string", next: "@pop" }],
+    ],
+  },
+});
+
+monaco.languages.setLanguageConfiguration("fluent", {
+  brackets: [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+  ],
+  autoClosingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")" },
+    { open: '"', close: '"' },
+  ],
+  surroundingPairs: [
+    { open: "{", close: "}" },
+    { open: "[", close: "]" },
+    { open: "(", close: ")", },
+    { open: '"', close: '"' },
+  ],
+  indentationRules: {
+    increaseIndentPattern: /^\s*[\(\{\[]/,
+    decreaseIndentPattern: /^\s*[\)\}\]]/,
+  },
+  // TODO: unify this with RESERVED_SYMBOLS
+  // Word pattern for identifiers (letter-based symbols)
+  wordPattern: /(?:\p{L})[\p{L}\p{N}\-]*/gu,
+  comments: {
+    lineComment: ";",
+  },
+});
+
+monaco.editor.defineTheme("fluentTheme", {
+  base: "vs-dark",
+  inherit: true,
+  rules: COLORS,
+  colors: {
+    "editor.foreground": "#" + (COLORS.find(rule => rule.token === "string")?.foreground ?? "FFFFFF"),
+    "editorSuggestWidget.foreground": "#D8D8D8",
+    "editorSuggestWidget.background": "#1C1C1C",
+    "editor.background": "#1C1C1C",
+    "focusBorder": "#FF000000",
+  },
+});
+
+monaco.editor.defineTheme("fluentThemeReadOnly", {
+  base: "vs-dark",
+  inherit: true,
+  rules: COLORS,
+  colors: {
+    "editor.foreground": "#" + (COLORS.find(rule => rule.token === "string")?.foreground ?? "FFFFFF"),
+    "editorSuggestWidget.foreground": "#D8D8D8",
+    "editorSuggestWidget.background": "#1C1C1C",
+    "editor.background": "#1C1C1C00",
+    "focusBorder": "#FF000000",
+  },
+});
+
+// BQN386 (dzaima/BQN386, APL385-derived, free for any use) supplies the
+// tacit/APL glyph blocks as one matched set – system monospace fonts miss
+// ⟜ (U+27DC) and pull its mirror ⊸ (U+22B8) from a different fallback, so
+// the pair renders at two sizes. Registered via the FontFace API instead of
+// a CSS @font-face because Bun's bundler fails hot-swapping CSS that
+// carries a binary asset; /BQN386.ttf is served as a plain static file.
+// The unicode-range keeps ASCII and letters on the system mono.
+// relative URL, like mnist.safetensors: GitHub Pages serves the app from
+// /fluent/, so an absolute /BQN386.ttf would 404 and silently drop the font
+const symbolFont = new FontFace("BQN386", 'url("BQN386.ttf")', {
+  unicodeRange: "U+2016, U+2190-23FF, U+27C0-27FF, U+2980-29FF, U+2A00-2AFF",
+})
+document.fonts.add(symbolFont)
+// Monaco measures glyph widths at mount – remeasure once the font arrives
+// or cursor/selection x-positions drift on lines with ⊸ ⟜ ⍨ ⍥. A failed
+// load (e.g. a dev server started before the /BQN386.ttf route existed)
+// must degrade to the system fallback fonts, not an error overlay.
+symbolFont.load()
+  .then(() => monaco.editor.remeasureFonts())
+  .catch(() => console.warn("BQN386 failed to load – symbol glyphs fall back to system fonts"))
+
+monaco.editor.addKeybindingRule({
+  keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyF,
+  command: "editor.action.formatDocument",
+});
+
+monaco.editor.addKeybindingRule({
+  keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK,
+  command: 'editor.action.quickCommand',
+  when: 'editorTextFocus'
+});
+
+monaco.editor.addKeybindingRule({
+  keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP,
+  command: 'editor.action.quickCommand',
+  when: 'editorTextFocus'
+});
+
+monaco.editor.addKeybindingRule({
+  keybinding: monaco.KeyCode.F1,
+  command: '-editor.action.quickCommand',
+  when: 'editorTextFocus'
+});
+
+// [symbol, name, detail, filter terms] – rendered into completion items below
+const SYMBOL_TABLE: [string, string, string, string][] = [
+  // Greek lowercase
+  ["α", "alpha", "Greek lowercase alpha", "alpha a"],
+  ["β", "beta", "Greek lowercase beta", "beta b"],
+  ["γ", "gamma", "Greek lowercase gamma", "gamma g"],
+  ["δ", "delta", "Greek lowercase delta", "delta d"],
+  ["ε", "epsilon", "Greek lowercase epsilon", "epsilon e"],
+  ["ζ", "zeta", "Greek lowercase zeta", "zeta z"],
+  ["η", "eta", "Greek lowercase eta", "eta"],
+  ["θ", "theta", "Greek lowercase theta", "theta"],
+  ["ι", "iota", "Greek lowercase iota", "iota i"],
+  ["κ", "kappa", "Greek lowercase kappa", "kappa k"],
+  ["λ", "lambda", "Greek lowercase lambda", "lambda l"],
+  ["μ", "mu", "Greek lowercase mu", "mu m"],
+  ["ν", "nu", "Greek lowercase nu", "nu n"],
+  ["ξ", "xi", "Greek lowercase xi", "xi x"],
+  ["π", "pi", "Greek lowercase pi", "pi p"],
+  ["ρ", "rho", "Greek lowercase rho", "rho r"],
+  ["σ", "sigma", "Greek lowercase sigma", "sigma s"],
+  ["τ", "tau", "Greek lowercase tau", "tau t"],
+  ["υ", "upsilon", "Greek lowercase upsilon", "upsilon u"],
+  ["φ", "phi", "Greek lowercase phi", "phi f"],
+  ["χ", "chi", "Greek lowercase chi", "chi c"],
+  ["ψ", "psi", "Greek lowercase psi", "psi"],
+  ["ω", "omega", "Greek lowercase omega", "omega o"],
+  // Greek uppercase
+  ["Γ", "Gamma", "Greek uppercase Gamma", "Gamma G"],
+  ["Δ", "Delta", "Greek uppercase Delta", "Delta D"],
+  ["Θ", "Theta", "Greek uppercase Theta", "Theta"],
+  ["Λ", "Lambda", "Greek uppercase Lambda", "Lambda L"],
+  ["Ξ", "Xi", "Greek uppercase Xi", "Xi X"],
+  ["Π", "Pi", "Greek uppercase Pi / Product", "Pi P product"],
+  ["Σ", "Sigma", "Greek uppercase Sigma / Sum", "Sigma S sum summation"],
+  ["Φ", "Phi", "Greek uppercase Phi", "Phi F"],
+  ["Ψ", "Psi", "Greek uppercase Psi", "Psi"],
+  ["Ω", "Omega", "Greek uppercase Omega", "Omega O"],
+  // Calculus & Analysis
+  ["∇", "nabla", "Nabla / Gradient", "nabla gradient grad del"],
+  ["∂", "partial", "Partial derivative", "partial derivative"],
+  ["∫", "integral", "Integral", "integral int"],
+  ["∮", "contour", "Contour integral", "contour integral oint"],
+  ["∬", "double integral", "Double integral", "double integral iint"],
+  ["∞", "infinity", "Infinity", "infinity inf"],
+  ["′", "prime", "Prime (derivative)", "prime derivative"],
+  ["″", "double prime", "Double prime", "double prime pprime"],
+  // Arithmetic operators
+  ["×", "times", "Multiplication / Cross product", "times cross multiply x"],
+  ["÷", "divide", "Division", "divide division"],
+  ["±", "plus-minus", "Plus-minus", "plus minus pm plusminus"],
+  ["∓", "minus-plus", "Minus-plus", "minus plus mp minusplus"],
+  ["√", "sqrt", "Square root", "sqrt square root"],
+  ["∛", "cbrt", "Cube root", "cbrt cube root"],
+  ["·", "dot", "Dot product / Multiplication", "dot cdot multiply"],
+  ["∘", "compose", "Function composition", "compose circ circle"],
+  // Comparison & Relations
+  ["≠", "not equal", "Not equal", "not equal neq !="],
+  ["≈", "approx", "Approximately equal", "approx approximately"],
+  ["≡", "match", "Match – same value, whole", "match equiv equivalent identical same"],
+  ["≢", "not equiv", "Not equivalent", "not equiv nequiv"],
+  ["≤", "leq", "Less than or equal", "leq less equal <="],
+  ["≥", "geq", "Greater than or equal", "geq greater equal >="],
+  ["≪", "much less", "Much less than", "much less ll"],
+  ["≫", "much greater", "Much greater than", "much greater gg"],
+  ["∝", "proportional", "Proportional to", "proportional propto"],
+  ["≅", "congruent", "Congruent / Isomorphic", "congruent cong isomorphic"],
+  ["∼", "similar", "Similar to", "similar sim tilde"],
+  // Set theory
+  ["∈", "element of", "Element of", "element of in"],
+  ["∉", "not element", "Not element of", "not element notin"],
+  ["∋", "contains", "Contains as member", "contains ni"],
+  ["⊂", "subset", "Subset", "subset sub"],
+  ["⊃", "superset", "Superset", "superset sup"],
+  ["⊆", "subseteq", "Subset or equal", "subseteq subset equal"],
+  ["⊇", "supseteq", "Superset or equal", "supseteq superset equal"],
+  ["∪", "union", "Union", "union cup"],
+  ["∩", "intersection", "Intersection", "intersection cap"],
+  ["∅", "empty set", "Empty set", "empty set emptyset null"],
+  ["∖", "set minus", "Set minus", "set minus setminus difference"],
+  // Logic
+  ["∀", "forall", "For all", "forall for all universal"],
+  ["∃", "exists", "There exists", "exists exist existential"],
+  ["∄", "not exists", "There does not exist", "not exists nexists"],
+  ["¬", "not", "Logical not", "not neg lnot"],
+  ["∧", "and", "Logical and", "and land wedge"],
+  ["∨", "or", "Logical or", "or lor vee"],
+  ["⊕", "xor", "Exclusive or / Direct sum", "xor oplus direct sum"],
+  ["⊗", "tensor", "Tensor product", "tensor otimes product"],
+  ["⊥", "perpendicular", "Perpendicular / Bottom", "perpendicular perp bottom false"],
+  ["⊤", "top", "Top / True", "top true tautology"],
+  ["⊢", "proves", "Proves / Entails", "proves vdash entails turnstile"],
+  ["⊨", "models", "Models / Satisfies", "models vDash satisfies"],
+  // Arrows
+  ["→", "right arrow", "Right arrow", "right arrow to ->"],
+  ["←", "left arrow", "Left arrow / Signal write", "left arrow from <- assign write"],
+  ["↔", "bidir arrow", "Bidirectional arrow", "bidir arrow leftrightarrow <->"],
+  ["⇒", "implies", "Implies", "implies Rightarrow =>"],
+  ["⇐", "implied by", "Implied by", "implied by Leftarrow <="],
+  ["⇔", "iff", "If and only if", "iff Leftrightarrow biconditional <=>"],
+  ["↑", "up arrow", "Up arrow", "up arrow uparrow"],
+  ["↓", "down arrow", "Down arrow", "down arrow downarrow"],
+  ["↦", "maps to", "Maps to", "maps to mapsto"],
+  ["⟳", "loop", "Loop / Repeat", "loop repeat cycle"],
+  ["⍣", "power", "Power / Inverse / Until", "power iterate repeat star inverse until fixpoint"],
+  ["⍢", "under", "Under – do it in g's world", "under dual conjugate"],
+  // Number sets
+  ["ℕ", "naturals", "Natural numbers", "naturals N natural numbers"],
+  ["ℤ", "integers", "Integers", "integers Z integer numbers"],
+  ["ℚ", "rationals", "Rational numbers", "rationals Q rational numbers"],
+  ["ℝ", "reals", "Real numbers", "reals R real numbers"],
+  ["ℂ", "complex", "Complex numbers", "complex C complex numbers"],
+  // Other useful symbols
+  ["°", "degree", "Degree", "degree deg"],
+  ["‖", "norm", "Norm", "norm parallel Vert"],
+  ["∥", "parallel", "Parallel", "parallel"],
+  ["⟨", "langle", "Left angle bracket", "langle left angle bracket"],
+  ["⟩", "rangle", "Right angle bracket", "rangle right angle bracket"],
+  ["⌊", "floor", "Floor (left)", "floor lfloor"],
+  ["⌋", "floor", "Floor (right)", "floor rfloor"],
+  ["⌈", "ceil", "Ceiling (left)", "ceil ceiling lceil"],
+  ["⌉", "ceil", "Ceiling (right)", "ceil ceiling rceil"],
+  ["ℏ", "hbar", "Reduced Planck constant", "hbar planck"],
+  ["ℓ", "ell", "Script small l", "ell script l"],
+  ["℘", "wp", "Weierstrass p", "wp weierstrass"],
+  ["ℵ", "aleph", "Aleph (cardinal)", "aleph cardinal"],
+]
+const symbolSuggestions = SYMBOL_TABLE.map(([symbol, name, detail, filterText]) => ({
+  label: `${symbol} ${name}`,
+  insertText: symbol,
+  detail,
+  filterText,
+}));
+registeredProviders.push(monaco.languages.registerCompletionItemProvider('fluent', {
+  provideCompletionItems: (model, position) => {
+    const word = model.getWordUntilPosition(position);
+
+    const range = {
+      startLineNumber: position.lineNumber,
+      endLineNumber: position.lineNumber,
+      startColumn: word.startColumn,
+      endColumn: word.endColumn,
+    };
+
+    const symbolSuggestionItems = symbolSuggestions.map(item => ({
+      label: item.label,
+      kind: monaco.languages.CompletionItemKind.Text,
+      insertText: item.insertText,
+      detail: item.detail,
+      range,
+      filterText: item.filterText,
+    }));
+
+    // Every name in scope – the canonical binding (SignalOnce) and its
+    // prelude alias (once) both list. The doc lives on the value, so aliases
+    // share it: both cards read the same because they resolve to one object.
+    return ({
+      suggestions: [
+        ...symbolSuggestionItems,
+        ...[...environmentNames.peek()].map(([key, { detail, doc }]) => ({
+          label: key,
+          kind: monaco.languages.CompletionItemKind.Function,
+          insertText: key,
+          documentation: doc ? { value: docCardBody(doc) } : `Function: ${key}`,
+          detail,
+          range,
+          filterText: key,
+        })),
+      ]
+    })
+  }
+}));
 
 const editorOnMount: OnMount = (editor, monaco) => {
   // Create command to access quick input service

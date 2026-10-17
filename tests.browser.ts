@@ -61,6 +61,23 @@ test("typing re-renders the editor, not the output", async ({ page }) => {
   expect(await page.evaluate(() => (window as unknown as { __outputRenders: number }).__outputRenders)).toBe(before)
 })
 
+test("the worker parses, its errors mark the editor, and the page bundles no parser", async ({ page }) => {
+  // regression: the page imported language.ts – ohm, the grammar, the engine – to parse
+  // every keystroke itself (29 ms a key on error-diffusion)
+  await open(page, "1 + (")
+  await expect(page.locator(".monaco-editor .squiggly-error").first()).toBeAttached()
+  const src = await page.locator("script[type=module][src]").first().getAttribute("src")
+  expect(await (await page.request.get(src!)).text()).not.toContain("ListOf<Expr")
+})
+
+test("an escaped quote doesn't end a string's highlighting", async ({ page }) => {
+  await open(page, '"a \\" b" + 1')
+  // the `1` after the string is a number, not more string
+  const tokens = page.locator(".monaco-editor .view-line span span")
+  await expect.poll(() => tokens.evaluateAll((spans) => spans.map((s) => [s.textContent?.trim(), getComputedStyle(s).color])))
+    .toContainEqual(["1", "rgb(10, 129, 239)"])
+})
+
 test("a typo'd axis renders an Error, not a silently wrong number", async ({ page }) => {
   await open(page, "sum([[1, 2], [3, 4]], axs)")
   await expect(panel(page)).toContainText("expected a tensor, got unbound symbol 'axs'")

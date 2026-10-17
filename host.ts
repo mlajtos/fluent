@@ -6,7 +6,7 @@
 
 import { Signal, computed, effect, untracked } from "@preact/signals-core"
 import {
-  CodeParse, evaluateSyntaxTreeNode, CodeEvaluate, createScope, DefaultEnvironment,
+  CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate, createScope, DefaultEnvironment,
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, getOrigin, SignalCreate, SignalUpdate, StringLiteral,
   engine, FluentVariable, isTensor, TensorScalarLive, PRELUDE,
@@ -705,6 +705,12 @@ const receive = (m: ToWorker) => {
     case "code": {
       source = m.source
       scheduleRun()
+      return
+    }
+    case "parse": {
+      const d = documentHash(m.source)
+      const errors = getParseErrors(m.source).map(({ message, start, end }) => ({ message, o: { s: [start.line, start.column], e: [end.line, end.column], d } as Where }))
+      post({ t: "parsed", d, errors })
       return
     }
     case "set": {
