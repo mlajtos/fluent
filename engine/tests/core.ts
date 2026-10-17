@@ -66,6 +66,13 @@ export default async function (): Promise<{ fails: number }> {
     const Wd = i2.get("W")!.data;
     check("gather values", [0, 1, 2, 3].every((c) => tbl[c] === Wd[2 * 4 + c]));
   }
+  { // −0 is a constant of its own: 1 ÷ (p·0) is ∞, 1 ÷ (p·−0) is −∞
+    const p = buffer("p", [2]), at = new Map([["p", T(Float32Array.of(1, 2), [2])]]);
+    for (const z of [0, -0]) {
+      const g = recip(mul(p, konst(z))), a = (await realize(cpu, g, at)).data, b = gpu ? (await realize(gpu, g, at)).data : a;
+      check(`parity: 1 ÷ (p·${Object.is(z, -0) ? "−0" : "0"})`, a[0] === 1 / z && b[0] === 1 / z, `cpu ${a[0]} gpu ${b[0]}`);
+    }
+  }
   // framed matmul vs looped reference
   {
     const B = 3, m = 4, k = 5, n = 6;
@@ -216,7 +223,8 @@ export default async function (): Promise<{ fails: number }> {
 
   // ── 5. the algebra says hello ─────────────────────────────────────────────────────
   check("provablyEq: x·(2·3) ≡ 6·x", provablyEq((t) => mul(t, mul(konst(2), konst(3))), (t) => mul(t, konst(6)), [[M, N]]));
-  check("provablyEq: x·1+0 ≡ x", provablyEq((t) => add(mul(t, konst(1)), konst(0)), (t) => t, [[M, N]]));
+  check("provablyEq: x·1+(−0) ≡ x", provablyEq((t) => add(mul(t, konst(1)), konst(-0)), (t) => t, [[M, N]]));
+  check("provablyEq: x+0 ≢ x (negative: −0 + 0 is 0)", !provablyEq((t) => add(t, konst(0)), (t) => t, [[M, N]]));
   check("provablyEq: rmsNorm ≡ rmsNorm∘reshape", provablyEq((t, w) => rmsNorm(t, w), (t, w) => rmsNorm(reshape(t, [M, N]), w), [[M, N], [N]]));
   check("provablyEq: x·2 ≢ x·3 (negative)", !provablyEq((t) => mul(t, konst(2)), (t) => mul(t, konst(3)), [[M, N]]));
 

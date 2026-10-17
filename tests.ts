@@ -1828,6 +1828,15 @@ describe("the engine", () => {
     expect(run("[1, 2, 3, 4, 5, 6] ⍴ [-2, -3]")).toBeInstanceOf(Error)
     expect(value("[1, 2, 3, 4, 5, 6] ⍴ [-1, 2]")).toEqual([[1, 2], [3, 4], [5, 6]])
   })
+  test("−0 is a constant of its own, whatever was compiled before", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { CPU } = await import("./engine/cpu.ts")
+    const x = ir.buffer("x", [2]), inputs = new Map([["x", { data: Float32Array.of(1, 2), shape: [2] }]])
+    const cpu = new CPU(), at = (z: number) => cpu.realizeSync([ir.recip(ir.mul(x, ir.konst(z)))], inputs)[0]!.data[0]
+    expect([at(0), at(-0)]).toEqual([Infinity, -Infinity])
+    // x + 0 is not x where x is −0
+    expect(Object.is(cpu.realizeSync([ir.add(ir.mul(x, ir.konst(-0)), ir.konst(0))], inputs)[0]!.data[0], 0)).toBe(true)
+  })
 })
 
 describe("doc cards", () => {

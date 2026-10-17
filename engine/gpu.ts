@@ -22,6 +22,7 @@ fn inff() -> f32 { var b = 0x7f800000u; return bitcast<f32>(b); }
 fn maxf(a: f32, b: f32) -> f32 { return select(max(a, b), nanf(), (bitcast<u32>(a) & 0x7fffffffu) > 0x7f800000u || (bitcast<u32>(b) & 0x7fffffffu) > 0x7f800000u); }`;
 const wgslF32 = (v: number): string => {
   if (!Number.isFinite(v)) return v > 0 ? "inff()" : v < 0 ? "(-inff())" : "nanf()";
+  if (Object.is(v, -0)) return "-0.0";
   const s = v.toString().replace("e+", "e");
   return /[.e]/.test(s) ? s : s + ".0";
 };

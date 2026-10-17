@@ -17,12 +17,14 @@ import { graphRewriteMany, type Rule } from "./rewrite.ts";
 // ---- simplify: the generators' law table (EXACT only — bit-preserving) --------
 const scalarOf = (u: UOp): number | null =>
   u.op === "CONSTANT" && u.shape.length === 0 ? (u.arg as Float32Array)[0]! : u.op === "BROADCAST" ? scalarOf(u.src[0]!) : null;
+const is = (u: UOp, v: number): boolean => Object.is(scalarOf(u), v);
 const SIMPLIFY: Rule[] = [
   (u) => (u.op === "DETACH" ? u.src[0]! : null),                              // ∇ captured this already; identity forward
-  (u) => (u.op === "MULTIPLY" && scalarOf(u.src[0]!) === 1 ? u.src[1]! : null),
-  (u) => (u.op === "MULTIPLY" && scalarOf(u.src[1]!) === 1 ? u.src[0]! : null),
-  (u) => (u.op === "ADD" && scalarOf(u.src[0]!) === 0 ? u.src[1]! : null),
-  (u) => (u.op === "ADD" && scalarOf(u.src[1]!) === 0 ? u.src[0]! : null),
+  (u) => (u.op === "MULTIPLY" && is(u.src[0]!, 1) ? u.src[1]! : null),
+  (u) => (u.op === "MULTIPLY" && is(u.src[1]!, 1) ? u.src[0]! : null),
+  // x + −0 is x for every x; x + 0 is not where x is −0
+  (u) => (u.op === "ADD" && is(u.src[0]!, -0) ? u.src[1]! : null),
+  (u) => (u.op === "ADD" && is(u.src[1]!, -0) ? u.src[0]! : null),
   (u) => ((u.op === "ADD" || u.op === "MULTIPLY") && u.src[0]!.op === "CONSTANT" && u.src[1]!.op === "CONSTANT" && !u.shape.length
     ? konst(u.op === "ADD" ? (u.src[0]!.arg as Float32Array)[0]! + (u.src[1]!.arg as Float32Array)[0]! : (u.src[0]!.arg as Float32Array)[0]! * (u.src[1]!.arg as Float32Array)[0]!) : null),
   // the view laws — pure indexing, so they may run in the default (bit-exact) pipeline
@@ -327,7 +329,7 @@ export function canonical(roots: UOp[]): { key: string; leaves: UOp[] } {
       if (!expanded && u.src.length) { stack.push([u, true]); for (let i = u.src.length - 1; i >= 0; i--) if (!index.has(u.src[i]!.id)) stack.push([u.src[i]!, false]); continue; }
       let part: string;
       if (u.op === "BUFFER" || (u.op === "CONSTANT" && u.shape.length)) { part = `L${leaves.length}[${u.shape}]`; leaves.push(u); }
-      else if (u.op === "CONSTANT") part = `C${(u.arg as Float32Array)[0]}`;
+      else if (u.op === "CONSTANT") { const v = (u.arg as Float32Array)[0]!; part = `C${Object.is(v, -0) ? "-0" : v}`; }
       else part = `${u.op}${u.arg === null || u.arg === undefined ? "" : JSON.stringify(u.arg)}[${u.shape}](${u.src.map((x) => index.get(x.id)).join(",")})`;
       index.set(u.id, parts.length); parts.push(part);
     }
