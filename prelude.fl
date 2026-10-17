@@ -791,14 +791,14 @@ CodeEvaluate: doc(CodeEvaluate, "CodeEvaluate(code)", "Run Fluent source text �
 FunctionArity: doc(FunctionArity, "FunctionArity((two, one))", "One function from two, chosen by how many arguments it gets: the first takes two, the second one – how + is add and abs.", "FunctionArity(({ x, y | x + y }, { x | -x }))(5) = -5"),
 FunctionNoAutoLift: doc(FunctionNoAutoLift, "FunctionNoAutoLift(f)", "f, marked so a signal passed to it arrives as the signal itself – not its value, with the call re-run on every change.", "FunctionNoAutoLift({ s | s })"),
 doc: FunctionDoc: doc(doc, "doc(f, signature, description, example)", "Attach a doc card to f – what hover shows – and give f back.", "double: doc({ x | x × 2 }, \"double(x)\", \"x twice\", \"double(2) = 4\")"),
-SignalCreate: doc(SignalCreate, "SignalCreate(value)", "A signal holding value – read it with s(), write it with s(v). $(value) is the short form.", "s: SignalCreate(1), s()"),
-SignalComputed: doc(SignalComputed, "SignalComputed(thunk)", "A signal whose value is the thunk's, computed again whenever a signal the thunk reads changes. $({ … }) is the short form.", "a: $1, b: SignalComputed({ a() × 10 }), b()"),
-SignalRead: doc(SignalRead, "SignalRead(s)", "A signal's value – the same as s().", "s: $3, SignalRead(s)"),
-SignalUpdate: doc(SignalUpdate, "SignalUpdate(s, v)", "Write v into the signal s – the same as s(v).", "s: $3, SignalUpdate(s, 4), s()"),
+SignalCreate: doc(SignalCreate, "SignalCreate(value)", "A signal holding value – read it with s(), write it with s(v). $(value) is the short form.", "s: SignalCreate(1), s() = 1"),
+SignalComputed: doc(SignalComputed, "SignalComputed(thunk)", "A signal whose value is the thunk's, computed again whenever a signal the thunk reads changes. $({ … }) is the short form.", "a: $1, b: SignalComputed({ a() × 10 }), b() = 10"),
+SignalRead: doc(SignalRead, "SignalRead(s)", "A signal's value – the same as s().", "s: $3, SignalRead(s) = 3"),
+SignalUpdate: doc(SignalUpdate, "SignalUpdate(s, v)", "Write v into the signal s – the same as s(v).", "s: $3, SignalUpdate(s, 4), s() = 4"),
 SignalEffect: doc(SignalEffect, "SignalEffect(thunk)", "Run the thunk now, and again whenever a signal it reads changes – for side effects.", "SignalEffect({ ◌ })"),
 
 ; Misc
-($): doc(Reactive, "$value", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $0.5, x^2"),
+($): doc(Reactive, "$value", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $0.5, x^2 = 0.25"),
 ; ← is defined here in the prelude, so its doc lives here too
 (←): SignalWrite: doc(FunctionNoAutoLift({ s, v | s(v) }), "signal← value", "Write a value into a signal – same as signal(value), but reads left-to-right. Chains like any spaced operator: parenthesize compound values, s ← (a + b).", "x: $1, x← 9, x() = 9"),
 once: doc(SignalOnce, "once(signal)", "Read a signal's current value without subscribing to it.", "x: $4, once(x) + 1 = 5"),
