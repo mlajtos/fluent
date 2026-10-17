@@ -854,6 +854,8 @@ describe("prelude list helpers", () => {
     // which choked on the scalar reductions ({}); (f ⍤ 1) over the windows is correct
     expect(value("stencil(3, Σ, [1, 2, 3, 4, 5])")).toEqual([6, 9, 12])
     expect(value("stencil(2, μ, [2, 4, 6, 8])")).toEqual([3, 5, 7])
+    // along the leading axis at any rank: each window of rows reduces to a row
+    expect(value("stencil(2, Σ, [[1, 2], [3, 4], [5, 6]])")).toEqual([[4, 6], [8, 10]])
   })
 })
 
@@ -1341,6 +1343,7 @@ describe("adversarial edge cases", () => {
     expect(value("sort(5)")).toBe(5)     // sorting one element is that element
     expect(value("⍋(5)")).toBe(0)        // its grade-up index is 0
     expect(value("softmax(5)")).toBe(1)  // softmax over a single logit is 1
+    expect(value("logSoftmax(5)")).toBe(0)
   })
 })
 
