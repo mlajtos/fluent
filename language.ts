@@ -778,6 +778,7 @@ let differentiating = false
 const operand = (v: any): any => {
   if (v instanceof FluentVariable) { return v.current }
   if (v == null) { throw new Error("expected a tensor, got ◌") }
+  if (v instanceof Signal) { throw new Error("expected a tensor, got a signal – read its value with s()") }
   if (typeof v === "symbol") {
     // an unbound name reached a numeric op (e.g. `1 * x`): fail with the name. The bare
     // symbol still flows through as a value elsewhere – only coercion errors.
@@ -1419,6 +1420,8 @@ const SignalUpdate = <T,>(s: Signal<T>, v: T) => {
 
   return new Error(`'SignalUpdate': ${s} is not a signal`)
 }
+setMeta(SignalRead, { noAutoLift: true })
+setMeta(SignalUpdate, { noAutoLift: true })
 
 const SignalComputed = computed
 
@@ -1470,9 +1473,16 @@ const FunctionPipe = function (this: CurrentScope, a: Value, b: Value): Value {
   return safeApply(b, arg, this)
 }
 
-const FunctionNoAutoLift = (fn: Function) => {
-  setMeta(fn, { noAutoLift: true })
-  return fn
+// f, as a new function whose signal arguments arrive as the signals themselves – f
+// itself, which every evaluation shares, stays as it is
+const FunctionNoAutoLift = (fn: Value) => {
+  if (!isFn(fn)) { return new Error("`FunctionNoAutoLift(f)`: f must be a function") }
+  const wrapper = function (this: CurrentScope, ...args: Value[]) { return fn.apply(this, args) }
+  wrapper.toString = () => String(fn)
+  setMeta(wrapper, { ...getMeta(fn), noAutoLift: true })
+  const origin = getOrigin(fn)
+  if (origin) { setOrigin(wrapper, origin) }
+  return wrapper
 }
 setMeta(FunctionNoAutoLift, { noAutoLift: true })
 

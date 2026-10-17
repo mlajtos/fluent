@@ -619,6 +619,15 @@ describe("language fixes", () => {
     expect(value("when([0, 0 ÷ 0, 2], { 1 })")).toBe(1)
     expect(run("guard([0 ÷ 0], { 1 })()")).toBeInstanceOf(NoMatch)
   })
+  test("FunctionNoAutoLift marks a new function, not the one it is given", () => {
+    run("FunctionNoAutoLift(sin)")
+    expect(value("sin($(0))")).toBe(0)
+    expect(message("FunctionNoAutoLift(sin)($(0))")).toContain("signal")
+  })
+  test("SignalRead and SignalUpdate take the signal itself", () => {
+    expect(value("s: $3, SignalRead(s)")).toBe(3)
+    expect(value("s: $3, SignalUpdate(s, 4), s()")).toBe(4)
+  })
   test("indexing an unknown name names it", () => {
     expect(message("a_0")).toContain("unknown name: a")
   })
