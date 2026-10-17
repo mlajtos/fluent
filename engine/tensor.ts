@@ -12,7 +12,7 @@ export type Like = Tensor | number | boolean | readonly unknown[];
 
 // A·B at any rank: Σₖ A[…,i,k]·B[…,k,j] over the view algebra; a frame on either operand
 // maps the cell over it, and an unframed operand is shared across the frame
-const cellMatmul = (A: UOp, B: UOp): UOp => {
+export const cellMatmul = (A: UOp, B: UOp): UOp => {
   const as = A.shape, bs = B.shape;
   if (as.length < 2 || bs.length < 2) throw new Error(`matmul: rank ≥ 2 operands, got [${as}]·[${bs}]`);
   const [m, k] = as.slice(-2), [k2, n] = bs.slice(-2);
@@ -32,19 +32,13 @@ const cellMatmul = (A: UOp, B: UOp): UOp => {
 // long as that leaf. A small graph over host data runs on the CPU — the metadata a program
 // computes (axes, shapes, index tables) never waits on the GPU; the work, not the size of
 // the inputs, decides: small weights still make a large training step.
-interface Device {
-  computeSync(roots: UOp[], resolve: (name: string) => GPUBuffer | undefined): GPUBuffer[];
-  readSync(b: GPUBuffer, n: number): Float32Array;
-  readAsync(b: GPUBuffer, n: number): Promise<Float32Array>;
-  release(b: GPUBuffer): void;
-}
 const cpu = new CPU();
-let device: Device | null = null;
+let gpu: GPU | null = null;
 const SMALL = 1 << 16;
 const leafOf = new WeakMap<UOp, UOp>();
 const hostData = new WeakMap<UOp, Float32Array>();
 const onDevice = new Map<string, GPUBuffer>();
-const freeOnCollect = new FinalizationRegistry<string>((name) => { const b = onDevice.get(name); onDevice.delete(name); if (b) device?.release(b); });
+const freeOnCollect = new FinalizationRegistry<string>((name) => { const b = onDevice.get(name); onDevice.delete(name); if (b) gpu?.release(b); });
 let nextLeaf = 0;
 // A rank-0 leaf is a one-element leaf seen as rank 0, on the host (see `scalar`) and on the
 // device alike, so a scalar that crosses time keeps one structure and its step one plan.
@@ -54,22 +48,20 @@ const heldData = (u: UOp): Float32Array | undefined => { const s = stored(u); re
 const isLeaf = (u: UOp) => stored(u).op === "BUFFER" || heldData(u) !== undefined;
 const rank0 = (leaf: UOp, shape: readonly number[]): UOp => (shape.length ? leaf : ir.reshape(leaf, []));
 const dataOf = (u: UOp): Float32Array | undefined => heldData(leafOf.get(u) ?? u) ?? hostData.get(u);
+// the leaf standing for a node, if it has one, and whether the host can't read it cheaply
+const leaf = (u: UOp): UOp | undefined => leafOf.get(u) ?? (isLeaf(u) ? u : undefined);
+const remote = (l: UOp): boolean => stored(l).op === "BUFFER" || ir.numel(l.shape) > SMALL;
+// the edges a walk follows: none out of a leaf
+const toLeaves = (u: UOp) => (leaf(u) ? [] : u.src);
 function cut(roots: UOp[]): { roots: UOp[]; hostOnly: boolean } {
   const memo = new Map<number, UOp>();
   let hostOnly = true, work = 0;
-  for (const root of roots) {
-    const stack: [UOp, boolean][] = [[root, false]];
-    while (stack.length) {
-      const [u, expanded] = stack.pop()!;
-      if (memo.has(u.id)) continue;
-      const l = leafOf.get(u) ?? (isLeaf(u) ? u : undefined);
-      if (l) { memo.set(u.id, l); if (stored(l).op === "BUFFER" || ir.numel(l.shape) > SMALL) hostOnly = false; continue; }
-      if (!u.src.length) { memo.set(u.id, u); continue; }
-      if (!expanded) { stack.push([u, true]); for (const x of u.src) if (!memo.has(x.id)) stack.push([x, false]); continue; }
-      const srcs = u.src.map((x) => memo.get(x.id)!);
-      memo.set(u.id, srcs.every((x, i) => x === u.src[i]) ? u : ir.node(u.op, srcs, u.arg, u.shape));
-      work += ir.numel(u.shape);
-    }
+  for (const u of ir.toposort(roots, toLeaves)) {
+    const l = leaf(u);
+    if (l) { memo.set(u.id, l); hostOnly &&= !remote(l); continue; }
+    const srcs = u.src.map((x) => memo.get(x.id)!);
+    memo.set(u.id, srcs.every((x, i) => x === u.src[i]) ? u : ir.node(u.op, srcs, u.arg, u.shape));
+    if (u.src.length) work += ir.numel(u.shape);
   }
   return { roots: roots.map((r) => memo.get(r.id)!), hostOnly: hostOnly && work <= SMALL };
 }
@@ -77,14 +69,14 @@ function compute(nodes: readonly UOp[]): void {
   const need = [...new Set(nodes.filter((n) => !leafOf.has(n) && !isLeaf(n)))];
   if (!need.length) return;
   const { roots, hostOnly } = cut(need);
-  if (!device || hostOnly) {
+  if (!gpu || hostOnly) {
     cpu.realizeSync(roots).forEach((t, i) => {
       const n = need[i]!, size = ir.numel(n.shape), d = t.data.length === size ? t.data : t.data.subarray(0, size);   // a kernel writes at least one element
       hostData.set(n, d); leafOf.set(n, held(d, n.shape));
     });
     return;
   }
-  device.computeSync(roots, (name) => onDevice.get(name)).forEach((b, i) => {
+  gpu.computeSync(roots, (name) => onDevice.get(name)).forEach((b, i) => {
     const n = need[i]!, name = `%v${nextLeaf++}`, buf = ir.buffer(name, n.shape.length ? n.shape : [1]), leaf = rank0(buf, n.shape);
     onDevice.set(name, b); freeOnCollect.register(buf, name);
     leafOf.set(n, leaf); leafOf.set(leaf, leaf);
@@ -96,14 +88,10 @@ export const materialize = (arrays: readonly Tensor[]): void => compute(arrays.m
 // large constant – memoized per node, so asking along a growing chain stays linear.
 const hostWorkMemo = new WeakMap<UOp, number>();
 const hostWork = (root: UOp): number => {
-  const stack: [UOp, boolean][] = [[root, false]];
-  while (stack.length) {
-    const [u, expanded] = stack.pop()!;
+  for (const u of ir.toposort(root, (u) => (hostWorkMemo.has(u) ? [] : toLeaves(u)))) {
     if (hostWorkMemo.has(u)) continue;
-    const l = leafOf.get(u) ?? (isLeaf(u) ? u : undefined);
-    if (l) { hostWorkMemo.set(u, stored(l).op === "BUFFER" || ir.numel(l.shape) > SMALL ? Infinity : 0); continue; }
-    if (!expanded) { stack.push([u, true]); for (const x of u.src) if (!hostWorkMemo.has(x)) stack.push([x, false]); continue; }
-    hostWorkMemo.set(u, Math.min(Infinity, u.src.reduce((w, x) => w + hostWorkMemo.get(x)!, ir.numel(u.shape))));
+    const l = leaf(u);
+    hostWorkMemo.set(u, l ? (remote(l) ? Infinity : 0) : u.src.reduce((w, x) => w + hostWorkMemo.get(x)!, ir.numel(u.shape)));
   }
   return hostWorkMemo.get(root)!;
 };
@@ -111,27 +99,20 @@ const hostWork = (root: UOp): number => {
 export function hostValue(a: Tensor): Float32Array | undefined {
   const known = dataOf(a.node);
   if (known || leafOf.has(a.node)) return known;
-  if (device && hostWork(a.node) > SMALL) return undefined;
+  if (gpu && hostWork(a.node) > SMALL) return undefined;
   compute([a.node]);
   return dataOf(a.node);
 }
+// a value the GPU computed, read back once and kept on the host beside its leaf
+const deviceBuffer = (n: UOp): GPUBuffer => onDevice.get(ir.bufName(stored(leafOf.get(n) ?? n)))!;
+const keep = (n: UOp, data: Float32Array): Float32Array => { hostData.set(n, data); hostData.set(leafOf.get(n)!, data); return data; };
 async function readAsync(a: Tensor): Promise<Float32Array> {
   compute([a.node]);
-  const known = dataOf(a.node);
-  if (known) return known;
-  const n = a.node, leaf = leafOf.get(n)!, data = await device!.readAsync(onDevice.get(ir.bufName(stored(leaf)))!, ir.numel(n.shape));
-  hostData.set(n, data); hostData.set(leaf, data);
-  return data;
+  return dataOf(a.node) ?? keep(a.node, await gpu!.readAsync(deviceBuffer(a.node), ir.numel(a.node.shape)));
 }
 function realize(arrays: readonly Tensor[]): Float32Array[] {
   compute(arrays.map((a) => a.node));
-  return arrays.map((a) => {
-    const n = a.node, d = dataOf(n);
-    if (d) return d;
-    const leaf = leafOf.get(n)!, data = device!.readSync(onDevice.get(ir.bufName(stored(leaf)))!, ir.numel(n.shape));
-    hostData.set(n, data); hostData.set(leaf, data);
-    return data;
-  });
+  return arrays.map((a) => dataOf(a.node) ?? keep(a.node, gpu!.readSync(deviceBuffer(a.node), ir.numel(a.node.shape))));
 }
 // A value that outlives its step stands on its leaf — computed, with no history behind it
 // for later graphs, and later ∇ walks, to drag along. A scalar is held as data, never kernel
@@ -149,18 +130,15 @@ export function graphSize(a: Tensor): number {
 }
 // the device buffer holding a value, for drawing it without a read
 function gpuBufferOf(a: Tensor): GPUBuffer {
-  if (!device) throw new Error("gpuBuffer: no GPU");
+  if (!gpu) throw new Error("gpuBuffer: no GPU");
   compute([a.node]);
-  let leaf = stored(leafOf.get(a.node) ?? a.node);
-  if (leaf.op === "CONSTANT") {                                                // host data: upload it once, as a device leaf
-    const [b] = device.computeSync([leaf], () => undefined), name = `%v${nextLeaf++}`;
-    const dl = ir.buffer(name, leaf.shape), data = leaf.arg as Float32Array;
+  const l = stored(leafOf.get(a.node) ?? a.node);
+  if (l.op === "CONSTANT") {                                                   // host data: upload it once, as a device leaf
+    const [b] = gpu.computeSync([l], () => undefined), name = `%v${nextLeaf++}`, dl = ir.buffer(name, l.shape), r = rank0(dl, a.node.shape);
     onDevice.set(name, b!); freeOnCollect.register(dl, name);
-    const l = rank0(dl, a.node.shape);
-    leafOf.set(a.node, l); leafOf.set(l, l); hostData.set(a.node, data); hostData.set(l, data);
-    leaf = dl;
+    leafOf.set(a.node, r); leafOf.set(r, r); keep(a.node, l.arg as Float32Array);
   }
-  return onDevice.get(ir.bufName(leaf))!;
+  return deviceBuffer(a.node);
 }
 
 const nest = (d: ArrayLike<number>, shape: readonly number[]): unknown => {
@@ -298,8 +276,8 @@ export class Tensor {
   js(): any { return nest(this.readSync(), this.node.shape); }
   item(): number { return this.readSync()[0]!; }
   // x.slice(i, [a], [a, b], …): an integer drops its axis, [a] runs to the end, [a, b] is a range
-  slice(...spec: (number | [number] | [number, number])[]): Tensor { return Tensor.#slice(this.node, spec); }
-  static #slice(n: UOp, spec: (number | [number] | [number, number])[]): Tensor {
+  slice(...spec: (number | [number] | [number, number])[]): Tensor {
+    let n = this.node;
     const drop: number[] = [];
     spec.forEach((s, axis) => {
       const len = n.shape[axis]!;
@@ -310,10 +288,7 @@ export class Tensor {
     });
     return new Tensor(drop.length ? ir.reshape(n, n.shape.filter((_, i) => !drop.includes(i))) : n);
   }
-  *[Symbol.iterator](): IterableIterator<Tensor> {
-    const n = this.node.shape[0] ?? 0;
-    for (let i = 0; i < n; i++) yield Tensor.#slice(this.node, [i]);
-  }
+  *[Symbol.iterator](): IterableIterator<Tensor> { for (let i = 0; i < (this.node.shape[0] ?? 0); i++) yield this.slice(i); }
   toString(): string { return `Tensor([${this.node.shape}])`; }
 }
 
@@ -340,7 +315,6 @@ export function tensor(values: unknown, opts: { shape?: readonly number[] } = {}
 // one value seen at every position: a broadcast constant, never a buffer of copies
 export const full = (shape: readonly number[], value: number): Tensor => new Tensor(shape.length ? ir.broadcastTo(ir.konst(value), shape) : ir.konst(value));
 export const zeros = (shape: readonly number[]): Tensor => full(shape, 0);
-export const zerosLike = (a: Tensor): Tensor => zeros(a.shape);
 export function arange(start: number, stop?: number, step = 1): Tensor {
   const [a, b] = stop === undefined ? [0, start] : [start, stop];
   const n = Math.max(0, Math.ceil((b - a) / step));
@@ -366,7 +340,6 @@ export const multiply = bin(ir.mul);
 export const subtract = bin((x, y) => ir.add(x, neg(y)));
 export const divide = bin((x, y) => ir.math("div", x, y));
 export const reciprocal = un(ir.recip);
-export const square = un((x) => ir.mul(x, x));
 export const sqrt = un(ir.sqrt);
 export const exp = un(ir.exp);
 export const log = un(ir.log);
@@ -390,7 +363,6 @@ export const floor = m1("floor"), trunc = m1("trunc"), round = m1("round"), sign
 export const expm1 = m1("expm1"), log1p = m1("log1p"), cbrt = m1("cbrt"), isnan = m1("isnan");
 export const maximum = bin((x, y) => ir.where(ir.cmplt(x, y), y, x));
 export const minimum = bin((x, y) => ir.where(ir.cmplt(y, x), y, x));
-export const clip = (a: Like, lo: Like, hi: Like): Tensor => minimum(maximum(a, lo), hi);
 export const less = bin(ir.cmplt);
 export const equal = bin((x, y) => ir.math("eq", x, y));
 // 1 where a value is nonzero; NaN counts as false
@@ -414,10 +386,9 @@ export function moveaxis(a: Like, source: number | number[], destination: number
   const x = nodeOf(a), r = x.shape.length;
   const src = (typeof source === "number" ? [source] : source).map((s) => normAxis(s, r));
   const dst = (typeof destination === "number" ? [destination] : destination).map((d) => normAxis(d, r));
-  const rest = x.shape.map((_, i) => i).filter((i) => !src.includes(i));
-  const order: number[] = new Array(r);
-  dst.forEach((d, i) => { order[d] = src[i]!; });
-  let k = 0; for (let i = 0; i < r; i++) if (order[i] === undefined) order[i] = rest[k++]!;
+  // the axes that stay, in order, with each moved one inserted where it goes
+  const order = x.shape.map((_, i) => i).filter((i) => !src.includes(i));
+  dst.map((d, i) => [d, src[i]!] as const).sort((p, q) => p[0] - q[0]).forEach(([d, s]) => order.splice(d, 0, s));
   return wrap(ir.permute(x, order));
 }
 export const padAxis = (a: Like, axis: number, before: number, after: number): Tensor => { const x = nodeOf(a); return wrap(ir.pad(x, normAxis(axis, x.shape.length), before, after)); };
@@ -499,10 +470,8 @@ function reduceN(x: UOp, axis: Axis, opts: { keepdims?: boolean } | undefined, o
   for (const ax of axes) x = ir.reduceAxis(x, ax, true, op);
   return opts?.keepdims ? x : ir.reshape(x, x.shape.filter((_, i) => !axes.includes(i)));
 }
-export const sum = (a: Like, axis?: Axis, opts?: { keepdims?: boolean }): Tensor => wrap(reduceN(nodeOf(a), axis, opts, "ADD"));
-export const prod = (a: Like, axis?: Axis, opts?: { keepdims?: boolean }): Tensor => wrap(reduceN(nodeOf(a), axis, opts, "MUL"));
-export const max = (a: Like, axis?: Axis, opts?: { keepdims?: boolean }): Tensor => wrap(reduceN(nodeOf(a), axis, opts, "MAX"));
-export const min = (a: Like, axis?: Axis, opts?: { keepdims?: boolean }): Tensor => wrap(neg(reduceN(neg(nodeOf(a)), axis, opts, "MAX")));
+const reducer = (op: "ADD" | "MAX" | "MUL", f = (x: UOp) => x) => (a: Like, axis?: Axis, opts?: { keepdims?: boolean }): Tensor => wrap(f(reduceN(f(nodeOf(a)), axis, opts, op)));
+export const sum = reducer("ADD"), prod = reducer("MUL"), max = reducer("MAX"), min = reducer("MAX", neg);
 // ── order: stable, NaN last; values move through a differentiable gather ─────────
 // Data the host has, or computes cheaply, is sorted there at once. Data on the GPU sorts
 // there, by a bitonic network: log₂m·(log₂m + 1)/2 passes, each pairing every element
@@ -585,22 +554,15 @@ export function matmul(a: Like, b: Like): Tensor {
   if (vecA || vecB) r = ir.reshape(r, r.shape.filter((_, i) => !((vecA && i === r.shape.length - 2) || (vecB && i === r.shape.length - 1))));
   return wrap(r);
 }
-export function tensordot(a: Like, b: Like, axes: [number[], number[]] | number = 2): Tensor {
-  const x = nodeOf(a), y = nodeOf(b);
-  const [ax, bx] = typeof axes === "number"
-    ? [x.shape.map((_, i) => i).slice(x.shape.length - axes), y.shape.map((_, i) => i).slice(0, axes)]
-    : [axes[0].map((i) => normAxis(i, x.shape.length)), axes[1].map((i) => normAxis(i, y.shape.length))];
-  const freeA = x.shape.map((_, i) => i).filter((i) => !ax.includes(i)), freeB = y.shape.map((_, i) => i).filter((i) => !bx.includes(i));
-  const K = ax.reduce((p, i) => p * x.shape[i]!, 1);
-  const A = ir.reshape(ir.permute(x, [...freeA, ...ax]), [Math.max(freeA.reduce((p, i) => p * x.shape[i]!, 1), 1), K]);
-  const B = ir.reshape(ir.permute(y, [...bx, ...freeB]), [K, Math.max(freeB.reduce((p, i) => p * y.shape[i]!, 1), 1)]);
-  return wrap(ir.reshape(cellMatmul(A, B), [...freeA.map((i) => x.shape[i]!), ...freeB.map((i) => y.shape[i]!)]));
-}
+// numpy's dot: x's last axis against y's second to last, every other axis kept
 export function dot(a: Like, b: Like): Tensor {
-  const x = nodeOf(a), y = nodeOf(b);
-  if (!x.shape.length || !y.shape.length) return wrap(ir.mul(x, y));
-  if (y.shape.length === 1) return wrap(reduceN(ir.mul(x, ir.broadcastTo(y, x.shape)), -1, {}, "ADD"));
-  return tensordot(new Tensor(x), new Tensor(y), [[-1], [y.shape.length - 2]]);
+  const x = nodeOf(a), y = nodeOf(b), r = y.shape.length;
+  if (!x.shape.length || !r) return wrap(ir.mul(x, y));
+  if (r === 1) return wrap(reduceN(ir.mul(x, ir.broadcastTo(y, x.shape)), -1, {}, "ADD"));
+  const K = x.shape.at(-1)!, freeA = x.shape.slice(0, -1), others = y.shape.map((_, i) => i).filter((i) => i !== r - 2), freeB = others.map((i) => y.shape[i]!);
+  const A = ir.reshape(ir.permute(x, x.shape.map((_, i) => i)), [Math.max(ir.numel(freeA), 1), K]);
+  const B = ir.reshape(ir.permute(y, [r - 2, ...others]), [K, Math.max(ir.numel(freeB), 1)]);
+  return wrap(ir.reshape(cellMatmul(A, B), [...freeA, ...freeB]));
 }
 // Einstein summation: label every axis, line the operands up label by label (a label
 // written twice in one operand reads its diagonal), multiply, sum the labels the output lacks
@@ -674,9 +636,7 @@ export function vjp<F extends (...xs: any[]) => Tensor>(f: F, primals: Tensor[])
 export const gradients = (value: Tensor, wrt: readonly Tensor[]): Tensor[] =>
   graphVjp(value.node, wrt.map((l) => l.node), ir.broadcastTo(ir.konst(1), value.node.shape)).map((n) => new Tensor(n));
 // ── devices: WebGPU where the platform has it, the CPU everywhere ────────────────
-let gpu: GPU | null = null;
-export async function init(): Promise<void> { gpu ??= await GPU.create(); device = gpu; }
-export const getWebGPUDevice = (): GPUDevice => { if (!gpu) throw new Error("no WebGPU device"); return gpu.device; };
+export async function init(): Promise<void> { gpu ??= await GPU.create(); }
 export const engineGpu = (): GPU | null => gpu;
 // resolves once at most `depth` computations are still running on the GPU
 export const gpuDrained = (depth: number): Promise<void> => gpu?.drained(depth) ?? Promise.resolve();
