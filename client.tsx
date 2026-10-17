@@ -1802,8 +1802,10 @@ monaco.languages.setMonarchTokensProvider("fluent", {
       [delimiterRegexp, { token: "delimiter" }],
       [operatorRegexp, { token: "operator" }],
     ],
+    // a backslash escapes the character after it
     string: [
-      [/[^"]+/, { token: "string" }],
+      [/[^"\\]+/, { token: "string" }],
+      [/\\./, { token: "string" }],
       [/"/, { token: "string", next: "@pop" }],
     ],
   },
