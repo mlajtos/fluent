@@ -600,10 +600,16 @@ const SampleRate = () => {
 
 const Fetch = (url: Value) => {
   const text = SignalCreate<Value>(null)
+  const retired = generationRetired()
   fetch(String(url))
-    .then((response) => response.text())
-    .then((data) => { text.value = data })
-    .catch((error) => { text.value = new Error(`Error fetching data: ${error.message}`) })
+    .then((r) => {
+      if (!r.ok) { throw new Error(`${r.status} ${String(url)}`) }
+      return r.text()
+    })
+    .then(
+      (data) => { if (!retired()) { text.value = data } },
+      (e) => { if (!retired()) { text.value = new Error(`Error fetching data: ${e?.message ?? e}`) } },
+    )
   return text
 }
 
@@ -662,12 +668,18 @@ const scheduleRun = () => {
 // what it shows of them when the new result arrives.
 const releaseAll = () => {
   pageDrawing = false
-  for (const live of lives.values()) { live.stop() }
-  lives.clear()
+  lives.forEach(forget)
   callbacks.clear()
-  dirty.clear()
   documentIds.clear()
   pictures.clear()
+}
+
+// a live nothing shows any more stops, and lets go of the pictures it showed
+const forget = (live: Live) => {
+  live.stop()
+  lives.delete(live.id)
+  dirty.delete(live)
+  for (const id of live.pictures) { pictures.delete(id) }
 }
 
 // The program runs inside an effect: a signal it reads at its top level – not inside a
@@ -739,14 +751,7 @@ const receive = (m: ToWorker) => {
     }
     case "drop": {
       const live = lives.get(m.id)
-      if (live) {
-        live.refs -= m.count
-        if (live.refs <= 0) {
-          live.stop()
-          lives.delete(m.id)
-          dirty.delete(live)
-        }
-      }
+      if (live && (live.refs -= m.count) <= 0) { forget(live) }
       const callback = callbacks.get(m.id)
       if (callback) {
         callback.refs -= m.count
