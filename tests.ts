@@ -17,6 +17,7 @@ const toHost: (message: ToWorker) => void = startHost((message) => { inbox.push(
 // there is no server to load from: an image is zeros, and a safetensors file is a
 // signal holding an empty list – what the real loader holds until its fetch resolves
 const loading = { LoadTensorFromImageUrl: () => SignalCreate(engine.zeros([16, 16, 3])), Fetch: () => SignalCreate(""), LoadSafeTensorFromURL: () => SignalCreate([]) }
+const hostFetch = DefaultEnvironment.Fetch
 extendEnvironment(loading as Record<string, Value>)
 
 const evaluateIn = (source: string, scope = createScope()) => evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), scope))
@@ -1660,6 +1661,36 @@ describe("the evaluation host", () => {
     const d = await evaluate("1 + 1")
     expect(d.k).toBe("tensor")
     expect(numberIn(d)).toBe(2)
+  })
+
+  test("a live value the page let go of lets go of its pictures", async () => {
+    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), $({ fill([4, 4], x()) }))`)
+    const picture = d.items[1].now
+    expect(picture.paint).toBe(true)
+    let painted = 0
+    const canvas = { width: 0, height: 0, getContext: () => ({ createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData: () => { painted++ } }) }
+    toHost({ t: "canvas", slot: 1, canvas: canvas as unknown as OffscreenCanvas })
+    toHost({ t: "paint", slot: 1, id: picture.id, size: [0, 0] })
+    await pause(50)
+    expect(painted).toBe(1)
+    toHost({ t: "drop", id: d.items[1].id, count: 1 })
+    toHost({ t: "paint", slot: 1, id: picture.id, size: [0, 0] })
+    await pause(50)
+    expect(painted).toBe(1)
+  })
+
+  test("Fetch of a missing file is an Error, not the server's 404 page", async () => {
+    const served = Bun.serve({ port: 0, fetch: () => new Response("Not Found", { status: 404 }) })
+    extendEnvironment({ Fetch: hostFetch })
+    const d = await evaluate(`Fetch("http://localhost:${served.port}/nope.txt")`)
+    const start = inbox.length
+    const { lives } = await after(start, "lives")
+    served.stop()
+    extendEnvironment({ Fetch: loading.Fetch } as Record<string, Value>)
+    const desc = lives.find((l: any) => l.id === d.id).desc
+    expect(desc).toMatchObject({ k: "error" })
+    expect(desc.chain.at(-1).message).toContain("404")
+    toHost({ t: "drawn" })
   })
 
   test("a write is answered, and what depends on it follows", async () => {

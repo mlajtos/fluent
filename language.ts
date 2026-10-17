@@ -1,7 +1,7 @@
 // MARK: Fluent language core
 // Grammar, evaluator, environment and prelude – no DOM, no React, no Monaco.
-// The evaluation worker runs it (host.ts), the page only parses with it (client.tsx), and
-// the end-to-end tests run it headless (tests.ts). Whoever computes starts the engine.
+// The evaluation worker runs it (host.ts), and the end-to-end tests run it headless
+// (tests.ts). Whoever computes starts the engine.
 
 import { grammar, type ActionDict } from "ohm-js"
 import { toAST as ohmToAST } from "ohm-js/extras"
@@ -9,48 +9,15 @@ import { signal, Signal, computed, effect, untracked } from "@preact/signals-cor
 import dedent from "ts-dedent"
 import * as engine from "./engine/tensor.ts"
 import PRELUDE from "./prelude.fl" with { type: "text" }
+import { OPERATOR_RANGES, IDENTIFIER_RANGES } from "./protocol"
 
 const isTensor = (v: unknown): v is engine.Tensor => v instanceof engine.Tensor
 
 // MARK: Grammar
-// The symbols an operator is made of, and those a name may hold beside letters and
-// digits. The grammar is built from these tables, and so are the editor's token regexes.
-const OPERATOR_RANGES: [string, string][] = [
-  ["!", "~"], // basic ASCII
-  ["∀", "⋿"], // mathematical operators
-  ["⌀", "⏿"], // miscellaneous technical
-  ["⨀", "⫿"], // supplemental mathematical operators
-  ["←", "⇿"], // arrows
-  ["⟰", "⟿"], // supplemental arrows A
-  ["⤀", "⥿"], // supplemental arrows B
-  ["×", "×"], // ×
-  ["÷", "÷"], // ÷
-  ["¬", "¬"], // ¬
-  ["⟀", "⟯"], // miscellaneous mathematical symbols A (⟜)
-  ["⦀", "⧿"], // miscellaneous mathematical symbols B
-  ["⚀", "⚅"], // die faces ⚀…⚅ (⚄ is rand)
-  ["·", "·"], // middle dot
-  ["‖", "‖"], // ‖
-  ["︀", "️"], // variation selectors (↔︎ is ↔ + U+FE0E)
-]
-const IDENTIFIER_RANGES: [string, string][] = [
-  [String.fromCodePoint(0x1D400), String.fromCodePoint(0x1D7FF)], // mathematical alphanumerics
-  [String.fromCodePoint(0x1F300), String.fromCodePoint(0x1FFFF)], // emoji
-]
-const charClass = (ranges: [string, string][]): string => ranges.map(([lo, hi]) => {
-  const at = (c: string) => `\\u{${c.codePointAt(0)!.toString(16)}}`
-  return lo === hi ? at(lo) : `${at(lo)}-${at(hi)}`
-}).join("")
-const ohmRanges = (ranges: [string, string][]): string => `(${ranges.map(([lo, hi]) => `"${lo}".."${hi}"`).join(" | ")})`
-
-// A name: a letter or a name symbol, then letters, digits and name symbols – no '-',
-// which is an operator. An operator: one symbol; the editor takes names, numbers,
-// strings and delimiters first, so the ASCII letters the first range spans never get here.
-const identifierRegexp = new RegExp(`[\\p{L}${charClass(IDENTIFIER_RANGES)}][\\p{L}\\p{N}${charClass(IDENTIFIER_RANGES)}]*`, "u")
-const numberRegexp = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/
-const stringRegexp = /"(?:[^"\\]|\\.)*"/
-const operatorRegexp = new RegExp(`[${charClass(OPERATOR_RANGES)}]`, "u")
-const delimiterRegexp = /[|,{}()\[\];]/u
+// The characters operators and names are made of live in protocol.ts, shared with the
+// editor's highlighting, so the two never drift apart.
+const ohmRanges = (ranges: Record<string, [string, string]>): string =>
+  `(${Object.values(ranges).map(([lo, hi]) => `"${lo}".."${hi}"`).join(" | ")})`
 
 const CodeGrammar = String.raw`
 Fluent {
@@ -1468,7 +1435,7 @@ const createScope = (): CurrentScope => {
 // MARK: Exports
 export {
   engine, FluentVariable, FluentData, isTensor, TensorScalarLive,
-  CodeParse, getParseErrors, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
+  CodeParse, getParseErrors,
   evaluateSyntaxTreeNode, CodeEvaluate, getAsSyncList, getMeta, setMeta, getOrigin,
   evaluateGeneration, flushRetirements, registerDisposable,
   NoMatch, StringLiteral,

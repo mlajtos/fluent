@@ -374,11 +374,11 @@ const numberOr = (v: Value | undefined, fallback: number): number => (v === unde
 // A value that arrives later: the signal holds `initial` until then, or an Error if it
 // can't arrive. An evaluation retired by the time it arrives drops it.
 const arriving = (failure: string, initial: unknown, load: () => Promise<unknown>) => {
-  const value = SignalCreate<unknown>(initial)
+  const value = SignalCreate<Value>(initial as Value)
   let retired = false
   registerDisposable(() => { retired = true })
   load().then(
-    (v) => { if (!retired) { SignalUpdate(value, v) } },
+    (v) => { if (!retired) { SignalUpdate(value, v as Value) } },
     (e) => { if (!retired) { value.value = new Error(`${failure}: ${e?.message ?? e}`) } },
   )
   return value as unknown as Value
