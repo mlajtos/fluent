@@ -296,7 +296,8 @@ interface FunctionMeta {
   noAutoLift?: boolean
   quotedArgs?: number[]
 }
-const getMeta = (fn: Function): FunctionMeta => (fn as any).__meta__ ?? {}
+const NO_META: FunctionMeta = Object.freeze({})
+const getMeta = (fn: Function): FunctionMeta => (fn as any).__meta__ ?? NO_META
 const setMeta = (fn: Function, updates: Partial<FunctionMeta>): void => { (fn as any).__meta__ = { ...getMeta(fn), ...updates } }
 
 // Where a value came from in the source. A WeakMap, so a function or a frozen value
@@ -908,7 +909,8 @@ const FunctionNoAutoLift = (fn: Value) => {
 const isTruthy = (v: Value): boolean => {
   const t = operand(v)
   if (!isTensor(t)) { throw new Error(`expected a tensor, got ${describeArg(v)}`) }
-  return t.size > 0 && engine.max(engine.truthy(t)).item() > 0
+  const holds = (n: number) => n !== 0 && !Number.isNaN(n)
+  return t.size === 1 ? holds(t.item()) : t.size > 0 && holds(engine.max(engine.truthy(t)).item())
 }
 
 // guard(cond, { value }) – a candidate that answers with value while cond holds and
@@ -1003,7 +1005,7 @@ const ListReduce = function (this: CurrentScope, a: Value, fn: Value, init?: Val
   if (!isFn(fn)) { return new Error("'ListReduce': `fn` must be a function") }
   if (init == null && a.length === 0) { return new Error("'ListReduce': an empty list with no init has nothing to fold") }
   let acc: Value = init == null ? a[0]! : init
-  for (const v of init == null ? a.slice(1) : a) { acc = safeApply(fn, [acc, v], this) }
+  for (const v of init == null ? a.slice(1) : a) { acc = fn.call(this, acc, v) }
   return acc
 }
 
@@ -1012,7 +1014,7 @@ const ListScan = function (this: CurrentScope, a: Value, fn: Value, init: Value)
   if (!Array.isArray(a)) { return new Error("'ListScan': `list` must be a list") }
   if (!isFn(fn)) { return new Error("'ListScan': `fn` must be a function") }
   const out = [init]
-  for (const v of a) { out.push(safeApply(fn, [out[out.length - 1]!, v], this)) }
+  for (const v of a) { out.push(fn.call(this, out[out.length - 1]!, v)) }
   return out
 }
 
