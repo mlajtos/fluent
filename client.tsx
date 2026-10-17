@@ -95,9 +95,12 @@ import dedent from "ts-dedent";
 import { Base64 } from 'js-base64'
 
 
-// Web Worker setup for monaco-editor
-(globalThis as { MonacoEnvironment?: typeof MonacoEnvironment }).MonacoEnvironment = {
-  getWorker: () => new Worker(new URL("monaco.worker.js", document.baseURI), { type: "module" }),
+// The workers' scripts: a build names them by their content (build.ts), the dev server by
+// their purpose
+declare const MONACO_WORKER: string, FLUENT_WORKER: string
+const startWorker = (name: string) => new Worker(new URL(name, document.baseURI), { type: "module" })
+;(globalThis as { MonacoEnvironment?: typeof MonacoEnvironment }).MonacoEnvironment = {
+  getWorker: () => startWorker(typeof MONACO_WORKER === "string" ? MONACO_WORKER : "monaco.worker.js"),
 }
 
 // In Safari, Monaco's clipboard service hands ClipboardItem a promise on every click
@@ -143,13 +146,20 @@ const result = signal<Desc | null>(null)
 const environmentNames = signal(new Map<string, { detail: string, doc: Doc | null }>())
 let prelude = ""
 
-// A hot update starts a fresh evaluator and stops the old one's sources
+// A hot update starts a fresh evaluator and stops the old one's sources; so does a lost GPU
 const hot = globalThis as { __fluentWorker?: Worker, __fluentSources?: Map<number, () => void> }
-hot.__fluentWorker?.terminate()
 const pageSources = hot.__fluentSources ??= new Map()
-for (const stop of pageSources.values()) { stop() }
-pageSources.clear()
-const worker = hot.__fluentWorker = new Worker(new URL("fluent.worker.js", document.baseURI), { type: "module" })
+let worker: Worker
+const spawn = () => {
+  hot.__fluentWorker?.terminate()
+  for (const stop of pageSources.values()) { stop() }
+  pageSources.clear()
+  worker = hot.__fluentWorker = startWorker(typeof FLUENT_WORKER === "string" ? FLUENT_WORKER : "fluent.worker.js")
+  worker.onmessage = receive
+  worker.onerror = (e) => {
+    result.value = { k: "error", chain: [{ message: `The evaluator stopped: ${e.message || "it failed to start"}` }] }
+  }
+}
 const toWorker = (message: ToWorker, transfer: Transferable[] = []) => worker.postMessage(message, transfer)
 
 // Every live value and tensor a description mentions is held once more…
@@ -200,7 +210,7 @@ const show = (mirror: Mirror, desc: Desc) => {
   if (old) { release(old) }
 }
 
-worker.onmessage = ({ data: m }: MessageEvent<ToPage>) => {
+function receive({ data: m }: MessageEvent<ToPage>) {
   switch (m.t) {
     case "ready": {
       environmentNames.value = new Map(m.names.map(([name, detail, doc]) => [name, { detail, doc }]))
@@ -236,11 +246,18 @@ worker.onmessage = ({ data: m }: MessageEvent<ToPage>) => {
     case "source": { startSource(m.id, m.kind, m.size, m.fps); return }
     case "stop": { pageSources.get(m.id)?.(); pageSources.delete(m.id); return }
     case "needSampleRate": { toWorker({ t: "sampleRate", value: sampleRate() }); return }
+    case "lost": {
+      // the GPU took the values with it: another worker runs the program again
+      mirrors.clear()
+      payloads.clear()
+      result.value = { k: "error", chain: [{ message: `The GPU was lost: ${m.message}. Starting again…` }] }
+      spawn()
+      toWorker({ t: "code", source: program.peek() })
+      return
+    }
   }
 }
-worker.onerror = (e) => {
-  result.value = { k: "error", chain: [{ message: `The evaluator stopped: ${e.message || "it failed to start"}` }] }
-}
+spawn()
 
 let writes = 0
 const write = (id: number, value: number | number[] | string | ImageBitmap) => {

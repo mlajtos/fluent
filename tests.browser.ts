@@ -2,7 +2,7 @@
 // boots it on :3210). Covers what tests.ts structurally can't – Monaco, the
 // output panel, reactive islands, canvas renderers, media sources.
 // Run with `bun run test:browser`; `bunx playwright install chromium` once.
-import { test, expect, type Page } from "@playwright/test"
+import { test, expect, type Locator, type Page } from "@playwright/test"
 
 // The dev server injects a <bun-hmr> status overlay that sits above the page
 // and swallows pointer events once it has rendered. It is harness chrome, not
@@ -19,6 +19,29 @@ const open = async (page: Page, code: string) => {
 
 // the result panel – scoped so Monaco's text and line numbers never match
 const panel = (page: Page) => page.getByTestId("print-panel").first()
+
+// How far apart the darkest and the brightest red on screen are, over an element – what
+// the screen shows, whoever painted it; a blank canvas is 0
+const spreadOf = async (element: Locator): Promise<number> => {
+  const png = (await element.screenshot()).toString("base64")
+  return element.page().evaluate(async (b64) => {
+    const img = new Image()
+    img.src = `data:image/png;base64,${b64}`
+    await img.decode()
+    const copy = document.createElement("canvas")
+    copy.width = img.width
+    copy.height = img.height
+    const ctx = copy.getContext("2d")!
+    ctx.drawImage(img, 0, 0)
+    const { data } = ctx.getImageData(0, 0, copy.width, copy.height)
+    let min = 255, max = 0
+    for (let i = 0; i < data.length; i += 4) {
+      min = Math.min(min, data[i]!)
+      max = Math.max(max, data[i]!)
+    }
+    return max - min
+  }, png)
+}
 
 test("evaluates a program and renders the result", async ({ page }) => {
   await open(page, "1 + 1")
@@ -96,6 +119,31 @@ test("a generation comment's answer lands where the comment is, and edits made m
   await expect.poll(text).toContain("2 $& 3")
   expect(await text()).toContain("; mine")
   expect(await text()).not.toContain(";;")
+})
+
+test("Fetch of a missing file shows an Error, not the server's 404 page", async ({ page }) => {
+  await open(page, 'Fetch("does-not-exist.txt")')
+  await expect(panel(page)).toContainText("404")
+})
+
+test("a lost GPU starts another worker, which runs the program again", async ({ page }) => {
+  await open(page, "1 + 41")
+  await expect(panel(page)).toContainText("42")
+  // what the worker posts when its device is lost
+  const replaced = await page.evaluate(() => {
+    const scope = globalThis as unknown as { __fluentWorker: Worker }, lost = scope.__fluentWorker
+    lost.dispatchEvent(new MessageEvent("message", { data: { t: "lost", message: "test" } }))
+    return scope.__fluentWorker !== lost
+  })
+  expect(replaced).toBe(true)
+  await expect(panel(page)).not.toContainText("lost")
+  await expect(panel(page)).toContainText("42")
+})
+
+test("a picture wider than the GPU's textures still paints", async ({ page }) => {
+  // regression: a canvas past maxTextureDimension2D paints nothing
+  await open(page, "[0..<10000] ÷ 10000")
+  await expect.poll(() => spreadOf(panel(page).locator("canvas").first())).toBeGreaterThan(10)
 })
 
 test("a typo'd axis renders an Error, not a silently wrong number", async ({ page }) => {
@@ -327,29 +375,7 @@ edges
   const canvas = panel(page).locator("canvas").first()
   await expect(canvas).toBeVisible({ timeout: 20_000 })
   // the fake feed has structure, so the heatmap must span the colormap
-  await expect(async () => {
-    // what the screen shows – the heatmap may be a WebGPU canvas (GPU blit) or a 2-D one
-    const png = (await canvas.screenshot()).toString("base64")
-    const spread = await page.evaluate(async (b64) => {
-      const img = new Image()
-      img.src = `data:image/png;base64,${b64}`
-      await img.decode()
-      const copy = document.createElement("canvas")
-      copy.width = img.width
-      copy.height = img.height
-      const ctx = copy.getContext("2d")
-      if (!ctx) { return -1 }
-      ctx.drawImage(img, 0, 0)
-      const { data } = ctx.getImageData(0, 0, copy.width, copy.height)
-      let min = 255, max = 0
-      for (let i = 0; i < data.length; i += 4) {
-        min = Math.min(min, data[i]!)
-        max = Math.max(max, data[i]!)
-      }
-      return max - min
-    }, png)
-    expect(spread).toBeGreaterThan(10)
-  }).toPass({ timeout: 15_000 })
+  await expect.poll(() => spreadOf(canvas), { timeout: 15_000 }).toBeGreaterThan(10)
 })
 
 test("PointPlot draws an x/y plot (custom x axis)", async ({ page }) => {
