@@ -587,7 +587,6 @@ const FunctionCascade = (candidates: Value) => {
 const FunctionCond = function (this: CurrentScope, ...candidates: Value[]): Value {
   return chooseFirst(candidates, [], this, () => "cond: no branch matched")
 }
-setMeta(FunctionCond, { noAutoLift: true })
 
 // reduce's fast path: a binary op with a native reduction, so `reduce +` runs engine.sum
 // rather than folding slice by slice. FunctionArity passes it on to its dispatchers.
@@ -601,8 +600,7 @@ const FunctionArity = (candidates: Function[]) => {
   const dispatch = tacitToString((a: Value, b: Value) => (b == null ? unary?.(a) : binary?.(a, b)))
   // its card is its candidates': `+` shows add and abs in one hover; a doc() on the
   // dispatcher afterwards still wins
-  const b: FunctionMeta = typeof binary === "function" ? getMeta(binary) : {}
-  const u: FunctionMeta = typeof unary === "function" ? getMeta(unary) : {}
+  const [b, u] = [binary, unary].map((f): FunctionMeta => typeof f === "function" ? getMeta(f) : {}) as [FunctionMeta, FunctionMeta]
   if (b.signature || u.signature) {
     setMeta(dispatch, {
       signature: [b.signature, u.signature].filter(Boolean).join("  ·  "),
@@ -610,7 +608,7 @@ const FunctionArity = (candidates: Function[]) => {
       example: [b.example, u.example].filter(Boolean).join("\n") || undefined,
     })
   }
-  const fast = typeof binary === "function" ? nativeReducer.get(binary) : undefined
+  const fast = typeof binary === "function" && nativeReducer.get(binary)
   if (fast) { nativeReducer.set(dispatch, fast) }
   return dispatch
 }
@@ -969,7 +967,7 @@ const doc = (target: Value, signature: Value, description: Value, example: Value
 // These take what they are given as it is – a signal, a thunk, a loop's own count – so a
 // signal argument does not turn the call into a computed. ⟳ lifted would be a computed
 // that nothing reads, and would run no steps at all.
-for (const f of [FunctionIterate, SignalRead, SignalUpdate, SignalEffect, SignalOnce, Reactive, SymbolAssign,
+for (const f of [FunctionCond, FunctionIterate, SignalRead, SignalUpdate, SignalEffect, SignalOnce, Reactive, SymbolAssign,
   FunctionNoAutoLift, FunctionGuard, FunctionTry, FunctionWhen, doc]) { setMeta(f, { noAutoLift: true }) }
 
 // MARK: Lists
@@ -1177,55 +1175,47 @@ const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   return (operand(a) as engine.Tensor).slice(...spec)
 }
 
+// A differentiated body runs with state writes forbidden; one it tries is an Error that
+// names the body
+const differentiated = (body: string, run: () => Value): Value => {
+  const outer = differentiating
+  differentiating = true
+  try {
+    return run()
+  } catch (e) {
+    if (e instanceof StateWrite) { return new Error(`${body} cannot change state while it is differentiated (${e.message})`) }
+    throw e
+  } finally {
+    differentiating = outer
+  }
+}
+// vjp with a ones cotangent: a scalar output gives the classic gradient, an elementwise
+// one per-element derivatives – ∇({x | x^2}) works on vectors
 const TensorGradient = (f: Value) => {
   if (!isFn(f)) { return new Error("`grad(f)`: `f` must be a function") }
-  // vjp with a ones cotangent: a scalar output gives the classic gradient, an elementwise
-  // one per-element derivatives – ∇({x | x^2}) works on vectors
-  return (x: Value) => {
-    if (x == null) { return gradientOfReads(f) }
-    const outer = differentiating
-    differentiating = true
-    try {
-      const [out, pullback] = engine.vjp((traced: engine.Tensor) => {
-        const result = f(traced)
-        const value = result instanceof Signal ? result.peek() : result
-        if (value instanceof Error) { throw value }
-        if (!isTensor(value)) { throw new Error("`grad(f)`: `f` must return a tensor") }
-        return value
-      }, [operand(x)])
-      return pullback(engine.full(out.shape, 1))[0]!
-    } catch (e) {
-      if (e instanceof StateWrite) { return new Error(`\`grad(f)\`: \`f\` cannot change state while being differentiated (${e.message})`) }
-      throw e
-    } finally {
-      differentiating = outer
-    }
-  }
+  return (x: Value) => x == null ? gradientOfReads(f) : differentiated("`grad(f)`: `f`", () => {
+    const [out, pullback] = engine.vjp((traced: engine.Tensor) => {
+      const value = SignalOnce(f(traced))
+      if (value instanceof Error) { throw value }
+      if (!isTensor(value)) { throw new Error("`grad(f)`: `f` must return a tensor") }
+      return value
+    }, [operand(x)])
+    return pullback(engine.full(out.shape, 1))[0]!
+  })
 }
 // ∇(loss)(): with nothing to differentiate with respect to, the derivative is with respect
 // to the variables the loss reads – found by reading them, as a computed signal finds its
 // signals. It comes back with the value, all computed in one pass: (value, variables,
 // gradients). An enclosing ∇ still differentiates through it.
 const gradientOfReads = (loss: Function): Value => {
-  const reads = new Map<FluentVariable, engine.Tensor>()
-  const outer = readTracker, outerDifferentiating = differentiating
+  const reads = new Map<FluentVariable, engine.Tensor>(), outer = readTracker
   readTracker = (v, value) => {
     let t = reads.get(v)
     if (!t) { t = engine.traced(outer ? outer(v, value) : value); reads.set(v, t) }
     return t
   }
-  differentiating = true
   let value: Value
-  try {
-    const result = loss()
-    value = result instanceof Signal ? result.peek() : result
-  } catch (e) {
-    if (e instanceof StateWrite) { return new Error(`\`∇(loss)()\`: the loss cannot change state while it is differentiated (${e.message})`) }
-    throw e
-  } finally {
-    readTracker = outer
-    differentiating = outerDifferentiating
-  }
+  try { value = differentiated("`∇(loss)()`: the loss", () => SignalOnce(loss())) } finally { readTracker = outer }
   if (value instanceof Error) { return value }
   if (!isTensor(value)) { return new Error("`∇(loss)()`: the loss must be a tensor") }
   const variables = [...reads.keys()], grads = engine.gradients(value, [...reads.values()])
