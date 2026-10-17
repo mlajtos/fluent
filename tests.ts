@@ -1866,14 +1866,10 @@ describe("doc cards", () => {
       : approx.length === 2 ? `max(abs((${approx[0]}) - (${approx[1]}))) ≤ (0.01 × (1 + max(abs(${approx[1]}))))`
         : s
   }
-  // SignalRead and SignalUpdate auto-lift the signal they are given, so they see its
-  // value instead of the signal – a language.ts fix (noAutoLift) is due; drop
-  // `.failing` once it lands
-  const broken = new Set(["SignalRead", "SignalUpdate"])
   for (const [fn, names] of groups) {
     const example = (fn as any).__meta__?.example as string | undefined
     if (!example) { continue }
-    ;(names.some((n) => broken.has(n)) ? test.failing : test)(`${names[0]}: ${example.split("\n")[0]}`, () => {
+    test(`${names[0]}: ${example.split("\n")[0]}`, () => {
       for (const ex of example.split("\n")) {
         const parts = split(ex, ", ")
         const binds = split(ex, ":").slice(1).some((p) => !p.startsWith("="))

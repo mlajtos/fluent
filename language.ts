@@ -1469,7 +1469,7 @@ const createScope = (): CurrentScope => {
 
 // MARK: Exports
 export {
-  engine, FluentVariable, isTensor, TensorScalarLive,
+  engine, FluentVariable, FluentData, isTensor, TensorScalarLive,
   CodeParse, getParseErrors, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
   evaluateSyntaxTreeNode, CodeEvaluate, getAsSyncList, getMeta, setMeta, getOrigin,
   evaluateGeneration, flushRetirements, registerDisposable,
