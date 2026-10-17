@@ -593,6 +593,25 @@ describe("reactivity", () => {
   })
 })
 
+describe("language fixes", () => {
+  const message = (source: string): string => {
+    const v = run(source)
+    return v instanceof Error ? v.message : `not an Error: ${String(v)}`
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 150))
+  test("◌ used as a tensor fails with a message that says ◌", () => {
+    expect(message("x: ◌, x + 1")).toContain("◌")
+    expect(message("sin(◌)")).toContain("◌")
+  })
+  test("an unknown name reached through a native's call is an Error, never ◌", () => {
+    expect(message("ListMap((oops, 1), (⍨ +))")).toContain("unknown name: oops")
+    expect(message("((⍨ +) ⍣ 1)(oops)")).toContain("unknown name: oops")
+  })
+  test("indexing an unknown name names it", () => {
+    expect(message("a_0")).toContain("unknown name: a")
+  })
+})
+
 describe("differentiation and optimization", () => {
   test("gradient", () => {
     expect(value("∇({ x | x^2 })(3)")).toBe(6)

@@ -738,14 +738,9 @@ engine.Tensor.prototype.toString = function () {
 // mutate the global Symbol for every symbol in the process (and every dependency).
 const resolveSymbol = (sym: symbol, env: CurrentScope): Value => {
   const k = Symbol.keyFor(sym) ?? ""
-  try {
-    // `in` (which walks the scope chain), not `??`: a name bound to ◌ must
-    // resolve to null – null is a value, absence is not. With `??` the binding
-    // masqueraded as an unbound symbol, so `x: ◌, x` gave back the symbol x.
-    return k in env ? (env[k] ?? null) : sym
-  } catch {
-    return null
-  }
+  // `in` walks the scope chain: a name bound to ◌ resolves to null, an unbound one
+  // stays its symbol – with no scope at hand, every name is unbound
+  return env != null && k in env ? (env[k] ?? null) : sym
 }
 
 const assignSymbol = (sym: symbol, env: CurrentScope, value: Value): void => {
@@ -786,6 +781,7 @@ let differentiating = false
 // with the name or the fix in the message.
 const operand = (v: any): any => {
   if (v instanceof FluentVariable) { return v.current }
+  if (v == null) { throw new Error("expected a tensor, got ◌") }
   if (typeof v === "symbol") {
     // an unbound name reached a numeric op (e.g. `1 * x`): fail with the name. The bare
     // symbol still flows through as a value elsewhere – only coercion errors.
@@ -1149,8 +1145,8 @@ const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert
   return function (...args: Value[]) {
     const dyadic = args.length >= 2
     const left = args[0]
-    const forward: Function = dyadic ? (z: Value) => (fn as Function)(left, z) : fn as Function
-    let step = forward
+    const forward = (z: Value) => safeApply(fn, dyadic ? [left, z] : [z], scope)
+    let step: Function = forward
     if (times < 0) {
       const inverse = safeApply(invert as Function, [forward], scope)
       if (typeof inverse !== "function") { return inverse }
@@ -1168,7 +1164,7 @@ const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert
       if (value instanceof Error) { break }
       if (until) {
         try {
-          const verdict = (until as Function)(value, prev)
+          const verdict = safeApply(until, [value, prev], scope)
           if (verdict instanceof Error) { value = verdict; break }
           if (isTruthy(requireData(verdict))) { break }
         } catch (e) {
@@ -1610,7 +1606,7 @@ const ListGet = (a: any[], b: Value) => {
   return a.at(index)
 }
 
-const ListMap = (a: any[], fn: (value: any, index: Value) => any) => {
+const ListMap = function (this: CurrentScope, a: any[], fn: (value: any, index: Value) => any) {
   if (typeof fn !== "function") {
     return new Error("'ListMap': 'fn' must be a function")
   }
@@ -1619,10 +1615,7 @@ const ListMap = (a: any[], fn: (value: any, index: Value) => any) => {
     return new Error("'ListMap': 'a' must be a list")
   }
 
-  return a.map((value, index) => {
-    // @ts-ignore
-    return FunctionApply(fn, [value, TensorScalar(index)])
-  })
+  return a.map((value, index) => safeApply(fn, [value, TensorScalar(index)], this))
 }
 
 const ListReduce = (a: any[], fn: (acc: any, value: any) => any, initialValue?: any) => {
@@ -2080,7 +2073,7 @@ const TensorGather = (a: Value, b: Value): Value => {
 // gather has no bounds mode, so an out-of-range index would read garbage; an index still
 // on the GPU (an embedding lookup into a minibatch) is trusted data and flows through.
 const TensorTake = (a: Value, b: Value): Value => {
-  const size = shapeOf(a)[0] ?? 0
+  const x = operand(a) as engine.Tensor, size = x.shape[0] ?? 0
   const flat = cheapValues(b)
   if (flat !== undefined) {
     // `!(0 <= w < size)` also rejects a NaN index, which slips past `<`/`>=`
@@ -2091,7 +2084,7 @@ const TensorTake = (a: Value, b: Value): Value => {
   }
   const raw = engine.trunc(operand(b))
   const wrapped = engine.where(engine.less(raw, 0), engine.add(raw, size), raw)
-  return engine.take(operand(a), wrapped, 0)
+  return engine.take(x, wrapped, 0)
 }
 // scatterAdd(indices, values, size): a [size, …] of zeros with each row of values added at
 // its index – take's transpose
