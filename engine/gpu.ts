@@ -15,14 +15,16 @@ const SUBMIT_CHUNK = 32;
 // workgroups per dispatch axis. Past either it drops the command buffer, without an error.
 const MAX_BINDINGS = 10, MAX_GROUPS = 65535;
 
-// WGSL rejects NaN and ±∞ from constant expressions; these build them at runtime. WGSL's
-// max may drop a NaN: maxf keeps it, as Math.max does on the CPU.
+// WGSL rejects NaN and ±∞ from constant expressions, and the shader compiler may fold a
+// −0.0 literal to 0.0; these build them at runtime. WGSL's max may drop a NaN: maxf keeps
+// it, as Math.max does on the CPU.
 const WGSL_SPECIALS = `fn nanf() -> f32 { var b = 0x7fc00000u; return bitcast<f32>(b); }
 fn inff() -> f32 { var b = 0x7f800000u; return bitcast<f32>(b); }
+fn negzf() -> f32 { var b = 0x80000000u; return bitcast<f32>(b); }
 fn maxf(a: f32, b: f32) -> f32 { return select(max(a, b), nanf(), (bitcast<u32>(a) & 0x7fffffffu) > 0x7f800000u || (bitcast<u32>(b) & 0x7fffffffu) > 0x7f800000u); }`;
 const wgslF32 = (v: number): string => {
   if (!Number.isFinite(v)) return v > 0 ? "inff()" : v < 0 ? "(-inff())" : "nanf()";
-  if (Object.is(v, -0)) return "-0.0";
+  if (Object.is(v, -0)) return "negzf()";
   const s = v.toString().replace("e+", "e");
   return /[.e]/.test(s) ? s : s + ".0";
 };
@@ -327,7 +329,7 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
 }
 
 const withHelpers = (wgsl: string): string =>
-  `${wgsl.includes("hashUniform(") ? WGSL_HASH_UNIFORM + "\n" : ""}${/nanf\(|inff\(|maxf\(/.test(wgsl) ? WGSL_SPECIALS + "\n" : ""}${wgsl}`;
+  `${wgsl.includes("hashUniform(") ? WGSL_HASH_UNIFORM + "\n" : ""}${/\b(nanf|inff|negzf|maxf)\(/.test(wgsl) ? WGSL_SPECIALS + "\n" : ""}${wgsl}`;
 
 // codegen as a rewrite: FUSED → KERNEL (src = inputs; wgsl + dispatch in arg)
 export function lowerMany(roots: UOp[]): UOp[] {
