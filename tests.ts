@@ -1820,6 +1820,9 @@ describe("the engine", () => {
     const kernels = optimizeMany(placeholders([drawing.node], leaves).roots).flatMap((r) => toposort(r)).filter((u) => u.op === "FUSED")
     expect(Math.max(...kernels.map((k) => numel(k.shape)))).toBeLessThanOrEqual(640 * 400 * 2)
   })
+  test("index ramps of different lengths stay different", () => {
+    expect(value("concat((0 ..< 300, 0 ..< 500))_600")).toBe(300)
+  })
 })
 
 describe("doc cards", () => {
