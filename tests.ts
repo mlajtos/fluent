@@ -607,6 +607,11 @@ describe("language fixes", () => {
     expect(message("ListMap((oops, 1), (⍨ +))")).toContain("unknown name: oops")
     expect(message("((⍨ +) ⍣ 1)(oops)")).toContain("unknown name: oops")
   })
+  test("call arguments read the bindings made among them, in reading order", () => {
+    expect(value("a: 1, f: { x, y | y }, f(a: 2, a)")).toBe(2)
+    expect(value("a: 1, f: { x, y | x }, f(a, a: 2)")).toBe(1)
+    expect(value("a: 1, [a, a: 2]")).toEqual([1, 2])
+  })
   test("indexing an unknown name names it", () => {
     expect(message("a_0")).toContain("unknown name: a")
   })

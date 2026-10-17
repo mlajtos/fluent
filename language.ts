@@ -598,9 +598,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
 
   if (node.type === "Program") {
     const values: Array<Value> = node.content.map((e) => evaluateSyntaxTreeNode(e, env))
-    // last value is the result of the program - reify so symbols get resolved
-    const lastValue = values[values.length - 1] ?? null
-    return reify(lastValue, env)
+    return values[values.length - 1] ?? null
   }
 
   if (node.type === "Number") {
@@ -625,9 +623,8 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 
   if (node.type === "Symbol") {
-    // Return raw symbol - resolve happens later in safeApply
-    // Note: Can't set origin on primitive Symbol
-    return Symbol.for(node.content.value)
+    // a name is looked up where it is read; an unbound one stays its symbol
+    return reify(Symbol.for(node.content.value), env)
   }
 
   if (node.type === "String") {
@@ -654,7 +651,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     // positional list) or first-class (records / named args), and if the latter
     // whether a named singleton (a: 2) demotes to 2 or stays the record {a: 2}.
     const localEnv = Object.create(env) as CurrentScope
-    const value = node.content.value.map((e) => reify(evaluateSyntaxTreeNode(e, localEnv), localEnv))
+    const value = node.content.value.map((e) => evaluateSyntaxTreeNode(e, localEnv))
     setOrigin(value, node.origin)
     return value
   }
@@ -671,8 +668,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
           return acc
         }, Object.create(env) as CurrentScope)
 
-      // Reify in localEnv so symbols resolve to local values, not outer scope
-      return reify(evaluateSyntaxTreeNode(node.content.expr, localEnv), localEnv)
+      return evaluateSyntaxTreeNode(node.content.expr, localEnv)
     }
 
     fn.toString = () => node.origin.source
@@ -687,11 +683,11 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     // a binding among a call's args (f(a: 2, b)) is local to the call. Infix operands
     // aren't an explicit ( … ), so they bind in the enclosing scope: a: b: 23 binds both.
     const argsEnv = (node.content.args.content.synthetic ? env : Object.create(env)) as CurrentScope
-    // Process args directly (not via List evaluation) - safeApply handles quotedArgs
-    const argNodes = node.content.args.content.value
-    const args = argNodes.map((argNode: SyntaxTreeNode) =>
-      evaluateSyntaxTreeNode(argNode, argsEnv)
-    )
+    // the arguments run in reading order, each seeing the bindings made before it; a
+    // quoted one (the name `:` binds) stays the name it spells
+    const quoted = typeof fn === "function" ? getMeta(fn).quotedArgs ?? [] : []
+    const args = node.content.args.content.value.map((arg, i) =>
+      quoted.includes(i) && arg.type === "Symbol" ? Symbol.for(arg.content.value) : evaluateSyntaxTreeNode(arg, argsEnv))
 
     const value = safeApply(fn, args, env)
 
@@ -921,17 +917,9 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
 
   try {
 
-    let fnValue: Value = reify(fn, env);
-    let argsValue: Value[] = args;
-
-    // Read function metadata
-    const meta = typeof fnValue === 'function' ? getMeta(fnValue) : {}
-    const { quotedArgs = [], noAutoLift = false } = meta
-
-    // Selectively reify arguments - quoted args stay as symbols
-    argsValue = args.map((arg, i) =>
-      quotedArgs.includes(i) ? arg : reify(arg, env)
-    )
+    const fnValue = fn
+    const argsValue = args
+    const noAutoLift = typeof fnValue === "function" && getMeta(fnValue).noAutoLift
 
     errorArgs = argsValue.filter(a => a instanceof Error)
 
