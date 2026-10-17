@@ -628,6 +628,15 @@ describe("language fixes", () => {
     expect(value("s: $3, SignalRead(s)")).toBe(3)
     expect(value("s: $3, SignalUpdate(s, 4), s()")).toBe(4)
   })
+  test("⟳ stops at a step that fails, and its signal holds the Error", async () => {
+    const scope = createScope()
+    const r = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(`n: $0, { n(n() + 1), 1 + "a" } ⟳ 5`), scope))
+    expect(r).toBeInstanceOf(Signal)
+    await settle()
+    expect((r as Signal<Value>).value).toBeInstanceOf(Error)
+    expect(((scope.n as Signal<Value>).value as engine.Tensor).js()).toBe(1)
+    expect(value("{ 0 } ⟳ 3, 7")).toBe(7)
+  })
   test("indexing an unknown name names it", () => {
     expect(message("a_0")).toContain("unknown name: a")
   })

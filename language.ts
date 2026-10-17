@@ -1265,9 +1265,11 @@ const ErrorIs = (v: Value) => engine.tensor(v instanceof Error ? 1 : 0)
 const Identical = (a: Value, b: Value) => engine.tensor(a === b ? 1 : 0)
 
 // Async repeat (⟳): runs fn between frames so the UI stays live. The loop
-// belongs to the evaluation that started it – a re-evaluation cancels it.
+// belongs to the evaluation that started it – a re-evaluation cancels it. It gives
+// back a signal that holds ◌ while the steps succeed; a step that fails stops the
+// loop, and the signal holds its Error.
 // (For synchronous function iteration f(f(f(x))) use ⍣ / FunctionPower.)
-const FunctionIterate = (fn: (index?: engine.Tensor) => void, iterations?: Value) => {
+const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Value) {
   const live = iterations instanceof Signal || iterations instanceof FluentVariable
   if (!(typeof fn === "function" && (iterations == null || isTensor(iterations) || live))) {
     throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` must be a scalar Tensor");
@@ -1296,7 +1298,7 @@ const FunctionIterate = (fn: (index?: engine.Tensor) => void, iterations?: Value
   // restart its loop – every time the count changed
   untracked(readTarget)
 
-  const generation = currentGeneration
+  const generation = currentGeneration, scope = this, failure = signal<Value>(null)
   let i = 0
   let scheduled = false
   let cancelled = false
@@ -1359,7 +1361,8 @@ const FunctionIterate = (fn: (index?: engine.Tensor) => void, iterations?: Value
       await engine.gpuDrained(2)
       if (generation !== currentGeneration || cancelled) { return }
       const stepStart = now()
-      fn(engine.scalar(i))
+      const result = safeApply(fn, [engine.scalar(i)], scope)
+      if (result instanceof Error) { cancelled = true; failure.value = result; return }
       i++
       stepTime += now() - stepStart
       if (stepTime > 25) { break }
@@ -1386,7 +1389,7 @@ const FunctionIterate = (fn: (index?: engine.Tensor) => void, iterations?: Value
   if (live) { registerDisposable(effect(() => { try { readTarget() } catch { return } schedule() })) }
   schedule()
 
-  return null
+  return failure
 }
 // ⟳ drives its own loop and reads its own count, so a signal argument must not
 // wrap the call in a lazy computed that nothing subscribes to – that ran the
