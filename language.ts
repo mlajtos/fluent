@@ -186,21 +186,24 @@ type SyntaxTreeNode =
   | { type: "Code", content: { value: SyntaxTreeNode }, origin: Origin }
 
 // 1-based line and column of an offset, as ohm counts them (a carriage return takes no
-// column), found by binary search over the document's line starts – the parser asks
-// twice per node, and a scan from the top made a parse quadratic
-let lineStarts: { text: string, starts: number[] } = { text: "", starts: [0] }
+// column). The parser asks twice per node, so both come from binary searches over the
+// document's line starts and carriage returns, found once per document.
+let lines = { text: "", starts: [0], returns: [] as number[] }
+// how many of the sorted xs are below x
+const below = (xs: number[], x: number): number => {
+  let lo = 0, hi = xs.length
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (xs[mid]! < x) { lo = mid + 1 } else { hi = mid } }
+  return lo
+}
 const lineAndColumn = (text: string, offset: number): { line: number, column: number } => {
-  if (lineStarts.text !== text) {
-    const starts = [0]
-    for (let i = 0; i < text.length; i++) { if (text[i] === "\n") { starts.push(i + 1) } }
-    lineStarts = { text, starts }
+  if (lines.text !== text) {
+    lines = { text, starts: [0], returns: [] }
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === "\n") { lines.starts.push(i + 1) } else if (text[i] === "\r") { lines.returns.push(i) }
+    }
   }
-  const starts = lineStarts.starts
-  let lo = 0, hi = starts.length - 1
-  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid]! <= offset) { lo = mid } else { hi = mid - 1 } }
-  let column = 1
-  for (let i = starts[lo]!; i < offset; i++) { if (text[i] !== "\r") { column++ } }
-  return { line: lo + 1, column }
+  const { starts, returns } = lines, line = below(starts, offset + 1), start = starts[line - 1]!
+  return { line, column: offset - start + 1 - (below(returns, offset) - below(returns, start)) }
 }
 
 function getLocationOrigin(node: any): Origin {
@@ -444,37 +447,7 @@ type ParseError = {
   end: { line: number; column: number };
 }
 
-// Convert a string index to line and column numbers
-const indexToLineAndColumn = (str: string, index: number): { line: number; column: number } => {
-  const lines = str.slice(0, index).split('\n');
-  const lastLine = lines[lines.length - 1] ?? '';
-  return {
-    line: lines.length,
-    column: lastLine.length + 1
-  };
-}
-
-// One parse per source: CodeParse and getParseErrors share match results. A
-// small LRU rather than a single slot – the nested CodeParse a backtick
-// literal runs mid-toAST would otherwise evict the outer program between
-// evaluation and editor validation, doubling the parse work per keystroke.
-const MATCH_CACHE_LIMIT = 8
-const matchCache = new Map<string, ReturnType<typeof CodeGrammarCompiled.match>>()
-const matchProgram = (program: string) => {
-  const input = String(program)
-  const cached = matchCache.get(input)
-  if (cached) {
-    matchCache.delete(input)
-    matchCache.set(input, cached) // refresh recency
-    return cached
-  }
-  const match = CodeGrammarCompiled.match(input)
-  matchCache.set(input, match)
-  if (matchCache.size > MATCH_CACHE_LIMIT) {
-    matchCache.delete(matchCache.keys().next().value!)
-  }
-  return match
-}
+const matchProgram = (program: string) => CodeGrammarCompiled.match(String(program))
 
 // Ohm's rightmost-failure message enumerates every alternative at the
 // failure point – for this grammar that includes whole operator glyph
@@ -498,7 +471,7 @@ const CodeParse = (program: string): SyntaxTreeNode => {
   } else {
     // @ts-ignore - getRightmostFailurePosition exists but not in types
     const errorPos = matchResult.getRightmostFailurePosition() as number;
-    const errorLocation = indexToLineAndColumn(program, errorPos);
+    const errorLocation = lineAndColumn(program, errorPos);
 
     return {
       type: "Error",
@@ -529,8 +502,8 @@ const getParseErrors = (program: string): ParseError[] => {
     errorPos--;
   }
 
-  const startLocation = indexToLineAndColumn(program, errorPos);
-  const endLocation = indexToLineAndColumn(program, program.length);
+  const startLocation = lineAndColumn(program, errorPos);
+  const endLocation = lineAndColumn(program, program.length);
 
   return [{
     message: humanizeParseError(matchResult.shortMessage ?? matchResult.message ?? "Syntax error"),

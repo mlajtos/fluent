@@ -656,6 +656,24 @@ describe("language fixes", () => {
   test("indexing an unknown name names it", () => {
     expect(message("a_0")).toContain("unknown name: a")
   })
+  test("parsing keeps nothing alive once it is done", async () => {
+    const { heapSize } = await import("bun:jsc")
+    const program = Array.from({ length: 2000 }, (_, i) => `f${i}: { x | x × ${i} + 1 },`).join("\n")
+    Bun.gc(true)
+    const before = heapSize()
+    for (let i = 0; i < 3; i++) { getParseErrors(program + " ".repeat(i)) }
+    // off this stack first, so a collector that scans it sees no stale reference
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    Bun.gc(true)
+    expect((heapSize() - before) / 1e6).toBeLessThan(20)
+  })
+  test("a long line costs no more to parse than the same text over many lines", () => {
+    const numbers = Array.from({ length: 5000 }, (_, i) => i)
+    const time = (source: string) => { const t = performance.now(); CodeParse(source); return performance.now() - t }
+    const oneLine = `[${numbers.join(", ")}]`, lines = `[${numbers.join(",\n")}]`
+    time(oneLine); time(lines)
+    expect(time(oneLine)).toBeLessThan(3 * time(lines))
+  })
 })
 
 describe("differentiation and optimization", () => {
