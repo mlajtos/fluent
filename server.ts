@@ -1,29 +1,24 @@
 import { serve } from "bun";
 import index from "./index.html";
 
-// Bundle Monaco editor worker for web worker context
-const monacoWorkerPath = Bun.fileURLToPath(import.meta.resolve("monaco-editor/esm/vs/editor/editor.worker.js"));
-const { outputs: [monacoWorker] } = await Bun.build({
-  entrypoints: [monacoWorkerPath],
-});
+const javascript = (body: BodyInit) => new Response(body, { headers: { "Content-Type": "application/javascript" } });
 
+// Monaco's editor worker, bundled once
+const { outputs: [monacoWorker] } = await Bun.build({
+  entrypoints: [Bun.fileURLToPath(import.meta.resolve("monaco-editor/esm/vs/editor/editor.worker.js"))],
+});
 if (!monacoWorker) throw new Error("Failed to bundle Monaco worker");
 
 // The evaluation worker, bundled on every request: a reload runs the current evaluator
 const evaluationWorker = async () => {
   const { success, logs, outputs: [bundle] } = await Bun.build({ entrypoints: ["./worker.ts"], target: "browser", format: "esm", sourcemap: "inline" });
-  if (!success || !bundle) {
-    return new Response(`throw new Error(${JSON.stringify(logs.map(String).join("\n"))})`, { headers: { "Content-Type": "application/javascript" } });
-  }
-  return new Response(bundle, { headers: { "Content-Type": "application/javascript" } });
+  return javascript(success && bundle ? bundle : `throw new Error(${JSON.stringify(logs.map(String).join("\n"))})`);
 };
 
 const server = serve({
   routes: {
     "/": index,
-    "/monaco.worker.js": new Response(monacoWorker, {
-      headers: { "Content-Type": "application/javascript" },
-    }),
+    "/monaco.worker.js": javascript(monacoWorker),
     "/fluent.worker.js": evaluationWorker,
     // dataset for the MNIST example (build.ts copies it into dist/ for prod)
     "/mnist.safetensors": () => new Response(Bun.file("./mnist.safetensors")),

@@ -18,7 +18,7 @@ import {
 } from "./protocol"
 import { Documentation } from "./documentation"
 import { TOUR_SOURCE } from "./tour"
-import { CpuPainter, GpuPainter, prepare, type Painter, type Picture } from "./painter"
+import { CpuPainter, GpuPainter, prepare, type Picture } from "./painter"
 
 type Post = (message: ToPage, transfer?: Transferable[]) => void
 let post: Post = () => { }
@@ -110,7 +110,7 @@ const dirty = new Set<Live>()
 let owner: Live | null = null
 // The worker paints pictures into canvases the page hands it: a picture waits here, by
 // id, until the page asks for it
-let painter: Painter = new CpuPainter()
+let painter: GpuPainter | CpuPainter = new CpuPainter()
 const pictures = new Map<number, Picture>()
 const describing = new Set<number>()
 // the transferable memory of the description being built
