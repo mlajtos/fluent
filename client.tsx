@@ -76,7 +76,7 @@
 
 import { Signal, signal, computed, effect } from "@preact/signals-core"
 import {
-  tensorView, numberText, FEW, documentHash, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
+  tensorView, labelled, numberText, documentHash, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
   type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
@@ -1169,32 +1169,27 @@ const Cells = ({ id, values, shape: [rows = 1, columns = 1] }: { id: number, val
   )
 }
 
-// a heatmap's range under it, on the viridis scale; one value alone when they are all the same
+// A picture's range under it – a heatmap's on the viridis scale – and one value alone when
+// they are all the same
 const VIRIDIS_CSS = "linear-gradient(to right, #440154, #3b528b, #21918c, #5ec962, #fde725)"
-const Legend = ({ range: [lo, hi] }: { range: Float32Array }) => lo! > hi! ? null : (
-  <div className="flex items-center gap-2 text-xs text-neutral-500 font-mono">
-    {short(lo!)}{lo! < hi! && <><div className="h-1.5 w-16 rounded-full" style={{ background: VIRIDIS_CSS }} />{short(hi!)}</>}
-  </div>
+const Legend = ({ range: [lo, hi], ramp }: { range: Float32Array, ramp: boolean }) => lo! > hi! ? null : (
+  <>
+    {short(lo!)}
+    {lo! < hi! && <>{ramp ? <div className="h-1.5 w-16 rounded-full" style={{ background: VIRIDIS_CSS }} /> : <span>…</span>}{short(hi!)}</>}
+  </>
 )
 
 function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
   useSignals()
-  const view = tensorView(d.shape), few = d.shape.reduce((a, b) => a * b, 1) < FEW, key = `${view}${few}`
+  const view = tensorView(d.shape), few = labelled(d.shape), key = `${view}${few}`
   const fresh = payloads.get(d.id)?.value
   const last = useRef<{ key: string, values: Float32Array } | null>(null)
   if (typeof fresh === "string") { return <ErrorView d={{ k: "error", chain: [{ message: fresh }] }} /> }
   if (fresh) { last.current = { key, values: fresh } }
-  // a picture's values when they are few, otherwise the range they span
+  // a picture's values when they are labelled, otherwise the range they span
   const values = last.current?.key === key ? last.current.values : undefined
-  const [height = 1, width = 1] = d.shape
 
   switch (view) {
-    case "shape": return (
-      <div>
-        <span className="font-bold">Tensor:</span> {d.shape.join(", ")}<br />
-        <span className="text-neutral-500">rank {d.shape.length} – reshape or slice it to plot</span>
-      </div>
-    )
     case "number": return <span style={{ color: `#${tokenColors.number}`, opacity: values ? 1 : 0.5 }}>{values ? numberText(values[0]!) : "…"}</span>
     case "bars":
       if (few) { return <Bars id={d.id} values={values} /> }
@@ -1202,26 +1197,29 @@ function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
     case "heat":
       if (few) { return <Cells id={d.id} values={values} shape={d.shape} /> }
   }
-  // a small heatmap is magnified by a whole number, to about 256 pixels; images and large
-  // heatmaps show at their own size
-  const displayWidth = view === "heat" ? width * Math.ceil(256 / Math.max(width, height)) : width
+  // a heatmap comes laid out and magnified, its size given; an image shows at its own size.
+  // Small multiples say the shape they lay out.
+  const [width, height] = d.size ?? [d.shape[1] ?? 1, d.shape[0] ?? 1]
   return (
     <div className="grid gap-1">
-      <PaintedCanvas id={d.id} style={canvasStyle(width, height, displayWidth)} />
-      {view === "heat" && values && <Legend range={values} />}
+      <PaintedCanvas id={d.id} style={canvasStyle(width, height, view === "heat")} />
+      <div className="flex items-center gap-2 text-xs text-neutral-500 font-mono">
+        {values && <Legend range={values} ramp={view === "heat"} />}
+        {view === "heat" && d.shape.length > 2 && <span className="ml-2">[{d.shape.join(", ")}]</span>}
+      </div>
     </div>
   )
 }
 
-// A picture shown at its own size or magnified by a whole number keeps its pixels square
-// and sharp; scaled by anything else – to fit a narrower panel – it is smoothed, so no
-// row or column of pixels drops out. A picture a few pixels high still shows.
-const canvasStyle = (width: number, height: number, displayWidth: number): CSSProperties => ({
+// A picture fills its panel's width up to its own size, scaled down – smoothed, so no row or
+// column of pixels drops out – when the panel is narrower; a heatmap's cells stay square
+// and sharp. A picture a few pixels high still shows.
+const canvasStyle = (width: number, height: number, sharp: boolean): CSSProperties => ({
   width: "100%",
-  maxWidth: `${displayWidth}px`,
+  maxWidth: `${width}px`,
   minHeight: "4px",
   aspectRatio: `${width / height}`,
-  imageRendering: displayWidth > width && displayWidth % width === 0 ? "pixelated" : "auto",
+  imageRendering: sharp ? "pixelated" : "auto",
 })
 
 // A canvas the worker paints: handed over once, then told which picture to paint as each

@@ -13,7 +13,7 @@ import {
   type Value, type SyntaxTreeNode, type Origin,
 } from "./language"
 import {
-  tensorView, documentHash, FEW,
+  tensorView, labelled, heatScale, documentHash,
   type Desc, type Doc, type SourceKind, type TensorView, type ToPage, type ToWorker, type Tree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
@@ -218,7 +218,7 @@ const numbersOf = (id: number, t: engine.Tensor): { payload?: Float32Array } => 
 
 // How a tensor looks is the prelude's own heat and bars (prelude.fl, Drawing), so a
 // program that binds its own doesn't change how values show
-let seeing: Record<"heat" | "DrawBarsOf" | "DrawExtent", (...args: Value[]) => Value>
+let seeing: Record<"DrawHeatOf" | "DrawTiles" | "DrawBarsOf" | "DrawExtent", (...args: Value[]) => Value>
 const tensorOf = (v: Value): engine.Tensor => {
   if (v instanceof Error) { throw v }
   return v as engine.Tensor
@@ -235,25 +235,28 @@ const windowOf = (t: engine.Tensor): engine.Tensor => {
 }
 
 // A tensor's picture, and the numbers that cross with it for the page's labels: its values
-// when they are few, otherwise the finite range they span; an image has none. A heatmap
-// and bars are made when they are painted – bars for the canvas's size – and live only
-// until they are on the screen.
-const prepare = (view: TensorView, t: engine.Tensor): { picture: Picture, numbers?: engine.Tensor } => {
+// when they are labelled, otherwise the finite range they span. A heatmap and bars are made
+// when they are painted – a heatmap with its maps laid out and magnified, bars for the
+// canvas's size – and live only until they are on the screen.
+const prepare = (view: TensorView, t: engine.Tensor): { picture: Picture, numbers: engine.Tensor, size?: [number, number] } => {
+  const numbers = (range: engine.Tensor) => (labelled(t.shape) ? t : range)
   if (view === "image") {
-    engine.materialize([t])
-    return { picture: t }
-  }
-  if (view === "heat") {
     const range = tensorOf(seeing.DrawExtent(t))
     engine.materialize([t, range])
-    return { picture: () => tensorOf(seeing.heat(t, range)), numbers: t.size < FEW ? t : range }
+    return { picture: t, numbers: range }
   }
   if (!t.size) { return { picture: () => null, numbers: t } }
+  if (view === "heat") {
+    // the maps' layout is known before anything is computed
+    const range = tensorOf(seeing.DrawExtent(t)), [h = 1, w = 1] = tensorOf(seeing.DrawTiles(t)).shape, k = heatScale(h, w)
+    engine.materialize([t, range])
+    return { picture: () => tensorOf(seeing.DrawHeatOf(t, range, engine.scalar(k))), numbers: numbers(range), size: [w * k, h * k] }
+  }
   const v = windowOf(t), n = engine.scalar(t.size), range = tensorOf(seeing.DrawExtent(v))
   engine.materialize([t, v, range])
   return {
     picture: ([w, h]) => (w >= 1 && h >= 1 ? tensorOf(seeing.DrawBarsOf(v, n, range, ...[w, h, roomy(w), roomy(h)].map(engine.scalar))) : null),
-    numbers: t.size < FEW ? t : range,
+    numbers: numbers(range),
   }
 }
 // Bars are drawn in a picture a little larger than their canvas – each side rounded up to
@@ -263,12 +266,11 @@ const roomy = (s: number) => Math.ceil(s / 128) * 128
 const describeTensor = (t: engine.Tensor): Desc => {
   const id = ++nextId, shape = [...t.shape], view = tensorView(shape)
   try {
-    if (view === "shape") { return { k: "tensor", id, shape } }
     if (view === "number") { return { k: "tensor", id, shape, ...numbersOf(id, t) } }
-    const { picture, numbers } = prepare(view, t)
+    const { picture, numbers, size } = prepare(view, t)
     pictures.set(id, picture)
     owner?.pictures.push(id)
-    return { k: "tensor", id, shape, paint: true, ...(numbers && numbersOf(id, numbers)) }
+    return { k: "tensor", id, shape, paint: true, ...numbersOf(id, numbers), ...(size && { size }) }
   } catch (e) {
     return describeError(asError(e))
   }

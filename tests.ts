@@ -6,7 +6,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test"
 import { Signal, effect } from "@preact/signals-core"
 import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, getOrigin, PRELUDE, type Value } from "./language"
 import { startHost } from "./host"
-import { numberText, type ToPage, type ToWorker } from "./protocol"
+import { numberText, tensorView, type ToPage, type ToWorker } from "./protocol"
 import { EXAMPLES } from "./examples"
 import { TOUR_SOURCE } from "./tour"
 
@@ -1780,6 +1780,19 @@ describe("pictures", () => {
   test("heatmaps given one span share one scale", () => {
     expect(value("heat([[1, 2]], [0, 4]) = [[viridis(0.25), viridis(0.5)]]")).toEqual([[[1, 1, 1], [1, 1, 1]]])
   })
+  test("maps stacked are small multiples on one scale, a NaN gap between", () => {
+    const tiled = value("heat(stack(([[0, 1]], [[2, 3]])))") as number[][][]
+    expect(tiled.length).toBe(1)
+    expect(tiled[0]!.length).toBe(5)
+    expect(value("heat(stack(([[0, 1]], [[2, 3]])))_0_0 = viridis(0)")).toEqual([1, 1, 1])
+    expect(value("heat(stack(([[0, 1]], [[2, 3]])))_0_4 = viridis(1)")).toEqual([1, 1, 1])
+    expect(value("isNaN(heat(stack(([[0, 1]], [[2, 3]])))_0_2)")).toEqual([1, 1, 1])
+    expect(value("shape(heat(fill([2, 3, 4, 5], 1)))")).toEqual([9, 17, 3])
+  })
+  test("one rule says how a tensor shows: colors are an image, any other rank 2 or more a heatmap", () => {
+    expect([[], [3], [2, 3], [2, 3, 3], [2, 3, 4], [2, 3, 2], [2, 3, 4, 5]].map(tensorView))
+      .toEqual(["number", "bars", "heat", "image", "image", "heat", "heat"])
+  })
 })
 
 // The host speaks to the page in plain data (protocol.ts): values cross as
@@ -1843,7 +1856,7 @@ describe("the evaluation host", () => {
   // What the painter puts on a canvas for a described picture, at a size in device pixels:
   // [r, g, b, a] per pixel, row by row
   let slots = 100
-  const paintOf = async (d: any, size: [number, number] = [0, 0]): Promise<{ width: number, height: number, px: (i: number) => number[] }> => {
+  const paintOf = async (d: any, size: [number, number] = [0, 0]): Promise<{ width: number, height: number, px: (i: number) => number[], at: (x: number, y: number) => number[], cell: (r: number, c: number, dx?: number) => number[], k: number }> => {
     let image: { width: number, height: number, data: Uint8ClampedArray } | null = null
     const canvas = { width: 0, height: 0, getContext: () => ({ createImageData: (w: number, h: number) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }), putImageData: (i: typeof image) => { image = i } }) }
     const slot = ++slots
@@ -1852,7 +1865,10 @@ describe("the evaluation host", () => {
     for (let i = 0; i < 400 && !image; i++) { await pause(5) }
     toHost({ t: "canvasGone", slot })
     const { width, height, data } = image!
-    return { width, height, px: (i) => [...data.subarray(4 * i, 4 * i + 4)] }
+    const at = (x: number, y: number) => [...data.subarray(4 * (Math.floor(y) * width + Math.floor(x)), 4 * (Math.floor(y) * width + Math.floor(x)) + 4)]
+    // a map's cell (r, c), at its center or a way from it: a heatmap comes magnified, `size` its pixels
+    const k = d.size && d.shape.length === 2 ? d.size[0] / d.shape[1] : 1
+    return { width, height, px: (i) => [...data.subarray(4 * i, 4 * i + 4)], at, cell: (r: number, c: number, dx = 0) => at((c + 0.5) * k + dx, (r + 0.5) * k), k }
   }
 
   test("one ∞ doesn't blank a bar chart: the range is the finite values'", async () => {
@@ -1866,24 +1882,30 @@ describe("the evaluation host", () => {
     expect(inked.at(-1)).toBe(height - 1)
   })
 
-  test("one ∞ doesn't flatten a heatmap, and a NaN is a hole, not the minimum's color", async () => {
+  test("one ∞ doesn't flatten a heatmap, a NaN is a hole, and ±∞ carry a ring", async () => {
     // regression: ∞ set the range, so every finite cell got the minimum's color, and so
     // did the ∞ and the NaN
-    const d = await evaluate("x: 0 ..< 25, where(x = 24, 1 ÷ 0, where(x = 12, 0 ÷ 0, x)) ⍴ [5, 5]")
+    const d = await evaluate("x: 0 ..< 25, where(x = 24, 1 ÷ 0, where(x = 6, -1 ÷ 0, where(x = 12, 0 ÷ 0, x))) ⍴ [5, 5]")
     expect([...d.payload]).toEqual([0, 23])
-    const { px } = await paintOf(d)
-    expect(px(0)).toEqual([68, 1, 84, 255])
-    expect(px(23)).toEqual([253, 231, 37, 255])
-    expect(px(24)).toEqual([253, 231, 37, 255])
-    expect(px(12)[3]).toBe(0)
-    expect(new Set(Array.from({ length: 25 }, (_, i) => String(px(i)))).size).toBe(24)
+    expect(d.size).toEqual([5 * 52, 5 * 52])
+    const { cell, k } = await paintOf(d)
+    const at = (i: number, dx = 0) => cell(Math.floor(i / 5), i % 5, dx)
+    expect(at(0)).toEqual([68, 1, 84, 255])
+    expect(at(23)).toEqual([253, 231, 37, 255])
+    expect(at(24)).toEqual([253, 231, 37, 255])
+    expect(at(12)[3]).toBe(0)
+    expect(new Set(Array.from({ length: 25 }, (_, i) => String(at(i)))).size).toBe(23)
+    // a ring a third of the way out: dark on ∞'s yellow, light on -∞'s purple, none on 23
+    expect(at(24, 0.3 * k)).toEqual([23, 23, 23, 255])
+    expect(at(6, 0.3 * k)).toEqual([242, 242, 242, 255])
+    expect(at(23, 0.3 * k)).toEqual([253, 231, 37, 255])
   })
 
   test("a heatmap of tiny values shows them apart", async () => {
     // regression: the range was at least 1e-6 wide, so values closer than that took one color
-    const { px } = await paintOf(await evaluate("[[0, 1e-8], [2e-8, 3e-8]]"))
-    expect(px(0)).toEqual([68, 1, 84, 255])
-    expect(px(3)).toEqual([253, 231, 37, 255])
+    const { cell } = await paintOf(await evaluate("[[0, 1e-8], [2e-8, 3e-8]]"))
+    expect(cell(0, 0)).toEqual([68, 1, 84, 255])
+    expect(cell(1, 1)).toEqual([253, 231, 37, 255])
   })
 
   test("a few values cross with their picture, for its labels", async () => {
@@ -1906,8 +1928,39 @@ describe("the evaluation host", () => {
   })
 
   test("a program's own heat doesn't change how its values show", async () => {
-    const { px } = await paintOf(await evaluate("heat: { x | 0 }, [[1, 2], [3, 4]]"))
-    expect(px(0)).toEqual([68, 1, 84, 255])
+    const { cell } = await paintOf(await evaluate("heat: { x | 0 }, [[1, 2], [3, 4]]"))
+    expect(cell(0, 0)).toEqual([68, 1, 84, 255])
+  })
+
+  test("a tensor of rank 3 or more shows as small multiples on one scale", async () => {
+    // regression: rank 3 showed its first channel as an image, clipped, and rank 4 no picture
+    const d = await evaluate("reshape(0 ..< 30, [2, 3, 5])")
+    expect([d.paint, [...d.payload]]).toEqual([true, [0, 29]])
+    // two 3 × 5 maps across, a gap between: 3 × 11 cells, 24 pixels each
+    expect(d.size).toEqual([11 * 24, 3 * 24])
+    const { at } = await paintOf(d)
+    const cell = (r: number, c: number) => at((c + 0.5) * 24, (r + 0.5) * 24)
+    expect(cell(0, 0)).toEqual([68, 1, 84, 255])
+    expect(cell(1, 5)[3]).toBe(0)
+    expect(cell(2, 10)).toEqual([253, 231, 37, 255])
+    const four = await evaluate("reshape(0 ..< 16, [2, 2, 2, 2])")
+    expect([four.paint, [...four.payload], four.size]).toEqual([true, [0, 15], [5 * 52, 5 * 52]])
+  })
+
+  test("[h, w, 3] and [h, w, 4] are images, with the range of their values", async () => {
+    const d = await evaluate("reshape(0 ..< 12, [2, 2, 3]) ÷ 22 - 0.25")
+    expect([...d.payload]).toEqual([-0.25, 0.25])
+    const rgba = await evaluate("fill([2, 2, 4], 0.5)")
+    const { px } = await paintOf(rgba)
+    expect(px(0)).toEqual([128, 128, 128, 128])
+  })
+
+  test("a bar past the scale ends in a caret", async () => {
+    const d = await evaluate("x: 0 ..< 24, where(x = 5, 1 ÷ 0, x)")
+    const { at } = await paintOf(d, [240, 60])
+    // the ∞ bar's center is at 54.5: its caret's tip is one row down from the top
+    expect(at(54, 1)).toEqual([23, 23, 23, 255])
+    expect(at(54, 6)).toEqual([253, 231, 37, 255])
   })
 
   test("Fetch of a missing file is an Error, not the server's 404 page", async () => {

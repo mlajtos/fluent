@@ -1,9 +1,8 @@
 // MARK: Painter
 // A picture the page shows is painted by the worker into a canvas the page handed over. A
-// picture is an image, [h, w, c] in 0–1: one channel is gray, three are RGB, anything else
-// shows its first channel. A NaN is a hole, and the canvas stays clear there. On the GPU
-// the image's buffer goes straight to the screen. An image larger than the canvas allows
-// shows every n-th pixel.
+// picture is an image, [h, w, 3] or [h, w, 4] in 0–1: RGB or RGBA. A NaN is a hole, and the
+// canvas stays clear there. On the GPU the image's buffer goes straight to the screen. An
+// image larger than the canvas allows shows every n-th pixel.
 
 import * as engine from "./engine/tensor.ts"
 import { MATHS } from "./engine/ir.ts"
@@ -73,10 +72,10 @@ struct Image { width: u32, channels: u32, step: u32 }
 
 @fragment fn pixel(@builtin(position) p: vec4f) -> @location(0) vec4f {
   let at = (u32(p.y) * image.width + u32(p.x)) * image.step * image.channels;
-  let i = select(vec3u(at), vec3u(at, at + 1u, at + 2u), image.channels == 3u);
-  let c = vec3f(values[i.x], values[i.y], values[i.z]);
-  if (${nan("c.x")} + ${nan("c.y")} + ${nan("c.z")} > 0.0) { return vec4f(0.0); }
-  return vec4f(clamp(c, vec3f(0.0), vec3f(1.0)), 1.0);
+  let c = vec4f(values[at], values[at + 1u], values[at + 2u], select(1.0, values[at + image.channels - 1u], image.channels == 4u));
+  if (${["x", "y", "z", "w"].map((k) => nan(`c.${k}`)).join(" + ")} > 0.0) { return vec4f(0.0); }
+  let a = clamp(c.w, 0.0, 1.0);
+  return vec4f(clamp(c.rgb, vec3f(0.0), vec3f(1.0)) * a, a);
 }
 `
 
@@ -149,15 +148,14 @@ export class CpuPainter extends Painter<CpuTarget> {
   protected async draw({ context }: CpuTarget, image: engine.Tensor, { w, channels, step, width, height }: Layout): Promise<void> {
     const values = await image.read()
     const picture = context.createImageData(width, height), out = picture.data
-    const c = channels === 3 ? 1 : 0
     for (let y = 0, p = 0; y < height; y++) {
       for (let x = 0; x < width; x++, p += 4) {
-        const at = (y * w + x) * step * channels, r = values[at]!, g = values[at + c]!, b = values[at + 2 * c]!
-        if (r !== r || g !== g || b !== b) { continue }
+        const at = (y * w + x) * step * channels, r = values[at]!, g = values[at + 1]!, b = values[at + 2]!, a = channels === 4 ? values[at + 3]! : 1
+        if (r !== r || g !== g || b !== b || a !== a) { continue }
         out[p] = r * 255
         out[p + 1] = g * 255
         out[p + 2] = b * 255
-        out[p + 3] = 255
+        out[p + 3] = a * 255
       }
     }
     context.putImageData(picture, 0, 0)
