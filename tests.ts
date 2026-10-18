@@ -393,6 +393,17 @@ describe("tensors", () => {
     expect(value("(Σ ⍤ -1)([[[1,2],[3,4]],[[5,6],[7,8]]])")).toEqual([10, 26])   // sum each 2×2
     expect(value("(Σ ⍤ 1)([[[1,2],[3,4]],[[5,6],[7,8]]])")).toEqual([[3, 7], [11, 15]])   // sum each row
   })
+  test("rank ⍤'s two frames agree as they do under +", () => {
+    expect(run("[[1,2,3],[4,5,6]] (+ ⍤ 0) [[10,20],[30,40],[50,60]]")).toBeInstanceOf(Error)   // [2 3] vs [3 2]
+    expect(run("[1,2,3,4,5,6] (+ ⍤ 0) [[10,20],[30,40],[50,60]]")).toBeInstanceOf(Error)
+    expect(value("[1,2] (+ ⍤ 0) [[10],[20]]")).toEqual(value("[1,2] + [[10],[20]]"))          // f ⍤ 0 is f for a scalar f
+  })
+  test("rank ⍤ over an empty frame gives an empty result", () => {
+    expect(value("(sin ⍤ 0)([])")).toEqual([])
+    expect(value("shape((softmax ⍤ 1)(fill([0, 3], 1)))")).toEqual([0, 3])
+    expect(value("shape((Σ ⍤ 1)(fill([0, 3], 1)))")).toEqual([0])
+    expect((run("stack(())") as Error).message).toBe("stack: needs at least one array")
+  })
   test("inner product ∙ is matmul, and swaps its ring", () => {
     expect(value("[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]]")).toEqual([[19, 22], [43, 50]])   // ×∙+ = matmul
     expect(value("[1,2,3] (× ∙ +) [4,5,6]")).toBe(32)                                     // vectors → dot
@@ -416,6 +427,11 @@ describe("tensors", () => {
     expect(value("conv(0 ..< 6, [1, 2, 1])")).toEqual([1, 4, 8, 12, 16, 14])
     expect(value("conv([[0, 0, 0], [0, 1, 0], [0, 0, 0]], [[0, 1, 0], [1, -4, 1], [0, 1, 0]])"))
       .toEqual([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
+  })
+  test("a kernel of lower rank runs over the last axes, each row on its own", () => {
+    expect(value("[[1,2,3,4],[10,20,30,40]] ⊛ [1,1,1]")).toEqual([[3, 6, 9, 7], [30, 60, 90, 70]])
+    expect(value("[[3,1,2],[6,4,5]] ⊛ [1,1]")).toEqual([value("[3,1,2] ⊛ [1,1]"), value("[6,4,5] ⊛ [1,1]")])
+    expect(value("shape(fill([2,3,4],1) ⊛ [1,1,1])")).toEqual([2, 3, 4])
   })
 })
 

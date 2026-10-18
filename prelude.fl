@@ -185,35 +185,36 @@ reverse: TensorReverse: doc({ x, k |
 }, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "0..<3 (⊗ ×) 0..<3 = [[0, 0, 0], [0, 1, 2], [0, 2, 4]]"),
 (⍤): rank: TensorRank: doc({ f, rank |
   k: cond(guard(identical(rank, ◌), { 0 }), { rank }),
-  cells: { a |
-    s: shape(a), r: #s,
-    split: cond(guard(k ≥ 0, { r - k ⌈ 0 }), { (-k) ⌊ r }),
-    frame: slice(s, [0], [split]),
-    (frame, unstack(a ⍴ concat(([Π(frame)], slice(s, [split])))))
+  ; the frame of an array of shape s: all but its last k axes, or its first -k
+  frameOf: { s | r: #s, slice(s, [0], [cond(guard(k ≥ 0, { r - k ⌈ 0 }), { (-k) ⌊ r })]) },
+  ; x's cells over the frame F, x broadcast to it, and the shape of one cell
+  cellsOf: { x, F |
+    s: shape(x), c: slice(s, [#(frameOf(s))]),
+    (unstack(broadcast(x ⍴ concat((fill([#(F) - (#(s) - #(c))], 1), s)), concat((F, c))) ⍴ concat(([Π(F)], c))), c)
   },
   { a, b |
-    A: cells(a), ca: ListGet(A, 1), na: ListLength(ca),
-    out: cond(
-      guard(identical(b, ◌), { (ListGet(A, 0), ListMap(ca, { c | f(c) })) }),
-      {
-        B: cells(b), cb: ListGet(B, 1), nb: ListLength(cb),
-        cond(
-          guard(na≠nb ∧ na≠1 ∧ nb≠1, { Error("`(f ⍤ k)`: dyadic rank needs frames that match or broadcast") }),
-          { (
-            cond(guard(na ≥ nb, { ListGet(A, 0) }), { ListGet(B, 0) }),
-            ListMap(unstack(0..<(na ⌈ nb)), { i | f(ListGet(ca, where(na = 1, 0, i)), ListGet(cb, where(nb = 1, 0, i))) })
-          ) }
-        )
-      }
-    ),
-    cond(guard(isError(out), { out }), {
-      rs: ListGet(out, 1),
-      ; the first cell that failed is the answer
-      bad: ListReduce(rs, { e, v | cond(guard(isError(e), { e }), guard(isError(v), { v }), 0) }, 0),
-      cond(guard(isError(bad), { bad }), { st: stack(rs), st ⍴ concat((ListGet(out, 0), slice(shape(st), [1]))) })
+    one: identical(b, ◌),
+    ; two frames agree as they do under +
+    S: cond(guard(one, { fill(frameOf(shape(a)), 0) }), { fill(frameOf(shape(a)), 0) + fill(frameOf(shape(b)), 0) }),
+    cond(guard(isError(S), { Error("`(f ⍤ k)`: dyadic rank needs frames that match or broadcast", S) }), {
+      F: shape(S), A: cellsOf(a, F), B: cond(guard(one, { A }), { cellsOf(b, F) }),
+      cond(
+        ; no cells: f on a cell of zeros tells the shape of the result's cells, as in J
+        guard(Π(F) = 0, {
+          z: cond(guard(one, { f(fill(A_1, 0)) }), { f(fill(A_1, 0), fill(B_1, 0)) }),
+          cond(guard(isError(z), { z }), { fill(concat((F, shape(z))), 0) })
+        }),
+        {
+          cs: A_0, ds: B_0,
+          rs: cond(guard(one, { ListMap(cs, { c | f(c) }) }), { ListMap(cs, { c, i | f(c, ListGet(ds, i)) }) }),
+          ; the first cell that failed is the answer
+          bad: ListReduce(rs, { e, v | cond(guard(isError(e), { e }), guard(isError(v), { v }), 0) }, 0),
+          cond(guard(isError(bad), { bad }), { st: stack(rs), st ⍴ concat((F, slice(shape(st), [1]))) })
+        }
+      )
     })
   }
-}, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1, 2, 3], [4, 5, 6]]) = [6, 15]"),
+}, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Two frames agree as they do under +. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1, 2, 3], [4, 5, 6]]) = [6, 15]"),
 (∙): inner: TensorInner: doc({ g, f | { a, b |
   sa: shape(a), sb: shape(b), ra: #sa, rb: #sb,
   cond(
@@ -250,7 +251,7 @@ windows: TensorWindows: doc({ w, arr | moveaxis(moveaxis(window(moveaxis(arr, 0,
 chunks: TensorChunks: doc({ w, arr | arr ⍴ concat(([-1, w], slice(shape(arr), [1]))) }, "chunks(w, arr)", "Split arr into non-overlapping width-w chunks; arr's length should be a multiple of w.", "chunks(2, [1, 2, 3, 4]) = [[1, 2], [3, 4]]"),
 
 (⌺): stencil: TensorStencil: doc({ w, f, arr | (f alongAxis 1)(windows(w, arr)) }, "stencil(w, f, arr)", "Slide a width-w window along arr's leading axis, reducing each with f – a windowed map. stencil(w, Σ, …) is a moving sum. The glyph is APL's stencil.", "stencil(3, Σ, [1, 2, 3, 4, 5]) = [6, 9, 12]"),
-(⊛): conv: doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]"),
+(⊛): conv: doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. A kernel of lower rank runs over the last axes, each row on its own. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]"),
 
 ; List operations – a list is a heterogeneous (a, b, …); these are its verbs,
 ; kept prefixed so they never blur into the tensor vocabulary (ListMap vs ⍤).
