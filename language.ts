@@ -444,6 +444,8 @@ const scheduleRetirementFlush = () => {
 function evaluateGeneration<T>(evaluate: () => T): T {
   const previous = currentGeneration
   currentGeneration = { disposables: new Set() }
+  // every run draws the same random numbers, so the same program trains the same weights
+  rngCounter = 0
   try {
     return evaluate()
   } finally {
@@ -1302,7 +1304,7 @@ const TensorAssign = (a: Value, b: Value): Value => {
 // step, :=)
 const TensorWatch = (a: Value): Value => a instanceof FluentVariable ? computed(() => (a.version.value, a.current)) : a
 
-// A fresh key per call – deterministic per page load, not across reloads
+// A fresh key per call, counted from 0 in each evaluation
 let rngCounter = 0
 const TensorRandomUniform = (a: Value) => engine.uniform(rngCounter++, asWholeList(a))
 

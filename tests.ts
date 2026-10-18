@@ -764,6 +764,11 @@ describe("training: ∇ follows what the loss reads", () => {
     expect(θ[0]).toBeCloseTo(-3, 5)
     expect(θ[1]).toBeCloseTo(-4, 5)
   })
+  test("the same program trains the same weights on every run", () => {
+    // random init, and a fresh random batch every step
+    const src = "W: ~randn([3, 2]), 𝓛: { x: ⚄([4, 3]), mean((matmul(x, W) - 1)^2) }, opt: adam(0.1), ({ s | opt(𝓛) } ⍣ 5)(0), W"
+    expect(value(src)).toEqual(value(src))
+  })
   test("a loss that reads no variable is a loud error", () => {
     expect(run("opt: adam(0.1), opt({ 3 })")).toBeInstanceOf(Error)
   })
