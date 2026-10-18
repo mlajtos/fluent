@@ -80,7 +80,6 @@ import {
   connect, mirrors, payloads, root, update, write, call,
   type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where,
 } from "./protocol"
-import { Documentation } from "./documentation"
 import { EXAMPLES } from "./examples"
 import { useSignals } from "@preact/signals-react/runtime"
 import { ErrorBoundary } from "react-error-boundary"

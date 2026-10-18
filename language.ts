@@ -1435,7 +1435,7 @@ export {
   engine, FluentVariable, FluentData, isTensor, TensorScalarLive,
   CodeParse, getParseErrors,
   evaluateSyntaxTreeNode, CodeEvaluate, getAsSyncList, getMeta, setMeta, getOrigin,
-  evaluateGeneration, flushRetirements, registerDisposable,
+  evaluateGeneration, flushRetirements, registerDisposable, nextFrame, asError,
   NoMatch, StringLiteral,
   DefaultEnvironment, extendEnvironment, setCodeNodePrinter, PRELUDE, createScope,
   SignalCreate, SignalUpdate,

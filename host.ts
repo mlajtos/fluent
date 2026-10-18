@@ -9,7 +9,7 @@ import {
   CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate, createScope, DefaultEnvironment,
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, getOrigin, SignalCreate, SignalUpdate, StringLiteral,
-  engine, FluentVariable, isTensor, TensorScalarLive,
+  engine, FluentVariable, isTensor, TensorScalarLive, asError, nextFrame,
   type Value, type SyntaxTreeNode, type Origin, type CurrentScope,
 } from "./language"
 import {
@@ -22,9 +22,6 @@ import { CpuPainter, GpuPainter, prepare, type Picture } from "./painter"
 
 type Post = (message: ToPage, transfer?: Transferable[]) => void
 let post: Post = () => { }
-
-const nextFrame = (cb: () => void) => { typeof requestAnimationFrame === "function" ? requestAnimationFrame(cb) : setTimeout(cb, 16) }
-const asError = (e: unknown): Error => e instanceof Error ? e : new Error(String(e))
 
 let nextId = 0
 
