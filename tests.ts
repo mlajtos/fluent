@@ -1274,12 +1274,14 @@ describe("inverse and ⍢ around", () => {
     expect(value("-3 (= over abs) 3")).toBe(1)
     expect(value("(√ compose +)(9, 16)")).toBe(5)
   })
-  test("solve finds the x near the seed, or says there is none", () => {
+  test("solve finds the x near the seed, or says it didn't land", () => {
     expect(value("solve(cos, 0, 1)")).toBeCloseTo(Math.PI / 2, 5)
+    // cos is flat at 0, so Newton can't step from there – though π/2 solves it
     const none = run("solve(cos, 0, 0)") as Error
     expect(none).toBeInstanceOf(Error)
     expect(none).not.toBeInstanceOf(NoMatch)
-    expect(none.message).toContain("no solution near the seed")
+    expect(none.message).toStartWith("solve: Newton's method didn't reach g(x) = y from the seed")
+    expect(none.message).not.toContain("no solution near the seed")
     expect(value("inverse({ x | x^3 + x })(10)")).toBeCloseTo(2, 5)
     expect(value("2 inverse(^) 8")).toBeCloseTo(3, 5)
     expect(value("inverse(log)([1, 2, 3])")).toEqual([Math.E, Math.E ** 2, Math.E ** 3].map((x) => expect.closeTo(x, 4)))
