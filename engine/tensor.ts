@@ -374,7 +374,7 @@ export const where = (c: Like, a: Like, b: Like): Tensor => wrap(ir.where(nodeOf
 // ── shape ───────────────────────────────────────────────────────────────────────
 const normAxis = (axis: number, rank: number): number => {
   const a = axis < 0 ? axis + rank : axis;
-  if (a < 0 || a >= rank) throw new Error(`axis ${axis} is out of bounds for an array of rank ${rank}`);
+  if (a < 0 || a >= rank) throw new Error(rank ? `there is no axis ${axis}: the value has ${rank} ${rank === 1 ? "axis" : "axes"}` : `a single number has no axis ${axis}`);
   return a;
 };
 export function reshape(a: Like, shape: readonly number[]): Tensor {

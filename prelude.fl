@@ -387,8 +387,8 @@ scan: TensorScan: doc({ x, f, k |
 ; max and min reduce, like sum; the glyphs are APL's ⌈ and ⌊ – ceiling and floor of
 ; one tensor, the pairwise max and min of two. One function can't be both: max(x, axis)
 ; and max(a, b) look alike, and the axis would be taken for an operand
-max: doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor.", "max([3, 1, 2]) = 3"),
-min: doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the whole tensor.", "min([3, 1, 2]) = 1"),
+max: doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor. The larger of two numbers is a ⌈ b.", "max([3, 1, 2]) = 3"),
+min: doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the whole tensor. The smaller of two numbers is a ⌊ b.", "min([3, 1, 2]) = 1"),
 (⌈): FunctionArity((doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]"), TensorCeil)),
 (⌊): FunctionArity((doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]"), TensorFloor)),
 argmax: TensorArgMax: doc({ x, k |
