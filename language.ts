@@ -1051,9 +1051,9 @@ const FunctionGuard = function (this: CurrentScope, cond: Value, body: Value) {
   const candidate = made(function () {
     if (holds) { return isFn(body) ? body.apply(scope) : body }
     // the guard's own call site, so hovering the decline finds it
-    const decline = NoMatch.of("guard: the condition doesn't hold")
-    setOrigin(decline, getOrigin(candidate))
-    return decline
+    const no = NoMatch.of("guard: the condition doesn't hold")
+    setOrigin(no, getOrigin(candidate))
+    return no
   })
   return candidate
 }
@@ -1650,9 +1650,7 @@ const ListReduce = function (this: CurrentScope, a: Value, fn: Value, init?: Val
   for (const v of init == null ? a.slice(1) : a) { acc = fn.call(this, acc, v) }
   return acc
 }
-const StringReduce = function (this: CurrentScope, a: Value, fn: Value, init?: Value) {
-  return isText(a) ? ListReduce.call(this, chars(a), fn, init) : decline("a string", a)
-}
+const StringReduce = function (this: CurrentScope, a: Value, fn: Value, init?: Value) { return isText(a) ? ListReduce.call(this, chars(a), fn, init) : decline("a string", a) }
 // axis 0 as a reusable value – the default a fold collapses
 const LEADING_AXIS: Value = engine.tensor(0)
 // A tensor's rows, or its slices along the axis given: `1 ..< 10 reduce +` = 45, `x reduce
@@ -1671,9 +1669,7 @@ const TensorReduce = function (this: CurrentScope, a: Value, fn: Value, axis?: V
 }
 // fold(x, f, start): f walks the items from start. A tensor's reduce takes an axis
 // third, so its fold is a member of its own.
-const TensorFold = function (this: CurrentScope, a: Value, fn: Value, start?: Value) {
-  return isTensorish(a) ? ListReduce.call(this, [...rowsOf(a)], fn, start) : decline("numbers", a)
-}
+const TensorFold = function (this: CurrentScope, a: Value, fn: Value, start?: Value) { return isTensorish(a) ? ListReduce.call(this, [...rowsOf(a)], fn, start) : decline("numbers", a) }
 
 // ListReduce keeping every step: (init, f(init, a₀), …) – from a₀ when there is no init.
 // TensorScan is the prelude's.
@@ -1684,9 +1680,7 @@ const ListScan = function (this: CurrentScope, a: Value, fn: Value, init?: Value
   for (const v of init == null ? a.slice(1) : a) { out.push(fn.call(this, out.at(-1)!, v)) }
   return out
 }
-const StringScan = function (this: CurrentScope, a: Value, fn: Value, init?: Value) {
-  return isText(a) ? ListScan.call(this, chars(a), fn, init) : decline("a string", a)
-}
+const StringScan = function (this: CurrentScope, a: Value, fn: Value, init?: Value) { return isText(a) ? ListScan.call(this, chars(a), fn, init) : decline("a string", a) }
 
 // A member the prelude writes in Fluent, for numbers: f, declining any other value
 const TensorOnly = (f: Value) => isFn(f)
