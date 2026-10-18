@@ -464,10 +464,10 @@ whole: $(φ(φ(X)) ⍴ [96]), ; φ(φ(x)) – snaps onto eˣ
   Text("A net **φ** trained on one rule — **φ(φ(x)) = eˣ** — with no labels, only self-consistency. It learns √exp, a function with no closed form."),
   Text("**loss** — self-consistency, converging:"),
   losses,
-  Text("**φ(x)** (middle) settles between **x** (line) and **eˣ** (top) — genuinely halfway:"),
-  (x, half, exp(x)),
+  Text("**φ(x)** (middle) settles between **x** (bottom) and **eˣ** (top) — genuinely halfway:"),
+  plot(x, (x, half, exp(x)), ("x", "phi(x)", "exp(x)")),
   Text("**φ(φ(x))** lands on **eˣ**:"),
-  (exp(x), whole),
+  plot(x, (exp(x), whole), ("exp(x)", "phi(phi(x))")),
 )
 `,
   "deep-delta-learning": `

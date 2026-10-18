@@ -588,6 +588,75 @@ draw: DrawShape: doc({ shape, color, width |
   }
 }, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width pixels wide in color, its edges antialiased.", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
 
+; Plotting – lines on one pair of axes, drawn with the words above. A label is text as a
+; shape, in a 3×5 pixel font: a glyph for each code from 32 (space) to 90 (Z), each a
+; 15-bit number, top row first
+DrawGlyphs: [0, 0, 0, 0, 0, 21157, 0, 0, 10530, 8778, 0, 1488, 20, 448, 2, 4772, 31599, 11415, 29671, 29391, 23497, 31183, 31215, 29330, 31727, 31695, 1040, 0, 0, 3640, 0, 0, 0, 11245, 27566, 14627, 27502, 31143, 31140, 14699, 23533, 29847, 4714, 23469, 18727, 24557, 27501, 11114, 27556, 11123, 27565, 14478, 29842, 23407, 23402, 23549, 23213, 23186, 29351],
+label: DrawLabel: doc({ s, at, size |
+  codes: cond(guard(isString(s), { StringToCodes(s) }), { s }),
+  ; a to z draw as A to Z; a code with no glyph draws as a space
+  i: where(codes ≥ 97, codes - 64, codes - 32),
+  g: take(DrawGlyphs, where(0≤i ∧ i<59, i, 0)),
+  n: #codes,
+  { p |
+    ; the glyph cell p falls in: a character is 3 cells and a gap wide, 5 tall
+    c: floor(moveaxis(p - at ÷ size, -1, 0)),
+    k: floor(c_0 ÷ 4), q: c_0 - 4×k, r: c_1,
+    lit: floor(take(g, clamp(k, 0, n-1)) ÷ 2^(14 - (3×r + q))) % 2,
+    where(0≤k ∧ k<n ∧ q<3 ∧ 0≤r ∧ r<5 ∧ lit, 0, 1e9)
+  }
+}, "label(text, at, size)", "The shape of a line of text, from its top-left corner at, in a 3×5 pixel font scaled by size: distance 0 on the letters, far elsewhere. Letters draw as capitals; text may also be character codes.", "Σ(canvas(4, 5, 0) . draw(label(\"1\", [0, 0], 1), 1, 1)) = 24"),
+; x as the codes of 3 significant digits, at most 3 decimals – "2.31", "-0.052", "1200" –
+; spaces filling 8 cells; arithmetic only, so it never waits for x to be read back
+DrawDigits: { x |
+  a: abs(x),
+  P: [1, 10, 100, 1000, 10000, 100000, 1000000],
+  e: Σ([0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000, 100000] ≤ a) - 4,
+  d: clamp(2 - e, 0, 3) × (a ≠ round(a)), ; a whole number has no decimals
+  m: round(a × take(P, d)),
+  n: Σ(P ≤ m) ⌈ (d + 1),
+  point: n - d,
+  j: 0..<8 - (x < 0),
+  t: j - (d>0 ∧ j>point),
+  digit: 48 + (floor(m + 0.5 ÷ take(P, clamp(n-1 - t, 0, 6))) % 10),
+  where(j < 0, 45, where(d>0 ∧ j=point, 46, where(t < n, digit, 32)))
+},
+plot: DrawPlot: doc({ x, ys, names |
+  rows: cond(guard(isList(ys), { stack(ys) }), guard((#shape(ys)) = 1, { ys ⍴ [1, -1] }), { ys }),
+  k: #rows, n: shape(rows)_1,
+  ; the picture, and the box the data fills
+  W: 480, H: 160, L: 52, R: 380, T: 8, B: 136,
+  cond(guard(n < 2, { canvas(W, H) }), {
+    ink: [0.765, 0.761, 0.718], faint: [0.537, 0.529, 0.506],
+    colors: [[0.224, 0.529, 0.898], [0.851, 0.349, 0.149], [0.098, 0.62, 0.439], [0.788, 0.522, 0], [0.835, 0.318, 0.506], [0, 0.514, 0], [0.565, 0.522, 0.914], [0.902, 0.404, 0.404]],
+    lo: min(rows), hi: max(rows),
+    sx: { v | v - x_0 ÷ (x_(-1) - x_0 ⌈ 1e-9) × (R - L) + L },
+    sy: { v | hi - v ÷ (hi - lo ⌈ 1e-9) × (B - T) + T },
+    text: { s, at, color | draw(label(s, at, 2), color, 1) },
+    width: { c | Σ(c ≠ 32) × 8 - 2 },
+    top: DrawDigits(hi), bottom: DrawDigits(lo), first: DrawDigits(x_0), end: DrawDigits(x_(-1)),
+    ; a range frame: each axis spans the data, labeled at its ends
+    frame: canvas(W, H)
+      . draw(line([[L - 6, T], [L - 6, B]]), faint, 1)
+      . draw(line([[L, B + 6], [R, B + 6]]), faint, 1)
+      . text(top, [L - 10 - width(top), T - 4], faint)
+      . text(bottom, [L - 10 - width(bottom), B - 5], faint)
+      . text(first, [L, B + 12], faint)
+      . text(end, [R - width(end), B + 12], faint),
+    ; each line labeled at its end, the labels pushed apart so they never overlap
+    last: slice(rows, [0, n-1]) ⍴ [k],
+    order: argsort(sy(last)),
+    steps: 0..<k × 12,
+    at: take(scan(take(sy(last), order) - steps, ⌈) + steps, argsort(order)),
+    ListReduce(unstack(0..<k), { pic, i |
+      words: cond(guard(isList(names), { concat((StringToCodes(ListGet(names, i)), [32], DrawDigits(last_i))) }), { DrawDigits(last_i) }),
+      pic
+        . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 2)
+        . text(words, [R + 8, clamp(at_i - 5, 0, H - 10)], ink)
+    }, frame)
+  })
+}, "plot(x, ys, names?)", "Lines on one pair of axes: ys is a list of vectors, or a matrix of rows, each over the points x. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
+
 ; Optimization
 ; Optimizers. A step differentiates the loss with respect to the variables it reads –
 ; ∇(loss)() gives (value, variables, gradients) – and moves each variable against its

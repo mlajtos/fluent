@@ -1867,6 +1867,27 @@ describe("numbers come out right", () => {
   }, 30_000)
 })
 
+describe("plot: lines on one pair of axes", () => {
+  test("a number as the codes of its digits, worked out without reading it back", () => {
+    const shown = (x: number) => value(`CodesToString(DrawDigits(${x}))`).trimEnd()
+    expect([2.31, 0.052, 1200, -0.5, 9.996, 0, 3, 38.44].map(shown)).toEqual(["2.31", "0.052", "1200", "-0.500", "10.00", "0", "3", "38.4"])
+  })
+  test("a label is its glyphs' lit cells", () => {
+    // "1" lights 8 of its 15 cells, in three channels
+    expect(value(`Σ(canvas(4, 5, 0) . draw(label("1", [0, 0], 1), 1, 1))`)).toBe(24)
+    expect(value(`Σ(canvas(8, 5, 0) . draw(label("i ", [0, 0], 1), 1, 1)) = Σ(canvas(8, 5, 0) . draw(label("I", [0, 0], 1), 1, 1))`)).toBe(1)
+  })
+  test("each series draws in its own color, and a series of fewer than 2 points draws nothing", () => {
+    // how many pixels of the first two series colors the picture has
+    const count = (p: string) => value(`p: ${p}, near: { c | Σ(Σ(abs(p - c), -1) < 0.05) }, stack((near([0.224, 0.529, 0.898]), near([0.851, 0.349, 0.149])))`) as number[]
+    const [blue, orange] = count(`plot(0..<50, (0..<50, 50 - 0..<50), ("up", "down"))`)
+    expect(blue).toBeGreaterThan(300)
+    expect(orange).toBeGreaterThan(300)
+    expect(count(`plot(0..<1, [3])`)).toEqual([0, 0])
+    expect(value(`shape(plot(linspace([-1, 1], 9), [[1, 2, 3, 4, 5, 6, 7, 8, 9]]))`)).toEqual([160, 480, 3])
+  })
+})
+
 describe("the engine", () => {
   test("a computation past the memory budget is an Error, not an exhausted machine", () => {
     const big = run("x: fill([1000, 1000], 1), (x ⍴ [1000, 1000, 1, 1]) + (x ⍴ [1, 1, 1000, 1000])") as engine.Tensor
