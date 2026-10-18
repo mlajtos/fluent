@@ -3,7 +3,7 @@
 // backend (Bun has no WebGPU). `bun test` runs this file.
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test"
-import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, getOrigin, PRELUDE, Signal, occurrence, type Value } from "./language"
+import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, getOrigin, PRELUDE, Signal, occurrence, keepingFrom, type Value } from "./language"
 import { startHost } from "./host"
 import { numberText, tensorView, connect, update, call, write, mirrors, type ToPage, type ToWorker } from "./protocol"
 import { EXAMPLES } from "./examples"
@@ -743,6 +743,26 @@ describe("one model of time: cells, computeds, occurrences", () => {
       return unwrap(scope["θ"])
     }
     expect(stepped(true)).toEqual(stepped(false))
+  })
+  test("an edit keeps the last run's cells by name, expression and shape, and their memory", () => {
+    const program = (head: string, init = "~[0]") => `${head}, θ: ${init}, opt: sgd(0.1, 0.9), go: { opt({ Σ((θ - 3)^2) }) }`
+    const rerun = (from: Record<string, Value>, source: string) => {
+      const scope = createScope()
+      evaluateGeneration(() => keepingFrom(from, scope, () => evaluateSyntaxTreeNode(CodeParse(source), scope)))
+      return scope
+    }
+    const first = scopeOf(program("a: 1"))
+    occurrence(() => (first.go as Function)())
+    occurrence(() => (first.go as Function)())
+    expect(unwrap(first["θ"])[0]).toBeCloseTo(1.62, 5)
+    // an edit above it: the same cell, and its momentum carries on – 2.814, not a fresh 1.896
+    const second = rerun(first, program("a: 2"))
+    expect(second["θ"]).toBe(first["θ"])
+    occurrence(() => (second.go as Function)())
+    expect(unwrap(second["θ"])[0]).toBeCloseTo(2.814, 4)
+    // an edit of its own expression starts it afresh, as does another shape
+    expect(unwrap(rerun(second, program("a: 2", "~[5]"))["θ"])).toEqual([5])
+    expect(unwrap(rerun(second, program("a: 2", "~[0, 0]"))["θ"])).toEqual([0, 0])
   })
   test("the same occurrences give the same states", () => {
     const program = "x: 0 ..< 8, θ: ~[0, 0], 𝓛: { μ((x × θ_0 + θ_1 - x × 3)^2) }, opt: adam(0.1), step: { opt(𝓛) }"

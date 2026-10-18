@@ -952,12 +952,43 @@ const Reactive = (a: Value) => isFn(a) ? SignalComputed(a as () => Value) : Sign
 
 // name: value binds in the scope it is called from; the name arrives quoted. A binding is
 // the scope's own, even over a name the environment reads through a getter (Tour).
-const SymbolAssign = function (this: CurrentScope, name: Value, value: Value) {
+const SymbolAssign = function (this: CurrentScope, name: Value, made: Value) {
   if (typeof name !== "symbol") { return new Error(`\`name: value\` binds a name, got ${describeArg(name)}`) }
-  const key = Symbol.keyFor(name) ?? name.description ?? ""
+  const key = Symbol.keyFor(name) ?? name.description ?? "", value = kept(this, key, made)
   try { this[key] = value } catch { Object.defineProperty(this, key, { value, writable: true, enumerable: true, configurable: true }) }
   return value ?? null
 }
+
+// MARK: Keeping cells across edits
+// An edit runs the program again, in a fresh scope. A top-level ~ or ~~ is the cell of the
+// run before when it is bound under the same name, made by the same expression, to the
+// same shape – so an edit elsewhere keeps what training learned, and an edit of the cell's
+// own expression starts it afresh. What an optimizer remembers of a variable stays with
+// the variable, so a kept variable keeps its moments too.
+let keeping: { from: CurrentScope, into: CurrentScope } | null = null
+const keepingFrom = <T,>(from: CurrentScope | null, into: CurrentScope, run: () => T): T => {
+  keeping = from && { from, into }
+  try { return run() } finally { keeping = null }
+}
+const kept = (scope: CurrentScope, key: string, value: Value): Value => {
+  if (!keeping || scope !== keeping.into || !(value instanceof FluentVariable) || !Object.hasOwn(keeping.from, key)) { return value }
+  const old = keeping.from[key]
+  return old instanceof FluentVariable && old.constructor === value.constructor && getOrigin(old)?.source === getOrigin(value)?.source
+    && old.peek().shape.join() === value.peek().shape.join() ? old : value
+}
+// the slots an optimizer's init made for a variable, by the init's source
+const memories = new WeakMap<FluentVariable, Map<string, Value>>()
+const TensorMemoryOf = function (this: CurrentScope, v: Value, init: Value, make: Value): Value {
+  const fresh = isFn(make) ? make.apply(this) : make
+  if (!(v instanceof FluentVariable) || !Array.isArray(fresh)) { return fresh }
+  const key = (isFn(init) && getOrigin(init)?.source) || "", byInit = memories.get(v) ?? new Map<string, Value>()
+  memories.set(v, byInit)
+  const old = byInit.get(key), shapes = (m: Value) => Array.isArray(m) ? m.map((s) => s instanceof FluentVariable ? s.peek().shape.join() : "").join(";") : ""
+  if (Array.isArray(old) && shapes(old) === shapes(fresh)) { return old }
+  byInit.set(key, fresh)
+  return fresh
+}
+setMeta(TensorMemoryOf, { noAutoLift: true })
 setMeta(SymbolAssign, { quotedArgs: [0] })
 
 // f @ x applies f to x; a list spreads as the arguments. x . f is the same, read the
@@ -1680,7 +1711,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorPermute, TensorBroadcast, TensorPadAxis, TensorWindow, TensorTake, TensorScatterAdd, TensorRange,
   TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorLength, TensorShape, TensorGather,
   TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorRandomUniform,
-  List, ListLength, ListConcat, ListGet, ListMap, ListReduce, ListScan,
+  List, ListLength, ListConcat, ListGet, ListMap, ListReduce, ListScan, TensorMemoryOf,
   StringConcat, StringLiteral, StringLength, StringToCodes, CodesToString,
   Storage,
 })
@@ -1730,6 +1761,6 @@ export {
   evaluateGeneration, flushRetirements, registerDisposable, nextFrame, asError,
   NoMatch, StringLiteral,
   DefaultEnvironment, extendEnvironment, setCodeNodePrinter, PRELUDE, createScope,
-  SignalCreate, SignalUpdate, Signal, signal, computed, onWrite, awaiting, occurrence,
+  SignalCreate, SignalUpdate, Signal, signal, computed, onWrite, awaiting, occurrence, keepingFrom,
 }
 export type { Value, CurrentScope, SyntaxTreeNode, Origin, ParseError, FunctionMeta }

@@ -769,7 +769,7 @@ TensorOptimizerSlots: FunctionNoAutoLift({ held, vs, make |
 ; which take their arguments as they are – a live rate is read at each step.
 optimizer: Optimizer: doc(FunctionNoAutoLift({ init, rule, lr, only |
   ; a variable's memory: its step count, then its slots
-  memory: { v | ListConcat((~~0,), ListMap(init(v), { x | ~~x })) },
+  memory: { v | TensorMemoryOf(v, init, { ListConcat((~~0,), ListMap(init(v), { x | ~~x })) }) },
   ; given its variables, it makes their memory at once, so := can restore it before a step
   held: $cond(guard(isList(only), { (only, ListMap(only, memory)) }), ◌),
   joined: { ls | ListReduce(ls, { p, q | ListConcat(p, q) }, List()) },

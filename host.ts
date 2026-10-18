@@ -8,7 +8,7 @@ import {
   CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate, createScope, DefaultEnvironment,
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, getOrigin, SignalCreate, SignalUpdate, StringLiteral,
-  Signal, computed, signal, onWrite, awaiting, occurrence,
+  Signal, computed, signal, onWrite, awaiting, occurrence, keepingFrom,
   engine, isTensor, TensorScalarLive, asError, nextFrame,
   type Value, type SyntaxTreeNode, type Origin, type CurrentScope,
 } from "./language"
@@ -654,6 +654,8 @@ for (const f of [Text, Button, TextEditor, Slider, Checkbox, Scrubber, ImageUplo
 // MARK: Running the program
 
 let source: string | null = null
+// the last run's top-level scope: an edit keeps its cells by name
+let lastScope: CurrentScope | null = null
 let runScheduled = false
 
 // a burst of edits runs only the latest
@@ -689,13 +691,15 @@ const run = () => {
   documentIds.clear()
   sampleRateRead = false
   warnings.clear()
-  const code = source
+  const code = source, scope = createScope(), from = lastScope
   let value: Value
   try {
-    value = evaluateGeneration(() => evaluateStatements(CodeParse(code), createScope()))
+    // the cells the last run trained are this run's, where the program still makes them
+    value = evaluateGeneration(() => keepingFrom(from, scope, () => evaluateStatements(CodeParse(code), scope)))
   } catch (e) {
     value = asError(e)
   }
+  lastScope = scope
   // the value goes at once if the page may take it, before any loop's first frame
   program.value = value
   dirty.add(root)
