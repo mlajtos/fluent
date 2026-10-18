@@ -2980,6 +2980,61 @@ describe("the engine", () => {
     const tall = await lowered(matmul(ir.buffer("A", [1 << 20, 64]), ir.buffer("B", [64, 16])))
     expect(tiled(tall) && tall.every((k) => k.dispatch.every((d) => d <= 65535))).toBe(true)
   })
+  const forms = async (root: any) => {
+    const ir = await import("./engine/ir.ts")
+    const { lowerMany } = await import("./engine/gpu.ts")
+    return ir.toposort(lowerMany([root])[0]!).filter((u) => u.op === "KERNEL").map((u) => {
+      const { wgsl, dispatch } = u.arg as { wgsl: string; dispatch: number[] }
+      return { shape: u.shape.join(" "), dispatch: dispatch.join(" "), coop: wgsl.includes("var<workgroup> part") }
+    })
+  }
+  test("a long reduction to few outputs splits over workgroups, and a second kernel combines their partials", async () => {
+    const ir = await import("./engine/ir.ts")
+    const picture = ir.buffer("p", [800, 1280, 3])
+    for (const op of ["ADD", "MAX", "MUL"] as const)                      // a picture's range: 3 outputs, 1,024,000 terms each
+      expect(await forms(ir.reduceAxis(ir.reduceAxis(picture, 0, true, op), 1, true, op))).toEqual([
+        { shape: "32 3", dispatch: "3 1 32", coop: true }, { shape: "1 1 3", dispatch: "1", coop: false },
+      ])
+    expect(await forms(ir.sum(ir.buffer("v", [1 << 20])))).toEqual([{ shape: "96 1", dispatch: "1 1 96", coop: true }, { shape: "", dispatch: "1", coop: false }])
+    // a picture's range in rows reads its neighbours side by side: k's fastest digit is the column
+    const ks = (await import("./engine/gpu.ts")).lowerMany([ir.reduceAxis(ir.reduceAxis(picture, 0, true, "MAX"), 1, true, "MAX")])[0]!
+    expect(ir.toposort(ks).some((u) => u.op === "KERNEL" && (u.arg as { wgsl: string }).wgsl.includes("((k) / 1u) % 1280u"))).toBe(true)
+  })
+  test("a reduction to many outputs side by side in memory runs a thread an output; in rows, a workgroup an output", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { matmul } = await import("./engine/tests/vocab.ts")
+    expect(await forms(ir.reduceAxis(ir.buffer("x", [4096, 1024]), 0, false))).toEqual([{ shape: "1024", dispatch: "4", coop: false }])
+    expect(await forms(ir.reduceAxis(ir.buffer("x", [1024, 4096]), 1, false))).toEqual([{ shape: "1024", dispatch: "1024 1", coop: true }])
+    expect(await forms(matmul(ir.buffer("h", [1, 1024]), ir.buffer("W", [1024, 512])))).toEqual([{ shape: "1 512", dispatch: "2", coop: false }])
+    expect(await forms(ir.reduceAxis(ir.buffer("x", [4096, 64]), 0, false, "MAX"))).toEqual([{ shape: "64", dispatch: "64 1", coop: true }])   // few: the plain nest could not fill the machine
+  })
+  test("a sum or product over 2–4 elements is straight-line code, the same to the bit", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { optimize } = await import("./engine/opt.ts")
+    const { CPU } = await import("./engine/cpu.ts")
+    const x = ir.buffer("x", [1000, 3]), d = Float32Array.from({ length: 3000 }, (_, i) => Math.sin(i) * 10 ** (i % 7))
+    const loops = (k: any) => ir.toposort(k).filter((u) => u.op === "ACC").map((u) => (u.src[0]!.arg as { extent: number }).extent)
+    const sum3 = ir.reduceAxis(x, 1, false), prod3 = ir.reduceAxis(x, 1, false, "MUL"), max3 = ir.reduceMax(x, 1, false)
+    expect([sum3, prod3, max3].map((r) => loops(optimize(r)))).toEqual([[], [], [3]])   // a maximum keeps its loop
+    const [s, p] = new CPU().realizeSync([sum3, prod3], new Map([["x", { data: d, shape: [1000, 3] }]])).map((h) => h.data)
+    const f = Math.fround, want = (g: (a: number, b: number) => number, start: number) => Float32Array.from({ length: 1000 }, (_, i) => [0, 1, 2].reduce((a, c) => f(g(a, d[i * 3 + c]!)), start))
+    expect([s, p]).toEqual([want((a, b) => a + b, 0), want((a, b) => a * b, 1)])
+    // a term that reads a contraction runs that loop of its own: the squared distance of each
+    // joint of an arm, L·S, from a point (the reach demo's forward kinematics)
+    const L = Float32Array.from({ length: 256 }, (_, i) => (i % 17) - 8), S = Float32Array.from({ length: 32 }, (_, i) => (i % 5) - 2)
+    const P = ir.add((await import("./engine/tensor.ts")).cellMatmul(ir.buffer("L", [16, 16]), ir.buffer("S", [16, 2])), ir.konst(-3))
+    const [far] = new CPU().realizeSync([ir.reduceAxis(ir.mul(P, P), 1, false)], new Map([["L", { data: L, shape: [16, 16] }], ["S", { data: S, shape: [16, 2] }]])).map((h) => h.data)
+    const joint = (i: number, c: number) => [...Array(16).keys()].reduce((a, j) => a + L[i * 16 + j]! * S[j * 2 + c]!, 0) - 3
+    expect(far).toEqual(Float32Array.from({ length: 16 }, (_, i) => joint(i, 0) ** 2 + joint(i, 1) ** 2))
+    // the nearest of 500 points, from each of 1000: a point's own coordinates leave the loop
+    const { rangesIn } = await import("./engine/opt.ts")
+    const q = ir.buffer("q", [1, 500, 2]), diff = ir.add(ir.buffer("pt", [1000, 1, 2]), ir.mul(q, ir.konst(-1)))
+    const k = optimize(ir.reduceMax(ir.mul(ir.reduceAxis(ir.mul(diff, diff), 2, false), ir.konst(-1)), 1, false))
+    const slot = ir.kInputs(k).findIndex((b) => b.op === "BUFFER" && ir.bufName(b) === "pt")
+    const own = ir.toposort(k.src[1]!).filter((u) => u.op === "LOAD" && (u.arg as { slot: number }).slot === slot)
+    expect(loops(k)).toEqual([500])
+    expect(own.length && own.every((u) => [...rangesIn(u)].every((r) => r === k.src[0]))).toBeTruthy()
+  })
   test("joining n pieces the host does not hold takes about n/7 kernels, not n", async () => {
     const { optimizeMany } = await import("./engine/opt.ts")
     const { toposort } = await import("./engine/ir.ts")
