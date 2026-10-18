@@ -1442,9 +1442,11 @@ describe("gallery examples smoke suite", () => {
     const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + length)))
     const mnist = Object.entries(header).map(([name, t]: [string, any]) =>
       [name, engine.tensor(Float32Array.from(bytes.subarray(8 + length + t.data_offsets[0], 8 + length + t.data_offsets[1])), { shape: t.shape })])
-    extendEnvironment({ FunctionIterate: stepLater, Button: pressLater, LoadSafeTensorFromURL: () => SignalCreate(mnist) } as Record<string, Value>)
+    // makemore's names, as the dev server serves them
+    const names = await Bun.file(new URL("names.txt", import.meta.url)).text()
+    extendEnvironment({ FunctionIterate: stepLater, Button: pressLater, LoadSafeTensorFromURL: () => SignalCreate(mnist), Fetch: (url: Value) => SignalCreate(String(url) === "names.txt" ? names : "") } as Record<string, Value>)
   })
-  afterAll(() => { extendEnvironment({ ...real, LoadSafeTensorFromURL: loading.LoadSafeTensorFromURL } as Record<string, Value>) })
+  afterAll(() => { extendEnvironment({ ...real, LoadSafeTensorFromURL: loading.LoadSafeTensorFromURL, Fetch: loading.Fetch } as Record<string, Value>) })
 
   // Force every value the example binds, following signals, variables and lists, and
   // read each tensor off the device: the top-level value of a demo is almost always a
@@ -1511,6 +1513,46 @@ describe("gallery examples smoke suite", () => {
       for (let i = 0; i < 4; i++) { expect([name, unwrap(steps[0]!(engine.scalar(i)))]).toEqual([name, null]) }
       const [step, train, heldOut] = unwrap(evaluateSyntaxTreeNode(CodeParse("history()_0"), scope)) as number[]
       expect([name, step, train! > 0, heldOut! > 0]).toEqual([name, 4, true, true])
+      flushRetirements()
+    }
+  }, 60_000)
+  test("makemore learns, and a new run resumes from the checkpoint the last one saved", async () => {
+    // the demo, smaller: 3000 names, a narrower model, an evaluation every 25 steps
+    const names = (await Bun.file(new URL("names.txt", import.meta.url)).text()).split("\n").slice(0, 3000).join("\n")
+    const fetch = DefaultEnvironment.Fetch!
+    extendEnvironment({ Fetch: () => SignalCreate(names) } as Record<string, Value>)
+    const small = EXAMPLES.makemore.replace('run: "names",', 'run: "test: names",').replace("B: 64,", "B: 16,")
+      .replace("C: 64, F: 256,", "C: 32, F: 64,").replace("every: 100,", "every: 25,").replace("⍣ 64", "⍣ 24")
+    const read = (scope: Record<string, Value>, expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope))
+    try {
+      steps.length = 0
+      const first = scopeOf(small)
+      for (let i = 0; i < 75; i++) { expect(unwrap(steps[0]!(engine.scalar(i)))).toBe(null) }
+      const history = read(first, "history") as number[][]
+      expect(history.map((row) => row[0])).toEqual([25, 50, 75])
+      // the held-out loss falls, well under the 3.3 of guessing among 27 characters
+      expect(history[2]![2]!).toBeLessThan(history[0]![2]!)
+      expect(history[2]![2]!).toBeLessThan(2.8)
+      expect(String(read(first, "samples()"))).toMatch(/^[a-z ]{24}$/)
+      const weights = read(first, "Wq")
+      await new Promise((r) => setTimeout(r, 20))
+      // a reload: the same program from the top, at step 0, paused – until the checkpoint arrives
+      steps.length = 0
+      const second = scopeOf(small)
+      ;(second.training as Signal<Value>).value = engine.scalar(0)
+      expect(read(second, "step")).toBe(0)
+      await new Promise((r) => setTimeout(r, 20))
+      steps[0]!(engine.scalar(0))
+      expect(read(second, "step")).toBe(75)
+      expect(read(second, "Wq")).toEqual(weights)
+      expect(read(second, "ListGet(opt(), 0)")).toBe(75)
+      expect((read(second, "history") as number[][]).length).toBe(3)
+      // and training goes on from there
+      ;(second.training as Signal<Value>).value = engine.scalar(1)
+      steps[0]!(engine.scalar(1))
+      expect(read(second, "step")).toBe(76)
+    } finally {
+      extendEnvironment({ Fetch: fetch } as Record<string, Value>)
       flushRetirements()
     }
   }, 60_000)

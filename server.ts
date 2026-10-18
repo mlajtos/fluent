@@ -22,6 +22,8 @@ const server = serve({
     "/fluent.worker.js": evaluationWorker,
     // dataset for the MNIST example (build.ts copies it into dist/ for prod)
     "/mnist.safetensors": () => new Response(Bun.file("./mnist.safetensors")),
+    // names for the makemore example: makemore's names.txt, 32,033 names (build.ts copies it too)
+    "/names.txt": () => new Response(Bun.file("./names.txt")),
     // symbol font for the editor and AST viz (build.ts copies it for prod)
     "/BQN386.ttf": () => new Response(Bun.file("./BQN386.ttf")),
     // CORS proxy for LoadTensorFromImageUrl / LoadSafeTensorFromURL. It
