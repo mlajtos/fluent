@@ -154,9 +154,47 @@ erf: TensorErrorFunction: doc({ x |
   s × (1 - (p × exp(-(a × a))))
 }, "erf(x)", "Gauss error function – the area under a normal curve out to x, saturating at ±1. Smooth and differentiable everywhere.", "erf(1) ≈ 0.8427"),
 
+; Items – a container is a row of items: a tensor's rows, a list's elements, a string's
+; characters. A verb on items is the cascade of its members, one for each kind and named
+; for it – TensorTake, ListTake, StringTake – each declining a value of another kind.
+(#): length: Length: doc(cascade((TensorLength, ListLength, StringLength)), "length(x)", "How many items: a tensor's rows, a list's elements, or a string's characters.", "length(\"abc\") = 3"),
+(_): gather: Gather: doc(cascade((TensorGather, ListGather, StringGather)), "x_i", "Index into a string, list, or tensor. `x_i` picks one item; `x_[i, j]` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30"),
+take: doc(cascade((TensorTake, ListTake, StringTake)), "take(x, n)", "The first n items of x; with a negative n, the last n. An n past the end takes them all.", "take(\"hello\", 3) = \"hel\", take([10, 20, 30], -2) = [20, 30]"),
+drop: doc(cascade((TensorDrop, ListDrop, StringDrop)), "drop(x, n)", "x without its first n items; with a negative n, without its last n.", "drop((7, 8, 9), 1) = (8, 9)"),
+TensorReverse: doc(TensorOnly({ x, k |
+  one: { y, k | z: moveaxis(y, k, 0), n: #z, moveaxis(z_(n-1 - 0..<n), 0, k) },
+  ; a number has no axis to reverse
+  fold(cond(guard(identical(k, ◌), { 0 ..< (1 ⌊ (#shape(x))) }), { k ⍴ [-1] }), one, x)
+}), "TensorReverse(x, axes?)", "x's rows back to front – or x reversed along each of the axes given.", "TensorReverse([[1, 2], [3, 4]], 1) = [[2, 1], [4, 3]]"),
+reverse: doc(cascade((TensorReverse, ListReverse, StringReverse)), "reverse(x, axes?)", "x's items back to front; a tensor along the axes given, too.", "reverse(\"abc\") = \"cba\", reverse([[1, 2], [3, 4]]) = [[3, 4], [1, 2]]"),
+concat: doc(cascade((TensorConcat, ListConcat, StringConcat)), "a concat b  ·  concat(xs, axis?)", "a's items, then b's: tensors along the leading axis, lists, strings. concat(xs) joins the containers listed in xs – tensors along the axis given.", "(1, 2) concat (3,) = (1, 2, 3), concat((\"ab\", \"cd\")) = \"abcd\", concat(([[1], [2]], [[3], [4]]), 1) = [[1, 3], [2, 4]]"),
+reduce: doc(cascade((TensorReduce, ListReduce, StringReduce)), "x reduce f", "Fold x's items left to right with f – a tensor's along the axis given, too. Known ops (+, ×, ⌈, ⌊) fold numbers natively, so on a vector x reduce ⌈ is max.", "(1, 2, 3) reduce + = 6, [[1, 2], [3, 4]] reduce + = [4, 6], 1..<10 reduce + = 45"),
+TensorScan: doc(TensorOnly({ x, f, k |
+  ax: cond(guard(identical(k, ◌), { 0 }), { k }),
+  y: moveaxis(x, ax, 0), n: #y,
+  i: 0..<n ⍴ concat(([n], fill([(#shape(y)) - 1], 1))),
+  ; log₂(n) passes: each element folds in the partial result d places before it, and d
+  ; doubles – so f must be associative, and elements before d keep what they have
+  pass: { s |
+    z: s_0, d: s_1,
+    earlier: padAxis(slice(z, [0], [n - d]), 0, d, 0),
+    (where(i ≥ d, f(earlier, z), z), d × 2)
+  },
+  moveaxis((pass ⍣ cond(guard(n ≤ 1, { 0 }), { ceil(log2(n)) }))((y, 1))_0, 0, ax)
+}), "TensorScan(x, f, axis?)", "The running fold of x's rows with f – or of its slices along the axis given. f must be associative: the fold takes log₂ n steps.", "TensorScan([[1, 2, 3], [4, 5, 6]], +, 1) = [[1, 3, 6], [4, 9, 15]]"),
+scan: doc(cascade((TensorScan, ListScan, StringScan)), "x scan f", "The running fold: item i combines items 0 … i with f, so its last item is x reduce f. With + a cumulative sum, with ⌈ a running maximum.", "[1, 2, 3, 4] scan + = [1, 3, 6, 10], (1, 2, 3) scan + = (1, 3, 6)"),
+fold: doc(cascade((TensorFold, ListReduce, StringReduce)), "fold(x, f, start)", "Walk x's items from start, carrying what f makes: f(f(start, x_0), x_1) … – a loop over the items whose result can be of any kind.", "fold((1, 2, 3), { s, v | s × 10 + v }, 0) = 123"),
+TensorLength: doc(TensorLength, "TensorLength(x, axis?)", "How long x's leading axis is, or the axis given; a number is one item.", "TensorLength([[1, 2], [3, 4], [5, 6]]) = 3"),
+TensorGet: doc(TensorGet, "TensorGet(x, i)", "Row i of x; a negative i counts from the end.", "TensorGet([[1, 2], [3, 4]], -1) = [3, 4]"),
+TensorGather: doc(TensorGather, "TensorGather(x, indices)", "The rows of x at indices, any shape of them; a negative index counts from the end, and one out of range is an Error.", "TensorGather([10, 20, 30], [2, -3]) = [30, 10]"),
+TensorTake: doc(TensorTake, "TensorTake(x, n)", "The first n rows of x, or the last -n – a view: nothing is copied.", "TensorTake([[1, 2], [3, 4], [5, 6]], -1) = [[5, 6]]"),
+TensorDrop: doc(TensorDrop, "TensorDrop(x, n)", "x without its first n rows, or its last -n – a view.", "TensorDrop([1, 2, 3, 4], 1) = [2, 3, 4]"),
+TensorConcat: doc(TensorConcat, "TensorConcat(a, b, …)  ·  TensorConcat(xs, axis?)", "Tensors joined end to end along the leading axis, or the axis given.", "TensorConcat(([1, 2], [3])) = [1, 2, 3]"),
+TensorReduce: doc(TensorReduce, "TensorReduce(x, f, axis?)", "Fold x's rows – or its slices along the axis given – left to right with f.", "TensorReduce([[1, 2], [3, 4]], +, 1) = [3, 7]"),
+TensorFold: doc(TensorFold, "TensorFold(x, f, start)", "Walk x's rows from start, carrying what f makes.", "TensorFold([1, 2, 3], { s, v | s × 10 + v }, 0) = 123"),
+TensorOnly: doc(TensorOnly, "TensorOnly(f)", "f for numbers only: it declines any other value, as a member of a cascade of kinds.", "cascade((TensorOnly({ x | x × 2 }), { x | x }))(\"a\") = \"a\""),
+
 ; Tensor shape/indexing
-(#): length: Length: doc(cascade((TensorLength, ListLength, StringLength)), "length(x)", "How many: a tensor's leading axis, a list's elements, or a string's characters.", "length(\"abc\") = 3"),
-(_): gather: doc(TensorGather, "x_i", "Index into a string, list, or tensor. `x_i` picks one element; `x_[i, j]` gathers several, keeping the container's type. Negative indices count from the end.", "[10, 20, 30]_(-1) = 30"),
 (⍴): reshape: doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]"),
 (..<): range: doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the `<` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]"),
 (...): rangeInclusive: TensorRangeInclusive: doc({ a, b | s: trunc(a), e: trunc(b), s + (where(s ≤ e, 1, -1) × (0 ..< abs(e - s)+1)) }, "start ... stop", "Integer range from start through stop, endpoint included.", "1 ... 5 = [1, 2, 3, 4, 5]"),
@@ -167,8 +205,7 @@ permute: doc(TensorPermute, "permute(x, axes)", "Reorder x's axes: axis axes_i o
 broadcast: doc(TensorBroadcast, "broadcast(x, shape)", "Stretch x's size-1 axes, and add missing leading ones, to shape – without copying.", "broadcast([1, 2], [2, 2]) = [[1, 2], [1, 2]]"),
 padAxis: doc(TensorPadAxis, "padAxis(x, axis, before, after)", "Zeros around x along one axis.", "padAxis([1, 2], 0, 1, 2) = [0, 1, 2, 0, 0]"),
 window: doc(TensorWindow, "window(x, sizes)", "The sliding windows of x's trailing axes, one per position – a view, so a convolution never copies its neighbourhoods.", "window([1, 2, 3, 4], [2]) = [[1, 2], [2, 3], [3, 4]]"),
-take: doc(TensorTake, "take(x, indices)", "The rows of x at indices, any shape of them; a negative index counts from the end, and one out of range is an Error.", "take([10, 20, 30], [2, -3]) = [30, 10]"),
-scatterAdd: doc(TensorScatterAdd, "scatterAdd(indices, values, size)", "size zeros, each value added at its index – take's transpose: histograms, bincounts.", "scatterAdd([0, 2, 0], [1, 1, 1], 3) = [2, 0, 1]"),
+scatterAdd: doc(TensorScatterAdd, "scatterAdd(indices, values, size)", "size zeros, each value added at its index – a gather's transpose: histograms, bincounts.", "scatterAdd([0, 2, 0], [1, 1, 1], 3) = [2, 0, 1]"),
 detach: doc(TensorDetach, "detach(x)", "x, with no derivative: ∇ treats it as a constant.", "(∇{ x | detach(x) × x })(3) = 3"),
 moveaxis: TensorMoveAxis: doc({ x, from, to |
   ; output axis i reads axis f where i = t, else the i-th of the others
@@ -176,14 +213,6 @@ moveaxis: TensorMoveAxis: doc({ x, from, to |
   i: 0..<r, j: i - (i > t),
   permute(x, where(i = t, f, j + (1 - (j < f))))
 }, "moveaxis(x, from, to)", "x with axis from moved to position to, the others keeping their order. A view.", "shape(moveaxis(fill([2, 3, 4], 0), 0, -1)) = [3, 4, 2]"),
-reverse: TensorReverse: doc({ x, k |
-  one: { y, k | z: moveaxis(y, k, 0), n: #z, moveaxis(take(z, n-1 - 0..<n), 0, k) },
-  cond(
-    ; every axis reversed is the flat order reversed – one gather
-    guard(identical(k, ◌), { n: Π(shape(x)), take(flat(x), n-1 - 0..<n) ⍴ shape(x) }),
-    { ks: k ⍴ [-1], ListReduce(unstack(0..<(#ks)), { y, j | one(y, ks_j) }, x) }
-  )
-}, "reverse(x, axis?)", "x back to front – along every axis, or the ones given.", "reverse([1, 2, 3]) = [3, 2, 1]"),
 (⊗): outer: TensorOuter: doc({ f, rank |
   r: cond(guard(identical(rank, ◌), { [0, 0] }), { broadcast(rank ⍴ [-1], [2]) }),
   rA: r_0, rB: r_1,
@@ -232,21 +261,20 @@ stencil: TensorStencil: doc({ w, f, arr |
 (⌺): doc({ f, w | { x | stencil(w, f, x) } }, "(f ⌺ w)", "Stencil: f on every width-w window along the leading axis – (Σ ⌺ 3) is a moving sum, (μ ⌺ 5) a moving average. APL's stencil.", "(Σ ⌺ 3)([1, 2, 3, 4, 5]) = [6, 9, 12]"),
 (⊛): conv: doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. A kernel of lower rank runs over the last axes, each row on its own. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]"),
 
-; List operations – a list is a heterogeneous (a, b, …); these are its verbs,
-; kept prefixed so they never blur into the tensor vocabulary (ListMap vs ⍤).
-List: doc(List, "List(a, b, …)", "Build a list from its arguments – the same list a bare (a, b, …) makes.", "ListLength(List(1, 2, 3)) = 3"),
-ListLength: doc(ListLength, "ListLength(list)", "How many elements a list has.", "ListLength((1, 2, 3)) = 3"),
-ListConcat: doc(ListConcat, "ListConcat(a, b)", "Join two lists end to end.", "ListConcat((1, 2), (3, 4)) = (1, 2, 3, 4)"),
-ListGet: doc(ListGet, "ListGet(list, i)", "The element at index i; a negative i counts from the end.", "ListGet((10, 20, 30), -1) = 30"),
-ListMap: doc(ListMap, "ListMap(list, f)", "Apply f to every element, giving a new list – the list-land counterpart of ⍤.", "ListGet(ListMap((1, 2, 3), { x | x × 10 }), 1) = 20"),
-ListReduce: doc(ListReduce, "ListReduce(list, f, init)", "Fold a list left to right: start at init, then f(acc, element) across the list.", "ListReduce((1, 2, 3), { a, b | a + b }, 0) = 6"),
-ListGather: doc({ a, b | ListMap(b, { i | ListGet(a, i) }) }, "ListGather(list, indices)", "Pick the elements at the given indices, in that order – a list-land _.", "ListGather((10, 20, 30), (2, 0)) = (30, 10)"),
-ListZip: doc({ a, b | ListMap(ListTake(a, ListLength(b)), { v, i | (v, ListGet(b, i)) }) }, "ListZip(a, b)", "Pair up elements of a and b, stopping at the shorter length.", "ListZip((1, 2), (3, 4)) = ((1, 3), (2, 4))"),
-ListTake: doc({ list, n | ListGather(list, unstack(0 ..< (0 ⌈ n ⌊ ListLength(list)))) }, "ListTake(list, n)", "The first n elements, with n clamped to [0, length].", "ListTake((7, 8, 9), 2) = (7, 8)"),
-ListDrop: doc({ list, n | len: ListLength(list), ListGather(list, unstack((0 ⌈ n ⌊ len) ..< len)) }, "ListDrop(list, n)", "All but the first n elements, with n clamped to [0, length].", "ListDrop((7, 8, 9), 1) = (8, 9)"),
-ListReverse: doc({ list | ListGather(list, unstack(reverse(0 ..< ListLength(list)))) }, "ListReverse(list)", "The list back to front.", "ListReverse((1, 2, 3)) = (3, 2, 1)"),
+; List operations – a list is a heterogeneous (a, b, …); ListMap is the list side of ⍤
+List: doc(List, "List(a, b, …)", "Build a list from its arguments – the same list a bare (a, b, …) makes.", "#List(1, 2, 3) = 3"),
+ListMap: doc(ListMap, "ListMap(list, f)", "Apply f to every element, giving a new list – the list-land counterpart of ⍤.", "ListMap((1, 2, 3), { x | x × 10 })_1 = 20"),
+ListZip: doc({ a, b | ListMap(take(a, #b), { v, i | (v, b_i) }) }, "ListZip(a, b)", "Pair up elements of a and b, stopping at the shorter length.", "ListZip((1, 2), (3, 4)) = ((1, 3), (2, 4))"),
 ListEnumerate: doc({ list | ListMap(list, { v, i | (i, v) }) }, "ListEnumerate(list)", "Pair each element with its index, as (index, element).", "ListEnumerate((7, 8)) = ((0, 7), (1, 8))"),
-ListScan: doc(ListScan, "ListScan(list, f, init)", "Like ListReduce, but keep every step – the running fold, starting from init.", "ListScan((1, 2, 3), +, 0) = (0, 1, 3, 6)"),
+ListLength: doc(ListLength, "ListLength(list)", "How many elements a list has.", "ListLength((1, 2, 3)) = 3"),
+ListGet: doc(ListGet, "ListGet(list, i)", "The element at index i; a negative i counts from the end.", "ListGet((10, 20, 30), -1) = 30"),
+ListGather: doc(ListGather, "ListGather(list, indices)", "The elements at the given indices, in that order.", "ListGather((10, 20, 30), (2, 0)) = (30, 10)"),
+ListTake: doc(ListTake, "ListTake(list, n)", "The first n elements; with a negative n, the last n.", "ListTake((7, 8, 9), 2) = (7, 8)"),
+ListDrop: doc(ListDrop, "ListDrop(list, n)", "All but the first n elements; with a negative n, all but the last n.", "ListDrop((7, 8, 9), 1) = (8, 9)"),
+ListReverse: doc(ListReverse, "ListReverse(list)", "The list back to front.", "ListReverse((1, 2, 3)) = (3, 2, 1)"),
+ListConcat: doc(ListConcat, "ListConcat(a, b, …)  ·  ListConcat(lists)", "Lists joined end to end; one list of lists joins the lists in it.", "ListConcat((1, 2), (3, 4)) = (1, 2, 3, 4)"),
+ListReduce: doc(ListReduce, "ListReduce(list, f, init?)", "Fold a list left to right: start at init – or at the first element – then f(acc, element) across the list.", "ListReduce((1, 2, 3), { a, b | a + b }, 0) = 6"),
+ListScan: doc(ListScan, "ListScan(list, f, init?)", "Like ListReduce, but keep every step – the running fold, starting from init, or from the first element.", "ListScan((1, 2, 3), +, 0) = (0, 1, 3, 6)"),
 
 ; Arithmetic – + and × are the engine's; the rest are made from them
 add: doc(TensorAdd, "x + y", "Element-wise addition; shapes broadcast.", "[1, 2] + 10 = [11, 12]"),
@@ -353,21 +381,7 @@ mish: TensorMish: doc({ x | x × tanh(softplus(x)) }, "mish(x)", "A self-gated a
 ; Reductions
 (∇): grad: doc(TensorGradient, "∇f", "Gradient of a function: ∇(f)(x) is df/dx at x. Works on any function of smooth numeric ops — reshape and indexing pass through; argmax/round/comparisons read as constant (zero gradient). Nests: ∇(∇(f)) is the second derivative. With no argument, ∇(loss)() differentiates with respect to the ~ variables loss reads and gives (value, variables, gradients) – what an optimizer steps.", "(∇{ x | x^2 })(3) = 6"),
 Σ: sum: doc(TensorSum, "Σ(x, axis?)", "Sum of the elements, over one axis or the whole tensor.", "Σ([1, 2, 3]) = 6"),
-reduce: doc(TensorReduce, "x reduce fn", "Fold a tensor's items left to right with a binary function – along the leading axis, or the one given: `x reduce +` adds a matrix's rows. Known ops (+, ×, ⌈, ⌊) reduce natively, so on a vector `x reduce ⌈` is max.", "1..<10 reduce + = 45, [[1, 2], [3, 4]] reduce + = [4, 6]"),
 Π: prod: doc(TensorProduct, "Π(x, axis?)", "The product of the elements, over one axis or the whole tensor.", "Π([1, 2, 3, 4]) = 24"),
-scan: TensorScan: doc({ x, f, k |
-  ax: cond(guard(identical(k, ◌), { 0 }), { k }),
-  y: moveaxis(x, ax, 0), n: #y,
-  i: 0..<n ⍴ concat(([n], fill([(#shape(y)) - 1], 1))),
-  ; log₂(n) passes: each element folds in the partial result d places before it, and d
-  ; doubles – so f must be associative, and elements before d keep what they have
-  pass: { s |
-    z: s_0, d: s_1,
-    earlier: padAxis(slice(z, [0], [n - d]), 0, d, 0),
-    (where(i ≥ d, f(earlier, z), z), d × 2)
-  },
-  moveaxis((pass ⍣ cond(guard(n ≤ 1, { 0 }), { ceil(log2(n)) }))((y, 1))_0, 0, ax)
-}, "x scan f", "The running fold: item i combines items 0 … i with f, along the leading axis or the one given, as reduce does – so its last item is x reduce f. With + a cumulative sum, with ⌈ a running maximum. f must be associative.", "[1, 2, 3, 4] scan + = [1, 3, 6, 10]"),
 μ: mean: TensorMean: doc({ x, k, keep | s: Σ(x, k, keep), s × (Π(shape(s)) ÷ Π(shape(x))) }, "μ(x, axis?)", "The mean of the elements, over one axis or the whole tensor.", "μ([1, 2, 3, 6]) = 3"),
 
 ; max and min reduce, like sum; the glyphs are APL's ⌈ and ⌊ – ceiling and floor of
@@ -542,7 +556,6 @@ linspace: TensorLinearSpace: doc({ r, n |
 fill: TensorFill: doc({ shape, v | broadcast(v, shape) }, "fill(shape, v)", "A tensor of the given shape with every element v.", "fill([2, 2], 7) = [[7, 7], [7, 7]]"),
 stack: doc(TensorStack, "stack((a, b, …), axis?)", "Tensors of one shape as one tensor, along a new axis.", "stack(([1, 2], [3, 4])) = [[1, 2], [3, 4]]"),
 unstack: doc(TensorUnstack, "unstack(x, axis?)", "A tensor taken apart along an axis, as a list – stack undone.", "(#unstack([[1, 2], [3, 4]])) = 2"),
-concat: doc(TensorConcat, "concat((a, b, …), axis?)", "Tensors joined end to end along an existing axis.", "concat(([1, 2], [3])) = [1, 2, 3]"),
 (⧉): tile: TensorTile: doc({ x, reps |
   r: reps ⍴ [-1], d: shape(x), n: (#r) ⌈ (#d),
   sh: concat((fill([n - (#d)], 1), d)), rr: concat((fill([n - (#r)], 1), r)),
@@ -561,29 +574,29 @@ concat: doc(TensorConcat, "concat((a, b, …), axis?)", "Tensors joined end to e
 DrawExtent: { x | f: (1 - isNaN(x)) × (abs(x) < 1÷0), [min(where(f, x, 1÷0)), max(where(f, x, -1÷0))] },
 ; viridis's 256 colors as d3 writes them, two hex digits a channel, and after them NaN: no color
 DrawViridisTable: { h | d: StringToCodes(h), d: where(d ≥ 97, d - 87, d - 48), concat((sum(d ⍴ [256, 3, 2] × [16, 1], -1) ÷ 255, fill([1, 3], 0 ÷ 0))) }("44015444025645045745055946075a46085c460a5d460b5e470d60470e6147106347116447136548146748166848176948186a481a6c481b6d481c6e481d6f481f70482071482173482374482475482576482677482878482979472a7a472c7a472d7b472e7c472f7d46307e46327e46337f463480453581453781453882443983443a83443b84433d84433e85423f854240864241864142874144874045884046883f47883f48893e49893e4a893e4c8a3d4d8a3d4e8a3c4f8a3c508b3b518b3b528b3a538b3a548c39558c39568c38588c38598c375a8c375b8d365c8d365d8d355e8d355f8d34608d34618d33628d33638d32648e32658e31668e31678e31688e30698e306a8e2f6b8e2f6c8e2e6d8e2e6e8e2e6f8e2d708e2d718e2c718e2c728e2c738e2b748e2b758e2a768e2a778e2a788e29798e297a8e297b8e287c8e287d8e277e8e277f8e27808e26818e26828e26828e25838e25848e25858e24868e24878e23888e23898e238a8d228b8d228c8d228d8d218e8d218f8d21908d21918c20928c20928c20938c1f948c1f958b1f968b1f978b1f988b1f998a1f9a8a1e9b8a1e9c891e9d891f9e891f9f881fa0881fa1881fa1871fa28720a38620a48621a58521a68522a78522a88423a98324aa8325ab8225ac8226ad8127ad8128ae8029af7f2ab07f2cb17e2db27d2eb37c2fb47c31b57b32b67a34b67935b77937b87838b9773aba763bbb753dbc743fbc7340bd7242be7144bf7046c06f48c16e4ac16d4cc26c4ec36b50c46a52c56954c56856c66758c7655ac8645cc8635ec96260ca6063cb5f65cb5e67cc5c69cd5b6ccd5a6ece5870cf5773d05675d05477d1537ad1517cd2507fd34e81d34d84d44b86d54989d5488bd6468ed64590d74393d74195d84098d83e9bd93c9dd93ba0da39a2da37a5db36a8db34aadc32addc30b0dd2fb2dd2db5de2bb8de29bade28bddf26c0df25c2df23c5e021c8e020cae11fcde11dd0e11cd2e21bd5e21ad8e219dae319dde318dfe318e2e418e5e419e7e419eae51aece51befe51cf1e51df4e61ef6e620f8e621fbe723fde725"),
-viridis: DrawViridis: doc({ t | take(DrawViridisTable, where(isNaN(t), 256, clamp(round(t × 255), 0, 255))) }, "viridis(t)", "The color at t on the viridis scale, [r, g, b] in 0–1: dark purple at 0, through blue and green, to yellow at 1. Below 0 or above 1 it is the end's color; NaN has no color, [NaN, NaN, NaN].", "viridis(0) = [68, 1, 84] ÷ 255"),
+viridis: DrawViridis: doc({ t | DrawViridisTable_where(isNaN(t), 256, clamp(round(t × 255), 0, 255)) }, "viridis(t)", "The color at t on the viridis scale, [r, g, b] in 0–1: dark purple at 0, through blue and green, to yellow at 1. Below 0 or above 1 it is the end's color; NaN has no color, [NaN, NaN, NaN].", "viridis(0) = [68, 1, 84] ÷ 255"),
 ; a tensor of rank 3 or more as one map: its last two axes are a map, and each axis before
 ; them lays its maps out – across, then down, by turns – one NaN row or column apart
 DrawTiles: { x |
   r: #shape(x),
   gap: { y, ax | where(padAxis(fill(shape(y), 1), ax, 0, 1), padAxis(y, ax, 0, 1), 0 ÷ 0) },
-  fold: { y |
+  laid: { y |
     s: shape(y), k: #s,
     cond(guard(k < 3, { y }), {
       m: s_(k-3), h: s_(k-2), w: s_(k-1), lead: slice(s, [0], [k-3]),
       cond(
         guard((r - k) % 2 = 0, {
           f: moveaxis(gap(y, k-1), k-3, k-2) ⍴ concat((lead, [h, m × (w+1)])),
-          fold(slice(f, fill([k-1], 0), concat((fill([k-2], -1), [m × (w+1) - 1]))))
+          laid(slice(f, fill([k-1], 0), concat((fill([k-2], -1), [m × (w+1) - 1]))))
         }),
         {
           f: gap(y, k-2) ⍴ concat((lead, [m × (h+1), w])),
-          fold(slice(f, fill([k-1], 0), concat((fill([k-3], -1), [m × (h+1) - 1, -1]))))
+          laid(slice(f, fill([k-1], 0), concat((fill([k-3], -1), [m × (h+1) - 1, -1]))))
         }
       )
     })
   },
-  fold(x)
+  laid(x)
 },
 heat: DrawHeat: doc({ x, span |
   m: DrawTiles(x),
@@ -606,7 +619,7 @@ DrawBarsOf: { v, n, r, width, height, W, H |
   top: r_1 ⌈ 0, extent: top - (r_0 ⌊ 0) ⌈ 1e-30,
   ; column x covers the values from i0 up to i1, at least one, and shows their extremes
   x: 0 ..< W, i0: floor(x × n ÷ width), i1: floor((x + 1) × n ÷ width) ⌈ (i0 + 1),
-  idx: i0 ⊗(+) (0 ..< max(i1 - i0)), g: take(v, idx ⌊ (n - 1)),
+  idx: i0 ⊗(+) (0 ..< max(i1 - i0)), g: v_(idx ⌊ n-1),
   inside: (idx < (i1 ⍴ [W, 1])) × (1 - isNaN(g)),
   a: min(where(inside, g, 1÷0), 1), b: max(where(inside, g, -1÷0), 1),
   ; the value at each row's center; the zero line is the row within half a row of 0
@@ -671,13 +684,13 @@ letters: DrawLetters: doc({ s, at, size |
   ; them a blank one for each code the font lacks, as it lacks a space
   font: StringToCodes(DrawFontCodes), blank: length(font),
   i: Σ(codes ⊗(>) font, -1) ⌊ (blank - 1),
-  glyph: where(take(font, i) = codes, i, blank),
+  glyph: where(font_i = codes, i, blank),
   ; for each character of each text, in order, its glyph's samples, each with the ones
   ; after it across, down, and both, within the glyph – what a point between them reads
   j: 0..<200, across: flat(broadcast(0..<10 < 9, [20, 10])), down: (j < 190) × 10,
   near: stack((j, j + across, j + down, j + across + down), -1),
   field: concat((StringToCodes(DrawFontField), fill([200], 126))),
-  cells: take(field, flat(glyph) ⍴ [-1, 1, 1] × 200 + near) ⍴ [-1, 4],
+  cells: field_(flat(glyph) ⍴ [-1, 1, 1] × 200 + near) ⍴ [-1, 4],
   corners: at ⍴ [-1, 2], m: #corners,
   { p |
     ; p in samples from each text's corner, the character it falls on, and where in it
@@ -686,7 +699,7 @@ letters: DrawLetters: doc({ s, at, size |
     x: clamp(u_0 - 10×k - 0.5, 0, 9), y: clamp(u_1 - 0.5, 0, 19),
     tx: x - floor(x), ty: y - floor(y),
     ; the distance at p, from the four samples around it
-    q: moveaxis(take(cells, 0..<m × n + clamp(k, 0, n-1) × 200 + floor(y)×10 + floor(x)), -1, 0),
+    q: moveaxis(cells_(0..<m × n + clamp(k, 0, n-1) × 200 + floor(y)×10 + floor(x)), -1, 0),
     d: q_0 × 1-tx + q_1×tx × 1-ty + (q_2 × 1-tx + q_3×tx × ty) - 80 ÷ 200 × size,
     ; within the text, the distance to the glyph less half a pixel, so a stroke 1 pixel
     ; wide draws the glyph itself
@@ -709,13 +722,13 @@ DrawDigits: { x |
   ; digit; a whole number has none
   sci: e>6 ⌈ (e < -3 × 0<a),
   d: where(sci, 2, clamp(2 - e, 0, 5) × (a ≠ round(a))),
-  m: round(where(sci, a ÷ 10^e × 100, a × take(P, d))),
+  m: round(where(sci, a ÷ 10^e × 100, a × P_d)),
   n: Σ(P - 0.5 < m, -1, 1) ⌈ (d + 1),
   point: n - d,
   j: 0..<9 - (v < 0),
   t: j - (d>0 × j>point),
   ; the code of the digit of y, a whole number, worth 10 to the power p
-  at: { y, p | r: floor(y + 0.5 ÷ take(P, clamp(p, 0, 6))), 48 + r - (floor(r ÷ 10) × 10) },
+  at: { y, p | r: floor(y + 0.5 ÷ P_clamp(p, 0, 6)), 48 + r - (floor(r ÷ 10) × 10) },
   ; after the digits, an exponent: e, its sign if negative, and its one or two digits
   k: t - n, E: abs(e), w: 1 + (e < 0) + (E > 9),
   power: where(k = 0, 101, where(e<0 × k=1, 8722, at(E, w - k))),
@@ -742,7 +755,7 @@ plot: DrawPlot: doc({ x, ys, names |
     last: slice(rows, [0, n-1]) ⍴ [k],
     order: argsort(sy(last)),
     steps: 0..<k × 13,
-    at: take(scan(take(sy(last), order) - steps, ⌈) + steps, argsort(order)),
+    at: (scan(sy(last)_order - steps, ⌈) + steps)_argsort(order),
     values: DrawDigits(last),
     words: ListMap(unstack(0..<k), { i |
       cond(guard(isList(names), { concat((StringToCodes(ListGet(names, i)), [32], values_i)) }), { values_i })
@@ -939,15 +952,21 @@ muon: OptimizerMuon: doc(FunctionNoAutoLift({ lr, a, b | momentum: TensorOptimiz
 }, lr, TensorOptimizerVars(a, b)) }), "muon(lr, momentum?, vars?)", "Muon: momentum whose update, for a matrix, is orthogonalized by Newton–Schulz steps – every direction of the matrix moves at the same rate. Other variables step as momentum SGD.", "opt: muon(0.02)"),
 
 ; Strings
+StringLength: doc(StringLength, "StringLength(s)", "How many characters s has.", "StringLength(\"abc\") = 3"),
+StringGet: doc(StringGet, "StringGet(s, i)", "The character at index i; a negative i counts from the end.", "StringGet(\"abc\", -1) = \"c\""),
+StringGather: doc(StringGather, "StringGather(s, indices)", "The characters at the given indices, in that order, as a string.", "StringGather(\"abc\", [2, 0]) = \"ca\""),
+StringTake: doc(StringTake, "StringTake(s, n)", "The first n characters; with a negative n, the last n.", "StringTake(\"hello\", -2) = \"lo\""),
+StringDrop: doc(StringDrop, "StringDrop(s, n)", "All but the first n characters; with a negative n, all but the last n.", "StringDrop(\"hello\", 2) = \"llo\""),
+StringReverse: doc(StringReverse, "StringReverse(s)", "s back to front.", "StringReverse(\"abc\") = \"cba\""),
+StringConcat: doc(StringConcat, "StringConcat(a, b, …)  ·  StringConcat(strings)", "Strings joined end to end – after the first, a value that isn't a string as the source that writes it. One list of strings joins the strings in it.", "StringConcat(\"ab\", \"cd\") = \"abcd\""),
+StringReduce: doc(StringReduce, "StringReduce(s, f, init?)", "Fold the characters left to right with f, from init or from the first character.", "StringReduce(\"abc\", { a, c | StringConcat(c, a) }) = \"cba\""),
+StringScan: doc(StringScan, "StringScan(s, f, init?)", "The running fold of the characters, as a list: its last item is StringReduce(s, f).", "StringScan(\"abc\", StringConcat) = (\"a\", \"ab\", \"abc\")"),
 StringToCodes: doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\"abc\") = [97, 98, 99]"),
 CodesToString: doc(CodesToString, "CodesToString(codes)", "A tensor of character codes back to text. Rounds first, so model outputs decode directly.", "CodesToString([104, 105]) = \"hi\""),
 String: doc(StringLiteral, "String(x)", "The Fluent source that reproduces a value: CodeEvaluate(String(x)) is x again. A string comes back quoted, a list keeps its parens, a tensor keeps its rank. Exact for data; a signal or ~ round-trips to a new one, and a lambda needs its free names in scope.", "String([1, 2]) = \"[1, 2]\""),
 
 ; Cards for built-ins bound natively
 ln: doc(TensorNaturalLogarithm, "ln(x)", "The natural logarithm – log to base e, the same as log(x).", "ln(1) = 0"),
-TensorLength: doc(TensorLength, "TensorLength(x)", "How long a tensor's leading axis is.", "TensorLength([[1, 2], [3, 4], [5, 6]]) = 3"),
-StringConcat: doc(StringConcat, "StringConcat(a, b, …)", "Strings joined end to end.", "StringConcat(\"ab\", \"cd\") = \"abcd\""),
-StringLength: doc(StringLength, "StringLength(s)", "How many characters s has.", "StringLength(\"abc\") = 3"),
 CodeParse: doc(CodeParse, "CodeParse(text)", "Fluent source text as a syntax tree – a program as a value.", "CodeParse(\"1 + 2\")"),
 CodeEvaluate: doc(CodeEvaluate, "CodeEvaluate(code)", "Run Fluent source text – or a quoted program – and give its value.", "CodeEvaluate(\"1 + 2\") = 3"),
 FunctionArity: doc(FunctionArity, "FunctionArity((two, one))", "One function from two, chosen by how many arguments it gets: the first takes two, the second one – how + is add and abs.", "FunctionArity(({ x, y | x + y }, { x | -x }))(5) = -5"),

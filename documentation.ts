@@ -104,13 +104,13 @@ Button("Reset", { x(0) }),
   - axis variants: \`stack((a, b), axis)\`, \`concat((a, b), axis)\`, \`unstack(x, axis)\`, \`sum(x, axis)\`
   - outer product \`⊗\`: \`a (⊗ f) b\` pairs every cell of a with every cell of b; \`a (f ⊗ k) b\` keeps trailing k axes zipped
   - inner product \`∙\`: \`a (g ∙ f) b\` combines with g, then reduces with f – \`A (× ∙ +) B\` is matrix multiply, \`W (+ ∙ ⌊) W\` is shortest paths
-  - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
+  - items – a tensor's rows, a list's elements, a string's characters: \`#\`, \`_\`, \`take\`, \`drop\`, \`reverse\`, \`concat\`, \`reduce\`, \`scan\` and \`fold(x, f, start)\` work on all three; each kind's own is named for it (\`TensorTake\`, \`ListTake\`, \`StringTake\`); \`ListMap\` maps a list
   - UI: \`Slider\`, \`Scrubber\`, \`Checkbox\`, \`Button\`, \`Text\`, \`TextEditor\`, \`Code\`, \`CodeEditor\`, \`CodePrint\`, \`Print\`, \`PrettyPrint\`, \`Grid\`, \`Layers\`, \`Center\`, \`Point2D\`, \`Trail\`, \`PointPlot\`, \`ImageUpload\`
   - live inputs: \`Camera\`, \`Microphone\`, \`MicrophoneSpectrum\`, \`Time\`, \`MousePosition\`
   - optimizers: \`sgd\` (optional momentum), \`adam\`, \`adamw\`, \`adagrad\`, \`rmsprop\`, \`lion\`, \`muon\` and more – each built on \`optimizer(init, rule)\`
   - metadata: \`doc(fn, signature, description, example)\` attaches the card hover shows
 - Ad-hoc operators
-  - define custom operators: \`(++): ListConcat, (1, 2) ++ (3, 4)\`
+  - define custom operators: \`(++): concat, (1, 2) ++ (3, 4)\`
 
 ### IDE
 - Syntax highlighting

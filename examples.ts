@@ -1438,9 +1438,9 @@ model: { ids |
 B: 64,
 cut: { floor((#D) × 0.9) }, ; windows past the cut are held out – never trained on
 lossOn: { d | crossEntropy(slice(d, [0, 1], [-1, T]), model(slice(d, [0, 0], [-1, T]))) },
-loss: { lossOn(take(D, floor(⚄([B]) × cut()))) },
+loss: { lossOn(D_floor(⚄([B]) × cut())) },
 ; a score: 256 windows spread evenly over n windows from from – steady, at a bounded cost
-score: { from, n | lossOn(take(D, from + floor(linspace([0, n - 1], 256)))) },
+score: { from, n | lossOn(D_(from + floor(linspace([0, n - 1], 256)))) },
 
 ; --- sampling: gumbel-max, with a temperature you can drag ---
 τ: $0.5,
@@ -1590,9 +1590,9 @@ modelAt: { ids, r | matmul((cycle ⍣ r)(embed(ids)), Wu) }, ; dreaming picks it
 B: 64,
 cut: { floor((#D) × 0.9) }, ; windows past the cut are held out – never trained on
 lossOn: { d | crossEntropy(slice(d, [0, 1], [-1, T]), model(slice(d, [0, 0], [-1, T]))) },
-loss: { lossOn(take(D, floor(⚄([B]) × cut()))) },
+loss: { lossOn(D_floor(⚄([B]) × cut())) },
 ; a score: 256 windows spread evenly over n windows from from – steady, at a bounded cost
-score: { from, n | lossOn(take(D, from + floor(linspace([0, n - 1], 256)))) },
+score: { from, n | lossOn(D_(from + floor(linspace([0, n - 1], 256)))) },
 
 ; --- sampling: gumbel-max, with temperature and rounds you can drag ---
 τ: $0.5,
@@ -1712,7 +1712,7 @@ streams: \${ when(loaded(), {
 ; a window is T+1 characters in a row: each of the first T is followed by the next
 train: { window(streams()_0, [T + 1]) },
 val: { window(streams()_1, [T + 1]) },
-batch: { d | take(d, floor(⚄([B]) × (#d))) }, ; B windows of d, at random
+batch: { d | d_floor(⚄([B]) × (#d)) }, ; B windows of d, at random
 
 ; --- the model: one transformer block, as in nanoGPT, its weights drawn small ---
 E: ~(randn([V, C]) × 0.02), ; a vector for each token
@@ -1734,7 +1734,7 @@ attend: { x |
   matmul(matmul(a, v), Wo)
 },
 model: { ids |
-  x0: take(E, ids) + P,
+  x0: E_ids + P,
   x1: x0 + attend(rms(x0, g1)),
   x2: x1 + matmul(gelu(matmul(rms(x1, g2), W1)), W2),
   matmul(rms(x2, g3), Wu) ; [windows, T, V] scores for each next character
@@ -1742,7 +1742,7 @@ model: { ids |
 lossOn: { d | crossEntropy(slice(d, [0, 1], [-1, T]), model(slice(d, [0, 0], [-1, T]))) },
 loss: { lossOn(batch(train())) },
 ; the loss on 1024 windows spread evenly over a split: steady, at a bounded cost
-score: { d | lossOn(take(d, floor(linspace([0, (#d) - 1], 1024)))) },
+score: { d | lossOn(d_floor(linspace([0, (#d) - 1], 1024))) },
 
 ; --- optimization: AdamW, decaying only the matrices; warmup, cosine decay; clipping ---
 params: (E, P, Wq, Wk, Wv, Wo, W1, W2, Wu, g1, g2, g3),

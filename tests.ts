@@ -188,11 +188,13 @@ describe("combinators", () => {
     expect(value("ListGet(ListDrop((1, 2, 3), 1), 0)")).toBe(2)
     expect(value("ListGet(ListGather((5, 6, 7), (2, 0)), 0)")).toBe(7)
   })
-  test("ListTake/ListDrop clamp to the list length – no over-take", () => {
+  test("ListTake/ListDrop clamp to the list length – no over-take; a negative n counts from the end", () => {
     expect(value("ListLength(ListTake((1, 2, 3), 5))")).toBe(3)
     expect(value("ListGet(ListTake((1, 2, 3), 5), 2)")).toBe(3)
-    expect(value("ListLength(ListTake((1, 2, 3), -1))")).toBe(0)
     expect(value("ListLength(ListDrop((1, 2, 3), 5))")).toBe(0)
+    expect(value("ListTake((1, 2, 3), -1)_0")).toBe(3)
+    expect(value("ListLength(ListDrop((1, 2, 3), -1))")).toBe(2)
+    expect(value("ListLength(ListTake((1, 2, 3), -5))")).toBe(3)
   })
   test("isFunction answers the K-lift question, enabling userland bind", () => {
     expect(value("isFunction(√)")).toBe(1)
@@ -357,7 +359,9 @@ describe("tensors", () => {
     expect(value("pad([1, 2, 3], 2)")).toEqual([0, 0, 1, 2, 3, 0, 0])
     expect(value("repeat([1, 2], 3)")).toEqual([1, 1, 1, 2, 2, 2])
     expect(value("reverse([1, 2, 3])")).toEqual([3, 2, 1])
-    expect(value("reverse([[1, 2], [3, 4]])")).toEqual([[4, 3], [2, 1]])        // every axis: one gather
+    expect(value("reverse([[1, 2], [3, 4]])")).toEqual([[3, 4], [1, 2]])        // the items: rows
+    expect(value("reverse([[1, 2], [3, 4]], [0, 1])")).toEqual([[4, 3], [2, 1]])
+    expect(value("reverse(5)")).toBe(5)
     expect(value("reverse([[1, 2], [3, 4]], 1)")).toEqual([[2, 1], [4, 3]])
     expect(value("sinc(0)")).toBe(1)   // sinc(0) = 1 by definition
   })
@@ -1253,6 +1257,12 @@ describe("choosing: a candidate answers or declines", () => {
     expect(boom.message).toBe("boom")
     expect(boom).not.toBeInstanceOf(NoMatch)
   })
+  test("a decline is an Error that records no JavaScript stack: a choice makes one per candidate", () => {
+    for (const source of ["cascade((guard(0, { 1 }),))(5)", "take(sin, 1)", "NoMatch"]) {
+      const v = run(source) as NoMatch
+      expect([source, v instanceof NoMatch, v instanceof Error, v.stack, String(v).startsWith("NoMatch: ")]).toEqual([source, true, true, undefined, true])
+    }
+  })
   test("a matched branch that breaks surfaces – it never falls through to a wrong answer", () => {
     // a shape error in the chosen branch is its answer; the fallback 0 would look like a result
     const broken = run("cond(guard(1, { [1, 2] + [1, 2, 3] }), { 0 })")
@@ -1611,6 +1621,68 @@ describe("polymorphic index _ (string / list / tensor)", () => {
   })
 })
 
+describe("one vocabulary for items: a tensor's rows, a list's elements, a string's characters", () => {
+  const text = (source: string) => String(value(source))
+  test("take, drop and reverse rearrange the items of every kind", () => {
+    expect(value("take([[1, 2], [3, 4], [5, 6]], 2)")).toEqual([[1, 2], [3, 4]])
+    expect(value("take([10, 20, 30], -2)")).toEqual([20, 30])
+    expect(value("#take((7, 8, 9), 2)")).toBe(2)
+    expect(text('take("hello", 3)')).toBe("hel")
+    expect(text('take("ab", 5)')).toBe("ab")                     // past the end: all of them
+    expect(text('take("ab", 0)')).toBe("")
+    expect(value("drop([1, 2, 3, 4], 1)")).toEqual([2, 3, 4])
+    expect(text('drop("hello", -2)')).toBe("hel")
+    expect(value("drop((7, 8, 9), 2)_0")).toBe(9)
+    expect(value("reverse((1, 2, 3))_0")).toBe(3)
+    expect(text('reverse("abc")')).toBe("cba")
+    expect(value("take(5, 1)")).toEqual([5])                     // a number is one item
+  })
+  test("concat joins two of a kind, or the containers listed", () => {
+    expect(value("[1, 2] concat [3]")).toEqual([1, 2, 3])
+    expect(value("concat(([[1], [2]], [[3], [4]]), 1)")).toEqual([[1, 3], [2, 4]])
+    expect(value("#((1, 2) concat (3,))")).toBe(3)
+    expect(value("#concat(((1,), (2,), (3,)))")).toBe(3)
+    expect(value("#concat(())")).toBe(0)
+    expect(text('"ab" concat "cd"')).toBe("abcd")
+    expect(text('concat(("ab", "cd"))')).toBe("abcd")
+    // along another axis, concat ⍤ k
+    expect(value("[[1], [2]] (concat ⍤ 1) [[3], [4]]")).toEqual([[1, 3], [2, 4]])
+  })
+  test("reduce, scan and fold fold the items, and the scan's last item is the reduction", () => {
+    expect(value("(1, 2, 3) reduce +")).toBe(6)
+    expect(value("[[1, 2], [3, 4]] reduce +")).toEqual([4, 6])
+    expect(text('reverse("abc") reduce StringConcat')).toBe("cba")
+    expect(value("TensorStack((1, 2, 3) scan +)")).toEqual([1, 3, 6])
+    for (const [x, f] of [["(3, 1, 4, 1, 5)", "⌈"], ['"abc"', "StringConcat"], ["[[1, 5], [4, 2]]", "⌈"]]) {
+      expect(value(`x: ${x}, (x scan ${f})_(-1) ≡ (x reduce ${f})`)).toBe(1)
+    }
+    expect(value("fold((1, 2, 3), { s, v | s × 10 + v }, 0)")).toBe(123)
+    expect(value("fold([1, 2, 3], { s, v | s × 10 + v }, 0)")).toBe(123)
+    expect(text('fold("abc", { s, c | StringConcat(c, s) }, "")')).toBe("cba")
+  })
+  test("each kind keeps its own member of every verb, by its own name", () => {
+    const scope = createScope()
+    for (const verb of ["Length", "Get", "Gather", "Take", "Drop", "Concat", "Reverse", "Reduce", "Scan"]) {
+      for (const kind of ["Tensor", "List", "String"]) { expect([kind + verb, typeof scope[kind + verb]]).toEqual([kind + verb, "function"]) }
+    }
+  })
+  test("a member declines another kind's value; one that takes the value and then fails is an Error", () => {
+    for (const call of ['TensorTake("ab", 1)', "ListTake([1, 2], 1)", "StringTake((1, 2), 1)", 'ListReverse("ab")', "StringConcat([1], [2])",
+      "TensorReduce((1, 2), +)", "StringScan((1, 2), +)", 'ListGather("ab", 0)', "TensorReverse((1, 2))", "TensorScan((1, 2), +)"]) {
+      expect([call, run(call) instanceof NoMatch]).toEqual([call, true])
+    }
+    // the first member that takes the value answers, and its failure stops the cascade
+    for (const call of ['take([1, 2], "a")', "(1, 2) concat 3", "ListConcat((1,), 2)", "[1, 2]_5", "ListGet((1, 2), [0, 1])"]) {
+      const v = run(call)
+      expect([call, v instanceof Error, v instanceof NoMatch]).toEqual([call, true, false])
+    }
+  })
+  test("the list members read the list they are given, not the cells inside it", () => {
+    expect(value("x: $1, identical(ListGet(ListConcat((x,), (2,)), 0), x)")).toBe(1)
+    expect(value("x: $1, identical(ListGet(ListTake((x, 2), 1), 0), x)")).toBe(1)
+  })
+})
+
 describe("cond (eager variadic cascade)", () => {
   test("runs candidates in order, first non-Error wins, branches stay lazy", () => {
     expect(value("fact: { n | cond(guard(n = 0, { 1 }), { n × fact(n - 1) }) }, fact(5)")).toBe(120)
@@ -1902,6 +1974,19 @@ describe("every name in shipped Fluent source resolves", () => {
       expect(names(src.trim())).toEqual({ parsed: true, unresolved: [], shadowed: [] })
     })
   }
+  test("every take in shipped Fluent takes a count: a gather is x_i", () => {
+    // take(x, n) is the first n items; it once took the rows at indices, so a gather left
+    // spelled take(x, i) with one index would silently take the first i rows
+    const counts: string[] = []
+    const walk = (n: any) => {
+      if (!n || typeof n !== "object") { return }
+      if (Array.isArray(n)) { n.forEach(walk); return }
+      if (n.type === "Operation" && ["take", "TensorTake"].includes(symbolOf(n.content?.operator) ?? "")) { counts.push(n.content.args.content.value[1]?.origin?.source) }
+      for (const k of Object.keys(n)) { if (k !== "origin") { walk(n[k]) } }
+    }
+    for (const source of [PRELUDE, TOUR_SOURCE, ...Object.values(EXAMPLES)]) { walk(CodeParse(source)) }
+    expect(counts.sort()).toEqual(["#b"])
+  })
 
   test("the README's names at a glance are each one function", async () => {
     // a row's glyph, word and full name are bound to one function – or, for a glyph
@@ -2013,10 +2098,14 @@ describe("error messages carry context", () => {
     expect(scope["r"]).toBe(scope["e"])
     expect(chain(`Error("x") × 2`)).toEqual([{ message: "x", user: true, line: 1 }])
   })
-  test("take and concat name a value that isn't numbers, in the reader's words", () => {
-    expect(chain("take(sin, 1)")[0]!.message).toBe("expected numbers, got a function")
-    expect(chain(`concat(("ab", "cd"))`)[0]!.message).toBe("expected numbers, got a string")
+  test("a verb on items says what it takes, in the reader's words", () => {
+    expect(chain("take(sin, 1)")).toEqual([{ message: "expected numbers, a list or a string, got a function", user: true, line: 1 }])
+    expect(chain("reverse(◌)")[0]!.message).toBe("expected numbers, a list or a string, got ◌")
+    // a member that takes the value and then fails is the answer: numbers can't join a string
     expect(chain(`[1, 2] concat "ab"`)[0]!.message).toBe("expected numbers, got a string")
+    expect(chain("(1, 2) concat 3")[0]!.message).toContain("axis")
+    // an unknown name is a mistake, not a value of another kind
+    expect(chain("length(radious)")[0]!.message).toBe("unknown name: radious")
   })
   test("an Error made in a prelude body is reported at the reader's call that reached it", () => {
     // `-` is the prelude's x + (y × -1): its shape error points at the reader's line

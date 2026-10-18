@@ -41,7 +41,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | — | `max` | `TensorMax` |
 | — | `min` | `TensorMin` |
 | `#` | `length` | `Length` |
-| `_` | `gather` | `TensorGather` |
+| `_` | `gather` | `Gather` |
 | `⍴` | `reshape` | `TensorReshape` |
 | `..<` | `range` | `TensorRange` |
 | `...` | `rangeInclusive` | `TensorRangeInclusive` |
