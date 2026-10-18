@@ -2398,8 +2398,14 @@ describe("numbers come out right", () => {
 
 describe("plot: lines on one pair of axes", () => {
   test("a number as the codes of its digits, worked out without reading it back", () => {
-    const shown = (x: number) => value(`CodesToString(DrawDigits(${x}))`).trimEnd()
-    expect([2.31, 0.052, 1200, -0.5, 9.996, 0.99999, 0.00014, 0, 3, 38.44].map(shown)).toEqual(["2.31", "0.0520", "1200", "-0.500", "10.0", "1.00", "0.00014", "0", "3", "38.4"])
+    const shown = (x: number | string) => value(`CodesToString(DrawDigits(${x}))`).trimEnd()
+    expect([2.31, 0.052, 1200, -0.5, 9.996, 0.99999, 0.00123, 0, 3, 38.44].map(shown)).toEqual(["2.31", "0.0520", "1200", "−0.500", "10.0", "1.00", "0.00123", "0", "3", "38.4"])
+    // with an exponent from 10 million up and below 0.001; NaN, ∞ and −∞ as such
+    expect(["12345678", "9999999", "-1.5e9", "3.3e38", "0.00014", "-4.2e-11", "2e-37"].map(shown)).toEqual(["1.23e7", "1.00e7", "−1.50e9", "3.30e38", "1.40e−4", "−4.20e−11", "2.00e−37"])
+    expect(["0 ÷ 0", "1 ÷ 0", "-1 ÷ 0"].map(shown)).toEqual(["NaN", "∞", "−∞"])
+    // numbers give a row of codes each
+    expect(value(`ListMap(unstack(DrawDigits([1, -2])), CodesToString)`)).toEqual(["1        ", "−2       "])
+    expect(value(`shape(DrawDigits([[1, -2]]))`)).toEqual([1, 2, 9])
   })
   test("letters draw the IDE's font, as much of it as each glyph covers", () => {
     // a glyph's coverage, summed in linear light, and the glyph's area: BQN386's W covers

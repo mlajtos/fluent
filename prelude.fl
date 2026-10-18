@@ -714,21 +714,33 @@ letters: DrawLetters: doc({ s, at, size |
     min(where(inside, d + 0.5 ⌈ 0, 1e9), -1)
   }
 }, "letters(text, at, size)", "The shape of a line of text in the IDE's font at a font size of size pixels, from its top-left corner at: a character is 0.6 × size wide and the line 1.2 × size tall. Drawn 1 pixel wide it is the font itself; wider, bolder. A character the font lacks is left blank. text may be character codes, or a list of texts with a row of at for each.", "canvas(100, 16) . draw(letters(\"letters 2.5\", [4, 1], 12), [1, 1, 1], 1)"),
-; x as the codes of 3 significant digits, at most 5 decimals – "2.31", "-0.0520", "1200" –
-; spaces filling 8 cells; arithmetic only, so it never waits for x to be read back
+; x as the codes of 3 significant digits – "2.31", "−0.0520", "1200" – with an exponent
+; from 10 million up and below 0.001 – "1.50e9", "4.20e−5" – and NaN, ∞ and −∞ as such,
+; spaces filling 9 cells, a row of them for each number in x. Arithmetic only, so it
+; never waits for x to be read back
 DrawDigits: { x |
-  a: abs(x),
+  ; a number on each row, a cell in each column
+  v: x ⍴ [-1, 1], a: abs(v),
   P: [1, 10, 100, 1000, 10000, 100000, 1000000],
-  ; ⌊log₁₀ a⌋, where 0.9995 counts as 1, since it shows as 1.00; a whole number has no decimals
-  e: Σ([0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000, 100000] × 0.9995 ≤ a) - 4,
-  d: clamp(2 - e, 0, 5) × (a ≠ round(a)),
-  m: round(a × take(P, d)),
-  n: Σ(P ≤ m) ⌈ (d + 1),
+  ; ⌊log₁₀ a⌋ from -37, where 0.9995 counts as 1, since it shows as 1.00; 10^-38 is
+  ; too small for f32 to hold in full, and a GPU reads it as 0
+  e: Σ(10^(0..<75 - 36) × 0.9995 < a, -1, 1) - 37,
+  ; from 10 million up and below 0.001, an exponent – and two decimals after the first
+  ; digit; a whole number has none
+  sci: e>6 ⌈ (e < -3 × 0<a),
+  d: where(sci, 2, clamp(2 - e, 0, 5) × (a ≠ round(a))),
+  m: round(where(sci, a ÷ 10^e × 100, a × take(P, d))),
+  n: Σ(P - 0.5 < m, -1, 1) ⌈ (d + 1),
   point: n - d,
-  j: 0..<8 - (x < 0),
-  t: j - (d>0 ∧ j>point),
-  digit: 48 + (floor(m + 0.5 ÷ take(P, clamp(n-1 - t, 0, 6))) % 10),
-  where(j < 0, 45, where(d>0 ∧ j=point, 46, where(t < n, digit, 32)))
+  j: 0..<9 - (v < 0),
+  t: j - (d>0 × j>point),
+  ; the code of the digit of y, a whole number, worth 10 to the power p
+  at: { y, p | r: floor(y + 0.5 ÷ take(P, clamp(p, 0, 6))), 48 + r - (floor(r ÷ 10) × 10) },
+  ; after the digits, an exponent: e, its sign if negative, and its one or two digits
+  k: t - n, E: abs(e), w: 1 + (e < 0) + (E > 9),
+  power: where(k = 0, 101, where(e<0 × k=1, 8722, at(E, w - k))),
+  shown: where(j < 0, 8722, where(d>0 × j=point, 46, where(t < n, at(m, n-1 - t), where(sci × (k < w+1), power, 32)))),
+  where(isNaN(v), StringToCodes("NaN      "), where(a = 1÷0, where(j < 0, 8722, where(j = 0, 8734, 32)), shown)) ⍴ concat((shape(x), [9]))
 },
 plot: DrawPlot: doc({ x, ys, names |
   rows: cond(guard(isList(ys), { stack(ys) }), guard((#shape(ys)) = 1, { ys ⍴ [1, -1] }), { ys }),
@@ -741,24 +753,24 @@ plot: DrawPlot: doc({ x, ys, names |
     lo: min(rows), hi: max(rows),
     sx: { v | v - x_0 ÷ (x_(-1) - x_0 ⌈ 1e-9) × (R - L) + L },
     sy: { v | hi - v ÷ (hi - lo ⌈ 1e-9) × (B - T) + T },
-    ; labels at a font size of 12: a character 7.2 wide, a digit's middle 7 below the top
-    width: { c | Σ(c ≠ 32) × 7.2 },
-    ; a range frame: each axis spans the data, labeled at its ends
-    top: DrawDigits(hi), bottom: DrawDigits(lo), first: DrawDigits(x_0), end: DrawDigits(x_(-1)),
-    ends: [[L - 10 - width(top), T - 7], [L - 10 - width(bottom), B - 7], [L, B + 9], [R - width(end), B + 9]],
+    ; a range frame: each axis spans the data, labeled at its ends – at a font size of 12, a
+    ; character 7.2 wide and a digit's middle 7 below the top
+    ends: DrawDigits([hi, lo, x_0, x_(-1)]), w: Σ(ends ≠ 32, -1) × 7.2,
+    corners: [[L - 10 - w_0, T - 7], [L - 10 - w_1, B - 7], [L, B + 9], [R - w_3, B + 9]],
     ; each line labeled at its end with its name and last value, the labels pushed apart
     ; so they never overlap
     last: slice(rows, [0, n-1]) ⍴ [k],
     order: argsort(sy(last)),
     steps: 0..<k × 13,
     at: take(scan(take(sy(last), order) - steps, ⌈) + steps, argsort(order)),
+    values: DrawDigits(last),
     words: ListMap(unstack(0..<k), { i |
-      cond(guard(isList(names), { concat((StringToCodes(ListGet(names, i)), [32], DrawDigits(last_i))) }), { DrawDigits(last_i) })
+      cond(guard(isList(names), { concat((StringToCodes(ListGet(names, i)), [32], values_i)) }), { values_i })
     }),
     frame: canvas(W, H)
       . draw(line([[L - 6, T], [L - 6, B]]), faint, 1)
       . draw(line([[L, B + 6], [R, B + 6]]), faint, 1)
-      . draw(letters((top, bottom, first, end), ends, 12), faint, 1),
+      . draw(letters(unstack(ends), corners, 12), faint, 1),
     ListReduce(unstack(0..<k), { pic, i | pic . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 2) }, frame)
       . draw(letters(words, stack((fill([k], R + 8), clamp(at - 7, 0, H - 14)), -1), 12), ink, 1)
   })
