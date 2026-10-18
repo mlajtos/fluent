@@ -100,7 +100,7 @@ function schedule(roots: UOp[], uc: Map<number, number>): Set<number> {
 const accMemo = new WeakMap<UOp, number>();                                     // values are immutable; the memo keeps the DAG walk linear and dies with the nodes
 // the loop work one element of a kernel costs: a loop is its extent times its body's, a
 // nest multiplies down, side-by-side loops count once – the costliest of them
-const accCost = (v: UOp): number => {
+export const accCost = (v: UOp): number => {
   const m = accMemo.get(v); if (m !== undefined) return m;
   let c = 1;
   for (const s of v.src) c = Math.max(c, accCost(s));
