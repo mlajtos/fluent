@@ -612,10 +612,13 @@ draw: DrawShape: doc({ shape, color, width |
     ; across the stroke a pixel spans d-0.5 to d+0.5 and the stroke -r to r: the overlap
     ; is how much of the pixel it covers
     cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ (-r)) ⌈ 0, -1),
-    ; mixed as light mixes – in linear intensity, not in the screen's gamma-encoded values
-    picture^γ × 1-cover + color^γ×cover ^ 1÷γ
+    ; one distance for the whole picture is a shape that measured all its pixels together
+    cond(guard((#TensorShape(d)) < 2, { Error("draw: the shape gave one distance for the whole picture, not one for each pixel – p is every pixel at once, [height, width, 2]; measure along its last axis: norm(p - c, -1)") }), {
+      ; mixed as light mixes – in linear intensity, not in the screen's gamma-encoded values
+      picture^γ × 1-cover + color^γ×cover ^ 1÷γ
+    })
   }
-}, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width pixels wide in color, its edges antialiased.", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
+}, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width pixels wide in color, its edges antialiased. The shape is given every pixel at once, p as [height, width, 2], and gives each its distance, so it measures along the last axis: norm(p - c, -1).", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
 
 ; Optimization
 ; Optimizers. A step differentiates the loss with respect to the variables it reads –

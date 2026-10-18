@@ -1652,6 +1652,14 @@ describe("error messages carry context", () => {
 })
 
 describe("pictures", () => {
+  test("a shape that measures the whole picture at once is an Error, not an empty canvas", () => {
+    // regression: norm(p - c) without its axis is one number for every pixel together, and
+    // draw silently drew nothing
+    const v = run("canvas(20, 20) . draw({ p | abs(norm(p - [10, 10]) - 6) }, [1, 1, 1], 2)")
+    expect(v).toBeInstanceOf(Error)
+    expect((v as Error).message).toContain("norm(p - c, -1)")
+    expect(value("Σ(canvas(20, 20) . draw({ p | abs(norm(p - [10, 10], -1) - 6) }, [1, 1, 1], 2) ≠ canvas(20, 20))")).toBeGreaterThan(100)
+  })
   test("viridis has no color for NaN, and the ends' colors past them", () => {
     expect(value("isNaN(viridis(0 ÷ 0))")).toEqual([1, 1, 1])
     expect(value("viridis([-1 ÷ 0, 2]) = viridis([0, 1])")).toEqual([[1, 1, 1], [1, 1, 1]])
