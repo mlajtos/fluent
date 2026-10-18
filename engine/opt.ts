@@ -27,6 +27,9 @@ const SIMPLIFY: Rule[] = [
   (u) => (u.op === "ADD" && is(u.src[1]!, -0) ? u.src[0]! : null),
   (u) => ((u.op === "ADD" || u.op === "MULTIPLY") && u.src[0]!.op === "CONSTANT" && u.src[1]!.op === "CONSTANT" && !u.shape.length
     ? konst(u.op === "ADD" ? (u.src[0]!.arg as Float32Array)[0]! + (u.src[1]!.arg as Float32Array)[0]! : (u.src[0]!.arg as Float32Array)[0]! * (u.src[1]!.arg as Float32Array)[0]!) : null),
+  (u) => (u.op === "LESS_THAN" && !u.shape.length && scalarOf(u.src[0]!) !== null && scalarOf(u.src[1]!) !== null ? konst(scalarOf(u.src[0]!)! < scalarOf(u.src[1]!)! ? 1 : 0) : null),
+  (u) => { const c = u.op === "WHERE" ? scalarOf(u.src[0]!) : null; return c === null ? null : c !== 0 ? u.src[1]! : u.src[2]!; },   // NaN selects the first, as both backends do
+  (u) => (u.op === "IVAL" && u.src[0]!.op === "ICONST" ? konst(u.src[0]!.arg as number) : null),
   // the view laws — pure indexing, so they may run in the default (bit-exact) pipeline
   (u) => (u.op === "RESHAPE" && sameShape(u.src[0]!.shape, u.shape) ? u.src[0]! : null),
   (u) => (u.op === "BROADCAST" && sameShape(u.src[0]!.shape, u.shape) ? u.src[0]! : null),
@@ -293,7 +296,61 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
   return plan;
 }
 
-// ---- optimize: simplify → schedule → fuse; result = leaves + FUSED only --------------
+// ---- a small loop is straight-line code ---------------------------------------------
+// A sum or product over 2–4 elements – a point's coordinates, a color's channels – becomes
+// its terms, in the loop's order, each with the loop variable a constant. The law table
+// folds what that makes constant, so a select that picks a coordinate folds away and what a
+// point reads leaves the loops around it. Every fold is exact. A maximum keeps its loop: no
+// elementwise op is maxf.
+const UNROLL = 4, UNROLLED = 1024;                                             // the most terms, and the most ops an unrolled loop prints
+const fold = (op: Op, src: UOp[], arg: unknown, shape: readonly number[]): UOp => {
+  const u = rebuild(op, src, arg, shape);
+  for (const r of SIMPLIFY) { const o = r(u); if (o) return o; }
+  return u;
+};
+const unroll = (value: UOp): UOp => {
+  const memo = new Map<number, UOp>();
+  const walk = (v: UOp): UOp => {
+    let o = memo.get(v.id);
+    if (o) return o;
+    const src = v.src.map(walk);
+    o = src.every((x, i) => x === v.src[i]) ? v : fold(v.op, src, v.arg, v.shape);
+    const op = v.op === "ACC" ? (v.arg as { op: string }).op : "", n = op ? (v.src[0]!.arg as { extent: number }).extent : 0;
+    if (n && n <= UNROLL && op !== "MAX" && n * toposort(o.src[1]!).length <= UNROLLED) {
+      const [r, body] = o.src as [UOp, UOp];
+      let terms = konst(op === "ADD" ? 0 : 1);
+      for (let k = 0; k < n; k++) {
+        // a loop inside a term that reads k is a loop of its own, on a fresh variable
+        const at = new Map<number, UOp>([[r.id, iconst(k)]]), moved = [r];
+        const put = (x: UOp): UOp => {
+          let y = at.get(x.id);
+          if (y) return y;
+          if (!x.src.length || !moved.some((q) => rangesIn(x).has(q))) return x;
+          if (x.op === "ACC") { const q = x.src[0]!; at.set(q.id, range((q.arg as { extent: number }).extent)); moved.push(q); }
+          y = fold(x.op, x.src.map(put), x.arg, x.shape);
+          at.set(x.id, y);
+          return y;
+        };
+        terms = fold(op === "ADD" ? "ADD" : "MULTIPLY", [terms, put(body)], null, []);
+      }
+      o = terms;
+    }
+    memo.set(v.id, o);
+    return o;
+  };
+  return walk(value);
+};
+const unrollMany = (plan: UOp[]): UOp[] => {
+  const memo = new Map<number, UOp>();
+  for (const k of toposort(plan, (u) => (u.op === "FUSED" ? kInputs(u) : []))) {
+    if (k.op !== "FUSED") continue;
+    const ins = kInputs(k).map((x) => memo.get(x.id) ?? x), v = unroll(k.src[1]!);
+    memo.set(k.id, v === k.src[1] && ins.every((x, i) => x === kInputs(k)[i]) ? k : node("FUSED", [k.src[0]!, v, ...ins], null, k.shape, k.site));
+  }
+  return plan.map((r) => memo.get(r.id) ?? r);
+};
+
+// ---- optimize: simplify → schedule → fuse → unroll; result = leaves + FUSED only -------
 export function optimizeMany(roots: UOp[]): UOp[] {
   const s = graphRewriteMany(simplifyMany(roots), SCHED_REWRITES);
   const uc = useCounts(s);
@@ -302,6 +359,7 @@ export function optimizeMany(roots: UOp[]): UOp[] {
   // the nests the last plan loads, until a plan loads no new nest
   let g: UOp[], n: number;
   do { n = loaded.size; g = fuseWith(s, uc, mat, loaded); } while (loaded.size > n);
+  g = unrollMany(g);
   for (const u of toposort(g))                                                 // legality: only leaves and kernels may reach the executor
     if (u.op !== "FUSED" && u.op !== "CONSTANT" && u.op !== "BUFFER" && u.shape.length) throw new Error(`optimize: ${u.op} survived to the kernel boundary`);
   return g;
