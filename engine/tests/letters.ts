@@ -7,8 +7,11 @@ import { init } from "../tensor.ts";
 
 const value = (source: string) => evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope())) as { read(): Promise<Float32Array> };
 const CASES = [
-  'Σ(canvas(520, 160, 0) . draw(letters("12", [10, 4], 2), 1, 1) > 0.3)',
+  'Σ(canvas(520, 160, 0) . draw(letters("12", [10, 4], 12), 1, 1) > 0.3)',
+  'Σ(canvas(520, 160, 0) . draw(letters(("−0.0520 ∞ … ·", "NaN g|"), [[10.5, 4.25], [200, 40]], 10), 1, 1))',
+  'Σ(canvas(520, 160, 0) . draw(letters("Ag{}_~", [3, 100], 24), 1, 2))',
   'Σ(plot(0..<10, (0..<10, 9 - 0..<10), ("up", "down")) > 0.3)',
+  'Σ(plot(0..<10 × 1e8, (0..<10 - 5, 9 - 0..<10), ("up", "down")) > 0.3)',
 ];
 
 export default async function (): Promise<{ fails: number }> {

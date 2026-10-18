@@ -2401,12 +2401,23 @@ describe("plot: lines on one pair of axes", () => {
     const shown = (x: number) => value(`CodesToString(DrawDigits(${x}))`).trimEnd()
     expect([2.31, 0.052, 1200, -0.5, 9.996, 0.99999, 0.00014, 0, 3, 38.44].map(shown)).toEqual(["2.31", "0.0520", "1200", "-0.500", "10.0", "1.00", "0.00014", "0", "3", "38.4"])
   })
-  test("letters are their glyphs' lit cells", () => {
-    // "1" lights 8 of its 15 cells, in three channels
-    expect(value(`Σ(canvas(4, 5, 0) . draw(letters("1", [0, 0], 1), 1, 1))`)).toBe(24)
-    expect(value(`Σ(canvas(8, 5, 0) . draw(letters("i ", [0, 0], 1), 1, 1)) = Σ(canvas(8, 5, 0) . draw(letters("I", [0, 0], 1), 1, 1))`)).toBe(1)
-    // several texts in one shape, each at its own corner
-    expect(value(`Σ(canvas(8, 5, 0) . draw(letters(("1", [49]), [[0, 0], [4, 0]], 1), 1, 1))`)).toBe(48)
+  test("letters draw the IDE's font, as much of it as each glyph covers", () => {
+    // a glyph's coverage, summed in linear light, and the glyph's area: BQN386's W covers
+    // 0.177 of a square of the font's size, measured on Chrome's render of it at 240 pixels
+    const ink = (text: string, size: number, at = "[0, 0]") => value(`Σ((canvas(${size * text.length}, ${size * 2}, 0) . draw(letters("${text}", ${at}, ${size}), 1, 1))^2.2) ÷ 3`) as number
+    expect(ink("W", 24) / (0.177 * 24 * 24)).toBeCloseTo(1, 1)
+    // as much ink wherever a text falls among the pixels
+    expect(ink("held out 2.31", 12, "[0.3, 0.7]") / ink("held out 2.31", 12)).toBeCloseTo(1, 1)
+    // a space, and a character the font lacks, draw nothing
+    expect(ink(" é", 12)).toBe(0)
+    // the field holds a 10 × 20 cell for each of the font's codes
+    expect(value(`length(DrawFontField) ÷ length(DrawFontCodes) = 200`)).toBe(1)
+  })
+  test("several texts make one shape, each from its own corner, a character 0.6 of the size across", () => {
+    const apart = (a: string, b: string) => value(`max(abs(letters(${a})(pixels(canvas(30, 12))) ⌊ 9 - (letters(${b})(pixels(canvas(30, 12))) ⌊ 9)))`) as number
+    expect(apart(`"1−∞", [0, 0], 10`, `("1", [8722], "∞"), [[0, 0], [6, 0], [12, 0]], 10`)).toBeLessThan(1e-4)
+    // lowercase is a glyph of its own
+    expect(apart(`"a", [0, 0], 10`, `"A", [0, 0], 10`)).toBeGreaterThan(1)
   })
   test("each series draws in its own color, and a series of fewer than 2 points draws nothing", () => {
     // how many pixels of the first two series colors the picture has
