@@ -629,14 +629,14 @@ DrawBarsOf: { v, n, r, width, height, W, H |
 bars: DrawBars: doc({ v, width, height | DrawBarsOf(v, #v, DrawExtent(v), width, height, width, height) }, "bars(v, width, height)", "A [n] tensor as bars from zero, on a picture of width × height pixels, [height, width, 3], with the zero line in gray. A bar is colored by viridis at its value's place between the smallest and the largest finite value; a column narrower than its values shows their extremes.", "shape(bars([3, -1, 2], 30, 20)) = [20, 30, 3]"),
 canvas: DrawCanvas: doc({ width, height, color | fill([height, width, 3], 1) × cond(guard(identical(color, ◌), { 0.09 }), { color }) }, "canvas(width, height, color?)", "A picture of width × height pixels, all one color – the playground's background unless given.", "canvas(2, 1, [1, 0, 0]) = [[[1, 0, 0], [1, 0, 0]]]"),
 pixels: DrawPixels: doc({ picture | h: shape(picture)_0, w: shape(picture)_1, stack(meshgrid(0..<w + 0.5, 0..<h + 0.5), -1) }, "pixels(picture)", "Where each pixel's center is, as [x, y] from the top left – a picture's shape with 2 in place of its colors.", "pixels(canvas(2, 1)) = [[[0.5, 0.5], [1.5, 0.5]]]"),
-dots: DrawDots: doc({ points | { p | min(norm(unsqueeze(p, -2) - points, -1), -1) } }, "dots(points)", "The shape of n points, [n, 2]: from p, the distance to the nearest one. Drawn wide, a dot is a disk.", "dots([[0, 0], [9, 9]])([3, 4]) = 5"),
+dots: DrawDots: doc({ points | { p | min(norm(p - points, -1)) } ⍤ 1 }, "dots(points)", "The shape of n points, [n, 2]: from p, the distance to the nearest one. Drawn wide, a dot is a disk.", "dots([[0, 0], [9, 9]])([3, 4]) = 5"),
 line: DrawLine: doc({ points |
   n: length(points) - 1,
   a: points_(0..<n),
   ab: points_(1 ..< n+1) - a,
   ; how far along each segment p's nearest point lies: 0 at its start, 1 at its end
   along: { ap | clamp(Σ(ap × ab, -1, 1) ÷ (Σ(ab × ab, -1, 1) ⌈ 1e-12), 0, 1) },
-  { p | ap: unsqueeze(p, -2) - a, min(norm(ap - along(ap)×ab, -1), -1) }
+  { p | ap: p - a, min(norm(ap - along(ap)×ab, -1)) } ⍤ 1
 }, "line(points)", "The shape of the line through n points, [n, 2], one segment after another: from p, the distance to the nearest segment.", "line([[0, 0], [10, 0]])([5, 3]) = 3"),
 draw: DrawShape: doc({ shape, color, width |
   r: width ÷ 2,

@@ -68,7 +68,7 @@ Define an operator whenever a binary operation recurs or has a sign of its own.
 Bind the glyph in parentheses and use it infix:
 
 ```
-(∥): reciprocal ⍢ +,                 ; 6 ∥ 3 = 2, resistors in parallel
+(∥): ÷ ⍢ +,                          ; 6 ∥ 3 = 2, resistors in parallel
 (≻): { t, v | v_0 × 1-t + v_1×t },   ; 0.25 ≻ [0, 8] = 2
 ```
 

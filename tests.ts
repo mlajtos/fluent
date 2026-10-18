@@ -1940,6 +1940,11 @@ describe("error messages carry context", () => {
     expect(scope["r"]).toBe(scope["e"])
     expect(chain(`Error("x") × 2`)).toEqual([{ message: "x", user: true, line: 1 }])
   })
+  test("take and concat name a value that isn't numbers, in the reader's words", () => {
+    expect(chain("take(sin, 1)")[0]!.message).toBe("expected numbers, got a function")
+    expect(chain(`concat(("ab", "cd"))`)[0]!.message).toBe("expected numbers, got a string")
+    expect(chain(`[1, 2] concat "ab"`)[0]!.message).toBe("expected numbers, got a string")
+  })
   test("an Error made in a prelude body is reported at the reader's call that reached it", () => {
     // `-` is the prelude's x + (y × -1): its shape error points at the reader's line
     expect(chain("a: [1, 2],\nb: [1, 2, 3],\na - b")).toEqual([{ message: "elementwise: [2] vs [3]", user: true, line: 3 }])

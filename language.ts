@@ -1064,6 +1064,14 @@ const numericArg = (v: Value): any => {
   return operand(v)
 }
 
+// A tensor operand for an op that works on numbers only: anything else is named here, in
+// the learner's words, rather than handed to the engine
+const tensorArg = (v: Value): engine.Tensor => {
+  const t = operand(v)
+  if (!isTensor(t)) { throw new Error(`expected numbers, got ${describeArg(v)}`) }
+  return t
+}
+
 // The engine's own ops, each a native under its name. Comparisons give float32 0/1,
 // APL-style: Fluent is a float32 language, and (x = 1) - y is arithmetic.
 const natives = (ops: Record<string, Function>, wrap: (op: any) => Function): Record<string, Function> =>
@@ -1121,7 +1129,7 @@ const TensorUnstack = (a: Value, b?: Value): Value[] => {
 }
 const TensorConcat = (...args: Value[]) => {
   const listed = Array.isArray(args[0])
-  const xs = ((listed ? args[0] : args) as Value[]).map(operand)
+  const xs = ((listed ? args[0] : args) as Value[]).map(tensorArg)
   return engine.concatenate(xs, listed && args[1] != null ? asNumber(args[1]) : 0)
 }
 
@@ -1334,7 +1342,7 @@ const TensorGather = (a: Value, b: Value): Value =>
 // gather has no bounds mode, so an index out of range would read garbage; one still on
 // the GPU (an embedding lookup into a minibatch) is trusted data and flows through.
 const TensorTake = (a: Value, b: Value): Value => {
-  const x = operand(a) as engine.Tensor, size = x.shape[0] ?? 0
+  const x = tensorArg(a), size = x.shape[0] ?? 0
   // `!(0 <= w < size)` also rejects a NaN index, which slips past `<` and `>=`
   const bad = cheapValues(b)?.find((i) => { const w = i < 0 ? i + size : i; return !(w >= 0 && w < size) })
   if (bad !== undefined) { return new Error(`index ${bad} is out of bounds for an axis of length ${size}`) }

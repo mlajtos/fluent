@@ -342,8 +342,6 @@ compute device. Where it is heading, with the source of each idea:
   constants per adapter calibrated by timestamp queries (XLA priority fusion, Inductor).
 - **Multi-output kernels** (Adam's p, m, v in one kernel; softmax with logsumexp) and a
   K-contiguous GEMV with vector loads (MLX `gemv.h`).
-- **`⍤` by batching rules** (JAX vmap, Futhark): `⍤` builds one batched graph instead of
-  unstacking, applying and stacking a copy per cell.
 - **Bounded command buffers**: about one frame (~16 ms) of estimated GPU time per
   command buffer, and a dispatch estimated over ~20 ms split, against watchdogs.
 - **Indirect dispatch** for data-dependent loops (`⍣` until, `solve`): encode N
