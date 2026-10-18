@@ -606,9 +606,9 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
 
   // 10 · draw it – one number turns the dot into a ring
   await room("Draw it")
-  const ring = (body: string) => `dot: dots([[40, 30]]),\nring: { p | ${body} },\ncanvas(80, 60) . draw(ring, [1, 0.8, 0.2], 4)`
-  await rejected("a ring: every spot 20 away", ring("0"), "You didn’t draw a circle")
-  await typeInCell(page, "ring: { p | 0 }", ring("abs(dot(p) - 20)"))
+  const ring = (body: string) => `dot: dots([[80, 60]]),\nring: { p | ${body} },\ncanvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)`
+  await rejected("a ring: 40 away", ring("0"), "You didn’t draw a circle")
+  await typeInCell(page, "ring: { p | 0 }", ring("abs(dot(p) - 40)"))
   await solved("You didn’t draw a circle")
   await next()
 

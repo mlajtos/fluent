@@ -1577,7 +1577,7 @@ describe("the Tour's checks", () => {
     const check = checks.find(([s]) => s.includes(seed))![1]
     return unwrap(evaluateGeneration(() => check(CodeEvaluate.call(Object.create(scope), src), src))) === 1
   }
-  const ring = (body: string) => `dot: dots([[40, 30]]),\nring: { p | ${body} },\ncanvas(80, 60) . draw(ring, [1, 0.8, 0.2], 4)`
+  const ring = (body: string) => `dot: dots([[80, 60]]),\nring: { p | ${body} },\ncanvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)`
   const rooms: [string, string[], string[]][] = [
     ["make this say 7", ["1 + 2*3"], ["7", "7 ; +*", "1 + 6 ; *", "1 + (2 * 3)"]],
     ["fish out the 30", ["[10, 20, 30] _ 2", "[10, 20, 30]_2"], ["30"]],
@@ -1587,7 +1587,7 @@ describe("the Tour's checks", () => {
     ["now put plus in the middle", ["plus: add, 40 plus 2", "plus: add,\n40 plus 2 ; ← now put plus in the middle"],
       ["plus: add, 42", "plus: add, 40 + 2", "plus: add, plus(40, 2)"]],
     ["almost. a cube is", ["cube: { x | x^3 }, cube(3)", "cube: { x | x × x × x }, ; ← almost.\ncube(3) ; done"], ["cube: { x | x^2 }, 27"]],
-    ["a ring: every spot 20 away", [ring("abs(dot(p) - 20)"), ring("abs(20 - dot(p))")], [ring("abs(dot(p) - 0)"), ring("0"), "dot: dots([[40, 30]]), ring: { p | abs(dot(p) - 20) }, 5"]],
+    ["a ring: 40 away", [ring("abs(dot(p) - 40)"), ring("abs(40 - dot(p))")], [ring("abs(dot(p) - 0)"), ring("0"), "dot: dots([[80, 60]]), ring: { p | abs(dot(p) - 40) }, 5"]],
     ["the slope of x·x·x, at 2", ["f: { x | x^3 }, df: grad(f), df(2)", "f: { x | x^3 },\ndf: ∇(f),\ndf(2) ; ← now: the slope of x·x·x, at 2"],
       ["f: { x | x^2 }, df: grad(f), 12", "f: { x | x^3 }, df: { x | 3 × x^2 }, df(2)"]],
   ]

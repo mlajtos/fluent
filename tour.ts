@@ -220,18 +220,18 @@ s10: Grid(1)(
   head("**Fluent Tour** · 10 / 16"),
   Text("### Draw it
 
-**A shape is a distance.** \`dot: dots([[40, 30]])\` is a function: hand it a spot \`p\` — an \`[x, y]\` — and it tells you how far \`p\` is from the point at 40, 30. \`draw(shape, color, width)\` paints every pixel whose distance comes out near zero, so a point drawn 4 wide is a small disk. \`ring\` below asks how far each spot’s distance is from 0 — still just the dot. Ask about 20 instead, and the pixels that answer zero are the ones 20 away."),
-  challenge("dot: dots([[40, 30]]),
-ring: { p | abs(dot(p) - 0) }, ; ← a ring: every spot 20 away from the dot
-canvas(80, 60) . draw(ring, [1, 0.8, 0.2], 4)",
+**A shape is a distance.** \`dot: dots([[80, 60]])\` is a function: hand it a spot \`p\` — an \`[x, y]\` — and it tells you how far \`p\` is from the point at 80, 60. \`draw(shape, color, width)\` paints every pixel whose distance comes out near zero, so a point drawn 4 wide is a small disk. \`ring\` below asks how far each spot’s distance is from 0 — still just the dot. Ask about 40 instead, and the pixels that answer zero are the ones 40 away."),
+  challenge("dot: dots([[80, 60]]),
+ring: { p | abs(dot(p) - 0) }, ; ← a ring: 40 away
+canvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)",
     { r, s |
-      min(shape(r) = [60, 80, 3])
-        ∧ (appended(s, "ring([60, 30])") = 0)
-        ∧ (appended(s, "ring([40, 10])") = 0)
-        ∧ (appended(s, "ring([40, 30])") = 20)
+      min(shape(r) = [120, 160, 3])
+        ∧ (appended(s, "ring([120, 60])") = 0)
+        ∧ (appended(s, "ring([80, 20])") = 0)
+        ∧ (appended(s, "ring([80, 60])") = 40)
     },
-    Text("✅ **A ring.** You didn’t draw a circle — you said what one *is*: every spot 20 from the middle. The computer found the spots. That is how every picture in the gallery is made."),
-    Text("🎯 *Make \`ring\` a ring of radius **20** — one number to change.*")
+    Text("✅ **A ring.** You didn’t draw a circle — you said what one *is*: every spot 40 from the middle. The computer found the spots. That is how every picture in the gallery is made."),
+    Text("🎯 *Make \`ring\` a ring of radius **40** — one number to change.*")
   )
 ),
 
