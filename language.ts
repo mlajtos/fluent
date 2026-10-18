@@ -453,7 +453,8 @@ class Computed<T = Value> extends Signal<T> {
     this.running = true
     let value: T
     try {
-      value = occurring(true, this.fn)
+      // its value crosses instants, so a tensor in it is settled into a leaf, as a cell's is
+      value = heldValue(occurring(true, this.fn) as Value) as T
     } catch (e) {
       if (!(e instanceof StateWrite)) { throw e }
       value = new Error("a computed value cannot change state – change it in a step { … }") as T
