@@ -811,6 +811,36 @@ describe("data slots (~~)", () => {
   })
 })
 
+describe("Storage: a signal kept across runs", () => {
+  const arrive = () => new Promise((r) => setTimeout(r, 10))
+  const data = (v: Value) => JSON.parse(JSON.stringify(unwrap(v).map(unwrap)))
+  test("a write is saved as the value it had then; the next run gets it back", async () => {
+    const written = run(`θ: ~[1, 2], s: Storage("test: kept"), s((θ, "hi", [[3]])), θ:= [5, 6], s`)
+    expect(data(written)).toEqual([[1, 2], "hi", [[3]]])
+    const later = run(`Storage("test: kept")`) as Signal<Value>
+    expect(later.value).toBe(null)
+    await arrive()
+    expect(data(later)).toEqual([[1, 2], "hi", [[3]]])
+  })
+  test("◌ forgets – also written to a signal that holds ◌ – and what can't be saved is an Error", async () => {
+    run(`s: Storage("test: forgotten"), s([1])`)
+    await arrive()
+    run(`s: Storage("test: forgotten"), s(◌)`)
+    const later = run(`Storage("test: forgotten")`) as Signal<Value>
+    await arrive()
+    expect(later.value).toBe(null)
+    const fn = run(`s: Storage("test: a function"), s({ x | x }), s`) as Signal<Value>
+    await arrive()
+    expect(fn.value).toBeInstanceOf(Error)
+  })
+  test("a run that writes first keeps its value when an older one arrives", async () => {
+    run(`s: Storage("test: race"), s(1)`)
+    const s = run(`s: Storage("test: race"), s(2), s`) as Signal<Value>
+    await arrive()
+    expect(unwrap(s)).toBe(2)
+  })
+})
+
 describe("function power validation", () => {
   test("⍣ rejects a non-scalar count instead of silently doing nothing", () => {
     expect(run("({ x | x × 2 } ⍣ [2, 2])(1)")).toBeInstanceOf(Error)

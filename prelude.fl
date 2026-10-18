@@ -851,6 +851,7 @@ SignalComputed: doc(SignalComputed, "SignalComputed(thunk)", "A signal whose val
 SignalRead: doc(SignalRead, "SignalRead(s)", "A signal's value – the same as s().", "s: $3, SignalRead(s) = 3"),
 SignalUpdate: doc(SignalUpdate, "SignalUpdate(s, v)", "Write v into the signal s – the same as s(v).", "s: $3, SignalUpdate(s, 4), s() = 4"),
 SignalEffect: doc(SignalEffect, "SignalEffect(thunk)", "Run the thunk now, and again whenever a signal it reads changes – for side effects.", "SignalEffect({ ◌ })"),
+Storage: doc(Storage, "Storage(key)", "A signal kept in this browser under key: it survives a reload. It is ◌ until a saved value arrives; writing it saves the value – a variable's value at that moment, tensors, strings and lists of them – and writing ◌ forgets it. A checkpoint is one: save the weights and the optimizer's memory, and := puts them back.", "s: Storage(\"notes\"), s(\"hello\"), s() = \"hello\""),
 
 ; Misc
 ($): doc(Reactive, "$value", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $0.5, x^2 = 0.25"),
