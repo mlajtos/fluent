@@ -57,9 +57,10 @@ const SCHED_REWRITES: Rule[] = [(u) => {
 }];
 
 // ---- the schedule ----------------------------------------------------------------
-// Measured platform constants (tests/bench re-derive them): inlining a kernel that carries
-// a loop trades a dispatch for `indexSpace·loopExtent` recomputed flops — pays under ~2e7.
-export const COST = { reduceBudget: 2e7, perElem: 4096, tile: 16, tileMinM: 2 };
+// Measured platform constants: inlining a kernel that carries a loop trades a dispatch for
+// `indexSpace·loopExtent` recomputed flops — pays under ~2e7. A contraction shorter than
+// tileMinK runs as a plain nest, not a tile: tests/bench-tile.ts re-derives that one.
+export const COST = { reduceBudget: 2e7, perElem: 4096, tile: 16, tileMinM: 2, tileMinK: 8 };
 const ELEM = new Set<Op>(["ADD", "MULTIPLY", "RECIPROCAL", "EXP", "LOG", "SQRT", "LESS_THAN", "WHERE", "MATH"]);
 const VIEW = new Set<Op>(["BROADCAST", "PERMUTE", "RESHAPE", "SLICE", "WINDOW"]);
 const MAX_INPUTS = 6;                                                          // soft cap on kernel growth (inline/splice stop here; mandatory reads may still add)
@@ -119,8 +120,10 @@ export const rangesIn = (u: UOp): ReadonlySet<UOp> => {
   return out;
 };
 
-function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[] {
-  const built = new Map<number, UOp>();
+// `loaded` names the loop nests a plan materializes anyway: every reader loads them, none
+// recomputes one. The pass adds the nests its own plan loads.
+function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loaded: Set<number>): UOp[] {
+  const built = new Map<number, UOp>(), source = new Map<UOp, number>();
 
   // Build one kernel's scalar value for `top` over the index space `regionShape`, read at
   // index expression `at`; `loop` is the reduction's loop variable, if the kernel has one.
@@ -167,8 +170,9 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
       const b = build(vm.base);
       // the inputs a splice adds: a second read of a spliced kernel adds none
       const fresh = () => kInputs(b).filter((x) => !slot.has(x.id)).length;
-      if (b.op === "FUSED" && chainUse(v) === 1 && slot.get(b.id) === undefined && inputs.length + fresh() <= cap) {
-        const c = accCost(b.src[1]!);                                          // c = 1: a pure map folds free; a loop folds while recompute stays cheap
+      const c = b.op === "FUSED" ? accCost(b.src[1]!) : 0;                     // c = 1: a pure map folds free; a loop folds while recompute stays cheap
+      // a loop nest the plan materializes is loaded, never also recomputed
+      if (b.op === "FUSED" && chainUse(v) === 1 && slot.get(b.id) === undefined && inputs.length + fresh() <= cap && !(c > 1 && loaded.has(vm.base.id))) {
         // a spliced value runs once a thread, and again each step of the reduction's loop
         // only where its index reads the loop variable – the printers hoist it otherwise
         const evals = outN * (loop && rangesIn(e).has(loop) ? (loop.arg as { extent: number }).extent : 1);
@@ -182,10 +186,10 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
         // round trip — traffic elimination, so it is exempt from both budgets: the folded
         // chain of sums is what the split-K tile printer catches. Spliced into an
         // elementwise body instead, the contraction would run as serial loops per thread
-        // where, materialized, it runs as a tile. The occupancy floor (outN ≥ 1024) keeps
-        // a near-scalar output (a loss) from folding the graph into one serial thread.
+        // where, materialized, it runs as a tile. A scalar output (a loss) never folds: the
+        // graph would run as one serial thread.
         const amp = evals / Math.max(numel(b.shape), 1);
-        const traffic = whole && amp <= 1.01 && outN >= 1024;
+        const traffic = whole && amp <= 1.01 && outN >= 2;
         // a loop spliced into a reduction's body runs once per step of the outer loop, on
         // one thread – materialized it runs on its own, in parallel; only a short one pays
         const nested = evals > outN && c > 16;
@@ -268,20 +272,27 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>): UOp[
       const body = node("WHERE", [eq, load(1, iadd(imul(i, iconst(R)), imod(gid, iconst(R)))), konst(0)], null, []);
       out = fused(gid, acc("ADD", i, body), [build(u.src[0]!), build(u.src[1]!)], u.shape);
     } else throw new Error(`fuse: no kernel form for ${u.op}`);
-    built.set(u.id, out);
+    built.set(u.id, out); source.set(out, u.id);
     return out;
   };
   // Pre-build every node a `read` could reach as a base, in topological order, so build()
   // never recurses deeper than one kernel — real graphs are thousands of nodes deep.
   for (const u of toposort(roots)) if (u.op === "REDUCE" || u.op === "GATHER" || u.op === "SCATTER_ADD" || ELEM.has(u.op)) build(u);
-  return roots.map(build);
+  const plan = roots.map(build);
+  for (const k of toposort(plan, (u) => (u.op === "FUSED" ? kInputs(u) : [])))
+    for (const x of k.op === "FUSED" ? kInputs(k) : []) if (x.op === "FUSED" && accCost(x.src[1]!) > 1) loaded.add(source.get(x)!);
+  return plan;
 }
 
 // ---- optimize: simplify → schedule → fuse; result = leaves + FUSED only --------------
 export function optimizeMany(roots: UOp[]): UOp[] {
   const s = graphRewriteMany(simplifyMany(roots), SCHED_REWRITES);
   const uc = useCounts(s);
-  const g = fuseWith(s, uc, schedule(s, uc));
+  const mat = schedule(s, uc), loaded = new Set<number>();
+  // a loop nest the plan materializes is computed once: fuse again, every reader loading
+  // the nests the last plan loads, until a plan loads no new nest
+  let g: UOp[], n: number;
+  do { n = loaded.size; g = fuseWith(s, uc, mat, loaded); } while (loaded.size > n);
   for (const u of toposort(g))                                                 // legality: only leaves and kernels may reach the executor
     if (u.op !== "FUSED" && u.op !== "CONSTANT" && u.op !== "BUFFER" && u.shape.length) throw new Error(`optimize: ${u.op} survived to the kernel boundary`);
   return g;

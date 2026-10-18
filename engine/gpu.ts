@@ -111,7 +111,7 @@ function tileNest(u: UOp, nIn: number): Printed | null {
   const shT = u.shape.filter((d) => d !== 1), sh = shT.length >= 2 ? shT : u.shape;
   const N = sh.at(-1) ?? 1, M = Math.floor(Math.max(numel(u.shape), 1) / Math.max(N, 1)), K = chain.reduce((p, r) => p * extent(r), 1);
   if (M < Math.max(2, COST.tileMinM) || N < 2 || K < 2) return null;   // M = 1 keeps the streaming nest — a tile would idle 15/16 threads
-  if (K < 64 && chain.length === 1) return null;                       // tiny K cannot amortize tile staging (K=32 tiles lose to the plain nest)
+  if (K < COST.tileMinK && chain.length === 1) return null;            // a short K cannot amortize tile staging
   // Occupancy: a tile grid smaller than the machine (weight-grad shapes like [32,96] with
   // K = 5344 give 12 workgroups) leaves the GPU idle on long serial tile loops. A K-GROUP
   // axis fixes it: workgroup z owns a K-slice, runs the same coalesced tile loop over it,

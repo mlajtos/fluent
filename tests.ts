@@ -1906,6 +1906,17 @@ describe("the engine", () => {
     const count = (op: string) => ir.toposort(kernels[0]!.src[1]!).filter((u) => u.op === op).length
     expect([kernels.length, count("MULTIPLY"), count("LOAD")]).toEqual([1, 6, 1])
   })
+  test("a contraction several kernels read is computed once", async () => {
+    // an RMS norm of an embedding plus positions: its variance and its scaled output both
+    // read the matmul through the sum
+    const ir = await import("./engine/ir.ts")
+    const { optimizeMany } = await import("./engine/opt.ts")
+    const { matmul, rmsNorm } = await import("./engine/tests/vocab.ts")
+    const x = ir.add(matmul(ir.buffer("X", [512, 27]), ir.buffer("E", [27, 32])), ir.buffer("P", [512, 32]))
+    const y = rmsNorm(x, ir.broadcastTo(ir.buffer("g", [32]), [512, 32]))
+    const loops = ir.toposort(optimizeMany([y])[0]!).filter((u) => u.op === "RANGE" && (u.arg as { extent: number }).extent === 27)
+    expect(loops.length).toBe(1)
+  })
   const lowered = async (root: any) => {
     const ir = await import("./engine/ir.ts")
     const { lowerMany } = await import("./engine/gpu.ts")
