@@ -2644,11 +2644,12 @@ describe("plot: lines on one pair of axes", () => {
     expect(apart(`"a", [0, 0], 10`, `"A", [0, 0], 10`)).toBeGreaterThan(1)
   })
   test("each series draws in its own color, and a series of fewer than 2 points draws nothing", () => {
-    // how many pixels of the first two series colors the picture has
+    // how many pixels of the first two series colors the picture has – at density 1, a line
+    // 1.25 units wide covers few pixels in full and the rest in part
     const count = (p: string) => value(`p: ${p}, near: { c | Σ(Σ(abs(p - c), -1) < 0.05) }, stack((near([0.224, 0.529, 0.898]), near([0.851, 0.349, 0.149])))`) as number[]
     const [blue, orange] = count(`plot(0..<50, (0..<50, 50 - 0..<50), ("up", "down"))`)
-    expect(blue).toBeGreaterThan(300)
-    expect(orange).toBeGreaterThan(300)
+    expect(blue).toBeGreaterThan(100)
+    expect(orange).toBeGreaterThan(100)
     expect(count(`plot(0..<1, [3])`)).toEqual([0, 0])
     expect(value(`shape(plot(linspace([-1, 1], 9), [[1, 2, 3, 4, 5, 6, 7, 8, 9]]))`)).toEqual([160, 520, 3])
   })

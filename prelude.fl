@@ -761,7 +761,7 @@ plot: DrawPlot: doc({ x, ys, names |
       . draw(line([[L - 6, T], [L - 6, B]]), faint, 1)
       . draw(line([[L, B + 6], [R, B + 6]]), faint, 1)
       . draw(letters(unstack(ends), corners, 12), faint, 1),
-    ListReduce(unstack(0..<k), { pic, i | pic . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 2) }, frame)
+    ListReduce(unstack(0..<k), { pic, i | pic . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 1.25) }, frame)
       . draw(letters(words, stack((fill([k], R + 8), clamp(at - 7, 0, H - 14)), -1), 12), ink, 1)
   })
 }, "plot(x, ys, names?)", "Lines on one pair of axes, a picture 520 × 160 units: ys is a list of vectors, or a matrix of rows, each over the points x. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
