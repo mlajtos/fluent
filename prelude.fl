@@ -714,8 +714,9 @@ radam: OptimizerRAdam: doc({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
   (v - lr×u, (ListGet(q, 0), ListGet(q, 1)))
 }, lr, a) }, "radam(lr, vars?)", "RAdam: Adam whose adaptive step is switched in as its variance estimate becomes reliable – no warmup needed.", "opt: radam(0.01)"),
 amsgrad: OptimizerAMSGrad: doc({ lr, a | optimizer({ v | (zerosLike(v), zerosLike(v), zerosLike(v)) }, { g, v, s, t, lr |
-  q: TensorAdamMoments(g, s, t, 0.9, 0.999), top: ListGet(s, 2) ⌈ ListGet(q, 3),
-  (v - lr×(ListGet(q, 2) ÷ ((√top) + 1e-8)), (ListGet(q, 0), ListGet(q, 1), top))
+  ; the largest raw second moment, bias-corrected at this step – as PyTorch does
+  q: TensorAdamMoments(g, s, t, 0.9, 0.999), top: ListGet(s, 2) ⌈ ListGet(q, 1),
+  (v - lr×(ListGet(q, 2) ÷ (√(top ÷ (1 - 0.999^t)) + 1e-8)), (ListGet(q, 0), ListGet(q, 1), top))
 }, lr, a) }, "amsgrad(lr, vars?)", "AMSGrad: Adam that divides by the largest second moment seen so far, so a step never grows from a forgotten large gradient.", "opt: amsgrad(0.01)"),
 adabelief: OptimizerAdaBelief: doc({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
   m: g × 0.1 + (ListGet(s, 0) × 0.9), d: g - m,

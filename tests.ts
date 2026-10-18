@@ -733,6 +733,23 @@ describe("training: ∇ follows what the loss reads", () => {
       expect([opt, Math.abs(θ[0]! - 3) < 0.02 && Math.abs(θ[1]! + 1) < 0.02]).toEqual([opt, true])
     }
   })
+  test("amsgrad keeps the largest raw second moment and bias-corrects it, as PyTorch does", () => {
+    // torch.optim.Adam(amsgrad=True), in float64, on Σ a(θ - c)²
+    const a = [1, 10, 0.1], c = [0.3, 0.1, -0.7], θ = [1, -2, 0.5], m = [0, 0, 0], v = [0, 0, 0], top = [0, 0, 0]
+    const [step, read] = run(`θ: ~[${θ}], 𝓛: { Σ([${a}] × (θ - [${c}])^2) }, opt: amsgrad(0.1), ({ opt(𝓛) }, { θ })`) as Value[] as Function[]
+    for (let t = 1; t <= 8; t++) {
+      step!()
+      for (let i = 0; i < 3; i++) {
+        const g = 2 * a[i]! * (θ[i]! - c[i]!)
+        m[i] = 0.9 * m[i]! + 0.1 * g
+        v[i] = 0.999 * v[i]! + 0.001 * g * g
+        top[i] = Math.max(top[i]!, v[i]!)
+        θ[i] = θ[i]! - 0.1 * (m[i]! / (1 - 0.9 ** t)) / (Math.sqrt(top[i]! / (1 - 0.999 ** t)) + 1e-8)
+      }
+      const got = unwrap(read!()) as number[]
+      got.forEach((x, i) => expect(x).toBeCloseTo(θ[i]!, 4))
+    }
+  })
   test("an optimizer is a value: optimizer(init, rule, lr)", () => {
     // plain gradient descent, written out
     expect(value("θ: ~([0]), 𝓛: { (θ_0 - 2) ^ 2 }, opt: optimizer({ v | List() }, { g, v, s, t, lr | (v - (lr × g), List()) }, 0.25), opt(𝓛), θ")).toEqual([1])
