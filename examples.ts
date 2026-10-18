@@ -1415,7 +1415,7 @@ dec: { t | CodesToString(where(t = 0, 32, t + 96)) },
 
 ; --- the entire dataset is this editable string ---
 corpus: $"emma olivia ava isabella sophia charlotte mia amelia harper evelyn abigail emily elizabeth mila ella avery sofia camila aria scarlett victoria madison luna grace chloe penelope layla riley zoey nora lily eleanor hannah lillian addison aubrey ellie stella natalie zoe leah hazel violet aurora savannah audrey brooklyn bella claire skylar lucy paisley everly anna caroline nova genesis emilia kennedy samantha maya willow kinsley naomi aaliyah elena sarah ariana allison gabriella alice madelyn cora ruby eva serenity autumn adeline hailey gianna valentina isla eliana quinn ivy sadie piper lydia alexa josephine emery julia delilah arianna vivian kaylee sophie brielle madeline",
-load: { c | windows(T + 1, enc(c)) }, ; every 9-char window is an example
+load: { c | window(enc(c), [T + 1]) }, ; every 9-char window is an example
 D: ~~load(once(corpus)),
 SignalEffect({ D:= load(corpus()) }), ; corpus edits reload the slot – the weights stay
 
@@ -1555,7 +1555,7 @@ dec: { t | CodesToString(where(t = 0, 32, t + 96)) },
 
 ; --- the entire dataset is this editable string ---
 corpus: $"emma olivia ava isabella sophia charlotte mia amelia harper evelyn abigail emily elizabeth mila ella avery sofia camila aria scarlett victoria madison luna grace chloe penelope layla riley zoey nora lily eleanor hannah lillian addison aubrey ellie stella natalie zoe leah hazel violet aurora savannah audrey brooklyn bella claire skylar lucy paisley everly anna caroline nova genesis emilia kennedy samantha maya willow kinsley naomi aaliyah elena sarah ariana allison gabriella alice madelyn cora ruby eva serenity autumn adeline hailey gianna valentina isla eliana quinn ivy sadie piper lydia alexa josephine emery julia delilah arianna vivian kaylee sophie brielle madeline",
-load: { c | windows(T + 1, enc(c)) }, ; every 9-char window is an example
+load: { c | window(enc(c), [T + 1]) }, ; every 9-char window is an example
 D: ~~load(once(corpus)),
 SignalEffect({ D:= load(corpus()) }), ; corpus edits reload the slot – the weights stay
 
@@ -1724,8 +1724,8 @@ SignalEffect({ when(loaded(), {
   streams((mask(ids, ¬held), mask(ids, held)))
 }) }),
 ; a window is T+1 characters in a row: each of the first T is followed by the next
-train: { windows(T + 1, streams()_0) },
-val: { windows(T + 1, streams()_1) },
+train: { window(streams()_0, [T + 1]) },
+val: { window(streams()_1, [T + 1]) },
 batch: { d | take(d, floor(⚄([B]) × (#d))) }, ; B windows of d, at random
 
 ; --- the model: one transformer block, as in nanoGPT, its weights drawn small ---

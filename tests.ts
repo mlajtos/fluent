@@ -443,6 +443,42 @@ describe("tensors", () => {
     expect(value("shape((Σ ⍤ 1)(fill([0, 3], 1)))")).toEqual([0])
     expect((run("stack(())") as Error).message).toBe("stack: needs at least one array")
   })
+  // f, counting its calls: a native the scope binds as `spy`
+  const counted = (source: string) => {
+    let calls = 0
+    const scope = createScope()
+    scope.spy = (x: Value) => { calls++; return x }
+    return { value: unwrap(evaluateIn(source, scope)), calls }
+  }
+  test("rank ⍤ runs f once, on a cell, and the frame comes free", () => {
+    expect(counted("({ v | Σ(spy(v)) } ⍤ 1)(fill([5, 3], 1))")).toEqual({ value: [3, 3, 3, 3, 3], calls: 1 })
+    expect(counted("({ m | spy(m) matmul transpose(m) } ⍤ 2)([[[1, 2], [3, 4]], [[1, 0], [0, 1]]])"))
+      .toEqual({ value: [[[5, 11], [11, 25]], [[1, 0], [0, 1]]], calls: 1 })
+    // every view and gather takes the frame: a row's own picks, its own scatter, its own scan
+    expect(value("({ v | v_[2, 0] } ⍤ 1)([[1, 2, 3], [4, 5, 6]])")).toEqual([[3, 1], [6, 4]])
+    expect(value("({ v | v_argmax(v) } ⍤ 1)([[1, 9, 3], [7, 2, 1]])")).toEqual([9, 7])
+    expect(value("({ v | scatterAdd([0, 0, 1], v, 2) } ⍤ 1)([[1, 2, 3], [4, 5, 6]])")).toEqual([[3, 3], [9, 6]])
+    expect(value("({ v | scatterAdd(v, [1, 1], 3) } ⍤ 1)([[0, 2], [1, 1]])")).toEqual([[1, 0, 1], [0, 2, 0]])
+    expect(value("({ v | v scan + } ⍤ 1)([[1, 2, 3], [4, 5, 6]])")).toEqual([[1, 3, 6], [4, 9, 15]])
+    expect(value("((Σ ⍤ 1) ⍤ 2)(fill([2, 3, 4], 1))")).toEqual([[4, 4, 4], [4, 4, 4]])
+  })
+  test("rank ⍤ runs f cell by cell when f reads its cell's numbers or writes state", () => {
+    // the trace, then each of the two cells
+    expect(counted("({ x | cond(guard(Σ(spy(x)) > 0, { x }), { -x }) } ⍤ 1)([[1, 2], [-3, -4]])"))
+      .toEqual({ value: [[1, 2], [3, 4]], calls: 3 })
+    // a bounds check reads the index: one out of range is the loop's Error
+    expect((run("({ v | v_(v_0) } ⍤ 1)([[1, 2, 3], [7, 5, 6]])") as Error).message).toBe("index 7 is out of bounds for an axis of length 3")
+    expect(value("c: $0, ({ v | c(c() + 1), Σ(v) } ⍤ 1)([[1, 2], [3, 4], [5, 6]]), c()")).toBe(3)
+  })
+  test("rank ⍤ draws ⚄ for every cell, and ∇ goes through it", () => {
+    const r = value("({ v | ⚄(shape(v)) } ⍤ 1)(fill([3, 2], 0))") as number[][]
+    expect(new Set(r.map(String)).size).toBe(3)
+    // nested: each outer cell draws its own, shared by its inner cells
+    const s = value("({ r | ({ x | x + ⚄([]) } ⍤ 0)(r) } ⍤ 1)(fill([2, 2], 0))") as number[][]
+    expect(s[0]![0]).not.toBe(s[1]![0])
+    expect(value("(∇{ x | Σ((softmax ⍤ 1)(x) × [1, 2, 3]) })([[1, 2, 3], [3, 2, 1]])"))
+      .toEqual(value("(∇{ x | Σ(softmax(x) × [1, 2, 3]) })([[1, 2, 3], [3, 2, 1]])"))
+  })
   test("inner product ∙ is matmul, and swaps its ring", () => {
     expect(value("[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]]")).toEqual([[19, 22], [43, 50]])   // ×∙+ = matmul
     expect(value("[1,2,3] (× ∙ +) [4,5,6]")).toBe(32)                                     // vectors → dot
@@ -993,14 +1029,18 @@ describe("prelude list helpers", () => {
     expect(value("ListLength(ListScan((1, 2, 3), { a, b | a + b }, 0))")).toBe(4)
     expect(value("ListGet(ListScan((1, 2, 3), { a, b | a + b }, 0), 3)")).toBe(6)
   })
-  test("windows, chunks, stencil slide over a vector", () => {
-    expect(value("windows(2, [1, 2, 3, 4])")).toEqual([[1, 2], [2, 3], [3, 4]])
-    expect(value("chunks(2, [1, 2, 3, 4])")).toEqual([[1, 2], [3, 4]])
+  test("window and stencil slide over a vector", () => {
+    expect(value("window([1, 2, 3, 4], [2])")).toEqual([[1, 2], [2, 3], [3, 4]])
     // stencil reduces each window with f
     expect(value("stencil(3, Σ, [1, 2, 3, 4, 5])")).toEqual([6, 9, 12])
     expect(value("stencil(2, μ, [2, 4, 6, 8])")).toEqual([3, 5, 7])
     // along the leading axis at any rank: each window of rows reduces to a row
     expect(value("stencil(2, Σ, [[1, 2], [3, 4], [5, 6]])")).toEqual([[4, 6], [8, 10]])
+    // a shape-keeping f keeps each window
+    expect(value("stencil(3, sort, [3, 1, 2, 5, 4])")).toEqual([[1, 2, 3], [1, 2, 5], [2, 4, 5]])
+    // ⌺ is the operator: f and the width give the function
+    expect(value("(Σ ⌺ 3)([1, 2, 3, 4, 5])")).toEqual([6, 9, 12])
+    expect(value("(μ ⌺ 2)([[1, 2], [3, 4], [5, 6]])")).toEqual([[2, 3], [4, 5]])
   })
 })
 
@@ -1029,6 +1069,13 @@ describe("operator arity", () => {
     expect(value("+([-3, 4])")).toEqual([3, 4])   // unary abs
     expect(value("-([1, 2])")).toEqual([-1, -2])  // unary negate
     expect(value("×(-7)")).toBe(-1)               // unary sign
+    expect(value("÷([2, 4])")).toEqual([0.5, 0.25]) // unary reciprocal
+    expect(value("^(0)")).toBe(1)                 // unary exp: ^x is e^x
+    expect(value("^(1)")).toBeCloseTo(Math.E, 6)
+    expect(value("[3, 4] ÷ 2")).toEqual([1.5, 2])
+    expect(value("2 ^ [1, 2, 3]")).toEqual([2, 4, 8])
+    // resistors in parallel: add the reciprocals, and come back
+    expect(value("(∥): ÷ ⍢ +, 6 ∥ 3")).toBeCloseTo(2, 5)
   })
 })
 
@@ -1250,12 +1297,14 @@ describe("inverse and ⍢ around", () => {
     expect(value("-3 (= over abs) 3")).toBe(1)
     expect(value("(√ compose +)(9, 16)")).toBe(5)
   })
-  test("solve finds the x near the seed, or says there is none", () => {
+  test("solve finds the x near the seed, or says it didn't land", () => {
     expect(value("solve(cos, 0, 1)")).toBeCloseTo(Math.PI / 2, 5)
+    // cos is flat at 0, so Newton can't step from there – though π/2 solves it
     const none = run("solve(cos, 0, 0)") as Error
     expect(none).toBeInstanceOf(Error)
     expect(none).not.toBeInstanceOf(NoMatch)
-    expect(none.message).toContain("no solution near the seed")
+    expect(none.message).toStartWith("solve: Newton's method didn't reach g(x) = y from the seed")
+    expect(none.message).not.toContain("no solution near the seed")
     expect(value("inverse({ x | x^3 + x })(10)")).toBeCloseTo(2, 5)
     expect(value("2 inverse(^) 8")).toBeCloseTo(3, 5)
     expect(value("inverse(log)([1, 2, 3])")).toEqual([Math.E, Math.E ** 2, Math.E ** 3].map((x) => expect.closeTo(x, 4)))
@@ -2366,10 +2415,10 @@ describe("numbers come out right", () => {
     expect(value("argmax([1, 0 ÷ 0, 3])")).toBe(1)                        // the first NaN, as numpy
     expect(value("argmin([3, 1, 0 ÷ 0])")).toBe(2)
   })
-  test("windows and chunks are views of the same numbers", () => {
-    expect(value("windows(3, [1, 2, 3, 4, 5])")).toEqual([[1, 2, 3], [2, 3, 4], [3, 4, 5]])
-    expect(value("windows(2, [[1, 2], [3, 4], [5, 6]])")).toEqual([[[1, 2], [3, 4]], [[3, 4], [5, 6]]])
-    expect(value("chunks(2, [1, 2, 3, 4, 5, 6])")).toEqual([[1, 2], [3, 4], [5, 6]])
+  test("window is a view of the same numbers, over the trailing axes", () => {
+    expect(value("window([1, 2, 3, 4, 5], [3])")).toEqual([[1, 2, 3], [2, 3, 4], [3, 4, 5]])
+    expect(value("window([[1, 2, 3], [4, 5, 6]], [2])")).toEqual([[[1, 2], [2, 3]], [[4, 5], [5, 6]]])
+    expect(value("window([[1, 2, 3], [4, 5, 6]], [2, 2])")).toEqual([[[[1, 2], [4, 5]], [[2, 3], [5, 6]]]])
   })
   test("fft's fast path agrees with the DFT", () => {
     for (const n of [64, 256]) {
@@ -2388,6 +2437,13 @@ describe("numbers come out right", () => {
     expect(value("[1, 2, 3, 4] scan +")).toEqual([1, 3, 6, 10])
     expect(value("[3, 1, 4, 1, 5, 9, 2, 6] scan ⌈")).toEqual([3, 3, 4, 4, 5, 9, 9, 9])
     expect(value("scan([[1, 2, 3], [4, 5, 6]], +, 0)")).toEqual([[1, 2, 3], [5, 7, 9]])
+    // along the leading axis, as reduce folds: the scan's last item is the reduction, at any rank
+    expect(value("[[1, 2, 3], [4, 5, 6]] scan +")).toEqual([[1, 2, 3], [5, 7, 9]])
+    for (const f of ["+", "⌈", "×"]) {
+      for (const x of ["[3, 1, 2]", "[[1, 5, 3], [4, 2, 6]]", "fill([2, 3, 2], 2) - (0..<2)"]) {
+        expect(value(`x: ${x}, (x scan ${f})_(-1) ≡ (x reduce ${f})`)).toBe(1)
+      }
+    }
     expect(value("∇({ x | Σ((x scan +) × [1, 10, 100]) })([1, 2, 3])")).toEqual([111, 110, 100])
   })
   test("pipe, apply and zerosLike", () => {

@@ -1142,6 +1142,51 @@ const TensorReduce = function (this: CurrentScope, tensor: Value, fn: Value, axi
   return ListReduce.call(this, parts, fn)
 }
 
+// (f ⍤ k): f on each rank-k cell, mapped over the frame of leading axes – a negative k
+// fixes the frame's rank instead. Two frames agree as they do under +. f runs once, on a
+// cell, and the engine gives the graph it built the frame; an f that reads its cell's
+// numbers – a branch on them, a bounds check – or writes state, which it may not do
+// while it is traced, runs cell by cell instead. With no cells, f on a cell of zeros
+// tells the shape of the result's cells, as in J.
+const TensorRank = (f: Value, k?: Value) => {
+  if (!isFn(f)) { return new Error(`\`(f ⍤ k)\`: \`f\` must be a function, got ${describeArg(f)}`) }
+  const rank = k == null ? 0 : asWhole(k)
+  return made(function (this: CurrentScope, a: Value, b?: Value) {
+    const args = b == null ? [a] : [a, b], xs = args.map(operand) as engine.Tensor[]
+    const frameRank = (r: number) => rank >= 0 ? Math.max(r - rank, 0) : Math.min(-rank, r)
+    let F: number[]
+    try { F = xs.map((x) => engine.zeros(x.shape.slice(0, frameRank(x.ndim)))).reduce((p, q) => engine.add(p, q)).shape } catch (e) {
+      return new Error("`(f ⍤ k)`: dyadic rank needs frames that match or broadcast", { cause: asError(e) })
+    }
+    if (!F.length) { return safeApply(f, args, this) }
+    const framed = xs.map((x) => {
+      const r = frameRank(x.ndim), cell = x.shape.slice(r)
+      return engine.broadcastTo(engine.reshape(x, [...Array(F.length - r).fill(1), ...x.shape]), [...F, ...cell])
+    })
+    const outer = differentiating
+    differentiating = true
+    try {
+      const view = engine.overFrame(F, framed, (cells) => safeApply(f, cells, this))
+      if (view) { return view }
+    } catch (e) {
+      if (!(e instanceof StateWrite)) { throw e }
+    } finally { differentiating = outer }
+    const cells = framed.map((x) => x.shape.slice(F.length)), n = F.reduce((p, q) => p * q, 1)
+    if (n === 0) {
+      const z = safeApply(f, cells.map((c) => engine.zeros(c)), this)
+      return isTensorish(z) ? engine.zeros([...F, ...shapeOf(z)]) : z
+    }
+    const items = framed.map((x, i) => [...engine.reshape(x, [n, ...cells[i]!])])
+    const rs = Array.from({ length: n }, (_, j) => safeApply(f, items.map((c) => c[j]!), this))
+    // the first cell that failed is the answer; a live cell's result makes the stack live
+    const stacked = (done: Value[]): Value => {
+      const st = done.find(isFailure) ?? TensorStack(done)
+      return isTensor(st) ? engine.reshape(st, [...F, ...st.shape.slice(1)]) : st
+    }
+    return safeApply(stacked, [rs], this)
+  })
+}
+
 // Index values for a bounds check: read when they are on the host or cheap to compute
 // there; values still on the GPU – a minibatch drawn from a data slot – flow through
 // unchecked, as trusted data
@@ -1490,7 +1535,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc,
   Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalEffect, SignalOnce,
   ...UNARY, ...BINARY, ...REDUCTIONS,
-  TensorStack, TensorUnstack, TensorConcat, TensorReduce, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
+  TensorStack, TensorUnstack, TensorConcat, TensorReduce, TensorRank, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
   TensorPermute, TensorBroadcast, TensorPadAxis, TensorWindow, TensorTake, TensorScatterAdd, TensorRange,
   TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorLength, TensorShape, TensorGather,
   TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorWatch, TensorRandomUniform,
