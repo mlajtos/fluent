@@ -449,7 +449,9 @@ class FluentVariable {
   get size() { return this.#value.size }
   assign(next: engine.Tensor): void {
     this.#value = engine.settle(next)
-    this.version.value++
+    // a write, not a read: a program that assigns at its top level would else read the
+    // version it bumps, and run again
+    this.version.value = this.version.peek() + 1
   }
   toString() { return this.#value.toString() }
 }

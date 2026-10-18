@@ -1741,6 +1741,15 @@ describe("the evaluation host", () => {
     expect(numberIn(d)).toBe(2)
   })
 
+  test("a top-level assignment runs the program once, not again on its own write", async () => {
+    for (const source of ["θ: ~[0, 0], θ:= [1, 2], θ", "D: ~~[1], D:= [3, 4], D"]) {
+      const start = inbox.length
+      await evaluate(source)
+      await pause(200)
+      expect(inbox.slice(start).filter((m) => m.t === "result").length).toBe(1)
+    }
+  })
+
   test("a live value the page let go of lets go of its pictures", async () => {
     const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), $({ fill([5, 5], x()) }))`)
     const picture = d.items[1].now
