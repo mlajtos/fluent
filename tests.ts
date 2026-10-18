@@ -1991,12 +1991,12 @@ describe("plot: lines on one pair of axes", () => {
     const shown = (x: number) => value(`CodesToString(DrawDigits(${x}))`).trimEnd()
     expect([2.31, 0.052, 1200, -0.5, 9.996, 0.99999, 0.00014, 0, 3, 38.44].map(shown)).toEqual(["2.31", "0.0520", "1200", "-0.500", "10.0", "1.00", "0.00014", "0", "3", "38.4"])
   })
-  test("a label is its glyphs' lit cells", () => {
+  test("letters are their glyphs' lit cells", () => {
     // "1" lights 8 of its 15 cells, in three channels
-    expect(value(`Σ(canvas(4, 5, 0) . draw(label("1", [0, 0], 1), 1, 1))`)).toBe(24)
-    expect(value(`Σ(canvas(8, 5, 0) . draw(label("i ", [0, 0], 1), 1, 1)) = Σ(canvas(8, 5, 0) . draw(label("I", [0, 0], 1), 1, 1))`)).toBe(1)
+    expect(value(`Σ(canvas(4, 5, 0) . draw(letters("1", [0, 0], 1), 1, 1))`)).toBe(24)
+    expect(value(`Σ(canvas(8, 5, 0) . draw(letters("i ", [0, 0], 1), 1, 1)) = Σ(canvas(8, 5, 0) . draw(letters("I", [0, 0], 1), 1, 1))`)).toBe(1)
     // several texts in one shape, each at its own corner
-    expect(value(`Σ(canvas(8, 5, 0) . draw(label(("1", [49]), [[0, 0], [4, 0]], 1), 1, 1))`)).toBe(48)
+    expect(value(`Σ(canvas(8, 5, 0) . draw(letters(("1", [49]), [[0, 0], [4, 0]], 1), 1, 1))`)).toBe(48)
   })
   test("each series draws in its own color, and a series of fewer than 2 points draws nothing", () => {
     // how many pixels of the first two series colors the picture has

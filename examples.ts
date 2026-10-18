@@ -1698,7 +1698,7 @@ editable: \${ 1 - training() },
 ; new ones, with what a real training run has: a dataset fetched and split, random
 ; minibatches, AdamW, warmup and cosine decay, gradient clipping, evaluation, a log,
 ; a checkpoint that survives a reload, sampling and a clock. A program draws the
-; same random numbers on every run, so a run repeats exactly.
+; same random numbers each time it runs, so a run from step 0 repeats exactly.
 
 (++): TensorConcat,
 

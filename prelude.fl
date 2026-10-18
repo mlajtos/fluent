@@ -588,11 +588,11 @@ draw: DrawShape: doc({ shape, color, width |
   }
 }, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width pixels wide in color, its edges antialiased.", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
 
-; Plotting – lines on one pair of axes, drawn with the words above. A label is text as a
-; shape, in a 3×5 pixel font: a glyph for each code from 32 (space) to 90 (Z), each a
-; 15-bit number, top row first
+; Plotting – lines on one pair of axes, drawn with the words above, and text drawn as a
+; shape: letters, in a 3×5 pixel font – a glyph for each code from 32 (space) to 90 (Z),
+; each a 15-bit number, top row first
 DrawGlyphs: [0, 0, 0, 0, 0, 21157, 0, 0, 10530, 8778, 0, 1488, 20, 448, 2, 4772, 31599, 11415, 29671, 29391, 23497, 31183, 31215, 29330, 31727, 31695, 1040, 0, 0, 3640, 0, 0, 0, 11245, 27566, 14627, 27502, 31143, 31140, 14699, 23533, 29847, 4714, 23469, 18727, 24557, 27501, 11114, 27556, 11123, 27565, 14478, 29842, 23407, 23402, 23549, 23213, 23186, 29351],
-label: DrawLabel: doc({ s, at, size |
+letters: DrawLetters: doc({ s, at, size |
   codesOf: { t | cond(guard(isString(t), { StringToCodes(t) }), { t }) },
   texts: cond(guard(isList(s), { ListMap(s, codesOf) }), { (codesOf(s),) }),
   ; a row of codes for each text, filled out with spaces to one length
@@ -610,7 +610,7 @@ label: DrawLabel: doc({ s, at, size |
     ; inside the text and lit – each factor is 0 or 1
     min(where((-1 < k) × (k < n) × (q < 3) × (-1 < r) × (r < 5) × lit, 0, 1e9), -1)
   }
-}, "label(text, at, size)", "The shape of a line of text, from its top-left corner at, in a 3×5 pixel font scaled by size: distance 0 on the letters, far elsewhere. Letters draw as capitals. text may be character codes, or a list of texts with a row of at for each.", "Σ(canvas(4, 5, 0) . draw(label(\"1\", [0, 0], 1), 1, 1)) = 24"),
+}, "letters(text, at, size)", "The shape of a line of text, from its top-left corner at, in a 3×5 pixel font scaled by size: distance 0 on the letters, far elsewhere. Letters draw as capitals. text may be character codes, or a list of texts with a row of at for each.", "Σ(canvas(4, 5, 0) . draw(letters(\"1\", [0, 0], 1), 1, 1)) = 24"),
 ; x as the codes of 3 significant digits, at most 5 decimals – "2.31", "-0.0520", "1200" –
 ; spaces filling 8 cells; arithmetic only, so it never waits for x to be read back
 DrawDigits: { x |
@@ -654,9 +654,9 @@ plot: DrawPlot: doc({ x, ys, names |
     frame: canvas(W, H)
       . draw(line([[L - 6, T], [L - 6, B]]), faint, 1)
       . draw(line([[L, B + 6], [R, B + 6]]), faint, 1)
-      . draw(label((top, bottom, first, end), ends, 2), faint, 1),
+      . draw(letters((top, bottom, first, end), ends, 2), faint, 1),
     ListReduce(unstack(0..<k), { pic, i | pic . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 2) }, frame)
-      . draw(label(words, stack((fill([k], R + 8), clamp(at - 5, 0, H - 10)), -1), 2), ink, 1)
+      . draw(letters(words, stack((fill([k], R + 8), clamp(at - 5, 0, H - 10)), -1), 2), ink, 1)
   })
 }, "plot(x, ys, names?)", "Lines on one pair of axes: ys is a list of vectors, or a matrix of rows, each over the points x. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
 
