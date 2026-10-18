@@ -4,12 +4,12 @@
 // stay here – tensors, signals, variables; the page draws their descriptions and writes
 // back through ids.
 
-import { Signal, computed, effect, signal, untracked } from "@preact/signals-core"
 import {
   CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate, createScope, DefaultEnvironment,
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, getOrigin, SignalCreate, SignalUpdate, StringLiteral,
-  engine, FluentVariable, isTensor, TensorScalarLive, asError, nextFrame,
+  Signal, computed, signal, onWrite, awaiting, occurrence, keepingFrom,
+  engine, isTensor, TensorScalarLive, asError, nextFrame,
   type Value, type SyntaxTreeNode, type Origin, type CurrentScope,
 } from "./language"
 import {
@@ -81,15 +81,19 @@ const where = (origin: Origin | undefined): Where | undefined => {
   return { s: [origin.start.line, origin.start.column], e: [origin.end.line, origin.end.column], d }
 }
 
-// A live value the page shows: a signal or a variable. Its effect marks it dirty when it
-// changes, and the next frame sends its new description – one per frame however often it
-// changes, none while the tensors of the last one are still being read, and none while
-// the page is still drawing the last batch.
+// A live value the page shows: a signal or a variable. Showing it is sampling it: after a
+// write, the next frame looks at every live and sends the new description of each one
+// whose value changed – none while the tensors of the last one are still being read, and
+// none while the page is still drawing the last batch.
 type Live = {
   id: number,
-  target: Signal<Value> | FluentVariable,
+  target: Signal,
   refs: number,
-  stop: () => void,
+  // the instant of the value it showed last, and the value it shows next
+  at: number,
+  sample?: { value: Value },
+  // looked at again no sooner than this
+  quiet: number,
   reading: number,
   ack: number,
 }
@@ -117,31 +121,62 @@ const send = (message: ToPage) => {
   post(message, t)
 }
 
-const valueOf = (target: Signal<Value> | FluentVariable): Value => {
+const valueOf = (target: Signal): Value => {
   try {
-    return target instanceof FluentVariable ? target.current : target.value
+    return target.value
   } catch (e) {
     return asError(e)
   }
 }
+// A live's value now, if it changed since it was shown. A sample that started reads from
+// the GPU (text decoded from codes) is shown once they arrive, and the page keeps the last
+// one until then: a value that changes every frame shows a little late, never blank.
+// Looking at a live takes at most a twentieth of the worker: after a sample that took
+// s ms, its next waits 19s ms – a cheap value is shown every frame, a costly one less
+// often, and the program's own steps keep the rest.
+const sampleOf = (live: Live): void => {
+  const start = performance.now()
+  if (start < live.quiet) { stale = true; return }
+  const [value, reads] = awaiting(() => valueOf(live.target))
+  live.quiet = performance.now() + 19 * (performance.now() - start)
+  if (live.target.at === live.at) { return }
+  live.at = live.target.at
+  live.sample = { value }
+  dirty.add(live)
+  if (!reads.length) { return }
+  live.reading++
+  Promise.allSettled(reads).then(() => { live.reading--; markDirty() })
+}
 
 let flushScheduled = false
 let pageDrawing = false
-const markDirty = (live: Live) => {
-  dirty.add(live)
+// a write happened: the next display frame looks at what changed – once a frame, however
+// often the program writes
+let stale = false
+const markDirty = (live?: Live) => {
+  if (live) { dirty.add(live) } else { stale = true }
   if (flushScheduled || pageDrawing) { return }
   flushScheduled = true
-  nextFrame(flush)
+  nextFrame(() => flush(true))
 }
-const flush = () => {
-  flushScheduled = false
+onWrite(() => markDirty())
+const flush = (frame = false) => {
+  if (frame) { flushScheduled = false }
   // the frame before the last is still on the GPU: the next waits for it
-  if (pageDrawing || painter.pending > 1) { return }
+  if (pageDrawing || painter.pending > 1) { if (stale) { markDirty() } return }
+  if (stale && !frame) { markDirty() }
+  if (stale && frame) {
+    stale = false
+    // a sample waiting to be shown is shown before the next is taken
+    for (const live of lives.values()) { if (live.reading === 0 && !live.sample) { sampleOf(live) } }
+    // a live still waiting its turn is looked at in a later frame
+    if (stale) { markDirty() }
+  }
   const batch: { id: number, desc: Desc, ack: number }[] = []
   for (const live of dirty) {
     if (live.reading > 0) { continue }
     dirty.delete(live)
-    batch.push({ id: live.id, desc: untracked(() => describeNow(live)), ack: live.ack })
+    batch.push({ id: live.id, desc: describeNow(live), ack: live.ack })
   }
   if (!batch.length) { return }
   send({ t: "lives", lives: batch })
@@ -153,25 +188,22 @@ const describeNow = (live: Live): Desc => {
   owner = live
   describing.add(live.id)
   try {
-    return describe(valueOf(live.target))
+    const value = live.sample ? live.sample.value : valueOf(live.target)
+    if (!live.sample) { live.at = live.target.at }
+    live.sample = undefined
+    return describe(value)
   } finally {
     describing.delete(live.id)
     owner = outer
   }
 }
 
-const describeLive = (target: Signal<Value> | FluentVariable): Desc => {
+const describeLive = (target: Signal): Desc => {
   const id = idOf(target)
   let live = lives.get(id)
   if (!live) {
-    const fresh: Live = live = { id, target, refs: 0, stop: () => { }, reading: 0, ack: 0 }
-    let first = true
-    fresh.stop = effect(() => {
-      if (target instanceof FluentVariable) { target.version.value } else { valueOf(target) }
-      if (first) { first = false; return }
-      markDirty(fresh)
-    })
-    lives.set(id, fresh)
+    live = { id, target, refs: 0, at: -1, quiet: 0, reading: 0, ack: 0 }
+    lives.set(id, live)
   }
   live.refs++
   // a value that contains itself is described once
@@ -348,7 +380,7 @@ const describeBare = (value: unknown, depth: number): Desc => {
   if (Array.isArray(value)) { return { k: "list", items: value.map(inner) } }
   if (typeof value === "function") { return describeFunction(value) }
   if (typeof value !== "object") { return { k: "other", v: String(value) } }
-  if (value instanceof Signal || value instanceof FluentVariable) { return describeLive(value as Signal<Value> | FluentVariable) }
+  if (value instanceof Signal) { return describeLive(value) }
   if (isTensor(value)) { return describeTensor(value) }
   if (value instanceof Error) { return describeError(value) }
   if (value instanceof Widget) {
@@ -504,8 +536,9 @@ const pointMapping = (range?: Value) => {
   return { x0, y0, spanX: x1 - x0 || 1, spanY: y1 - y0 || 1 }
 }
 
+// Text(s): markdown; a live s shows its text as it changes, the widget stays
 const Text = (value: Value) =>
-  typeof value === "string" || value instanceof String ? widget("Text", { text: String(value) }) : new Error(`Text: expected string, got ${typeof value}`)
+  typeof value === "string" || value instanceof String || value instanceof Signal ? widget("Text", {}, { text: value }) : new Error(`Text: expected string, got ${typeof value}`)
 
 const Button = (label?: Value, onClick?: Value) =>
   widget("Button", {}, { label: label ?? "Button", ...(typeof onClick === "function" && { onClick: new Callback(onClick) as unknown as Value }) })
@@ -614,14 +647,15 @@ const LoadSafeTensorFromURL = (url?: Value) => url == null
   ? new Error("loadSafeTensorFromURL: url is required")
   : arriving("LoadSafeTensorFromURL", [], () => withProxy(String(url), cachedFetch).then(parseSafetensors))
 
-for (const f of [Button, TextEditor, Slider, Checkbox, Scrubber, ImageUpload, Center, Layers, Point2D, Trail, Code, CodeEditor, Print, LoadSafeTensorFromURL, LoadTensorFromImageUrl]) {
+for (const f of [Text, Button, TextEditor, Slider, Checkbox, Scrubber, ImageUpload, Center, Layers, Point2D, Trail, Code, CodeEditor, Print, LoadSafeTensorFromURL, LoadTensorFromImageUrl]) {
   setMeta(f, { noAutoLift: true })
 }
 
 // MARK: Running the program
 
 let source: string | null = null
-let stopProgram: (() => void) | null = null
+// the last run's top-level scope: an edit keeps its cells by name
+let lastScope: CurrentScope | null = null
 let runScheduled = false
 
 // a burst of edits runs only the latest
@@ -633,7 +667,7 @@ const scheduleRun = () => {
 
 // The program's value is live 0, which the page holds from the start: each run sends it
 const program = signal<Value>(null)
-const root: Live = { id: 0, target: program, refs: 0, stop: () => { }, reading: 0, ack: 0 }
+const root: Live = { id: 0, target: program, refs: 0, at: -1, quiet: 0, reading: 0, ack: 0 }
 lives.set(0, root)
 
 // A program's statements one after another, as the language runs them: an Error that a
@@ -648,34 +682,29 @@ const evaluateStatements = (tree: SyntaxTreeNode, scope: CurrentScope): Value =>
   return value ?? null
 }
 
-// The program runs inside an effect: a signal it reads at its top level – not inside a
-// $ or a lambda – runs it again when it changes. once() reads without that. Each run's
-// value replaces the last one's; the page lets go of what it showed of the last one as
-// it shows the new one.
+// The program runs once, at the instant its text arrives: what it reads at its top level
+// is read then, and what it shows live follows. Each run's value replaces the last one's;
+// the page lets go of what it showed of the last one as it shows the new one.
 const run = () => {
   runScheduled = false
   if (source === null) { return }
-  stopProgram?.()
   documentIds.clear()
-  const code = source
-  let first = true
-  stopProgram = effect(() => {
-    if (!first) { scheduleRun(); return }
-    first = false
-    sampleRateRead = false
-    warnings.clear()
-    let value: Value
-    try {
-      value = evaluateGeneration(() => evaluateStatements(CodeParse(code), createScope()))
-    } catch (e) {
-      value = asError(e)
-    }
-    // the value goes at once if the page may take it, before any loop's first frame
-    program.value = value
-    dirty.add(root)
-    flush()
-    sendWarnings()
-  })
+  sampleRateRead = false
+  warnings.clear()
+  const code = source, scope = createScope(), from = lastScope
+  let value: Value
+  try {
+    // the cells the last run trained are this run's, where the program still makes them
+    value = evaluateGeneration(() => keepingFrom(from, scope, () => evaluateStatements(CodeParse(code), scope)))
+  } catch (e) {
+    value = asError(e)
+  }
+  lastScope = scope
+  // the value goes at once if the page may take it, before any loop's first frame
+  program.value = value
+  dirty.add(root)
+  flush()
+  sendWarnings()
 }
 
 // a value written by the page, as the language holds it
@@ -711,7 +740,7 @@ const receive = (m: ToWorker) => {
       const value = fromPage(m.value)
       let written: Value = null
       try {
-        if (!(live.target instanceof FluentVariable)) { written = SignalUpdate(live.target, value) } else if (isTensor(value)) { live.target.assign(value) }
+        written = SignalUpdate(live.target, value)
       } catch (e) {
         written = asError(e)
       }
@@ -719,11 +748,16 @@ const receive = (m: ToWorker) => {
       if (written instanceof Error) { warn(written, getOrigin(live.target)); sendWarnings() }
       return
     }
-    case "call": { callbacks.get(m.id)?.fn(); return }
+    case "call": {
+      // a press is an occurrence
+      const fn = callbacks.get(m.id)?.fn
+      if (fn) { occurrence(() => fn()) }
+      return
+    }
     case "drop": {
       // what the page shows no more stops, and is let go of
       const live = lives.get(m.id), callback = callbacks.get(m.id)
-      if (live && (live.refs -= m.count) <= 0) { live.stop(); lives.delete(m.id); dirty.delete(live) }
+      if (live && (live.refs -= m.count) <= 0) { lives.delete(m.id); dirty.delete(live) }
       if (callback && (callback.refs -= m.count) <= 0) { callbacks.delete(m.id) }
       pictures.delete(m.id)
       return

@@ -74,7 +74,7 @@ Button("Reset", { x(0) }),
   - update signal: \`x(0.7)\` or \`x ← 0.7\`
   - computed signal: \`y: x + 1\` – auto-lifts to reactive when \`x\` is a signal
   - explicit computed: \`y: $({ x() + 1 })\` – manual version (rarely needed)
-  - watch a trainable variable: \`watch(θ)\` – a signal that updates on every assignment
+  - follow a trainable variable: \`\${ θ × 2 }\` – a computed that reads θ follows every assignment
 - Iteration
   - repeat N times with \`⟳\`: \`step ⟳ 100\` (async, fire-and-forget)
   - power with \`⍣\`: \`(double ⍣ 5)(1)\` is \`double(double(...))\` = \`32\`

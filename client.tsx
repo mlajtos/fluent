@@ -391,7 +391,10 @@ const Markdown = ({ text }: { text: string }) => {
   return <div className="prose prose-neutral prose-invert"><div ref={ref}></div></div>
 }
 
-const TextView = ({ d }: { d: UIDesc }) => <Markdown text={String(d.props.text)} />
+const TextView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  return <Markdown text={textOf(d.slots.text) ?? ""} />
+}
 
 const ButtonView = ({ d }: { d: UIDesc }) => {
   useSignals()
