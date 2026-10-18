@@ -31,9 +31,10 @@ export type Desc = { o?: Where } & (
   | { k: "error", chain: { message: string, o?: Where }[], carried?: string }
   // a quoted program: one tree per statement
   | { k: "tree", roots: Tree[] }
-  // A number, or a few bars, shows its values: here when they were on the host, otherwise
-  // in a "tensor" message that follows. A picture with `paint` never crosses: the page
-  // hands the worker a canvas to paint it in, and gets the range it spans as its values.
+  // A number shows its value: here when it was on the host, otherwise in a "tensor"
+  // message that follows. A picture with `paint` never crosses: the page hands the worker
+  // a canvas to paint it in, and gets numbers for its labels – the values when they are
+  // fewer than FEW, otherwise the finite range they span. An image has no numbers.
   | { k: "tensor", id: number, shape: number[], payload?: Float32Array, paint?: true }
   // a signal or a variable and its value now; later values arrive as "live" messages
   | { k: "live", id: number, now?: Desc }
