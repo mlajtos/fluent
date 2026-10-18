@@ -727,79 +727,25 @@ const FunctionMemo = (f: Value) => {
 }
 
 // MARK: Combinators
-// The tacit aviary, after Conor Hoekstra's taxonomy (combinatorylogic.com). Each
-// combinator is a plain higher-order value, so a composed function drops into operator
-// position like any function: a (f ∘ g) b. Valence pairs (B+B₁, C+W, Σ+Δ, S+D, Φ+Φ₁)
-// share one binding – the closure routes on argument count, as FunctionArity does.
+// The tacit aviary, after Conor Hoekstra's taxonomy (combinatorylogic.com), is written in
+// Fluent in prelude.fl, on FunctionArity – all but ∘, below. Each combinator is a plain
+// higher-order value, so a composed function drops into operator position like any
+// function: a (f ∘ g) b.
 
 const isFn = (v: Value): v is Function => typeof v === "function"
 
-// Hooks and fork tines K-lift a non-function operand to a constant function – BQN's
-// bind: (1 ⊸ +) increments, (÷ ⟜ 2) halves.
-const constantly = (v: Value): Function => isFn(v) ? v : () => v
-
 // Q (Queer bird) – then: apply f, then g to the result. Reading order is evaluation
 // order – (f ∘ g)(…x) = g(f(…x)) – so this is APL's atop (B/B₁) with the tines swapped
-// to read left to right, like the . pipe.
+// to read left to right, like the . pipe. It passes on any number of arguments, so
+// List ∘ f is a function of any number of them.
 const FunctionThen = (f: Value, g: Value) => {
   if (!isFn(f) || !isFn(g)) { return new Error("`(f ∘ g)`: both operands must be functions") }
   return made(function (this: CurrentScope, ...args: Value[]) { return safeApply(g, [safeApply(f, args, this)], this) })
 }
 
-// C/W (Cardinal/Warbler) – commute: flip a binary's arguments; duplicate a unary's
-const FunctionCommute = (f: Value) => {
-  if (!isFn(f)) { return new Error("`(⍨ f)`: the operand must be a function") }
-  return made(function (this: CurrentScope, a: Value, b: Value) { return safeApply(f, b == null ? [a, a] : [b, a], this) })
-}
-
-// Ψ (Psi) – into: preprocess every argument with g, then combine with f. The
-// preprocessor is read first because it runs first: (g ⍥ f)(x, y) = f(g(x), g(y)) –
-// APL spells this f⍥g, but Fluent reads left to right.
-const FunctionInto = (g: Value, f: Value) => {
-  if (!isFn(f) || !isFn(g)) { return new Error("`(g ⍥ f)`: both operands must be functions") }
-  return made(function (this: CurrentScope, ...args: Value[]) {
-    return safeApply(f, args.map((a) => safeApply(g, [a], this)), this)
-  })
-}
-
-// Φ/Φ₁ (Phoenix/Pheasant) – fork: the outer tines f and h see the arguments, the middle
-// tine g combines their results – the train reading order
-const FunctionFork = (f: Value, g: Value, h: Value) => {
-  if (!isFn(g)) { return new Error("`Φ(f, g, h)`: the middle tine `g` must be a function") }
-  if (f == null || h == null) { return new Error("`Φ(f, g, h)`: takes three tines") }
-  const [fc, hc] = [constantly(f), constantly(h)]
-  return made(function (this: CurrentScope, ...args: Value[]) {
-    return safeApply(g, [safeApply(fc, args, this), safeApply(hc, args, this)], this)
-  })
-}
-
-// Σ/Δ (Violet Starling/Zebra Dove) – before: preprocess the left (or only) argument
-// with f, then combine with g
-const FunctionBefore = (f: Value, g: Value) => {
-  if (!isFn(g)) { return new Error("`(f ⊸ g)`: `g` must be a function") }
-  const fc = constantly(f)
-  return made(function (this: CurrentScope, a: Value, b: Value) {
-    return safeApply(g, [safeApply(fc, [a], this), b == null ? a : b], this)
-  })
-}
-
-// S/D (Starling/Dove) – after: preprocess the right (or only) argument with g, then
-// combine with f; the monadic case is the J hook
-const FunctionAfter = (f: Value, g: Value) => {
-  if (!isFn(f)) { return new Error("`(f ⟜ g)`: `f` must be a function") }
-  const gc = constantly(g)
-  return made(function (this: CurrentScope, a: Value, b: Value) {
-    return safeApply(f, [a, safeApply(gc, [b == null ? a : b], this)], this)
-  })
-}
-
-// I/K/KI – the tacks: ⊢ yields its rightmost argument, ⊣ its leftmost
-const FunctionRight = (...args: Value[]) => args.length === 0 ? new Error("`⊢`: takes at least one argument") : args[args.length - 1]!
-const FunctionLeft = (...args: Value[]) => args.length === 0 ? new Error("`⊣`: takes at least one argument") : args[0]!
-
 // What kind of value – 1 or 0, like a comparison, so it composes with guard and where.
-// isFunction is the K-lift question, for userland combinators that bind constants the
-// way the native hooks do.
+// isFunction is the question the prelude's hooks and fork ask before they hold an
+// operand constant.
 const bit = (b: boolean) => engine.tensor(b ? 1 : 0)
 const FunctionIs = (v: Value) => bit(isFn(v))
 const TensorIs = (v: Value) => bit(isTensorish(v))
@@ -1536,8 +1482,7 @@ const Storage = (key: Value): Value => {
 const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(null), {
   Null: null, null: null,
   SymbolAssign, CodeParse, CodeEvaluate,
-  FunctionIterate, FunctionRepeat, FunctionMemo, FunctionThen, FunctionCommute, FunctionInto, FunctionFork, FunctionBefore, FunctionAfter,
-  FunctionRight, FunctionLeft, FunctionIs, TensorIs, ListIs, StringIs, ErrorIs, Identical,
+  FunctionIterate, FunctionRepeat, FunctionMemo, FunctionThen, FunctionIs, TensorIs, ListIs, StringIs, ErrorIs, Identical,
   FunctionCascade, FunctionCond, FunctionArity, FunctionApply, FunctionNoAutoLift,
   FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc,
   Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalEffect, SignalOnce,

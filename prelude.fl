@@ -4,22 +4,30 @@ SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current sco
 (:=): doc(TensorAssign, "θ:= value", "Assign a new value to a variable (made with ~ or ~~); optimizers do this every step, watch(θ) sees it. Mid-expression, parenthesize the value: θ := (a + b).", "θ: ~[0, 0], θ:= [1, 2]"),
 
 ; Functions
-(.): pipe: FunctionPipe: doc(FunctionCommute(FunctionApply), "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]"),
+(.): pipe: FunctionPipe: doc({ x, f | f @ x }, "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]"),
 (⟳): iter: doc(FunctionIterate, "step ⟳ n", "Run a thunk n times, paced between display frames so the UI stays live – the loop for training and simulation. Async: a re-evaluation cancels it. Its value is a signal: ◌ while the steps succeed, the Error of the first step that fails, which stops the loop.", "opt: sgd(0.1), { opt(𝓛) } ⟳ 100"),
 (⍣): power: FunctionPower: doc({ f, n | FunctionRepeat(f, n, FunctionInverse) }, "(f ⍣ n)(x)", "Power: f applied n times – f(f(…f(x))). A negative n runs f backwards, through its inverse. A predicate in place of n runs f until predicate(new, old) holds – (f ⍣ ≡) iterates to a fixed point. Dyadic x (f ⍣ n) y iterates f(x, ·), as in APL. Synchronous; for a frame-paced loop use ⟳.", "({ x | x × 2 } ⍣ 5)(1) = 32, 2 (^ ⍣ -1) 8 = 3, (cos ⍣ ≡)(1) ≈ 0.739"),
 
 ; Combinators – glyph, array-language name, mainstream name
 (∘): then: doc(FunctionThen, "(f ∘ g)", "Then: apply f to the arguments, then g to the result – (f ∘ g)(x, y) = g(f(x, y)). Reading order is evaluation order. The Queer bird – APL's atop, swapped to read left-to-right.", "(+ ∘ √)(9, 16) = 5"),
-(⍨): swap: commute: doc(FunctionCommute, "(⍨ f)", "Commute: flip a binary function's arguments – x (⍨ f) y = f(y, x). With one argument, duplicate it: (⍨ f)(x) = f(x, x). The Cardinal and the Warbler.", "3 (⍨ -) 10 = 7"),
+(⍨): swap: commute: FunctionCommute: doc({ f | FunctionArity(({ a, b | f(b, a) }, { a | f(a, a) })) }, "(⍨ f)", "Commute: flip a binary function's arguments – x (⍨ f) y = f(y, x). With one argument, duplicate it: (⍨ f)(x) = f(x, x). The Cardinal and the Warbler.", "3 (⍨ -) 10 = 7"),
 compose: FunctionCompose: doc(⍨ then, "(f compose g)", "Composition in mathematics' order: (f compose g)(x) = f(g(x)) – then, the other way round. f compose g is g ∘ f.", "(√ compose +)(9, 16) = 5"),
-(⍥): into: doc(FunctionInto, "(g ⍥ f)", "Into: preprocess each argument with g, then feed them into f – x (g ⍥ f) y = f(g(x), g(y)). The preprocessor is read first because it runs first. The Psi bird.", "-3 (abs ⍥ =) 3 = 1"),
+(⍥): into: FunctionInto: doc({ g, f | FunctionArity(({ x, y | f(g(x), g(y)) }, { x | f(g(x)) })) }, "(g ⍥ f)", "Into: preprocess each argument with g, then feed them into f – x (g ⍥ f) y = f(g(x), g(y)). The preprocessor is read first because it runs first. The Psi bird.", "-3 (abs ⍥ =) 3 = 1"),
 over: FunctionOver: doc(⍨ into, "(f over g)", "APL's Over, in APL's order: x (f over g) y = f(g(x), g(y)) – the same as g ⍥ f.", "-3 (= over abs) 3 = 1"),
-Φ: phi: fork: doc(FunctionFork, "Φ(f, g, h)", "Fork: apply the outer tines f and h to the arguments, combine the results with the middle tine g – x Φ(f, g, h) y = g(f(x, y), h(x, y)). A non-function tine is held constant. The Phoenix; dyadically the Pheasant.", "Φ(Σ, ÷, #)([1, 2, 3, 4]) = 2.5"),
-(⊸): before: doc(FunctionBefore, "(f ⊸ g)", "Before: preprocess the left (or only) argument with f, then combine with g – (f ⊸ g)(x, y) = g(f(x), y); (f ⊸ g)(x) = g(f(x), x). A constant binds the left argument. The Violet Starling; dyadically the Zebra Dove.", "(1 ⊸ +)(41) = 42"),
-(⟜): hook: after: doc(FunctionAfter, "(f ⟜ g)", "After: preprocess the right (or only) argument with g, then combine with f – (f ⟜ g)(x, y) = f(x, g(y)); (f ⟜ g)(x) = f(x, g(x)) – the J hook. A constant binds the right argument. The Starling; dyadically the Dove.", "(÷ ⟜ √)(16) = 4"),
+; a hook or a fork holds an operand that isn't a function as a constant: K, the Kestrel
+FunctionConstantly: { v | cond(guard(isFunction(v), { v }), { { v } }) },
+Φ: phi: fork: FunctionFork: doc({ f, g, h |
+  F: FunctionConstantly(f), H: FunctionConstantly(h),
+  cond(
+    guard(identical(h, ◌), { Error("`Φ(f, g, h)`: takes three tines") }),
+    { FunctionArity(({ x, y | g(F(x, y), H(x, y)) }, { x | g(F(x), H(x)) })) }
+  )
+}, "Φ(f, g, h)", "Fork: apply the outer tines f and h to the arguments, combine the results with the middle tine g – x Φ(f, g, h) y = g(f(x, y), h(x, y)). A non-function tine is held constant. The Phoenix; dyadically the Pheasant.", "Φ(Σ, ÷, #)([1, 2, 3, 4]) = 2.5"),
+(⊸): before: FunctionBefore: doc({ f, g | F: FunctionConstantly(f), FunctionArity(({ a, b | g(F(a), b) }, { a | g(F(a), a) })) }, "(f ⊸ g)", "Before: preprocess the left (or only) argument with f, then combine with g – (f ⊸ g)(x, y) = g(f(x), y); (f ⊸ g)(x) = g(f(x), x). A constant binds the left argument. The Violet Starling; dyadically the Zebra Dove.", "(1 ⊸ +)(41) = 42"),
+(⟜): hook: after: FunctionAfter: doc({ f, g | G: FunctionConstantly(g), FunctionArity(({ a, b | f(a, G(b)) }, { a | f(a, G(a)) })) }, "(f ⟜ g)", "After: preprocess the right (or only) argument with g, then combine with f – (f ⟜ g)(x, y) = f(x, g(y)); (f ⟜ g)(x) = f(x, g(x)) – the J hook. A constant binds the right argument. The Starling; dyadically the Dove.", "(÷ ⟜ √)(16) = 4"),
 𝕐: fix: FunctionFix: doc({ f | g: { x | f(x(x)) }, g(g) }, "𝕐(f)", "Fixpoint – anonymous recursion. 𝕐(f) is the x with x = f(x): hand f its own recursion handle so a nameless function can call itself. The Y combinator; equivalently (⍨ @)((⍨ @) ∘ f). Named recursion needs nothing – a binding is visible in its own body.", "𝕐({ rec | { n | cond(guard(n = 0, { 1 }), { n × rec(n-1) }) } })(5) = 120"),
-(⊢): right: doc(FunctionRight, "x ⊢ y", "Right: yield the rightmost argument; with one argument, the identity.", "3 ⊢ 5 = 5"),
-(⊣): left: doc(FunctionLeft, "x ⊣ y", "Left: yield the leftmost argument; with one argument, the identity.", "3 ⊣ 5 = 3"),
+(⊢): right: FunctionRight: doc(FunctionArity(({ a, b | b }, { a | a })), "x ⊢ y", "Right: yield the right argument; with one argument, the identity.", "3 ⊢ 5 = 5"),
+(⊣): left: FunctionLeft: doc(FunctionArity(({ a, b | a }, { a | a })), "x ⊣ y", "Left: yield the left argument; with one argument, the identity.", "3 ⊣ 5 = 3"),
 isFunction: doc(FunctionIs, "isFunction(v)", "1 if v is a function, else 0 – the question a combinator asks before treating an operand as a constant. Composes like a comparison.", "isFunction(√) = 1, isFunction(5) = 0"),
 isTensor: doc(TensorIs, "isTensor(v)", "1 if v is a tensor (a number included) or a variable holding one, else 0.", "isTensor([1, 2]) = 1, isTensor((1, 2)) = 0"),
 isList: doc(ListIs, "isList(v)", "1 if v is a list, else 0.", "isList((1, 2)) = 1, isList([1, 2]) = 0"),

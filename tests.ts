@@ -151,6 +151,25 @@ describe("combinators", () => {
     expect(value("fork(Σ, ÷, #)([1, 2, 3, 4])")).toBe(2.5)
     expect(value("before(1, +)(41)")).toBe(42)
   })
+  // the combinators are prelude Fluent; what they make prints as the call that made it,
+  // and that text evaluates back to a function that answers the same
+  test("a combinator's function prints as the call that made it, and reads back", () => {
+    const cases: [string, string, number][] = [
+      ["⍨ -", "3, 10", 7], ["abs ⍥ =", "-3, 3", 1], ["Φ(Σ, ÷, #)", "[1, 2, 3, 4]", 2.5],
+      ["1 ⊸ +", "41", 42], ["÷ ⟜ √", "16", 4], ["swap(-)", "3, 10", 7], ["compose(√, +)", "9, 16", 5],
+    ]
+    for (const [made, args, answer] of cases) {
+      expect(value(`String(${made})`)).toBe(made)
+      expect(value(`CodeEvaluate(String(${made}))(${args})`)).toBe(answer)
+    }
+    // a prelude value prints as its definition, never as JavaScript
+    expect(value("String(⊢)")).toBe("FunctionArity(({ a, b | b }, { a | a }))")
+    expect(value("String(.)")).toBe("{ x, f | f @ x }")
+    expect(value("String(compose)")).toBe("⍨ then")
+  })
+  test("a fork given two tines is an Error, not a constant ◌", () => {
+    expect((run("Φ(Σ, ÷)([1, 2, 3, 4])") as Error).message).toContain("takes three tines")
+  })
   test("composed functions iterate under ⍣", () => {
     expect(value("((1 ⊸ +) ⍣ 5)(0)")).toBe(5)
     // ⍣ frees each consumed step, but never a value still in use
