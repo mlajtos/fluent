@@ -64,7 +64,7 @@ x: 1 ..< 10,
 `,
   "ad-hoc-operators": `
 ; Ad-hoc operators – defining custom operators
-(++): ListConcat,
+(++): concat,
 (1, 2) ++ (3, 4)
 `,
   "combinators": `
@@ -253,7 +253,7 @@ marks: curve_(0..<8 × 18),
 ; TODO App – reactive task management
 
 ; Helper operators
-(++): ListConcat,
+(++): concat,
 (++=): FunctionNoAutoLift({ a, b | a(a() ++ List(b)) }),
 
 ; Task factory – creates an editable task with a toggle
@@ -284,11 +284,11 @@ tasks: $List(),
 )
 `,
   "tasks-compressed": `
-(++):ListConcat,taskName: $"",taskCreate:{name|s: $name,f: $"🔴",Grid([1,10])(Button(f,{f("✅")}),TextEditor(s))},tasks: $(()),(Text("# TODO"),Grid([5,1])(TextEditor(taskName),Button("Add",{tasks(tasks()++List(taskCreate(taskName()))),taskName("")})),tasks)
+(++):concat,taskName: $"",taskCreate:{name|s: $name,f: $"🔴",Grid([1,10])(Button(f,{f("✅")}),TextEditor(s))},tasks: $(()),(Text("# TODO"),Grid([5,1])(TextEditor(taskName),Button("Add",{tasks(tasks()++List(taskCreate(taskName()))),taskName("")})),tasks)
 `,
   "tasks-mini": `
 ; Minimal TODO app – type a task, add it to the list
-(++): ListConcat,
+(++): concat,
 n: $"",
 tasks: $List(),
 (
@@ -304,7 +304,7 @@ tasks: $List(),
   "calculator": `
 ; Calculator – builds an expression string and evaluates it
 
-(++): StringConcat,
+(++): concat,
 
 expr: $"",
 result: expr . CodeEvaluate,
@@ -327,7 +327,7 @@ btn: { c | Button(c, { x | x ++ c } . append) },
 ; Find θ that minimizes (f(x) - y)²
 
 ; Operators
-(++): TensorConcat,
+(++): concat,
 
 ; Data: y = 0.23x + 0.47
 x: 0 ..< 10,
@@ -429,7 +429,7 @@ curve: \${ PointPlot(x, p(λ())) },
 ; trip. This √exp has no elementary closed form (Kneser built it with complex
 ; analysis); we just fit it, straight from its own equation.
 
-(++): TensorConcat,
+(++): concat,
 
 d: 16,
 x: linspace([-1, 1], 96),
@@ -492,14 +492,14 @@ u: ~(randn([d]) ÷ √(d)),
 },
 
 ; The model: one number in, d features, the blocks in turn, one number out
-f: { t | h: tanh(unsqueeze(t, -1) × E + e), Σ(ListReduce(unstack(0..<depth), Δ, h) × u, -1) },
+f: { t | h: tanh(unsqueeze(t, -1) × E + e), Σ(fold(0..<depth, Δ, h) × u, -1) },
 
 ; Data: 24 points to learn from, and 200 in between that it never sees
 xs: ⚄([24]) × 2×π,
 grid: linspace([0, 2×π], 200),
 
 ; Training
-(++): TensorConcat,
+(++): concat,
 𝓛: { mean((f(xs) - sin(xs))^2) },
 unseen: { mean((f(grid) - sin(grid))^2) },
 opt: adam(0.01),
@@ -1115,7 +1115,7 @@ weights: \${ softmax(scores × temp()) },
 ; A network of soft NAND-ish gates learns XOR – which isn't in its toolbox,
 ; so it must compose it (XOR = OR ∧ ¬AND). "Education" is just backprop.
 
-(++): TensorConcat,
+(++): concat,
 
 a: [0, 0, 1, 1],
 b: [0, 1, 0, 1],
@@ -1165,12 +1165,12 @@ gates: \${ stack((softmax(t1), softmax(t2), softmax(to))) },
 ; each gate's identity (which of the 16 two-input truth tables it computes) is
 ; a learnable softmax, educated by gradient descent. No neurons, just logic.
 
-(++): TensorConcat,
+(++): concat,
 
 ; --- data: 14×14 binarised MNIST (6000 train, 1000 test) as safetensors ---
 ; the signal is an empty list until the fetch resolves to [Xtrain, Ytrain, Xtest, Ytest]
 mnist: LoadSafeTensorFromURL("mnist.safetensors"),
-loaded: { ListLength(mnist()) > 0 },
+loaded: { (#mnist()) > 0 },
 ; train on 3000 of the 6000, score on 500 of the 1000 – keeps each frame light
 ; so the whole thing trains live and smoothly in the browser (pixels × examples)
 Xtr: { transpose(slice(mnist()_0_1, 0, 3000)) }, ; [196, 3000]
@@ -1247,11 +1247,11 @@ accuracy: \${
 ; update is a local, Hebbian outer product: ΔW ∝ Aᵀ·(φ'(z)⊙routed-error).
 ; After "Diffusing Blame", Yamada et al., Sakana AI (arXiv:2606.31700).
 
-(++): TensorConcat,
+(++): concat,
 
 ; --- data: 14×14 binarised MNIST as safetensors (an empty list until it loads) ---
 mnist: LoadSafeTensorFromURL("mnist.safetensors"),
-loaded: { ListLength(mnist()) > 0 },
+loaded: { (#mnist()) > 0 },
 Xtr: { mnist()_0_1 }, ; [6000, 196] pixels in {0, 1}
 Ytr: { mnist()_1_1 }, ; [6000, 10] one-hot labels
 Xte: { mnist()_2_1 }, ; [1000, 196]
@@ -1394,7 +1394,7 @@ amp: \${
 ; The training data follows the corpus: pausing, editing the text and resuming
 ; re-trains on your data without resetting the weights.
 
-(++): TensorConcat,
+(++): concat,
 
 ; --- vocabulary: ' ' → 0, a…z → 1…26 (anything else collapses to space) ---
 V: 27, T: 8, C: 32, F: 96,
@@ -1531,7 +1531,7 @@ editable: \${ 1 - training() },
 ; scaling rule (p = ½): skip α = (2N)^½, per-matrix init gain β = (8N)^-½ –
 ; strong skips and gentle starts keep 12 sublayer visits stable.
 
-(++): TensorConcat,
+(++): concat,
 
 ; --- vocabulary: ' ' → 0, a…z → 1…26 (anything else collapses to space) ---
 V: 27, T: 8, C: 32, F: 96,
@@ -1686,7 +1686,7 @@ editable: \${ 1 - training() },
 ; a checkpoint that survives a reload, sampling and a clock. A program draws the
 ; same random numbers each time it runs, so a run from step 0 repeats exactly.
 
-(++): TensorConcat,
+(++): concat,
 
 ; --- config ---
 run: "names", ; the checkpoint's name – rename it to start a fresh run
