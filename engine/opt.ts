@@ -62,8 +62,12 @@ const SCHED_REWRITES: Rule[] = [(u) => {
 // ---- the schedule ----------------------------------------------------------------
 // Measured platform constants: inlining a kernel that carries a loop trades a dispatch for
 // `indexSpace·loopExtent` recomputed flops — pays under ~2e7. A contraction shorter than
-// tileMinK runs as a plain nest, not a tile: tests/bench-tile.ts re-derives that one.
-export const COST = { reduceBudget: 2e7, perElem: 4096, tile: 16, tileMinM: 2, tileMinK: 8 };
+// tileMinK runs as a plain nest, not a tile: tests/bench-tile.ts re-derives that one. The
+// workgroups that fill the machine (fill), the fewest steps a thread of a split loop runs
+// (groupSteps) and the outputs, side by side in memory, from which a thread each beats a
+// workgroup each (coopFew) pick a reduction's form on the GPU: tests/bench-reduce.ts
+// re-derives them.
+export const COST = { reduceBudget: 2e7, perElem: 4096, tile: 16, tileMinM: 2, tileMinK: 8, fill: 96, groupSteps: 4, coopFew: 256 };
 const ELEM = new Set<Op>(["ADD", "MULTIPLY", "RECIPROCAL", "EXP", "LOG", "SQRT", "LESS_THAN", "WHERE", "MATH"]);
 const VIEW = new Set<Op>(["BROADCAST", "PERMUTE", "RESHAPE", "SLICE", "WINDOW"]);
 const MAX_INPUTS = 6;                                                          // soft cap on kernel growth (inline/splice stop here; mandatory reads may still add)

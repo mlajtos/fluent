@@ -99,6 +99,50 @@ export default async function (): Promise<{ fails: number }> {
     }
   }
 
+  // ── 1b. long reductions: the GPU splits them over workgroups, the CPU runs one loop ──────
+  // A maximum is the same in any order, so the split's is the loop's to the bit, with NaN,
+  // ±∞ and ±0 among the values; so is a sum of integers, and a product that neither rounds
+  // nor meets 0 · ∞.
+  {
+    const same = (a: Float32Array, b: Float32Array, tol = 0) => a.length === b.length && a.every((v, i) => Object.is(v, b[i]) || (Number.isNaN(v) && Number.isNaN(b[i]!)) || Math.abs(v - b[i]!) <= tol * Math.abs(b[i]!));
+    const H = 300, W = 700, picture = buffer("p", [H, W, 3]), flat = buffer("f", [H * W * 3]), n = H * W * 3;
+    const neg = (u: UOp) => mul(u, konst(-1));
+    const all = (u: UOp, op: "ADD" | "MAX" | "MUL") => reduceAxis(reduceAxis(u, 0, true, op), 1, true, op);
+    const fill = (f: (i: number) => number) => Float32Array.from({ length: n }, (_, i) => f(i));
+    const DATA: [string, Float32Array, boolean][] = [                       // whether sums and products are exact too
+      ["random", fill(() => (rnd() - 0.5) * 2), false],
+      ["a NaN", fill((i) => (i === 123457 ? NaN : rnd())), false],
+      ["±∞", fill((i) => (i === 5 ? Infinity : i === 400001 ? -Infinity : 1 + rnd())), false],
+      ["0 and −0", fill((i) => (i % 7 ? -0 : 0)), true],
+      ["only −0", fill(() => -0), true],
+      ["one 0 among −0s", fill((i) => (i ? -0 : 0)), true],
+      ["integers", fill((i) => (i % 13) - 6), true],
+      ["±1 and a few 2s", fill((i) => (i % 9973 === 0 ? 2 : i % 5 ? 1 : -1)), true],
+    ];
+    for (const [name, d, integral] of DATA) {
+      const at = new Map<string, HostData>([["p", T(d, [H, W, 3])], ["f", T(d, [n])]]);
+      const roots = [all(picture, "MAX"), neg(all(neg(picture), "MAX")), reduceAxis(flat, 0, false, "MAX"), neg(reduceAxis(neg(flat), 0, false, "MAX")), all(picture, "ADD"), reduceAxis(flat, 0, false, "ADD"), all(picture, "MUL")];
+      const a = await realizeMany(cpu, roots, at), b = gpu ? await realizeMany(gpu, roots, at) : a;
+      // a sum of fractions rounds in another order
+      check(`long reductions over ${name}: GPU = CPU${integral ? ", to the bit" : ", max and min to the bit"}`, a.every((x, i) => same(b[i]!.data, x.data, i < 4 || integral ? 0 : 1e-5)),
+        a.map((x, i) => `${x.data[0]}/${b[i]!.data[0]}`).join(" "));
+    }
+    { // the larger of 0 and −0 is 0, either way round, as Math.max says
+      const z = buffer("z", [2]), g = reduceAxis(z, 0, false, "MAX");
+      const got = await Promise.all([[0, -0], [-0, 0]].map(async (d) => (await realize(gpu ?? cpu, g, new Map([["z", T(Float32Array.from(d), [2])]]))).data[0]!));
+      check("max(0, −0) and max(−0, 0) are 0", got.every((v) => Object.is(v, 0)), got.map((v) => (Object.is(v, -0) ? "−0" : v)).join(", "));
+    }
+    { // an empty reduction is its identity; ∇ of a split maximum is the loop's
+      const e = buffer("e", [0, 3]), at = new Map<string, HostData>([["e", T(new Float32Array(0), [0, 3])]]);
+      const roots = [reduceAxis(e, 0, false, "ADD"), reduceAxis(e, 0, false, "MAX"), reduceAxis(e, 0, false, "MUL")];
+      const a = await realizeMany(cpu, roots, at), b = gpu ? await realizeMany(gpu, roots, at) : a;
+      check("empty reductions: 0, −∞, 1 on both", a.every((x, i) => same(x.data, b[i]!.data)) && [0, -Infinity, 1].every((v, i) => a[i]!.data.every((x) => x === v)));
+      const d = fill((i) => Math.floor(i / 3) % 1001), atP = new Map<string, HostData>([["p", T(d, [H, W, 3])]]);
+      const g = grad(sum(all(picture, "MAX")), picture), ga = await realize(cpu, g, atP), gb = gpu ? await realize(gpu, g, atP) : ga;
+      check("∇ of a split maximum: GPU = CPU, to the bit", same(ga.data, gb.data), `Σ∇ ${ga.data.reduce((s, v) => s + v, 0)}`);
+    }
+  }
+
   // ── 2. the schedule's shape: kernel counts ───────────────────────────────────────
   const kernels = (g: UOp): UOp[] => toposort(optimize(g)).filter((u) => u.op === "FUSED");
   const wgslOf = (g: UOp): string[] => { const out: string[] = []; for (const u of toposort(lowerMany([g])[0]!)) if (u.op === "KERNEL") out.push((u.arg as { wgsl: string }).wgsl); return out; };
@@ -109,9 +153,9 @@ export default async function (): Promise<{ fails: number }> {
   check("matvec + bias + silu epilogue is ONE kernel", kernels(silu(add(matmul(buffer("h", [1, 32]), buffer("Wg", [32, 16])), buffer("b", [16])))).length === 1);
   {
     const fat = wgslOf(matmul(buffer("A", [128, 64]), buffer("B", [64, 128])));   // a grid that fills the GPU, K past COST.tileMinK
-    const thin = wgslOf(matmul(buffer("h", [1, 1024]), buffer("W", [1024, 512])));
+    const thin = wgslOf(matmul(buffer("h", [1, 1024]), buffer("W", [1024, 512]))), rows = wgslOf(matmul(buffer("h", [1, 1024]), permute(buffer("W", [512, 1024]), [1, 0])));
     check("fat-M matmul is TILED (As/Bs tiles)", fat.length === 1 && fat[0]!.includes("var<workgroup> As"));
-    check("M=1 matvec is NOT tiled — it's coop split-K GEMV (part[] tree-reduce, 1 wg/output)", thin.length === 1 && !thin[0]!.includes("var<workgroup> As") && thin[0]!.includes("var<workgroup> part") && thin[0]!.includes("workgroup_id"));
+    check("M=1 matvec is NOT tiled: a thread an output where they read side by side, a workgroup an output where each reads a row", thin.length === 1 && !thin[0]!.includes("var<workgroup> As") && !thin[0]!.includes("var<workgroup> part") && rows.length === 1 && rows[0]!.includes("var<workgroup> part") && rows[0]!.includes("workgroup_id"));
   }
   { // a tile's term is any function of its two reads: ∇'s mul0 products, and exp(a·b), which is not 0 where the staged reads are 0 past K
     const Xb = buffer("X", [256, 128]), Wb = buffer("W", [128, 64]), y = matmul(Xb, Wb), P = buffer("P", [128, 72]), Q = buffer("Q", [72, 96]);

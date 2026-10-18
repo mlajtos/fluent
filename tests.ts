@@ -2980,6 +2980,34 @@ describe("the engine", () => {
     const tall = await lowered(matmul(ir.buffer("A", [1 << 20, 64]), ir.buffer("B", [64, 16])))
     expect(tiled(tall) && tall.every((k) => k.dispatch.every((d) => d <= 65535))).toBe(true)
   })
+  const forms = async (root: any) => {
+    const ir = await import("./engine/ir.ts")
+    const { lowerMany } = await import("./engine/gpu.ts")
+    return ir.toposort(lowerMany([root])[0]!).filter((u) => u.op === "KERNEL").map((u) => {
+      const { wgsl, dispatch } = u.arg as { wgsl: string; dispatch: number[] }
+      return { shape: u.shape.join(" "), dispatch: dispatch.join(" "), coop: wgsl.includes("var<workgroup> part") }
+    })
+  }
+  test("a long reduction to few outputs splits over workgroups, and a second kernel combines their partials", async () => {
+    const ir = await import("./engine/ir.ts")
+    const picture = ir.buffer("p", [800, 1280, 3])
+    for (const op of ["ADD", "MAX", "MUL"] as const)                      // a picture's range: 3 outputs, 1,024,000 terms each
+      expect(await forms(ir.reduceAxis(ir.reduceAxis(picture, 0, true, op), 1, true, op))).toEqual([
+        { shape: "32 3", dispatch: "3 1 32", coop: true }, { shape: "1 1 3", dispatch: "1", coop: false },
+      ])
+    expect(await forms(ir.sum(ir.buffer("v", [1 << 20])))).toEqual([{ shape: "96 1", dispatch: "1 1 96", coop: true }, { shape: "", dispatch: "1", coop: false }])
+    // a picture's range in rows reads its neighbours side by side: k's fastest digit is the column
+    const ks = (await import("./engine/gpu.ts")).lowerMany([ir.reduceAxis(ir.reduceAxis(picture, 0, true, "MAX"), 1, true, "MAX")])[0]!
+    expect(ir.toposort(ks).some((u) => u.op === "KERNEL" && (u.arg as { wgsl: string }).wgsl.includes("((k) / 1u) % 1280u"))).toBe(true)
+  })
+  test("a reduction to many outputs side by side in memory runs a thread an output; in rows, a workgroup an output", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { matmul } = await import("./engine/tests/vocab.ts")
+    expect(await forms(ir.reduceAxis(ir.buffer("x", [4096, 1024]), 0, false))).toEqual([{ shape: "1024", dispatch: "4", coop: false }])
+    expect(await forms(ir.reduceAxis(ir.buffer("x", [1024, 4096]), 1, false))).toEqual([{ shape: "1024", dispatch: "1024 1", coop: true }])
+    expect(await forms(matmul(ir.buffer("h", [1, 1024]), ir.buffer("W", [1024, 512])))).toEqual([{ shape: "1 512", dispatch: "2", coop: false }])
+    expect(await forms(ir.reduceAxis(ir.buffer("x", [4096, 64]), 0, false, "MAX"))).toEqual([{ shape: "64", dispatch: "64 1", coop: true }])   // few: the plain nest could not fill the machine
+  })
   test("joining n pieces the host does not hold takes about n/7 kernels, not n", async () => {
     const { optimizeMany } = await import("./engine/opt.ts")
     const { toposort } = await import("./engine/ir.ts")
