@@ -133,7 +133,7 @@ test("a view that fails to draw says why", async ({ page }) => {
   await expect(panel(page)).toContainText("2")
   await page.evaluate(() => {
     const desc = { k: "tree", roots: [{ label: null, o: { s: [1, 1], e: [1, 2], d: 0 }, children: [] }] }
-    ;(globalThis as unknown as { __fluentWorker: Worker }).__fluentWorker.dispatchEvent(new MessageEvent("message", { data: { t: "result", desc } }))
+    ;(globalThis as unknown as { __fluentWorker: Worker }).__fluentWorker.dispatchEvent(new MessageEvent("message", { data: { t: "lives", lives: [{ id: 0, desc, ack: 0 }] } }))
   })
   await expect(panel(page)).toContainText("This view failed")
   await expect(page.getByText("Something went wrong")).toHaveCount(0)

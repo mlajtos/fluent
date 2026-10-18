@@ -6,14 +6,30 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test"
 import { Signal, effect } from "@preact/signals-core"
 import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, type Value } from "./language"
 import { startHost } from "./host"
-import type { ToPage, ToWorker } from "./protocol"
+import { connect, update, call, write, mirrors, type ToPage, type ToWorker } from "./protocol"
 import { EXAMPLES } from "./examples"
 import { TOUR_SOURCE } from "./tour"
 
-// The evaluation host binds the widgets and the live sources, as in the IDE's worker;
-// here the page is this inbox
+// The evaluation host binds the widgets and the live sources, as in the IDE's worker.
+// The page is the page's own mirror (protocol.ts), plus this inbox of all it was sent;
+// each way, messages arrive later and in order, and the page draws a batch at once. A
+// test may hold back what the page reads, or its frames.
 const inbox: ToPage[] = []
-const toHost: (message: ToWorker) => void = startHost((message) => { inbox.push(message) })
+const held: Record<"reads" | "frames", (() => void)[] | null> = { reads: null, frames: null }
+const toHost: (message: ToWorker) => void = startHost((message) => {
+  inbox.push(message)
+  if (message.t !== "lives" && message.t !== "tensor") { return }
+  const read = () => update(message)
+  held.reads ? held.reads.push(read) : queueMicrotask(read)
+})
+const toWorker = (message: ToWorker) => { queueMicrotask(() => toHost(message)) }
+const drawn = (answer: () => void) => { held.frames ? held.frames.push(answer) : queueMicrotask(answer) }
+connect(toWorker, drawn)
+// holds them until the function it returns lets them go
+const hold = (what: keyof typeof held) => {
+  held[what] = []
+  return () => { const waiting = held[what] ?? []; held[what] = null; waiting.forEach((f) => f()) }
+}
 // there is no server to load from: an image is zeros, and a safetensors file is a
 // signal holding an empty list – what the real loader holds until its fetch resolves
 const loading = { LoadTensorFromImageUrl: () => SignalCreate(engine.zeros([16, 16, 3])), Fetch: () => SignalCreate(""), LoadSafeTensorFromURL: () => SignalCreate([]) }
@@ -1642,23 +1658,30 @@ describe("error messages carry context", () => {
 // The host speaks to the page in plain data (protocol.ts): values cross as
 // descriptions, live ones as ids the page holds, writes back to, and lets go of.
 describe("the evaluation host", () => {
-  const after = (start: number, kind: ToPage["t"], timeout = 3000): Promise<any> => new Promise((resolve, reject) => {
+  const until = <T,>(found: () => T | undefined, what: string, timeout = 3000): Promise<T> => new Promise((resolve, reject) => {
     const t0 = Date.now()
     const poll = () => {
-      const found = inbox.slice(start).find((m) => m.t === kind)
-      if (found) { resolve(found); return }
-      if (Date.now() - t0 > timeout) { reject(new Error(`no "${kind}" message in ${timeout} ms`)); return }
+      const it = found()
+      if (it !== undefined) { resolve(it); return }
+      if (Date.now() - t0 > timeout) { reject(new Error(`no ${what} in ${timeout} ms`)); return }
       setTimeout(poll, 5)
     }
     poll()
   })
+  // the first message of a kind since `start` – a batch of lives, one that has `id`
+  const after = (start: number, kind: ToPage["t"], id?: number): Promise<any> =>
+    until(() => inbox.slice(start).find((m) => m.t === kind && (id === undefined || (m.t === "lives" && m.lives.some((l) => l.id === id)))), `"${kind}" message`)
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const descOf = (batch: Extract<ToPage, { t: "lives" }>, id: number): any => batch.lives.find((l) => l.id === id)?.desc
+  // the program's value, live 0
   const evaluate = async (source: string): Promise<any> => {
     const start = inbox.length
     toHost({ t: "code", source })
-    return (await after(start, "result")).desc
+    return descOf(await after(start, "lives", 0), 0)
   }
   const numberIn = (d: any): number | undefined => d?.payload?.[0]
-  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  let painted = 0
+  const canvas = { width: 0, height: 0, getContext: () => ({ createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData: () => { painted++ } }) }
 
   test("it starts by listing the environment, with doc cards", () => {
     const ready = inbox.find((m) => m.t === "ready") as Extract<ToPage, { t: "ready" }>
@@ -1672,18 +1695,27 @@ describe("the evaluation host", () => {
     expect(numberIn(d)).toBe(2)
   })
 
-  test("a live value the page let go of lets go of its pictures", async () => {
+  test("a picture paints until the page lets go of it, however often its value moves on", async () => {
     const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), $({ fill([5, 5], x()) }))`)
-    const picture = d.items[1].now
-    expect(picture.paint).toBe(true)
-    let painted = 0
-    const canvas = { width: 0, height: 0, getContext: () => ({ createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData: () => { painted++ } }) }
+    const go = d.items[0].slots.onClick.id, live = d.items[1].id
     toHost({ t: "canvas", slot: 1, canvas: canvas as unknown as OffscreenCanvas })
-    toHost({ t: "paint", slot: 1, id: picture.id, size: [0, 0] })
+    let start = inbox.length
+    toHost({ t: "call", id: go })
+    const first = descOf(await after(start, "lives", live), live)
+    expect(first.paint).toBe(true)
+    // the next picture is on its way, and the page still shows the first
+    const read = hold("reads")
+    start = inbox.length
+    toHost({ t: "call", id: go })
+    await after(start, "lives", live)
+    painted = 0
+    toHost({ t: "paint", slot: 1, id: first.id, size: [0, 0] })
     await pause(50)
     expect(painted).toBe(1)
-    toHost({ t: "drop", id: d.items[1].id, count: 1 })
-    toHost({ t: "paint", slot: 1, id: picture.id, size: [0, 0] })
+    // the page reads the next, and lets go of the first
+    read()
+    await pause(10)
+    toHost({ t: "paint", slot: 1, id: first.id, size: [0, 0] })
     await pause(50)
     expect(painted).toBe(1)
   })
@@ -1692,14 +1724,13 @@ describe("the evaluation host", () => {
     const served = Bun.serve({ port: 0, fetch: () => new Response("Not Found", { status: 404 }) })
     extendEnvironment({ Fetch: hostFetch } as Record<string, Value>)
     const d = await evaluate(`Fetch("http://localhost:${served.port}/nope.txt")`)
-    const start = inbox.length
-    const { lives } = await after(start, "lives")
+    // what the page shows of it, once the fetch has failed
+    const shown = (): any => mirrors.get(d.id)?.desc.peek()
+    const desc = await until(() => shown()?.k === "error" ? shown() : undefined, "Error")
     served.stop()
     extendEnvironment({ Fetch: loading.Fetch } as Record<string, Value>)
-    const desc = lives.find((l: any) => l.id === d.id).desc
     expect(desc).toMatchObject({ k: "error" })
     expect(desc.chain.at(-1).message).toContain("404")
-    toHost({ t: "drawn" })
   })
 
   test("a write is answered, and what depends on it follows", async () => {
@@ -1715,12 +1746,12 @@ describe("the evaluation host", () => {
     const { lives } = await after(start, "lives")
     expect(lives.find((l: any) => l.id === target.id)).toMatchObject({ ack: 1 })
     expect(numberIn(lives.find((l: any) => l.id === squared.id).desc)).toBeCloseTo(0.64)
-    toHost({ t: "drawn" })
   })
 
   test("the next batch waits until the page has drawn the last", async () => {
     const d = await evaluate("x: $(0), (Slider(x), x)")
     const id = d.items[0].slots.target.id
+    const draw = hold("frames")
     let start = inbox.length
     toHost({ t: "set", id, value: 0.1, seq: 1 })
     await after(start, "lives")
@@ -1728,12 +1759,49 @@ describe("the evaluation host", () => {
     toHost({ t: "set", id, value: 0.2, seq: 2 })
     await pause(100)
     expect(inbox.slice(start).some((m) => m.t === "lives")).toBe(false)
+    draw()
+    const batch = await after(start, "lives", id)
+    expect(batch.lives.find((l: any) => l.id === id).ack).toBe(2)
+    expect(numberIn(descOf(batch, id))).toBeCloseTo(0.2)
+  })
+
+  test("a run waits for the page as any change does: one batch at most is on its way", async () => {
+    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), x)`)
+    const go = d.items[0].slots.onClick.id
+    const draw = hold("frames")
+    let start = inbox.length
+    toHost({ t: "call", id: go })
+    await after(start, "lives")
+    // the author edits while the page draws
+    start = inbox.length
+    toHost({ t: "code", source: "2 + 2" })
+    await pause(100)
+    expect(inbox.slice(start).some((m) => m.t === "lives")).toBe(false)
+    draw()
+    expect(numberIn(descOf(await after(start, "lives", 0), 0))).toBe(4)
+  })
+
+  test("a drop from before a run can't let go of what the run holds", async () => {
+    // a built-in keeps its id from run to run – here, the button's action
+    const source = `s: $(Button("go", SampleRate)), (Slider(s), s)`
+    const d = await evaluate(source)
+    const s = d.items[0].slots.target.id, go = d.items[1].now.slots.onClick.id
+    const read = hold("reads")
+    let start = inbox.length
+    // s no longer holds the button: the page will let go of it when it reads that
+    toHost({ t: "set", id: s, value: 1, seq: 1 })
+    await after(start, "lives", s)
     toHost({ t: "drawn" })
-    const { lives } = await after(start, "lives")
-    const update = lives.find((l: any) => l.id === id)
-    expect(update.ack).toBe(2)
-    expect(numberIn(update.desc)).toBeCloseTo(0.2)
-    toHost({ t: "drawn" })
+    // the next run's value names the same action, before the page has let go
+    start = inbox.length
+    toHost({ t: "code", source })
+    expect(descOf(await after(start, "lives", 0), 0).items[1].now.slots.onClick.id).toBe(go)
+    read()
+    await pause(10)
+    start = inbox.length
+    toHost({ t: "call", id: go })
+    await pause(10)
+    expect(inbox.slice(start).some((m) => m.t === "needSampleRate")).toBe(true)
   })
 
   test("a live value the page let go of stops sending", async () => {
@@ -1743,12 +1811,22 @@ describe("the evaluation host", () => {
     let start = inbox.length
     toHost({ t: "call", id: go })
     expect(numberIn((await after(start, "lives")).lives[0].desc)).toBe(1)
-    toHost({ t: "drawn" })
     toHost({ t: "drop", id: x.id, count: 1 })
     start = inbox.length
     toHost({ t: "call", id: go })
     await pause(100)
     expect(inbox.slice(start).some((m) => m.t === "lives")).toBe(false)
+  })
+
+  test("the page sends another worker nothing about the ids the last one named", async () => {
+    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), Slider(x))`)
+    const go = d.items[0].slots.onClick.id, x = d.items[1].slots.target.id
+    const sent: ToWorker[] = []
+    connect((message) => { sent.push(message) }, drawn)
+    call(go)
+    write(x, 1)
+    connect(toWorker, drawn)
+    expect(sent).toEqual([])
   })
 
   // Every shipped demo through the host, as the page gets it: plain data, and no
@@ -1767,12 +1845,14 @@ describe("the evaluation host", () => {
             : d.k === "live" ? [[`${path}()`, d.now]] : []
     return parts.flatMap(([p, x]) => errorsIn(x, p))
   }
+  // A demo runs once the last one's loop has finished its step: on the CPU, a model's
+  // first step takes seconds
   for (const [name, src] of [...Object.entries(EXAMPLES), ["Tour", "Tour"]] as [string, string][]) {
     test(`${name} crosses to the page whole`, async () => {
       const d = await evaluate(src.trim())
       expect(() => structuredClone(d)).not.toThrow()
       expect(errorsIn(d)).toEqual([])
-    })
+    }, 60_000)
   }
   test("every message is plain data", async () => {
     // and the last demo's loops retire

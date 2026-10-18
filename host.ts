@@ -4,7 +4,7 @@
 // stay here – tensors, signals, variables; the page draws their descriptions and writes
 // back through ids.
 
-import { Signal, computed, effect, untracked } from "@preact/signals-core"
+import { Signal, computed, effect, signal, untracked } from "@preact/signals-core"
 import {
   CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate, createScope, DefaultEnvironment,
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
@@ -87,8 +87,7 @@ const where = (origin: Origin | undefined): Where | undefined => {
 // A live value the page shows: a signal or a variable. Its effect marks it dirty when it
 // changes, and the next frame sends its new description – one per frame however often it
 // changes, none while the tensors of the last one are still being read, and none while
-// the page is still drawing the last batch. The pictures it showed last are let go when
-// it shows new ones.
+// the page is still drawing the last batch.
 type Live = {
   id: number,
   target: Signal<Value> | FluentVariable,
@@ -96,7 +95,6 @@ type Live = {
   stop: () => void,
   reading: number,
   ack: number,
-  pictures: number[],
 }
 const ids = new WeakMap<object, number>()
 const idOf = (o: object): number => {
@@ -109,7 +107,7 @@ const dirty = new Set<Live>()
 // the live whose value is being described: reads of its tensors pace its updates
 let owner: Live | null = null
 // The worker paints pictures into canvases the page hands it: a picture waits here, by
-// id, until the page asks for it
+// id, for the page to ask for it, until the page lets go of it
 let painter: GpuPainter | CpuPainter = new CpuPainter()
 const pictures = new Map<number, Picture>()
 const describing = new Set<number>()
@@ -144,7 +142,6 @@ const flush = () => {
   if (pageDrawing || painter.pending > 1) { return }
   const batch: { id: number, desc: Desc, ack: number }[] = []
   for (const live of dirty) {
-    if (lives.get(live.id) !== live) { dirty.delete(live); continue }
     if (live.reading > 0) { continue }
     dirty.delete(live)
     batch.push({ id: live.id, desc: untracked(() => describeNow(live)), ack: live.ack })
@@ -155,8 +152,6 @@ const flush = () => {
 }
 
 const describeNow = (live: Live): Desc => {
-  for (const id of live.pictures) { pictures.delete(id) }
-  live.pictures = []
   const outer = owner
   owner = live
   describing.add(live.id)
@@ -172,7 +167,7 @@ const describeLive = (target: Signal<Value> | FluentVariable): Desc => {
   const id = idOf(target)
   let live = lives.get(id)
   if (!live) {
-    const fresh: Live = live = { id, target, refs: 0, stop: () => { }, reading: 0, ack: 0, pictures: [] }
+    const fresh: Live = live = { id, target, refs: 0, stop: () => { }, reading: 0, ack: 0 }
     let first = true
     fresh.stop = effect(() => {
       if (target instanceof FluentVariable) { target.version.value } else { valueOf(target) }
@@ -223,7 +218,6 @@ const describeTensor = (t: engine.Tensor): Desc => {
     if (view === "number" || ((view === "bars" || view === "heat") && t.size < FEW)) { return { k: "tensor", id, shape, ...numbersOf(id, t) } }
     const picture = prepare(view, t)
     pictures.set(id, picture)
-    owner?.pictures.push(id)
     return { k: "tensor", id, shape, paint: true, ...(picture.range && numbersOf(id, picture.range)) }
   } catch (e) {
     return describeError(asError(e))
@@ -586,27 +580,20 @@ const scheduleRun = () => {
   setTimeout(run, 0)
 }
 
-// a live nothing shows any more stops, and lets go of the pictures it showed
-const forget = (live: Live) => {
-  live.stop()
-  lives.delete(live.id)
-  dirty.delete(live)
-  for (const id of live.pictures) { pictures.delete(id) }
-}
+// The program's value is live 0, which the page holds from the start: each run sends it
+const program = signal<Value>(null)
+const root: Live = { id: 0, target: program, refs: 0, stop: () => { }, reading: 0, ack: 0 }
+lives.set(0, root)
 
 // The program runs inside an effect: a signal it reads at its top level – not inside a
-// $ or a lambda – runs it again when it changes. once() reads without that. Every value
-// of the last program is let go: its lives stop sending, and the page drops what it
-// shows of them when the new result arrives.
+// $ or a lambda – runs it again when it changes. once() reads without that. Each run's
+// value replaces the last one's; the page lets go of what it showed of the last one as
+// it shows the new one.
 const run = () => {
   runScheduled = false
   if (source === null) { return }
   stopProgram?.()
-  pageDrawing = false
-  lives.forEach(forget)
-  callbacks.clear()
   documentIds.clear()
-  pictures.clear()
   const code = source
   let first = true
   stopProgram = effect(() => {
@@ -619,7 +606,10 @@ const run = () => {
     } catch (e) {
       value = asError(e)
     }
-    untracked(() => send({ t: "result", desc: describe(value) }))
+    // the value goes at once if the page may take it, before any loop's first frame
+    program.value = value
+    dirty.add(root)
+    flush()
   })
 }
 
@@ -662,9 +652,11 @@ const receive = (m: ToWorker) => {
       return
     }
     case "drop": {
+      // what the page shows no more stops, and is let go of
       const live = lives.get(m.id), callback = callbacks.get(m.id)
-      if (live && (live.refs -= m.count) <= 0) { forget(live) }
+      if (live && (live.refs -= m.count) <= 0) { live.stop(); lives.delete(m.id); dirty.delete(live) }
       if (callback && (callback.refs -= m.count) <= 0) { callbacks.delete(m.id) }
+      pictures.delete(m.id)
       return
     }
     case "frame": { receiveFrame(m.id, { bitmap: m.bitmap, samples: m.samples }); return }

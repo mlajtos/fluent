@@ -74,9 +74,10 @@
 
 // MARK: Imports
 
-import { Signal, signal, computed, effect } from "@preact/signals-core"
+import { signal, computed, effect } from "@preact/signals-core"
 import {
   tensorView, documentHash, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
+  connect, mirrors, payloads, root, update, write, call,
   type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
@@ -127,24 +128,6 @@ loader.config({ monaco })
 // there. The page draws descriptions of values (protocol.ts), writes back through ids,
 // and streams the camera, the microphone and the pointer in.
 
-type Mirror = {
-  // the value now, as the worker last described it
-  desc: Signal<Desc | undefined>,
-  // descriptions held here that mention it
-  refs: number,
-  // times the worker sent it: all of them are given back at once, when nothing here
-  // mentions it any more
-  received: number,
-  // the page's last write, and the last one the worker has answered
-  sent: number,
-  ack: number,
-  // what the page wrote, shown until the worker answers
-  local: Signal<unknown>,
-}
-const mirrors = new Map<number, Mirror>()
-// a tensor's values, or the message saying why they couldn't be computed
-const payloads = new Map<number, Signal<Float32Array | string | undefined>>()
-const result = signal<Desc | null>(null)
 const environmentNames = signal(new Map<string, { detail: string, doc: Doc | null }>())
 
 // A hot update starts a fresh evaluator and stops the old one's sources; so does a lost GPU
@@ -158,103 +141,35 @@ const spawn = () => {
   worker = hot.__fluentWorker = startWorker(typeof FLUENT_WORKER === "string" ? FLUENT_WORKER : "fluent.worker.js")
   worker.onmessage = receive
   worker.onerror = (e) => { showError(`The evaluator stopped: ${e.message || "it failed to start"}`) }
+  // a batch is drawn by the next frame
+  connect(toWorker, (answer) => requestAnimationFrame(answer))
 }
 const toWorker = (message: ToWorker, transfer: Transferable[] = []) => worker.postMessage(message, transfer)
-const showError = (message: string) => { result.value = { k: "error", chain: [{ message }] } }
+const showError = (message: string) => { root.desc.value = { k: "error", chain: [{ message }] } }
 
-const parts = (d: Desc): Desc[] =>
-  d.k === "list" ? d.items : d.k === "record" ? d.entries.map(([, v]) => v) : d.k === "ui" ? [...Object.values(d.slots), ...d.children] : []
-// Every live value and tensor a description mentions is held once more…
-const hold = (d: Desc): void => {
-  if (d.k === "live" || d.k === "callback") {
-    let mirror = mirrors.get(d.id)
-    if (!mirror) { mirrors.set(d.id, mirror = { desc: signal(undefined), refs: 0, received: 0, sent: 0, ack: 0, local: signal(undefined) }) }
-    mirror.refs++
-    mirror.received++
-    if (d.k === "live" && d.now) { show(mirror, d.now) }
-  }
-  if (d.k === "tensor") { payloads.set(d.id, signal(d.payload)) }
-  parts(d).forEach(hold)
-}
-// …and once less when it goes. What nothing mentions, the worker may let go of too.
-const release = (d: Desc): void => {
-  if (d.k === "live" || d.k === "callback") {
-    const mirror = mirrors.get(d.id)
-    if (!mirror || --mirror.refs > 0) { return }
-    mirrors.delete(d.id)
-    const now = mirror.desc.peek()
-    if (now) { release(now) }
-    toWorker({ t: "drop", id: d.id, count: mirror.received })
-  }
-  if (d.k === "tensor") { payloads.delete(d.id) }
-  parts(d).forEach(release)
-}
-// a mirror holds what its current value mentions
-const show = (mirror: Mirror, desc: Desc) => {
-  hold(desc)
-  const old = mirror.desc.peek()
-  mirror.desc.value = desc
-  if (old) { release(old) }
-}
-
-function receive({ data: m }: MessageEvent<ToPage>) {
+// what a worker sent after it was replaced names nothing here
+function receive({ data: m, target }: MessageEvent<ToPage>) {
+  if (target !== worker) { return }
   switch (m.t) {
     case "ready": {
       environmentNames.value = new Map(m.names.map(([name, detail, doc]) => [name, { detail, doc }]))
       return
     }
     case "parsed": { showParseErrors(m); return }
-    case "result": {
-      // the worker let go of everything the last result held
-      mirrors.clear()
-      payloads.clear()
-      hold(m.desc)
-      result.value = m.desc
-      return
-    }
-    case "lives": {
-      for (const { id, desc, ack } of m.lives) {
-        const mirror = mirrors.get(id)
-        // nothing here shows it any more: count what it mentions, and give it all back
-        if (!mirror) { hold(desc); release(desc); continue }
-        mirror.ack = ack
-        show(mirror, desc)
-      }
-      // drawn by the next frame: then the worker may send the next batch
-      requestAnimationFrame(() => toWorker({ t: "drawn" }))
-      return
-    }
-    case "tensor": {
-      const payload = payloads.get(m.id)
-      if (payload) { payload.value = m.error ?? m.payload }
-      return
-    }
+    case "lives": case "tensor": { update(m); return }
     case "source": { startSource(m.id, m.kind, m.size, m.fps); return }
     case "stop": { pageSources.get(m.id)?.(); pageSources.delete(m.id); return }
     case "needSampleRate": { toWorker({ t: "sampleRate", value: sampleRate() }); return }
     case "lost": {
       // the GPU took the values with it: another worker runs the program again
-      mirrors.clear()
-      payloads.clear()
-      showError(`The GPU was lost: ${m.message}. Starting again…`)
       spawn()
+      showError(`The GPU was lost: ${m.message}. Starting again…`)
       toWorker({ t: "code", source: program.peek() })
       return
     }
   }
 }
 spawn()
-
-let writes = 0
-const write = (id: number, value: number | number[] | string | ImageBitmap) => {
-  const mirror = mirrors.get(id)
-  if (!mirror) { return }
-  mirror.sent = ++writes
-  const image = typeof value === "object" && !Array.isArray(value)
-  if (!image) { mirror.local.value = value }
-  toWorker({ t: "set", id, value, seq: mirror.sent }, image ? [value] : [])
-}
-const call = (id: number) => toWorker({ t: "call", id })
 
 // What a description shows now – through live values to their current value. Reading it
 // in a component subscribes the component.
@@ -1068,7 +983,7 @@ function Framed({ d }: { d: Desc | null }): JSX.Element {
 // the program's value – the playground's output panel
 function ResultPanel(): JSX.Element {
   useSignals()
-  return <Framed d={result.value} />
+  return <Framed d={root.desc.value ?? null} />
 }
 
 // a built-in shows its doc card; a Fluent lambda its source

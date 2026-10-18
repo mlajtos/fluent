@@ -4,12 +4,16 @@
 //
 // The worker sends the changes of live values in batches, at most one a frame, and the
 // next only after the page has drawn the last – a page that draws slowly gets fewer,
-// fresher batches instead of a growing queue.
+// fresher batches instead of a growing queue. The program's value is live 0: each run
+// changes it.
 //
 // A live id is held by the descriptions that mention it. The worker counts how many
 // times it sent an id, the page counts how many it received; when the page stops
 // showing one it releases all it received in a single "drop", and the worker lets go
-// once its count reaches zero – a release can never race a send.
+// once its count reaches zero – a release can never race a send. A picture is sent
+// once, and dropped once. An id names one thing for as long as the worker runs.
+
+import { signal, type Signal } from "@preact/signals-core"
 
 // Where a value came from: line and column of its start and end, and a hash of the
 // document they index into – the page finds the editor whose text hashes the same.
@@ -77,7 +81,6 @@ export type SourceKind = "camera" | "microphone" | "spectrum" | "pointer"
 export type ToPage =
   // the environment's documented names, for hover cards and completion
   | { t: "ready", names: [string, string, Doc | null][] }
-  | { t: "result", desc: Desc }
   // a document's parse errors, by its hash
   | { t: "parsed", d: number, errors: { message: string, o: Where }[] }
   // live values that changed, as they are now; `ack` is the page's last write each has seen
@@ -103,6 +106,115 @@ export const documentHash = (text: string): number => {
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
   return 4294967296 * (2097151 & h2) + (h1 >>> 0)
 }
+
+// MARK: The page's mirror
+// The page's half of the count: a mirror of every live value and callback it shows, by
+// id, and the numbers of the tensors. Live 0 is held from the start.
+
+type Mirror = {
+  // the value now, as the worker last described it
+  desc: Signal<Desc | undefined>,
+  // descriptions held here that mention it
+  refs: number,
+  // times the worker sent it: all of them are given back at once, when nothing here
+  // mentions it any more
+  received: number,
+  // the page's last write, and the last one the worker has answered
+  sent: number,
+  ack: number,
+  // what the page wrote, shown until the worker answers
+  local: Signal<unknown>,
+}
+const mirror = (): Mirror => ({ desc: signal(undefined), refs: 0, received: 0, sent: 0, ack: 0, local: signal(undefined) })
+export const mirrors = new Map<number, Mirror>()
+// the program's value
+export const root = mirror()
+// a tensor's values, or the message saying why they couldn't be computed
+export const payloads = new Map<number, Signal<Float32Array | string | undefined>>()
+
+type Send = (message: ToWorker, transfer?: Transferable[]) => void
+let send: Send = () => { }
+let whenDrawn = (answer: () => void) => { answer() }
+
+// A worker starts: nothing the last one sent is held. The page answers each batch once
+// it is drawn.
+export const connect = (post: Send, drawn: (answer: () => void) => void) => {
+  send = post
+  whenDrawn = drawn
+  mirrors.clear()
+  payloads.clear()
+  root.desc.value = undefined
+  mirrors.set(0, root)
+}
+
+const parts = (d: Desc): Desc[] =>
+  d.k === "list" ? d.items : d.k === "record" ? d.entries.map(([, v]) => v) : d.k === "ui" ? [...Object.values(d.slots), ...d.children] : []
+// Every live value and tensor a description mentions is held once more…
+const hold = (d: Desc): void => {
+  if (d.k === "live" || d.k === "callback") {
+    let held = mirrors.get(d.id)
+    if (!held) { mirrors.set(d.id, held = mirror()) }
+    held.refs++
+    held.received++
+    if (d.k === "live" && d.now) { show(held, d.now) }
+  }
+  if (d.k === "tensor") { payloads.set(d.id, signal(d.payload)) }
+  parts(d).forEach(hold)
+}
+// …and once less when it goes. What nothing mentions, the worker may let go of too.
+const release = (d: Desc): void => {
+  if (d.k === "live" || d.k === "callback") {
+    const held = mirrors.get(d.id)
+    if (!held || --held.refs > 0) { return }
+    mirrors.delete(d.id)
+    const now = held.desc.peek()
+    if (now) { release(now) }
+    send({ t: "drop", id: d.id, count: held.received })
+  }
+  if (d.k === "tensor") {
+    payloads.delete(d.id)
+    if (d.paint) { send({ t: "drop", id: d.id, count: 1 }) }
+  }
+  parts(d).forEach(release)
+}
+// a mirror holds what its current value mentions
+const show = (held: Mirror, desc: Desc) => {
+  hold(desc)
+  const old = held.desc.peek()
+  held.desc.value = desc
+  if (old) { release(old) }
+}
+
+// The worker's news: live values as they are now, and a tensor's numbers
+export const update = (m: Extract<ToPage, { t: "lives" | "tensor" }>) => {
+  if (m.t === "tensor") {
+    const payload = payloads.get(m.id)
+    if (payload) { payload.value = m.error ?? m.payload }
+    return
+  }
+  // once drawn, the worker that sent the batch may send the next
+  const answer = send
+  whenDrawn(() => answer({ t: "drawn" }))
+  for (const { id, desc, ack } of m.lives) {
+    const held = mirrors.get(id)
+    // nothing here shows it any more: count what it mentions, and give it all back
+    if (!held) { hold(desc); release(desc); continue }
+    held.ack = ack
+    show(held, desc)
+  }
+}
+
+// The page writes to and calls only what it holds
+let writes = 0
+export const write = (id: number, value: number | number[] | string | ImageBitmap) => {
+  const held = mirrors.get(id)
+  if (!held) { return }
+  held.sent = ++writes
+  const image = typeof value === "object" && !Array.isArray(value)
+  if (!image) { held.local.value = value }
+  send({ t: "set", id, value, seq: held.sent }, image ? [value] : [])
+}
+export const call = (id: number) => { if (mirrors.has(id)) { send({ t: "call", id }) } }
 
 // MARK: Lexicon
 // The characters each kind of token is made of: the grammar is built from these tables,
