@@ -4,7 +4,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test"
 import { Signal, effect } from "@preact/signals-core"
-import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, type Value } from "./language"
+import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, getOrigin, PRELUDE, type Value } from "./language"
 import { startHost } from "./host"
 import type { ToPage, ToWorker } from "./protocol"
 import { EXAMPLES } from "./examples"
@@ -646,7 +646,7 @@ describe("language fixes", () => {
   test("FunctionNoAutoLift marks a new function, not the one it is given", () => {
     run("FunctionNoAutoLift(sin)")
     expect(value("sin($(0))")).toBe(0)
-    expect(message("FunctionNoAutoLift(sin)($(0))")).toContain("signal")
+    expect(message("FunctionNoAutoLift(sin)($(0))")).toContain("live value")
   })
   test("SignalRead and SignalUpdate take the signal itself", () => {
     expect(value("s: $3, SignalRead(s)")).toBe(3)
@@ -1512,6 +1512,28 @@ describe("String is the inverse of CodeEvaluate", () => {
     expect(value("String([[1, 2], [3, 4]])")).toBe("[[1, 2], [3, 4]]")
     expect(value("String((1, 2, 3))")).toBe("(1, 2, 3)")
   })
+
+  // a function prints as the expression that made it – whoever wrote the builder – and a
+  // built-in as its name; never as its JavaScript
+  test("a function made by a call prints as that call", () => {
+    expect(value("String(× ⍤ 1)")).toBe("× ⍤ 1")
+    expect(value("String(exp ⍣ -1)")).toBe("exp ⍣ -1")
+    expect(value("String(adam(0.01))")).toBe("adam(0.01)")
+    expect(value("String(sin ∘ cos)")).toBe("sin ∘ cos")
+    expect(value("String(sin)")).toBe("TensorSine")
+    expect(value("f: { x | { y | x + y } }, String(f(1))")).toBe("f(1)")
+    // a literal keeps its own source, also when a call passes it through
+    expect(value("double: doc({ x | x × 2 }, \"double(x)\", \"twice\", \"\"), String(double)")).toBe("{ x | x × 2 }")
+    expect(value("String(StringConcat(\"f is \", sin))")).toBe('"f is TensorSine"')
+  })
+  test("a closure round-trips where the names it was made from are in scope", () => {
+    expect(value("make: { n | { x | x + n } }, CodeEvaluate(String(make(3)))(1)")).toBe(4)
+  })
+  test("no function prints JavaScript", () => {
+    for (const source of ["sin", "sum", "exp ⍣ -1", "⍨ -", "× ⍤ 1", "adam(0.01)", "grad(sin)", "guard(1, { 2 })", "try({ 1 })", "FunctionNoAutoLift(sin)", "cascade((sin, cos))"]) {
+      expect(value(`String(${source})`)).not.toMatch(/=>|function|return|const /)
+    }
+  })
 })
 
 // A name that resolves to nothing is the shape almost every language change leaves
@@ -1597,6 +1619,7 @@ describe("the Tour's checks", () => {
     const check = checks.find(([s]) => s.includes(seed))![1]
     return unwrap(evaluateGeneration(() => check(CodeEvaluate.call(Object.create(scope), src), src))) === 1
   }
+  const ring = (body: string) => `dot: dots([[80, 60]]),\nring: { p | ${body} },\ncanvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)`
   const rooms: [string, string[], string[]][] = [
     ["make this say 7", ["1 + 2*3"], ["7", "7 ; +*", "1 + 6 ; *", "1 + (2 * 3)"]],
     ["fish out the 30", ["[10, 20, 30] _ 2", "[10, 20, 30]_2"], ["30"]],
@@ -1606,6 +1629,7 @@ describe("the Tour's checks", () => {
     ["now put plus in the middle", ["plus: add, 40 plus 2", "plus: add,\n40 plus 2 ; ← now put plus in the middle"],
       ["plus: add, 42", "plus: add, 40 + 2", "plus: add, plus(40, 2)"]],
     ["almost. a cube is", ["cube: { x | x^3 }, cube(3)", "cube: { x | x × x × x }, ; ← almost.\ncube(3) ; done"], ["cube: { x | x^2 }, 27"]],
+    ["a ring: 40 away", [ring("abs(dot(p) - 40)"), ring("abs(40 - dot(p))")], [ring("abs(dot(p) - 0)"), ring("0"), "dot: dots([[80, 60]]), ring: { p | abs(dot(p) - 40) }, 5"]],
     ["the slope of x·x·x, at 2", ["f: { x | x^3 }, df: grad(f), df(2)", "f: { x | x^3 },\ndf: ∇(f),\ndf(2) ; ← now: the slope of x·x·x, at 2"],
       ["f: { x | x^2 }, df: grad(f), 12", "f: { x | x^3 }, df: { x | 3 × x^2 }, df(2)"]],
   ]
@@ -1650,10 +1674,58 @@ describe("lifts created inside owned computeds (reactive cells)", () => {
 })
 
 describe("error messages carry context", () => {
-  test("an Error in arithmetic says so, and keeps the Error as its cause", () => {
-    const e = run(`Error("x") × 2`) as Error
-    expect(e.message).toBe("expected a tensor, got an Error")
-    expect((e.cause as Error).message).toBe("x")
+  // the chain the IDE lists, innermost first, each link with the document it points into
+  const chain = (source: string): { message: string, user: boolean, line?: number }[] => {
+    const links: Error[] = []
+    for (let e: unknown = run(source); e instanceof Error; e = e.cause) { links.unshift(e) }
+    return links.map((e) => ({ message: e.message, user: getOrigin(e)?.document === source, line: getOrigin(e)?.start.line }))
+  }
+  test("an Error in arithmetic is that Error, unchanged", () => {
+    const scope = scopeOf(`e: Error("x"), r: e × 2 + 1`)
+    expect(scope["r"]).toBe(scope["e"])
+    expect(chain(`Error("x") × 2`)).toEqual([{ message: "x", user: true, line: 1 }])
+  })
+  test("an Error made in a prelude body is reported at the reader's call that reached it", () => {
+    // `-` is the prelude's x + (y × -1): its shape error points at the reader's line
+    expect(chain("a: [1, 2],\nb: [1, 2, 3],\na - b")).toEqual([{ message: "elementwise: [2] vs [3]", user: true, line: 3 }])
+    expect(chain("x: [[1, 2], [3, 4]],\nμ(x, 5)")).toEqual([{ message: "there is no axis 5: the value has 2 axes", user: true, line: 2 }])
+    // one link, not a chain of the prelude's own frames
+    expect(chain("softmax((1, 2, 3))")).toEqual([{ message: "shape: expected numbers, got a ( … ) list of 3", user: true, line: 1 }])
+  })
+  test("an Error the reader's own function makes keeps its line inside a prelude body", () => {
+    // 𝕐 is the prelude's: the failing line is the reader's second one, not the call
+    expect(chain("𝕐({ rec | { n |\n  n + [1, 2] } })([1, 2, 3])")).toEqual([{ message: "elementwise: [3] vs [2]", user: true, line: 2 }])
+  })
+  test("a cascade gives back the Error it was handed: the first failure is the cause", () => {
+    expect(chain("length(radious + 1)")).toEqual([{ message: "unknown name: radious", user: true, line: 1 }])
+    // a decline that reaches arithmetic is a failure, said in the decline's words
+    expect(chain("cascade((guard(0, { 1 }),))(5) + 1").map((l) => l.message)).toEqual(["guard: the condition doesn't hold", "no overload matched (a number)"])
+  })
+  test("calling what isn't a function says what it is, in the tour's words", () => {
+    expect(chain("sine(1)")).toEqual([{ message: "unknown name: sine", user: true, line: 1 }])
+    expect(chain("x: [1, 2, 3], x[0]")).toEqual([{ message: "a list of 3 numbers is not a function", user: true, line: 1 }])
+    // an Error in call position is that Error, not "'Error: …' is not a function"
+    expect(chain("(double ⍣ 5)(1)").map((l) => l.message)).toEqual(["`(f ⍣ n)`: `f` must be a function, got the unknown name double"])
+    expect(chain("x: [1, 2], W: ~[3, 4], loss: Σ(x × W), opt: adam(0.1), opt(loss)")[0]!.message).toContain("write it in braces")
+    expect(chain("x: $(1), x(1, 2)")[0]!.message).toContain("a live value is read with s()")
+  })
+  test("a NoMatch keeps its own origin, a fresh one per read", () => {
+    run("no: { x | NoMatch }, no(1)")
+    const later = "say: { x | NoMatch },\n\nsay(2)"
+    expect(getOrigin(run(later))?.document).toBe(later)
+    expect(value("identical(NoMatch, NoMatch)")).toBe(0)
+  })
+  test("no JavaScript text reaches a message", () => {
+    // writing a computed live value, binding over a getter
+    expect(chain("a: $(1), b: a + 1, b(5)")[0]!.message).toBe("this live value is made from others – write the values it is made from")
+    expect(value("NoMatch: 5, NoMatch")).toBe(5)
+    for (const source of ["sine(1)", "x: [1, 2, 3], x[0]", "2 x 3", "f: x → x^2, f(3)", "(double ⍣ 5)(1)", "x: $(1), x(1, 2)", "a: $(1), b: a + 1, b(5)"]) {
+      for (const { message } of chain(source)) { expect(message).not.toMatch(/Symbol\(|Attempted|'1,2,3'|Error: |poor signal/) }
+    }
+  })
+  test("a binding inside a function binds there, and its value is the function's", () => {
+    expect(value("f: { x | y: x + 1, y × 2 }, f(1)")).toBe(4)
+    expect(value("{ x | x: x × 2 }(3)")).toBe(6)
   })
   test("a cascade that matches nothing names the arguments and the reason", () => {
     const v = run(`cascade((guard(1 = 2, { 7 }),))(5)`) as Error
@@ -1663,12 +1735,11 @@ describe("error messages carry context", () => {
     expect(v).toBeInstanceOf(NoMatch)
     expect((v.cause as Error).message).toContain("condition doesn't hold")
   })
-  test("a failing application inside a cell says which application failed", () => {
+  test("a failing application inside a cell points at the cell's own expression", () => {
     const v = unwrap(scopeOf(`x: $(0.5), code: $("x ⍴ [2, 2]"), r: CodeEvaluate(code), r`)["r"])
     expect(v).toBeInstanceOf(Error)
-    expect(v.message).toContain("applying TensorReshape")
-    expect(v.message).toContain("a tensor [2]")
-    expect((v.cause as Error).message).toContain("reshape")
+    expect(v.message).toContain("reshape")
+    expect(getOrigin(v)).toMatchObject({ source: "x ⍴ [2, 2]", document: "x ⍴ [2, 2]" })
   })
   test("a monster parse-expectation list collapses to a summary", () => {
     const [err] = getParseErrors("1 + (")
@@ -1712,6 +1783,15 @@ describe("the evaluation host", () => {
     const d = await evaluate("1 + 1")
     expect(d.k).toBe("tensor")
     expect(numberIn(d)).toBe(2)
+  })
+
+  test("a top-level assignment runs the program once, not again on its own write", async () => {
+    for (const source of ["θ: ~[0, 0], θ:= [1, 2], θ", "D: ~~[1], D:= [3, 4], D"]) {
+      const start = inbox.length
+      await evaluate(source)
+      await pause(200)
+      expect(inbox.slice(start).filter((m) => m.t === "result").length).toBe(1)
+    }
   })
 
   test("a live value the page let go of lets go of its pictures", async () => {
@@ -1882,6 +1962,20 @@ describe("the engine", () => {
     const big = run("x: fill([1000, 1000], 1), (x ⍴ [1000, 1000, 1, 1]) + (x ⍴ [1, 1, 1000, 1000])") as engine.Tensor
     expect(() => big.readSync()).toThrow(/GB of memory at once/)
   })
+  test("an op carries the site of the reader's call that built it, also inside the prelude", () => {
+    const source = "a: [1, 2, 3],\nb: a + 1,\nc: a - 1,\n(b, c)"
+    const [b, c] = run(source) as engine.Tensor[]
+    expect(b!.node.site).toMatchObject({ source: "a + 1", start: { line: 2 } })
+    // `-` builds its ops in the prelude: they still come from the reader's line 3
+    expect(c!.node.site).toMatchObject({ source: "a - 1", start: { line: 3 } })
+  })
+  test("an engine error raised at a read names the line that built the op", () => {
+    // the op is lazy: the read on line 3 forces it, but line 2 made it
+    const source = "a: TensorBroadcast(0 ..< 30000, [30000, 30000]),\nb: a + 1,\nString(b)"
+    const e = run(source) as Error
+    expect(e.message).toContain("line 2 «a + 1»")
+    expect(getOrigin(e)).toMatchObject({ source: "a + 1", document: source })
+  })
   test("the CPU backend runs the kernel it compiled, not a look-alike", async () => {
     // a concatenation of 8192 pieces: 8185 kernels alike but for their offsets, each
     // adding its own piece – a JavaScript engine that runs one's compiled code for
@@ -1988,9 +2082,9 @@ describe("the engine", () => {
     expect(joined.slice(200).js()).toEqual(pieces[200]!.slice(0).js())
   })
   // a WebGPU device that only counts what the GPU executor asks of it
-  const fakeGpu = async () => {
+  const fakeGpu = async ({ failFirst = false } = {}) => {
     const { GPU } = await import("./engine/gpu.ts")
-    const log = { pipelines: 0, destroyed: 0, done: [] as WeakRef<Promise<void>>[] }
+    const log = { pipelines: 0, destroyed: 0, popped: 0, done: [] as WeakRef<Promise<void>>[] }
     const buffer = (size: number) => ({ size, destroy: () => { log.destroyed++ } }) as unknown as GPUBuffer
     const pass = { setPipeline() {}, setBindGroup() {}, dispatchWorkgroups() {}, end() {} }
     const dev = {
@@ -1998,7 +2092,7 @@ describe("the engine", () => {
       createComputePipeline: () => { log.pipelines++; return { getBindGroupLayout: () => ({}) } },
       createCommandEncoder: () => ({ beginComputePass: () => pass, copyBufferToBuffer() {}, finish: () => ({}) }),
       queue: { writeBuffer() {}, submit() {}, onSubmittedWorkDone: () => { const p = Promise.resolve(); log.done.push(new WeakRef(p)); return p } },
-      pushErrorScope() {}, popErrorScope: async () => null,
+      pushErrorScope() {}, popErrorScope: async () => (failFirst && !log.popped++ ? { message: "invalid" } : null),
     }
     ;(globalThis as any).GPUBufferUsage ??= { STORAGE: 128, COPY_SRC: 4, COPY_DST: 8 }
     return { gpu: new GPU(dev as unknown as GPUDevice, false), log, buffer }
@@ -2014,6 +2108,20 @@ describe("the engine", () => {
     expect([value("scatterAdd([1.5], [10], 256)_1"), value("scatterAdd([1.5], [10], 257)_1")]).toEqual([10, 10])
     expect(value("scatterAdd([-0.5, 2.9, 0 ÷ 0], [1, 2, 4], 300)_(0 ..< 4)")).toEqual(value("scatterAdd([-0.5, 2.9, 0 ÷ 0], [1, 2, 4], 4)"))
     expect(value("[10, 20, 30]_([1.5] ⍴ [1])")).toEqual([20])
+  })
+  test("a GPU validation error belongs to its own plan's results, not the next call", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { gpu, buffer } = await fakeGpu({ failFirst: true }), x = ir.buffer("x", [8]), xb = buffer(32)
+    const [a] = gpu.computeSync([ir.mul(x, ir.konst(2))], () => xb)
+    await new Promise((r) => setTimeout(r, 0))
+    // an unrelated plan runs: the error is not raised there
+    const [b] = gpu.computeSync([ir.add(x, ir.konst(3))], () => xb)
+    expect(b).toBeDefined()
+    await expect(gpu.readAsync(a!, 8)).rejects.toThrow("gpu validation: invalid")
+    expect(() => gpu.readSync(a!, 8)).toThrow("gpu validation: invalid")
+    // a plan that computes from the failed result fails the same way
+    const [c] = gpu.computeSync([ir.mul(ir.buffer("a", [8]), ir.konst(4))], () => a!)
+    await expect(gpu.readAsync(c!, 8)).rejects.toThrow("gpu validation: invalid")
   })
   test("roots that compute one value still get a buffer each", async () => {
     const ir = await import("./engine/ir.ts")

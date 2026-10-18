@@ -1,5 +1,4 @@
-// The language's own documentation: bound as `Documentation` in every program, and handed
-// to the code generator as its manual.
+// The language's own documentation: bound as `Documentation` in every program.
 
 export const Documentation = `
 # Fluent
@@ -106,7 +105,7 @@ Button("Reset", { x(0) }),
   - outer product \`⊗\`: \`a (⊗ f) b\` pairs every cell of a with every cell of b; \`a (f ⊗ k) b\` keeps trailing k axes zipped
   - inner product \`∙\`: \`a (g ∙ f) b\` combines with g, then reduces with f – \`A (× ∙ +) B\` is matrix multiply, \`W (+ ∙ ⌊) W\` is shortest paths
   - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
-  - UI: \`Slider\`, \`Scrubber\`, \`Checkbox\`, \`Button\`, \`Text\`, \`Grid\`, \`Layers\`, \`Point2D\`, \`Trail\`, \`ImageUpload\`
+  - UI: \`Slider\`, \`Scrubber\`, \`Checkbox\`, \`Button\`, \`Text\`, \`TextEditor\`, \`Code\`, \`CodeEditor\`, \`CodePrint\`, \`Print\`, \`PrettyPrint\`, \`Grid\`, \`Layers\`, \`Center\`, \`Point2D\`, \`Trail\`, \`PointPlot\`, \`ImageUpload\`
   - live inputs: \`Camera\`, \`Microphone\`, \`MicrophoneSpectrum\`, \`Time\`, \`MousePosition\`
   - optimizers: \`sgd\` (optional momentum), \`adam\`, \`adamw\`, \`adagrad\`, \`rmsprop\`, \`lion\`, \`muon\` and more – each built on \`optimizer(init, rule)\`
   - metadata: \`doc(fn, signature, description, example)\` attaches the card hover shows
@@ -118,7 +117,6 @@ Button("Reset", { x(0) }),
 - Live evaluation with error reporting
 - Automatic visualization of values (tensors, lists, functions)
 - GPU-accelerated tensor operations (Fluent's own engine on WebGPU, with a CPU fallback)
-- LLM-backed code generation (BYO Anthropic API key)
 - Command palette (Ctrl+P or Ctrl+Shift+P)
 - Auto-completion (Ctrl+Space)
 - Shareable URL links (Ctrl+S)

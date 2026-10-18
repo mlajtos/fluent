@@ -249,9 +249,9 @@ const docOf = (value: unknown): Doc | undefined => {
   return meta.doc ? { signature: meta.signature, doc: meta.doc, example: meta.example } : undefined
 }
 
-// Fluent lambdas carry their source; a built-in's JS internals help nobody
+// a function shows the expression that made it; a built-in's JS internals help nobody
 const describeFunction = (fn: Function): Desc =>
-  ({ k: "function", name: fn.name || "function", source: Object.hasOwn(fn, "toString") ? fn.toString() : undefined, doc: docOf(fn) })
+  ({ k: "function", name: fn.name || "function", source: getOrigin(fn)?.source, doc: docOf(fn) })
 
 const labelOf = (node: SyntaxTreeNode): string => {
   switch (node.type) {

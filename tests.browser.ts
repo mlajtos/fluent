@@ -152,7 +152,7 @@ test("controls are named and reachable from the keyboard", async ({ page }) => {
 
 test("a typo'd axis renders an Error, not a silently wrong number", async ({ page }) => {
   await open(page, "sum([[1, 2], [3, 4]], axs)")
-  await expect(panel(page)).toContainText("expected a tensor, got unbound symbol 'axs'")
+  await expect(panel(page)).toContainText("unknown name: axs")
 })
 
 test("unparseable code inside backticks shows the parse error, panel stays alive", async ({ page }) => {
@@ -390,7 +390,7 @@ test("PointPlot draws an x/y plot (custom x axis)", async ({ page }) => {
 test("PointPlot surfaces an error argument, not a blank chart", async ({ page }) => {
   // `::` was removed; an unbound operator must show the error, not draw empty
   await open(page, "PointPlot(1 ..< 10, 1::10)")
-  await expect(panel(page)).toContainText(/not a function/i)
+  await expect(panel(page)).toContainText("unknown name: ::")
 })
 
 test("Layers: a lower Point2D is draggable, not just the top one", async ({ page }) => {
@@ -526,11 +526,11 @@ test("the Tour opens, checks a challenge, and rejects a cheat", async ({ page })
 // A learner doing the whole Tour, room by room: solve every challenge, drive
 // every control, and only ever advance with the header button. The per-room
 // tests above pin one mechanism each; this one is the only thing that runs
-// rooms 2-15 at all, and it is what catches a language change quietly
+// rooms 2-16 at all, and it is what catches a language change quietly
 // breaking a room (a hyphenated binding froze navigation on room 1 with no
 // console error, and 211/211 unit tests stayed green).
 test("a learner walks the whole Tour, solving every room", async ({ page }) => {
-  test.setTimeout(240_000)   // 15 rooms, two of them wall-clock training loops
+  test.setTimeout(240_000)   // 16 rooms, two of them wall-clock training loops
 
   const next = async () => {
     await page.keyboard.press("Escape")   // a lingering suggest widget eats the click
@@ -604,19 +604,27 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
   await solved("You changed a running program mid-flight")
   await next()
 
-  // 10 · grad reads a function
+  // 10 · draw it – one number turns the dot into a ring
+  await room("Draw it")
+  const ring = (body: string) => `dot: dots([[80, 60]]),\nring: { p | ${body} },\ncanvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)`
+  await rejected("a ring: 40 away", ring("0"), "You didn’t draw a circle")
+  await typeInCell(page, "ring: { p | 0 }", ring("abs(dot(p) - 40)"))
+  await solved("You didn’t draw a circle")
+  await next()
+
+  // 11 · grad reads a function
   await room("The slope machine")
   await rejected("the slope of x·x·x, at 2", "f: { x | x^2 }, df: grad(f), 12", "You differentiated a program")
   await typeInCell(page, "df: grad(f), 12", "f: { x | x^3 }, df: grad(f), df(2)")
   await solved("You differentiated a program by editing a program")
   await next()
 
-  // 11 · the slope, drawn – no challenge, both curves must plot
+  // 12 · the slope, drawn – no challenge, both curves must plot
   await room("The slope, drawn")
   await expect(panel(page).locator("canvas").first()).toBeVisible()
   await next()
 
-  // 12 · find the bottom by feel – scrub the guess from 10 to 42.
+  // 13 · find the bottom by feel – scrub the guess from 10 to 42.
   // Scrubber maps 0.1 of a unit per pixel of pointer travel, and it listens on
   // window, so the drag has to be real pointer events rather than a fill().
   await room("Find the bottom by feel")
@@ -638,7 +646,7 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
   await solved("Score 0, slope 0, guess 42")
   await next()
 
-  // 13 · walk downhill – each press is one gradient step, g ← 0.4g + 25.2,
+  // 14 · walk downhill – each press is one gradient step, g ← 0.4g + 25.2,
   // so it lands inside 1 of 42 in seven presses; press a few extra and stop
   // as soon as the light turns.
   await room("Walk downhill")
@@ -649,12 +657,12 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
   await expect(arrived).toBeVisible()
   await next()
 
-  // 14 · let it run – nothing to press, sgd finds √42 on its own
+  // 15 · let it run – nothing to press, iter presses the step and finds √42
   await room("Let it run")
   await expect(page.getByText("That is the square root of 42")).toBeVisible({ timeout: 120_000 })
   await next()
 
-  // 15 · the door out – the final header swaps next ▸ for start over ↺
+  // 16 · the door out – the final header swaps next ▸ for start over ↺
   await room("It keeps going")
   await expect(page.getByRole("button", { name: "start over ↺" })).toBeVisible()
   await expect(page.getByRole("button", { name: "next ▸" })).toHaveCount(0)

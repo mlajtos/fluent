@@ -1,13 +1,13 @@
 // The Tour: a challenge-checked walkthrough of the language, written IN the
 // language. Evaluating the symbol `Tour` in the playground yields this whole
 // interactive value – prose, live editable cells, checked challenges,
-// navigation. client.tsx binds it as a lazy environment entry, so each
+// navigation. host.ts binds it as a lazy environment entry, so each
 // evaluation builds a fresh instance and an unused Tour costs nothing.
 //
-// The arc: rooms 1–9 are the everyday language (reading order → lists →
-// names → functions → reactivity), rooms 10–14 are one continuous trick
-// (slope → feel the bottom → walk there by hand → let it run), room 15 is
-// the door to the gallery.
+// The arc: rooms 1–10 are the everyday language (reading order → lists →
+// names → functions → reactivity → a drawing), rooms 11–15 are one
+// continuous trick (slope → feel the bottom → walk there by hand → let it
+// run), room 16 is the door to the gallery.
 //
 // Authoring rules the grammar imposes on this string:
 // – A backslash escapes the next character in a Fluent string, so a literal
@@ -26,7 +26,7 @@
 //   challenge about how code is written counts characters (StringToCodes):
 //   keep those characters out of the seed's comments, or the seed passes.
 export const TOUR_SOURCE = `
-; The Fluent tour – fifteen rooms, from 1 + 2 to a value that learns.
+; The Fluent tour – sixteen rooms, from 1 + 2 to a value that learns.
 
 step: $(0),
 
@@ -54,11 +54,11 @@ demo: { src |
 },
 
 ; The header doubles as navigation – every room's first row is
-; [◂ back]  Fluent Tour · n / 15  [next ▸], and the last room's starts over
+; [◂ back]  Fluent Tour · n / 16  [next ▸], and the last room's starts over
 nav: { label, onward |
   Grid([1, 2, 1])(Button("◂ back", { step(0 ⌈ (step() - 1)) }), Center(Text(label)), onward)
 },
-head: { label | nav(label, Button("next ▸", { step((step() + 1) ⌊ 14) })) },
+head: { label | nav(label, Button("next ▸", { step((step() + 1) ⌊ 15) })) },
 
 ; the cell's code run again, with one more line after it or before it: both
 ; run in this lambda's scope, so each sees the other's names
@@ -70,7 +70,7 @@ prepended: { first, s | CodeEvaluate(first), CodeEvaluate(s) },
 
 ; 1 · reading order
 s1: Grid(1)(
-  head("**Fluent Tour** · 1 / 15"),
+  head("**Fluent Tour** · 1 / 16"),
   Text("### Reading order is meaning
 
 **Fluent runs left to right, the way you read.** No precedence tables, nothing to memorize: in \`1 + 2 * 3\` the \`1\` and \`2\` meet first, so it says 9. Want a piece to go first? **Glue it** — hug the parts together with no space around the operator. (Parens work too. But where is the fun in that.)
@@ -90,7 +90,7 @@ s1: Grid(1)(
 
 ; 2 · see the shape
 s2: Grid(1)(
-  head("**Fluent Tour** · 2 / 15"),
+  head("**Fluent Tour** · 2 / 16"),
   Text("### When in doubt, draw it
 
 **Not sure how a line will group?** Put it in backticks and Fluent stops running it and *draws* it instead. The tree you see is not a diagram **of** the program — it **is** the program. Hover the nodes — the source they came from lights up in the box. Re-space the code. Watch the shape follow your spaces."),
@@ -100,10 +100,10 @@ s2: Grid(1)(
 
 ; 3 · lists act like one number
 s3: Grid(1)(
-  head("**Fluent Tour** · 3 / 15"),
+  head("**Fluent Tour** · 3 / 16"),
   Text("### A list acts like one number
 
-**One number at a time is no way to live.** Square brackets make a list — and a list does math as one thing, no loops: \`[1, 2, 3] + 10\` lands the 10 on *each*. To reach inside, use a spaced \`_\` — item 0 comes first."),
+**One number at a time is no way to live.** Square brackets make a list of numbers — and a list does math as one thing, no loops: \`[1, 2, 3] + 10\` lands the 10 on *each*. To reach inside, use a spaced \`_\` — item 0 comes first."),
   demo("[1, 2, 3] + 10 ; the 10 lands on each"),
   challenge("[10, 20, 30] _ 0 ; ← fish out the 30",
     { r, s | c: StringToCodes(s), min(r = 30) ∧ (Σ(c = 95) ≥ 1) },
@@ -114,7 +114,7 @@ s3: Grid(1)(
 
 ; 4 · runs of numbers
 s4: Grid(1)(
-  head("**Fluent Tour** · 4 / 15"),
+  head("**Fluent Tour** · 4 / 16"),
   Text("### Runs of numbers
 
 **Writing long lists by hand is beneath you: \`1 ... 5\` counts from 1 through 5.** A run is a list like any other, so everything from the last room applies to it. Mind the spaces around \`...\` — you know why by now."),
@@ -127,7 +127,7 @@ s4: Grid(1)(
 
 ; 5 · naming things
 s5: Grid(1)(
-  head("**Fluent Tour** · 5 / 15"),
+  head("**Fluent Tour** · 5 / 16"),
   Text("### Name anything with \`:\`
 
 **Anything worth keeping deserves a name.** A \`:\` gives one to anything, and then you spend the name instead of retyping the value. Words work, Greek works — type \`theta\`, press **Tab**, get \`θ\`. Even \`🍌\` works."),
@@ -141,10 +141,10 @@ s5: Grid(1)(
 
 ; 6 · three names for everything
 s6: Grid(1)(
-  head("**Fluent Tour** · 6 / 15"),
+  head("**Fluent Tour** · 6 / 16"),
   Text("### Every built-in has three names
 
-**Your names sit next to the ones the language shipped with — and each built-in has three.** Long to discover, word for habit, glyph for speed: \`TensorSum\` is \`sum\` is \`Σ\`, one function in three sizes. **Hover any of them below** — the doc card pops up right here. (Type \`sigma\` + **Tab** for \`Σ\`.)"),
+**Your names sit next to the ones the language shipped with — and each built-in has three.** Long to discover, word for habit, glyph for speed: \`TensorSum\` is \`sum\` is \`Σ\`, one function in three sizes. **Hover any of them below** — the doc card pops up right here. (Type \`sigma\` + **Tab** for \`Σ\`. The round brackets just hold the three side by side, so one box shows them all — they do no math.)"),
   demo("(
   TensorSum([1, 2, 3]), ; a long name to discover…
   sum([1, 2, 3]), ; …a word for habit…
@@ -159,7 +159,7 @@ s6: Grid(1)(
 
 ; 7 · operators are functions
 s7: Grid(1)(
-  head("**Fluent Tour** · 7 / 15"),
+  head("**Fluent Tour** · 7 / 16"),
   Text("### Operators aren’t a special club
 
 **A secret about the names you’ve been using: \`+\` is one of them.** An operator is just a function with a short name — call it like one, or put any function’s name in the middle of two values. And that works for *your* names too."),
@@ -183,7 +183,7 @@ plus(40, 2) ; ← now put plus in the middle",
 
 ; 8 · make your own function
 s8: Grid(1)(
-  head("**Fluent Tour** · 8 / 15"),
+  head("**Fluent Tour** · 8 / 16"),
   Text("### Make your own function
 
 **Renaming built-ins is nice. Minting your own is better.** Braces make a function: \`{ x | x^2 }\` reads *take an \`x\`, hand back \`x^2\`*. Name it, call it — and lists flow through it the way they flow through \`+\`: one call, every item."),
@@ -200,7 +200,7 @@ cube(3)",
 ; 9 · make it move
 x: $(0.2),
 s9: Grid(1)(
-  head("**Fluent Tour** · 9 / 15"),
+  head("**Fluent Tour** · 9 / 16"),
   Text("### Make it move
 
 **Everything so far ran once and sat still. Wrap a value in \`$( )\` and it comes alive.** Here \`x: $(0.2)\` made \`x\` a live value. The box holds one *writer* — the slider — and two *readers*: a percentage, and a whole wave. Drag — every reader follows, nobody re-runs anything."),
@@ -215,9 +215,29 @@ s9: Grid(1)(
   )
 ),
 
-; 10 · the slope machine
+; 10 · draw it
 s10: Grid(1)(
-  head("**Fluent Tour** · 10 / 15"),
+  head("**Fluent Tour** · 10 / 16"),
+  Text("### Draw it
+
+**A shape is a distance.** \`dot: dots([[80, 60]])\` is a function: hand it a spot \`p\` — an \`[x, y]\` — and it tells you how far \`p\` is from the point at 80, 60. \`draw(shape, color, width)\` paints every pixel whose distance comes out near zero, so a point drawn 4 wide is a small disk. \`ring\` below asks how far each spot’s distance is from 0 — still just the dot. Ask about 40 instead, and the pixels that answer zero are the ones 40 away."),
+  challenge("dot: dots([[80, 60]]),
+ring: { p | abs(dot(p) - 0) }, ; ← a ring: 40 away
+canvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)",
+    { r, s |
+      min(shape(r) = [120, 160, 3])
+        ∧ (appended(s, "ring([120, 60])") = 0)
+        ∧ (appended(s, "ring([80, 20])") = 0)
+        ∧ (appended(s, "ring([80, 60])") = 40)
+    },
+    Text("✅ **A ring.** You didn’t draw a circle — you said what one *is*: every spot 40 from the middle. The computer found the spots. That is how every picture in the gallery is made."),
+    Text("🎯 *Make \`ring\` a ring of radius **40** — one number to change.*")
+  )
+),
+
+; 11 · the slope machine
+s11: Grid(1)(
+  head("**Fluent Tour** · 11 / 16"),
   Text("### The slope machine
 
 *That was the everyday language — all of it. The rest of the tour is a single trick: teaching a value to find its own way to a goal. The trick starts with a slope.*
@@ -236,9 +256,9 @@ df(3) ; ← now: the slope of x·x·x, at 2",
   )
 ),
 
-; 11 · the slope, drawn
-s11: Grid(1)(
-  head("**Fluent Tour** · 11 / 15"),
+; 12 · the slope, drawn
+s12: Grid(1)(
+  head("**Fluent Tour** · 12 / 16"),
   Text("### The slope, drawn
 
 **Slopes come whole, not point by point.** Below: a curve, and its slope, made by handing \`grad(f)\` the same run of numbers. Where the curve falls, the slope is below zero; where the curve bottoms out, the slope **crosses zero**. Keep that crossing in mind — the next three rooms stand on it."),
@@ -251,12 +271,12 @@ xs: -10 ... 10,
   Text("✅ **Nothing to solve.** A parabola’s slope is a straight line — you may have been told that once. Now you can just look at it.")
 ),
 
-; 12 · find the bottom by feel
+; 13 · find the bottom by feel
 far: { g | (g - 42)^2 },
 dfar: grad(far),
 dial: $(10),
-s12: Grid(1)(
-  head("**Fluent Tour** · 12 / 15"),
+s13: Grid(1)(
+  head("**Fluent Tour** · 13 / 16"),
   Text("### Find the bottom by feel
 
 **Put the slope to work.** \`far\` scores a guess by its distance from 42, and \`dfar: grad(far)\` is its slope function — named just like \`df\` last room. Below: the score, the slope, and the guess itself, **live and draggable**. Slide it. Negative slope: too low. Positive: too high. **Zero: you have arrived.**"),
@@ -271,15 +291,15 @@ s12: Grid(1)(
   )
 ),
 
-; 13 · walk downhill
+; 14 · walk downhill
 guess: $(10),
 hist: $([10]),
 ; the button labels are named out here so the cell reads as one short
 ; expression – the names are the labels
 stepDownhill: "step downhill",
 backTo10: "back to 10",
-s13: Grid(1)(
-  head("**Fluent Tour** · 13 / 15"),
+s14: Grid(1)(
+  head("**Fluent Tour** · 14 / 16"),
   Text("### Walk downhill
 
 **You found the bottom by feel. Now walk there deliberately.** Each press of the first button is one honest step: read the slope where you stand, scale it down, move the *other* way, remember the footprint. Watch the path: long strides far out, baby steps near the bottom — the slope itself shrinks as you close in."),
@@ -299,38 +319,42 @@ s13: Grid(1)(
   )
 ),
 
-; 14 · let it run
-answer: ~0.1,
-answerLive: watch(answer),
+; 15 · let it run
+answer: $(0.1),
 trail: $([0.1]),
 ; a line plot, not the annotated bar chart – the trail grows by one point
 ; per frame, and re-annotating hundreds of bars each frame would throttle
-; the very training loop the room wants you to watch
+; the very loop the room wants you to watch
 trailPlot: PointPlot(trail),
-s14: Grid(1)(
-  head("**Fluent Tour** · 14 / 15"),
+s15: Grid(1)(
+  head("**Fluent Tour** · 15 / 16"),
   Text("### Let it run
 
-**Now hand the button to the machine.** The question: *what number, squared, is 42?* The \`~\` marks \`answer\` as **trainable** — it starts at 0.1, knowing nothing. \`score\` is written exactly like \`far\` was, \`sgd\` presses the step button for you, and \`iter\` presses *that* two hundred times, between frames. Watch the line climb."),
-  demo("score: { (answer*answer - 42)^2 }, ; how far answer·answer misses 42
-opt: sgd(0.0005),
-{ opt(score), trail(trail() concat [answer]) } iter 200,
-watch(answer)"),
+**Now hand the button to the machine.** The question: *what number, squared, is 42?* \`score\` is written exactly like \`far\` was — how far \`a·a\` misses 42 — and \`dscore\` is its slope. \`step\` is one press of the last room’s button: read the slope, step against it. The one new word is \`iter\`: it presses \`step\` two hundred times, between frames. Watch the line climb."),
+  demo("score: { a | (a*a - 42)^2 }, ; how far a·a misses 42
+dscore: grad(score),
+step: {
+  here: answer(),
+  answer(here - dscore(here)*0.0005),
+  trail(trail() concat [answer()])
+},
+step iter 200,
+answer"),
   trailPlot,
-  status({ abs(answerLive()*answerLive() - 42) < 0.1 },
-    Text("✅ **6.4807….** That is the square root of 42, and nobody typed it — \`answer\` walked there, pressed downhill by its own slope, two hundred times. This is machine learning entire; the rest is scale."),
+  status({ abs(answer()*answer() - 42) < 0.1 },
+    Text("✅ **6.4807….** That is the square root of 42, and nobody typed it — \`answer\` walked there, pressed downhill by its own slope, two hundred times. This is machine learning entire; the rest is scale. Libraries bottle the step and call it an *optimizer* — \`sgd\`, \`adam\` — and it is the same walk."),
     Text("🎯 *Nothing to press — watch until \`answer · answer\` sits within 0.1 of 42. (Impatient? Raise the 0.0005.)*")
   )
 ),
 
-; 15 · it keeps going
-s15: Grid(1)(
-  nav("**Fluent Tour** · 15 / 15", Button("start over ↺", { step(0) })),
+; 16 · it keeps going
+s16: Grid(1)(
+  nav("**Fluent Tour** · 16 / 16", Button("start over ↺", { step(0) })),
   Text("### It keeps going
 
-**That was the tour** — numbers, lists, names, functions; then a slope, a bottom found by hand, a walk, and a value that found √42 on its own.
+**That was the tour** — numbers, lists, names, functions, a drawing; then a slope, a bottom found by hand, a walk, and a value that found √42 on its own.
 
-**Now open the gallery: press Ctrl+O** — or walk straight in: [a Mandelbrot you can sharpen](?example=mandelbrot), [Conway’s Game of Life](?example=game-of-life), [your webcam, edge-detected live](?example=camera-edges), [two optimizers racing down one loss surface](?example=optimizer-race), or [the Name Dreamer](?example=dreamer) — a small transformer, trained right in this tab, dreaming up names that don’t exist. Each demo is a page or two of the language you just learned, in an editor like the boxes here.
+**Now open the gallery: press Ctrl+O** — or walk straight in: [a Mandelbrot you can sharpen](?example=mandelbrot), [a curve drawn as values](?example=drawing), [Conway’s Game of Life](?example=game-of-life), [your webcam, edge-detected live](?example=camera-edges), [two optimizers racing down one loss surface](?example=optimizer-race), or [the Name Dreamer](?example=dreamer) — a small transformer, trained right in this tab, dreaming up names that don’t exist. Each demo is a page or two of the language you just learned, in an editor like the boxes here.
 
 Want the reference instead? Evaluate \`Documentation\`. And the box below is yours:"),
   demo("1 + 1 ; ← your turn"),
@@ -338,6 +362,6 @@ Want the reference instead? Evaluate \`Documentation\`. And the box below is you
 ),
 
 ; the tour
-rooms: (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15),
+rooms: (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15, s16),
 $({ rooms _ step() })
 `

@@ -5,7 +5,7 @@
 
 import { grammar, type ActionDict } from "ohm-js"
 import { toAST as ohmToAST } from "ohm-js/extras"
-import { signal, Signal, computed, effect, untracked } from "@preact/signals-core"
+import { signal, Signal, Computed, computed, effect, untracked } from "@preact/signals-core"
 import dedent from "ts-dedent"
 import * as engine from "./engine/tensor.ts"
 import PRELUDE from "./prelude.fl" with { type: "text" }
@@ -271,11 +271,38 @@ const setMeta = (fn: Function, updates: Partial<FunctionMeta>): void => { (fn as
 // has one too – a composed closure prints the source that made it.
 const originMap = new WeakMap<object, Origin>()
 const isObject = (v: unknown): v is object => v !== null && (typeof v === "object" || typeof v === "function")
-const setOrigin = (value: unknown, origin: Origin): void => { if (isObject(value)) { originMap.set(value, origin) } }
+const setOrigin = (value: unknown, origin: Origin | undefined): void => { if (origin && isObject(value)) { originMap.set(value, origin) } }
 const getOrigin = (value: unknown): Origin | undefined => isObject(value) ? originMap.get(value) : undefined
 const located = <T,>(value: T, node: { origin: Origin }): T => { setOrigin(value, node.origin); return value }
 
-const asError = (e: unknown): Error => e instanceof Error ? e : new Error(String(e))
+// A throw as an Error value. An engine error names the site of the op it is about – an op
+// built long before a read forced it – and that is where it is reported.
+const asError = (e: unknown): Error => {
+  const error = e instanceof Error ? e : new Error(String(e))
+  if (!getOrigin(error)) { setOrigin(error, (error as { site?: Origin }).site) }
+  return error
+}
+
+// MARK: Naming
+// A value is named by the reader's expression that made it: what an Error reports, what a
+// function prints, which line an engine op came from. A function made during a call takes
+// that call's origin, whoever wrote the builder, so it prints as the call. An Error made
+// in another document – a prelude body, an evaluated string – takes the origin of the
+// call that brought it back; inside the prelude, which no reader opens, it keeps its own.
+// A NoMatch is a decline, not a failure: it keeps its own origin. Any other value keeps
+// the origin it has as it passes through a call, or takes the call's when it has none –
+// but a function the call didn't make, a built-in, takes none: it prints by its name.
+let born = 0
+const birth = new WeakMap<Function, number>()
+const made = <F extends Function>(f: F): F => { birth.set(f, ++born); return f }
+const isFailure = (v: unknown): v is Error => v instanceof Error && !(v instanceof NoMatch)
+const named = (value: Value, node: { origin: Origin }, before: number): Value => {
+  if (isFn(value)) { return (birth.get(value) ?? 0) > before ? located(value, node) : value }
+  const origin = getOrigin(value)
+  if (!origin) { return located(value, node) }
+  const crossed = isFailure(value) && origin.document !== node.origin.document && node.origin.document !== PRELUDE
+  return crossed ? located(value, node) : value
+}
 
 function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value {
   switch (node.type) {
@@ -309,8 +336,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
         params.forEach((p, i) => { local[p] = args[i] ?? null })
         return evaluateSyntaxTreeNode(node.content.expr, local)
       }
-      fn.toString = () => node.origin.source
-      return located(fn, node)
+      return located(made(fn), node)
     }
     case "Operation": {
       const fn = evaluateSyntaxTreeNode(node.content.operator, env)
@@ -321,9 +347,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
       const quoted = typeof fn === "function" ? getMeta(fn).quotedArgs : undefined
       const args = node.content.args.content.value.map((arg, i) =>
         quoted?.includes(i) && arg.type === "Symbol" ? Symbol.for(arg.content.value) : evaluateSyntaxTreeNode(arg, argsEnv))
-      const value = safeApply(fn, args, env)
-      // a value that has an origin keeps it: an element ListGet returns points at itself
-      return getOrigin(value) ? value : located(value, node)
+      return safeApply(fn, args, env, node)
     }
     case "Code": {
       // the printer is IDE code (the AST viz): a bug there is an Error value, not an abort
@@ -367,20 +391,23 @@ let differentiating = false
 const isTensorish = (v: Value): boolean => isTensor(v) || v instanceof FluentVariable
 const isText = (v: Value): v is string | String => typeof v === "string" || v instanceof String
 
-// An op's operand: a variable's value or a tensor. Anything else fails here, with the
-// name or the fix in the message.
+// An op's operand: a variable's value or a tensor. Anything else fails here, in the
+// tour's words – numbers, a list of numbers [ … ], a ( … ) list – with the fix in the
+// message. An Error is a failure upstream: it passes through as it is.
 const operand = (v: any): any => {
   if (v instanceof FluentVariable) { return v.current }
-  if (v == null) { throw new Error("expected a tensor, got ◌") }
-  if (v instanceof Signal) { throw new Error("expected a tensor, got a signal – read its value with s()") }
+  if (v == null) { throw new Error("expected numbers, got ◌ – is an argument missing?") }
+  if (v instanceof Signal) { throw new Error("expected numbers, got a live value – read it with s()") }
   // an unbound name reached a numeric op (1 * x); as a value elsewhere it flows through
-  if (typeof v === "symbol") { throw new Error(`unknown name: ${Symbol.keyFor(v) ?? String(v)}`) }
+  if (typeof v === "symbol") { throw new Error(unknownName(v)) }
   // a list is a structure, not a bag of numbers – never coerced into a tensor
-  if (Array.isArray(v)) { throw new Error(`expected a tensor, got a list of ${v.length} – write it as a tensor [ … ]`) }
-  // the Error itself becomes the cause (safeApply), so the chain still says why
-  if (v instanceof Error) { throw new Error("expected a tensor, got an Error") }
+  if (Array.isArray(v)) { throw new Error("( … ) holds values side by side but does no math – write the numbers in [ … ]") }
+  // a decline that reaches an op is a failure, said in the decline's words
+  if (v instanceof NoMatch) { const e = new Error(v.message, { cause: v.cause }); setOrigin(e, getOrigin(v)); throw e }
+  if (v instanceof Error) { throw v }
   return v
 }
+const unknownName = (s: symbol): string => `unknown name: ${Symbol.keyFor(s) ?? s.description}`
 
 const shapeOf = (v: Value): number[] => (v instanceof FluentVariable ? v.current : (v as engine.Tensor)).shape
 
@@ -403,7 +430,9 @@ class FluentVariable {
   get size() { return this.#value.size }
   assign(next: engine.Tensor): void {
     this.#value = engine.settle(next)
-    this.version.value++
+    // a write, not a read: a program that assigns at its top level would else read the
+    // version it bumps, and run again
+    this.version.value = this.version.peek() + 1
   }
   toString() { return this.#value.toString() }
 }
@@ -465,38 +494,55 @@ const unwrapSignals = (a: any): any => a instanceof Signal ? unwrapSignals(a.val
 // The one way a function is applied. A signal is called to read it, s(), or to write it,
 // s(v). An application whose arguments hold signals is a computed that recomputes with
 // their current values, unless the function takes signals as they are (noAutoLift); the
-// engine fuses whatever a chain of computeds builds, at the read. A throw is an Error
-// value, caused by an Error among the arguments when there is one; inside a computed it
-// also names the application, since there is no callsite to point at.
+// engine fuses whatever a chain of computeds builds, at the read. Called for a node, the
+// result is named by it, and the engine ops it builds carry its site – a reader's call
+// only: inside the prelude the reader's call that reached it stays the site.
 // KNOWN WART: arity is not checked, so +(1, 2, 4) is 3 – see arity-plan.md.
-function safeApply(fn: Value, args: Value[], env: CurrentScope): Value {
+function safeApply(fn: Value, args: Value[], env: CurrentScope, node?: { origin: Origin }): Value {
+  return isFn(fn) && !getMeta(fn).noAutoLift && args.some(containsSignal)
+    ? computed(() => appliedAt(fn, args.map(unwrapSignals), env, node))
+    : appliedAt(fn, args, env, node)
+}
+const appliedAt = (fn: Value, args: Value[], env: CurrentScope, node?: { origin: Origin }): Value => {
+  if (!node) { return outcome(fn, args, env) }
+  const before = born
+  if (node.origin.document === PRELUDE) { return named(outcome(fn, args, env), node, before) }
+  const outer = engine.at.site
+  engine.at.site = node.origin
+  try { return named(outcome(fn, args, env), node, before) } finally { engine.at.site = outer }
+}
+
+// fn applied to args, a throw caught as an Error value. An Error among the arguments is a
+// failure upstream: a call it makes fail fails with that Error, unchanged – the first
+// failure is the one to fix. A state write while differentiating is control flow, not a
+// value: as an Error, a choice would read it as a candidate declining.
+const outcome = (fn: Value, args: Value[], env: CurrentScope): Value => {
+  let value: Value
   try {
-    if (fn instanceof Signal) {
-      if (args.length === 0) { return fn.value }
-      if (args.length === 1) { return SignalUpdate(fn, args[0]!) }
-      throw new Error("What are you trying to do with this poor signal?")
-    }
-    if (typeof fn !== "function") { throw new Error(`'${String(fn)}' is not a function.`) }
-    if (!getMeta(fn).noAutoLift && args.some(containsSignal)) {
-      return computed(() => {
-        const unwrapped = args.map(unwrapSignals)
-        try {
-          return fn.apply(env, unwrapped)
-        } catch (e) {
-          if (e instanceof StateWrite) { throw e }
-          const label = fn.name || getOrigin(fn)?.source || "a function"
-          return new Error(`applying ${label} to (${unwrapped.map(describeArg).join(", ")})`, { cause: asError(e) })
-        }
-      })
-    }
-    return fn.apply(env, args)
+    value = call(fn, args, env)
   } catch (e) {
-    // a state write while differentiating is control flow, not a value: as an Error,
-    // a choice would read it as a candidate declining
     if (e instanceof StateWrite) { throw e }
-    const cause = args.find((a) => a instanceof Error)
-    return e instanceof Error && cause ? new Error(e.message, { cause }) : asError(e)
+    value = asError(e)
   }
+  if (!(value instanceof Error)) { return value }
+  const poison = args.find(isFailure)
+  return poison && !causedBy(value, poison) ? poison : value
+}
+const causedBy = (e: unknown, cause: Error): boolean => {
+  for (; e instanceof Error; e = e.cause) { if (e === cause) { return true } }
+  return false
+}
+const call = (fn: Value, args: Value[], env: CurrentScope): Value => {
+  if (fn instanceof Signal) {
+    if (args.length === 0) { return fn.value }
+    if (args.length === 1) { return SignalUpdate(fn, args[0]!) }
+    throw new Error(`a live value is read with s() and written with s(v) – it takes no more than one argument, got ${args.length}`)
+  }
+  // calling a failure is that failure
+  if (fn instanceof Error) { return fn }
+  if (typeof fn === "symbol") { throw new Error(unknownName(fn)) }
+  if (!isFn(fn)) { throw new Error(`${describeArg(fn)} is not a function`) }
+  return fn.apply(env, args)
 }
 
 // MARK: Choosing
@@ -515,9 +561,6 @@ class NoMatch extends Error {
     this.name = "NoMatch"
   }
 }
-
-// The NoMatch a hand-written candidate returns to decline.
-const NoMatchValue = new NoMatch("no match")
 
 // The first answer of the candidates, in order. A candidate that isn't a function is its
 // own result, so an Error among them (a guard whose condition broke) surfaces and a
@@ -544,7 +587,7 @@ const FunctionCascade = (candidates: Value) => {
   if (!Array.isArray(candidates)) {
     return new Error(`\`cascade\`: expected a list of candidates, got ${describeArg(candidates)} – write cascade((f, g, …))`)
   }
-  return tacitToString(function (this: CurrentScope, ...args: Value[]) {
+  return made(function (this: CurrentScope, ...args: Value[]) {
     return chooseFirst(candidates, args, this,
       () => `no overload matched (${args.length === 0 ? "no arguments" : args.map(describeArg).join(", ")})`)
   })
@@ -565,7 +608,7 @@ const nativeReducer = new WeakMap<Function, (x: Value, axis?: Value) => Value>()
 // retried as the unary one, so it is an Error, not a quiet abs(1).
 const FunctionArity = (candidates: Function[]) => {
   const [binary, unary] = candidates
-  const dispatch = tacitToString((a: Value, b: Value) => (b == null ? unary?.(a) : binary?.(a, b)))
+  const dispatch = made((a: Value, b: Value) => (b == null ? unary?.(a) : binary?.(a, b)))
   // its card is its candidates': `+` shows add and abs in one hover; a doc() on the
   // dispatcher afterwards still wins
   const [b, u] = [binary, unary].map((f): FunctionMeta => typeof f === "function" ? getMeta(f) : {}) as [FunctionMeta, FunctionMeta]
@@ -601,16 +644,15 @@ const CodeEvaluate = function (this: CurrentScope, program: Value) {
 // decides how inversion is done. A dyadic x (f ⍣ n) y iterates f(x, ·) from y, as in APL.
 const REPEAT_UNTIL_BUDGET = 10000
 const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert?: Value) {
-  if (!isFn(fn)) { return new Error("`(f ⍣ n)`: `f` must be a function") }
+  if (!isFn(fn)) { return new Error(`\`(f ⍣ n)\`: \`f\` must be a function, got ${describeArg(fn)}`) }
   const until = isFn(n) ? n : null
   let times = 0
   if (!until) {
-    if (!isTensor(n)) { return new Error("`(f ⍣ n)`: `n` must be a scalar count or a predicate { new, old | … }") }
+    if (!isTensor(n)) { return new Error("`(f ⍣ n)`: `n` must be a count or a predicate { new, old | … }") }
     const count = getAsSyncList(n)
     // a non-scalar or NaN count would skip the loop and give the identity
     if (typeof count !== "number" || !Number.isFinite(count)) {
-      return new Error("`(f ⍣ n)`: `n` must be a finite scalar, got " +
-        (Array.isArray(count) ? `a tensor of shape [${n.shape.join(" ")}]` : String(count)))
+      return new Error(`\`(f ⍣ n)\`: \`n\` must be one finite number, got ${Array.isArray(count) ? describeArg(n) : String(count)}`)
     }
     // a live slider drives counts through fractional values – round, like linspace
     times = Math.round(count)
@@ -619,7 +661,7 @@ const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert
     }
   }
   const scope = this
-  return function (...args: Value[]) {
+  return made(function (...args: Value[]) {
     const dyadic = args.length >= 2, left = args[0]
     const forward = (z: Value) => safeApply(fn, dyadic ? [left!, z] : [z], scope)
     let step: Function = forward
@@ -643,7 +685,7 @@ const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert
       try { if (isTruthy(verdict)) { break } } catch (e) { return asError(e) }
     }
     return value
-  }
+  })
 }
 
 // MARK: Memo
@@ -669,7 +711,7 @@ const memoKey = (v: Value): string | null => {
 const FunctionMemo = (f: Value) => {
   if (!isFn(f)) { return new Error("`memo(f)`: `f` must be a function") }
   const kept = new Map<string, Value>()
-  return tacitToString(function (this: CurrentScope, ...args: Value[]) {
+  return made(function (this: CurrentScope, ...args: Value[]) {
     const keys = args.map(memoKey)
     if (keys.some((k) => k === null)) { return safeApply(f, args, this) }
     const key = keys.join("|")
@@ -693,25 +735,18 @@ const isFn = (v: Value): v is Function => typeof v === "function"
 // bind: (1 ⊸ +) increments, (÷ ⟜ 2) halves.
 const constantly = (v: Value): Function => isFn(v) ? v : () => v
 
-// A composed closure prints as the source that built it ((= ⍥ abs), not JS
-// internals) – the Operation that created it stamps its origin after return.
-const tacitToString = (h: Function): Function => {
-  h.toString = () => getOrigin(h)?.source ?? "(tacit function)"
-  return h
-}
-
 // Q (Queer bird) – then: apply f, then g to the result. Reading order is evaluation
 // order – (f ∘ g)(…x) = g(f(…x)) – so this is APL's atop (B/B₁) with the tines swapped
 // to read left to right, like the . pipe.
 const FunctionThen = (f: Value, g: Value) => {
   if (!isFn(f) || !isFn(g)) { return new Error("`(f ∘ g)`: both operands must be functions") }
-  return tacitToString(function (this: CurrentScope, ...args: Value[]) { return safeApply(g, [safeApply(f, args, this)], this) })
+  return made(function (this: CurrentScope, ...args: Value[]) { return safeApply(g, [safeApply(f, args, this)], this) })
 }
 
 // C/W (Cardinal/Warbler) – commute: flip a binary's arguments; duplicate a unary's
 const FunctionCommute = (f: Value) => {
   if (!isFn(f)) { return new Error("`(⍨ f)`: the operand must be a function") }
-  return tacitToString(function (this: CurrentScope, a: Value, b: Value) { return safeApply(f, b == null ? [a, a] : [b, a], this) })
+  return made(function (this: CurrentScope, a: Value, b: Value) { return safeApply(f, b == null ? [a, a] : [b, a], this) })
 }
 
 // Ψ (Psi) – into: preprocess every argument with g, then combine with f. The
@@ -719,7 +754,7 @@ const FunctionCommute = (f: Value) => {
 // APL spells this f⍥g, but Fluent reads left to right.
 const FunctionInto = (g: Value, f: Value) => {
   if (!isFn(f) || !isFn(g)) { return new Error("`(g ⍥ f)`: both operands must be functions") }
-  return tacitToString(function (this: CurrentScope, ...args: Value[]) {
+  return made(function (this: CurrentScope, ...args: Value[]) {
     return safeApply(f, args.map((a) => safeApply(g, [a], this)), this)
   })
 }
@@ -730,7 +765,7 @@ const FunctionFork = (f: Value, g: Value, h: Value) => {
   if (!isFn(g)) { return new Error("`Φ(f, g, h)`: the middle tine `g` must be a function") }
   if (f == null || h == null) { return new Error("`Φ(f, g, h)`: takes three tines") }
   const [fc, hc] = [constantly(f), constantly(h)]
-  return tacitToString(function (this: CurrentScope, ...args: Value[]) {
+  return made(function (this: CurrentScope, ...args: Value[]) {
     return safeApply(g, [safeApply(fc, args, this), safeApply(hc, args, this)], this)
   })
 }
@@ -740,7 +775,7 @@ const FunctionFork = (f: Value, g: Value, h: Value) => {
 const FunctionBefore = (f: Value, g: Value) => {
   if (!isFn(g)) { return new Error("`(f ⊸ g)`: `g` must be a function") }
   const fc = constantly(f)
-  return tacitToString(function (this: CurrentScope, a: Value, b: Value) {
+  return made(function (this: CurrentScope, a: Value, b: Value) {
     return safeApply(g, [safeApply(fc, [a], this), b == null ? a : b], this)
   })
 }
@@ -750,7 +785,7 @@ const FunctionBefore = (f: Value, g: Value) => {
 const FunctionAfter = (f: Value, g: Value) => {
   if (!isFn(f)) { return new Error("`(f ⟜ g)`: `f` must be a function") }
   const gc = constantly(g)
-  return tacitToString(function (this: CurrentScope, a: Value, b: Value) {
+  return made(function (this: CurrentScope, a: Value, b: Value) {
     return safeApply(f, [a, safeApply(gc, [b == null ? a : b], this)], this)
   })
 }
@@ -785,7 +820,7 @@ const yieldToInput = typeof scheduler?.yield === "function" ? () => scheduler.yi
 const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Value) {
   const live = iterations instanceof Signal || iterations instanceof FluentVariable
   if (!isFn(fn) || !(iterations == null || isTensor(iterations) || live)) {
-    throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` must be a scalar Tensor")
+    throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` one number")
   }
   // The count is a BUDGET: f ⟳ n runs f n times in total. A live count is read fresh –
   // raise it and the loop runs on to the new total, lower it below what has run and it
@@ -796,7 +831,7 @@ const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Va
       : iterations instanceof FluentVariable ? (iterations.version.value, iterations.current) : iterations)
     // a non-scalar count is never reached – an infinite loop, not an error
     if (typeof n !== "number" || Number.isNaN(n)) {
-      throw new Error("`FunctionIterate(fn, iterations)`: `iterations` must be a scalar Tensor")
+      throw new Error("`FunctionIterate(fn, iterations)`: `iterations` must be one number")
     }
     return n
   }
@@ -864,6 +899,7 @@ const SignalComputed = computed
 const SignalRead = (s: Value) => s instanceof Signal ? s.value : new Error(`'SignalRead': expected a signal, got ${describeArg(s)}`)
 const SignalUpdate = (s: Value, v: Value): Value => {
   if (!(s instanceof Signal)) { return new Error(`'SignalUpdate': expected a signal, got ${describeArg(s)}`) }
+  if (s instanceof Computed) { return new Error("this live value is made from others – write the values it is made from") }
   if (differentiating) { throw new StateWrite("a signal write") }
   s.value = heldValue(v)
   return null
@@ -871,7 +907,7 @@ const SignalUpdate = (s: Value, v: Value): Value => {
 // effects belong to the evaluation that created them – a re-evaluation stops them, or
 // stale effects would keep firing into disposed variables
 const SignalEffect = ((fn: () => void) => {
-  const dispose = effect(fn)
+  const dispose = made(effect(fn))
   registerDisposable(dispose)
   return dispose
 }) as typeof effect
@@ -880,10 +916,12 @@ const SignalOnce = (s: Value) => s instanceof Signal ? s.peek() : s
 // $v: a signal holding v, or a computed signal of a thunk
 const Reactive = (a: Value) => isFn(a) ? SignalComputed(a as () => Value) : SignalCreate(a)
 
-// name: value binds in the scope it is called from; the name arrives quoted
+// name: value binds in the scope it is called from; the name arrives quoted. A binding is
+// the scope's own, even over a name the environment reads through a getter (Tour).
 const SymbolAssign = function (this: CurrentScope, name: Value, value: Value) {
-  if (typeof name !== "symbol") { return new Error(`'SymbolAssign': Left side must be a symbol, got: ${String(name)}`) }
-  this[Symbol.keyFor(name) ?? ""] = value
+  if (typeof name !== "symbol") { return new Error(`\`name: value\` binds a name, got ${describeArg(name)}`) }
+  const key = Symbol.keyFor(name) ?? name.description ?? ""
+  try { this[key] = value } catch { Object.defineProperty(this, key, { value, writable: true, enumerable: true, configurable: true }) }
   return value ?? null
 }
 setMeta(SymbolAssign, { quotedArgs: [0] })
@@ -898,18 +936,16 @@ const FunctionApply = function (this: CurrentScope, fn: Value, args: Value) {
 // itself, which every evaluation shares, stays as it is
 const FunctionNoAutoLift = (fn: Value) => {
   if (!isFn(fn)) { return new Error("`FunctionNoAutoLift(f)`: f must be a function") }
-  const wrapper = function (this: CurrentScope, ...args: Value[]) { return fn.apply(this, args) }
-  wrapper.toString = () => String(fn)
+  const wrapper = made(function (this: CurrentScope, ...args: Value[]) { return fn.apply(this, args) })
   setMeta(wrapper, { ...getMeta(fn), noAutoLift: true })
-  const origin = getOrigin(fn)
-  return origin ? located(wrapper, { origin }) : wrapper
+  return wrapper
 }
 
 // Fluent's truth, one rule for a number and a tensor: some element is nonzero and not
 // NaN. guard, when and the until-form of ⍣ all ask it, and read one number to answer.
 const isTruthy = (v: Value): boolean => {
   const t = operand(v)
-  if (!isTensor(t)) { throw new Error(`expected a tensor, got ${describeArg(v)}`) }
+  if (!isTensor(t)) { throw new Error(`expected numbers, got ${describeArg(v)}`) }
   const holds = (n: number) => n !== 0 && !Number.isNaN(n)
   return t.size === 1 ? holds(t.item()) : t.size > 0 && holds(engine.max(engine.truthy(t)).item())
 }
@@ -920,13 +956,13 @@ const isTruthy = (v: Value): boolean => {
 // a cascade surfaces it. A body that isn't a thunk is its own value.
 const FunctionGuard = function (this: CurrentScope, cond: Value, body: Value) {
   const holds = isTruthy(cond), scope = this
-  const candidate = function () {
+  const candidate = made(function () {
     if (holds) { return isFn(body) ? body.apply(scope) : body }
     // the guard's own call site, so hovering the decline finds it
-    const origin = getOrigin(candidate)
     const decline = new NoMatch("guard: the condition doesn't hold")
-    return origin ? located(decline, { origin }) : decline
-  }
+    setOrigin(decline, getOrigin(candidate))
+    return decline
+  })
   return candidate
 }
 
@@ -935,7 +971,7 @@ const FunctionGuard = function (this: CurrentScope, cond: Value, body: Value) {
 // through, so try(f) joins an overload set as f would.
 const FunctionTry = function (this: CurrentScope, body: Value) {
   const scope = this
-  return function (...args: Value[]) {
+  return made(function (...args: Value[]) {
     let result: Value
     try {
       result = isFn(body) ? body.apply(scope, args) : body
@@ -943,8 +979,8 @@ const FunctionTry = function (this: CurrentScope, body: Value) {
       if (e instanceof StateWrite) { throw e }
       result = asError(e)
     }
-    return result instanceof Error && !(result instanceof NoMatch) ? new NoMatch("try: it failed", { cause: result }) : result
-  }
+    return isFailure(result) ? new NoMatch("try: it failed", { cause: result }) : result
+  })
 }
 
 // when(cond, { … }) – a conditional effect: run the thunk while cond is truthy, yield ◌
@@ -1020,30 +1056,35 @@ const ListScan = function (this: CurrentScope, a: Value, fn: Value, init: Value)
 }
 
 // MARK: Tensors
-// What a value is, for a message
+// What a value is, for a message, in the tour's words: a number, a list of numbers
+// [ … ], a ( … ) list, a live value $( )
 const describeArg = (v: Value): string =>
-  typeof v === "symbol" ? `unbound symbol '${Symbol.keyFor(v) ?? String(v)}'`
+  typeof v === "symbol" ? `the unknown name ${Symbol.keyFor(v) ?? v.description}`
     : v == null ? "◌"
     : v instanceof Error ? "an Error"
-    : v instanceof Signal ? "a signal"
-    : Array.isArray(v) ? "a list"
+    : v instanceof Signal ? "a live value"
+    : Array.isArray(v) ? `a ( … ) list of ${v.length}`
     : isText(v) ? "a string"
     : isFn(v) ? "a function"
-    : isTensor(v) ? (v.shape.length === 0 ? "a number" : `a tensor [${v.shape.join(" ")}]`)
+    : isTensor(v) ? numbers(v.shape)
     : v instanceof FluentVariable ? "a trainable variable"
-    : `a ${typeof v}`
+    : "a value"
+const numbers = (shape: readonly number[]): string =>
+  shape.length === 0 ? "a number"
+    : shape.length === 1 ? `a list of ${shape[0]} ${shape[0] === 1 ? "number" : "numbers"}`
+    : `numbers of shape [${shape.join(" ")}]`
 
 // An axis, a size, an index or a count, read out of a tensor argument. Strict: an unknown
 // name or an Error here fails, rather than coerce to NaN and change what the op does.
 const requireData = (v: Value): number | unknown[] => {
-  const data = getAsSyncList(v)
-  if (typeof data !== "number" && !Array.isArray(data)) { throw new Error(`expected a tensor, got ${describeArg(v)}`) }
+  const data = getAsSyncList(operand(v))
+  if (typeof data !== "number" && !Array.isArray(data)) { throw new Error(`expected numbers, got ${describeArg(v)}`) }
   return data
 }
-// a scalar, or a tensor of one element
+// one number: a scalar, or a tensor of one element
 const asNumber = (v: Value): number => {
   const data = [requireData(v)].flat(Infinity) as number[]
-  if (data.length !== 1) { throw new Error(`expected a scalar, got a tensor of shape [${shapeOf(v).join(" ")}]`) }
+  if (data.length !== 1) { throw new Error(`expected one number, got ${describeArg(v)}`) }
   if (Number.isNaN(data[0])) { throw new Error("expected a number, got NaN") }
   return data[0]!
 }
@@ -1065,9 +1106,9 @@ const asWholeList = (v: Value): number[] => asNumberList(v).map((n) => Math.roun
 // hold a string.
 const numericArg = (v: Value): any => {
   if (isText(v)) {
-    throw new Error(`a string (${JSON.stringify(String(v))}) is not a tensor – numeric ops like + and × need tensors; use StringConcat to join text`)
+    throw new Error(`a string (${JSON.stringify(String(v))}) is not a number – + and × need numbers; join text with StringConcat`)
   }
-  if (isFn(v)) { throw new Error("a function is not a tensor – numeric ops like + and × need tensors") }
+  if (isFn(v)) { throw new Error("a function is not a number – + and × need numbers; call it first, f(x)") }
   return operand(v)
 }
 
@@ -1140,12 +1181,12 @@ const LEADING_AXIS: Value = engine.tensor(0)
 // native reduction, pinned to the leading axis as a fold is – the native reductions
 // default to every axis.
 const TensorReduce = function (this: CurrentScope, tensor: Value, fn: Value, axis?: Value) {
-  if (!isFn(fn)) { return new Error("`reduce(tensor, fn, axis?)`: the second argument must be a function") }
+  if (!isFn(fn)) { return new Error("`reduce(x, fn, axis?)`: the second argument must be a function") }
   const fast = nativeReducer.get(fn)
   if (fast) { return fast(tensor, axis == null ? LEADING_AXIS : axis) }
   const parts = TensorUnstack(tensor, axis)
   // a known op has an identity (Σ[] = 0); a custom fn's is unknown
-  if (parts.length === 0) { return new Error("`reduce`: cannot fold an empty tensor with a custom function") }
+  if (parts.length === 0) { return new Error("`reduce`: an empty list of numbers has nothing to fold with a custom function") }
   return ListReduce.call(this, parts, fn)
 }
 
@@ -1194,17 +1235,19 @@ const differentiated = (body: string, run: () => Value): Value => {
 }
 // vjp with a ones cotangent: a scalar output gives the classic gradient, an elementwise
 // one per-element derivatives – ∇({x | x^2}) works on vectors
+// A loss written without braces is a value, read once: grad needs the function that
+// recomputes it.
 const TensorGradient = (f: Value) => {
-  if (!isFn(f)) { return new Error("`grad(f)`: `f` must be a function") }
-  return (x: Value) => x == null ? gradientOfReads(f) : differentiated("`grad(f)`: `f`", () => {
+  if (!isFn(f)) { return new Error(`\`grad(f)\`: \`f\` must be a function, got ${describeArg(f)} – write it in braces, { … }, so each step recomputes it`) }
+  return made((x: Value) => x == null ? gradientOfReads(f) : differentiated("`grad(f)`: `f`", () => {
     const [out, pullback] = engine.vjp((traced: engine.Tensor) => {
       const value = SignalOnce(f(traced))
       if (value instanceof Error) { throw value }
-      if (!isTensor(value)) { throw new Error("`grad(f)`: `f` must return a tensor") }
+      if (!isTensor(value)) { throw new Error(`\`grad(f)\`: \`f\` must give numbers, got ${describeArg(value)}`) }
       return value
     }, [operand(x)])
     return pullback(engine.full(out.shape, 1))[0]!
-  })
+  }))
 }
 // ∇(loss)(): with nothing to differentiate with respect to, the derivative is with respect
 // to the variables the loss reads – found by reading them, as a computed signal finds its
@@ -1220,7 +1263,7 @@ const gradientOfReads = (loss: Function): Value => {
   let value: Value
   try { value = differentiated("`∇(loss)()`: the loss", () => SignalOnce(loss())) } finally { readTracker = outer }
   if (value instanceof Error) { return value }
-  if (!isTensor(value)) { return new Error("`∇(loss)()`: the loss must be a tensor") }
+  if (!isTensor(value)) { return new Error(`\`∇(loss)()\`: the loss must give numbers, got ${describeArg(value)}`) }
   const variables = [...reads.keys()], grads = engine.gradients(value, [...reads.values()])
   engine.materialize([value, ...grads])
   return [engine.settle(value), variables, grads.map(engine.settle)]
@@ -1260,11 +1303,11 @@ const TensorReshape = (a: Value, b?: Value) => b != null ? engine.reshape(operan
 // tensor stays 0. A negative axis counts from the end. A list or a string is another
 // candidate's case.
 const TensorLength = (a: Value, b?: Value) => {
-  if (!isTensorish(a)) { return new NoMatch(`expected a tensor, got ${describeArg(a)}`) }
+  if (!isTensorish(a)) { return new NoMatch(`expected numbers, got ${describeArg(a)}`) }
   const shape = shapeOf(a), axis = b == null ? 0 : asWhole(b)
   return engine.tensor(shape[axis < 0 ? axis + shape.length : axis] ?? 1)
 }
-const TensorShape = (a: Value) => isTensorish(a) ? engine.tensor(shapeOf(a)) : new Error(`shape: expected a tensor, got ${describeArg(a)}`)
+const TensorShape = (a: Value) => isTensorish(a) ? engine.tensor(shapeOf(a)) : new Error(`shape: expected numbers, got ${describeArg(a)}`)
 
 // `_` on a string or a list keeps the container's type: x_i picks one item, x_[i, j]
 // several; a negative index counts from the end. A string's items are its characters.
@@ -1308,9 +1351,9 @@ const TensorScatterAdd = (indices: Value, values: Value, size: Value) =>
 const TensorWhere = (a: Value, b: Value, c: Value) => engine.where(engine.truthy(operand(a)), operand(b), operand(c))
 
 const TensorVariable = (a: Value) =>
-  isTensorish(a) ? new FluentVariable(operand(a)) : new Error("`~(init)`: initial value must be a tensor")
+  isTensorish(a) ? new FluentVariable(operand(a)) : new Error(`\`~(init)\`: the initial value must be numbers, got ${describeArg(a)}`)
 const TensorData = (a: Value) =>
-  isTensorish(a) ? new FluentData(operand(a)) : new Error("`~~(init)`: initial value must be a tensor – make one slot per tensor")
+  isTensorish(a) ? new FluentData(operand(a)) : new Error(`\`~~(init)\`: the initial value must be numbers, got ${describeArg(a)} – one slot holds one list of numbers`)
 
 const TensorAssign = (a: Value, b: Value): Value => {
   // a list of variables takes a list of as many values, computed together
@@ -1324,10 +1367,10 @@ const TensorAssign = (a: Value, b: Value): Value => {
     a.forEach((v, i) => { (v as FluentVariable).assign(values[i]!) })
     return null
   }
-  if (!(a instanceof FluentVariable)) { return new Error("`:=`: left side must be a variable created with ~ or ~~") }
+  if (!(a instanceof FluentVariable)) { return new Error(`\`:=\`: the left side must be a variable made with ~ or ~~, got ${describeArg(a)}`) }
   // an Error (an emptied corpus, a failed expression) doesn't corrupt the variable: it
   // keeps its last good value, and the Error surfaces
-  if (!isTensorish(b)) { return new Error("`:=`: value must be a tensor", b instanceof Error ? { cause: b } : undefined) }
+  if (!isTensorish(b)) { return new Error(`\`:=\`: the value must be numbers, got ${describeArg(b)}`) }
   if (differentiating) { throw new StateWrite("a variable write") }
   a.assign(operand(b))
   return null
@@ -1348,9 +1391,10 @@ const TensorRandomUniform = (a: Value) => engine.uniform(rngCounter++, asWholeLi
 // not just lose its brackets – it would re-parse as a SEQUENCE, `[1, 2, 3]` as 3.
 //
 // The law holds exactly for the values that are data: numbers, tensors of any rank,
-// lists, strings, ◌. It cannot hold for values with identity – a signal or a `~` variable
-// round-trips to a NEW one, equal but not the same – nor for a closure over names the
-// target scope does not have. Those are best effort.
+// lists, strings, ◌. A function prints as the expression that made it – a literal, the
+// call that built it, a built-in's name – so it comes back wherever those names are in
+// scope; never as its JavaScript. It cannot hold for values with identity – a signal or a
+// `~` variable round-trips to a NEW one, equal but not the same. Those are best effort.
 const numberLiteral = (n: number): string =>
   Number.isFinite(n) ? String(n)
     // no literal for these, but these expressions evaluate to them
@@ -1367,15 +1411,17 @@ const StringLiteral = (v: Value): string => {
   if (isTensor(v)) { return nestedLiteral(getAsSyncList(v)) }
   // a one-element list needs its trailing comma, or the parens are just grouping
   if (Array.isArray(v)) { return v.length === 1 ? `(${StringLiteral(v[0]!)},)` : `(${v.map(StringLiteral).join(", ")})` }
-  // a function prints its source; an Error has no literal form – it shows itself
+  if (isFn(v)) { return getOrigin(v)?.source ?? ((!birth.has(v) && v.name) || "(function)") }
+  // an Error has no literal form – it shows itself
   return String(v)
 }
 
-// text joined end to end; ◌, an Error or an unknown name is not text
+// text joined end to end, any other value as the source that reproduces it; ◌, an Error
+// or an unknown name is not text
 const StringConcat = (...args: Value[]) => {
   const bad = args.findIndex((a) => a == null || a instanceof Error || typeof a === "symbol")
   if (bad >= 0) { throw new Error(`StringConcat: expected text, got ${describeArg(args[bad]!)}`) }
-  return args.join("")
+  return args.map((a) => isText(a) ? String(a) : StringLiteral(a)).join("")
 }
 // characters, not UTF-16 units – as StringToCodes and `_` count them
 const StringLength = (a: Value) => isText(a) ? engine.tensor([...String(a)].length) : new NoMatch(`expected a string, got ${describeArg(a)}`)
@@ -1393,7 +1439,7 @@ const codesText = (codes: ArrayLike<number>): string | Error => {
   let text = ""
   for (let i = 0; i < codes.length; i++) {
     const code = codes[i]!
-    if (!Number.isFinite(code)) { return new Error("`CodesToString(codes)`: expected a tensor of character codes") }
+    if (!Number.isFinite(code)) { return new Error("`CodesToString(codes)`: expected a list of character codes") }
     text += String.fromCodePoint(Math.min(0x10FFFF, Math.max(0, Math.round(code))))
   }
   return text
@@ -1403,7 +1449,7 @@ const codesText = (codes: ArrayLike<number>): string | Error => {
 // (StringConcat, Text) recomputes then. Codes already at hand give the string itself.
 const CodesToString = (a: Value) => {
   const t = a instanceof FluentVariable ? a.current : a
-  if (!isTensor(t)) { return new Error("`CodesToString(codes)`: expected a tensor of character codes") }
+  if (!isTensor(t)) { return new Error(`\`CodesToString(codes)\`: expected a list of character codes, got ${describeArg(a)}`) }
   const known = engine.hostValue(t)
   if (known) { return codesText(known) }
   const text = signal<Value>("")
@@ -1421,7 +1467,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   FunctionIterate, FunctionRepeat, FunctionMemo, FunctionThen, FunctionCommute, FunctionInto, FunctionFork, FunctionBefore, FunctionAfter,
   FunctionRight, FunctionLeft, FunctionIs, TensorIs, ListIs, StringIs, ErrorIs, Identical,
   FunctionCascade, FunctionCond, FunctionArity, FunctionApply, FunctionNoAutoLift,
-  FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, NoMatch: NoMatchValue, doc,
+  FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc,
   Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalEffect, SignalOnce,
   ...UNARY, ...BINARY, ...REDUCTIONS,
   TensorStack, TensorUnstack, TensorConcat, TensorReduce, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
@@ -1431,6 +1477,10 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   List, ListLength, ListConcat, ListGet, ListMap, ListReduce, ListScan,
   StringConcat, StringLiteral, StringLength, StringToCodes, CodesToString,
 })
+
+// NoMatch, the decline a hand-written candidate returns: a fresh one per read, so each
+// decline carries the origin of its own call
+Object.defineProperty(DefaultEnvironment, "NoMatch", { get: () => new NoMatch("no match"), enumerable: true, configurable: true })
 
 // The host (or a test) extends the environment with widgets, live sources and printers
 // before it creates scopes. Bun's HMR re-runs only this module when it is the one that
@@ -1471,7 +1521,7 @@ export {
   CodeParse, getParseErrors,
   evaluateSyntaxTreeNode, CodeEvaluate, getAsSyncList, getMeta, setMeta, getOrigin,
   evaluateGeneration, flushRetirements, registerDisposable,
-  NoMatch, StringLiteral,
+  NoMatch, StringLiteral, asError,
   DefaultEnvironment, extendEnvironment, setCodeNodePrinter, PRELUDE, createScope,
   SignalCreate, SignalUpdate,
 }

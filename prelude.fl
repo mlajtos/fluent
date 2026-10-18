@@ -105,7 +105,7 @@ FunctionInverse: inverse: doc({ g | FunctionArity((
     { a, b | t: f(g(a), g(b)), FunctionSolve(g, t, near(b, t)) },
     { x | t: f(g(x)), FunctionSolve(g, t, near(x, t)) }
   ))
-}, "x (g ⍢ f) y", "Around: g around f goes into g's world, does f there, and comes back. When g transforms values – log, square – it is g⁻¹(f(g(x), g(y))): Pythagoras is square around +, the geometric mean is log around μ. When g picks out a part – a gather, a row, the diagonal – f edits just that part: (diagonal ⍢ (× ⟜ 0)) zeroes the diagonal. One rule for both: the nearest point to the argument where g lands on f's result. Reads left to right: g, then f, then g undone – (g ⍥ f) ∘ (g ⍣ -1).", "3 (square ⍢ +) 4 = 5"),
+}, "x (g ⍢ f) y", "Around: g around f goes into g's world, does f there, and comes back. When g transforms values – log, square – it is g⁻¹(f(g(x), g(y))): Pythagoras is square around +, the geometric mean is log around μ. When g picks out a part – a gather, a row, the diagonal – f edits just that part: ({ v | v_0 } ⍢ (× ⟜ 0)) zeroes the first element. One rule for both: the nearest point to the argument where g lands on f's result. Reads left to right: g, then f, then g undone – (g ⍥ f) ∘ (g ⍣ -1).", "3 (square ⍢ +) 4 = 5, ({ v | v_0 } ⍢ (× ⟜ 0))([5, 6, 7]) = [0, 6, 7]"),
 under: FunctionUnder: doc(⍨ around, "x (f under g) y", "APL's Under, in APL's order: f under g is g around f – f done in g's world. Pythagoras is + under square.", "3 (+ under square) 4 = 5"),
 (≡): match: Match: doc({ a, b |
   cond(
@@ -388,8 +388,8 @@ scan: TensorScan: doc({ x, f, k |
 ; max and min reduce, like sum; the glyphs are APL's ⌈ and ⌊ – ceiling and floor of
 ; one tensor, the pairwise max and min of two. One function can't be both: max(x, axis)
 ; and max(a, b) look alike, and the axis would be taken for an operand
-max: doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor.", "max([3, 1, 2]) = 3"),
-min: doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the whole tensor.", "min([3, 1, 2]) = 1"),
+max: doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor. The larger of two numbers is a ⌈ b.", "max([3, 1, 2]) = 3"),
+min: doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the whole tensor. The smaller of two numbers is a ⌊ b.", "min([3, 1, 2]) = 1"),
 (⌈): FunctionArity((doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]"), TensorCeil)),
 (⌊): FunctionArity((doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]"), TensorFloor)),
 argmax: TensorArgMax: doc({ x, k |

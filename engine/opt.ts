@@ -10,7 +10,7 @@
 import type { UOp, Op } from "./ir.ts";
 import {
   node, konst, buffer, numel, strides, sameShape, permute, broadcastTo, toposort, viewMap, bcIndex,
-  range, iconst, iadd, imul, idiv, imod, load, acc, iidx, ival, fused, kInputs, rebuild,
+  range, iconst, iadd, imul, idiv, imod, load, acc, iidx, ival, fused, kInputs, rebuild, at, siteLabel,
 } from "./ir.ts";
 import { graphRewriteMany, type Rule } from "./rewrite.ts";
 
@@ -40,8 +40,11 @@ export const simplifyMany = (roots: UOp[]): UOp[] => graphRewriteMany(roots, SIM
 // shares it with everything else). `materialized` names the nodes the backend allocates.
 export const MEMORY_BUDGET = 2 ** 31;
 export const checkMemory = (roots: readonly UOp[], materialized: Op): void => {
-  const bytes = toposort(roots).reduce((n, u) => n + (u.op === materialized ? numel(u.shape) * 4 : 0), 0);
-  if (bytes > MEMORY_BUDGET) throw new Error(`this needs ${(bytes / 2 ** 30).toFixed(1)} GB of memory at once – more than the ${MEMORY_BUDGET / 2 ** 30} GB Fluent allows; compute it in smaller pieces`);
+  const pieces = toposort(roots).filter((u) => u.op === materialized), bytes = pieces.reduce((n, u) => n + numel(u.shape) * 4, 0);
+  if (bytes <= MEMORY_BUDGET) return;
+  const big = pieces.reduce((a, u) => (numel(u.shape) > numel(a.shape) ? u : a)), gb = (b: number) => `${(b / 2 ** 30).toFixed(1)} GB`;
+  const where = big.site ? ` from ${siteLabel(big.site)}` : "";
+  throw Object.assign(new Error(`this needs ${gb(bytes)} of memory at once – more than the ${MEMORY_BUDGET / 2 ** 30} GB Fluent allows; the largest piece, [${big.shape.join(" ")}]${where}, takes ${gb(numel(big.shape) * 4)}: compute it in smaller pieces`), { site: big.site });
 };
 
 // Σ-linearity at the SCHEDULE level (reordering float summation is a schedule license —
@@ -232,6 +235,8 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
 
   const build = (u: UOp): UOp => {
     const m = built.get(u.id); if (m) return m;
+    const outer = at.site;
+    at.site = u.site;                                                          // a kernel comes from the node it computes
     let out: UOp;
     if (u.op === "CONSTANT" || u.op === "BUFFER") out = u;
     else if (ELEM.has(u.op) || VIEW.has(u.op) || u.op === "PAD" || u.op === "RANDOM" || u.op === "IOTA") {   // a map kernel; a view reaching build is a root → a strided copy nest
@@ -272,6 +277,7 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
       out = fused(gid, acc("ADD", i, body), [build(u.src[0]!), build(u.src[1]!)], u.shape);
     } else throw new Error(`fuse: no kernel form for ${u.op}`);
     built.set(u.id, out); source.set(out, u.id);
+    at.site = outer;
     return out;
   };
   // Pre-build every node a `read` could reach as a base, in topological order, so build()
@@ -321,7 +327,7 @@ export const placeholders = (roots: UOp[], leaves: UOp[]): { roots: UOp[]; slots
   for (const u of toposort(roots)) {
     if (memo.has(u.id)) continue;
     const src = u.src.map((s) => memo.get(s.id)!);
-    memo.set(u.id, src.every((s, i) => s === u.src[i]) ? u : node(u.op, src, u.arg, u.shape));
+    memo.set(u.id, src.every((s, i) => s === u.src[i]) ? u : node(u.op, src, u.arg, u.shape, u.site));
   }
   return { roots: roots.map((r) => memo.get(r.id)!), slots };
 };
