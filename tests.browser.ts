@@ -304,6 +304,37 @@ test("camera (fake device) streams into a canvas", async ({ page }) => {
   await expect(panel(page).locator("canvas").first()).toBeVisible({ timeout: 20_000 })
 })
 
+test("a busy worker gets the newest pointer position, not a queue of them", async ({ page }) => {
+  // regression: the page sent a frame every display frame whatever the worker did – a
+  // worker busy for 3 s had 420 frames (21 MB of camera pictures) waiting for it
+  await page.addInitScript(() => {
+    const post = Worker.prototype.postMessage, scope = globalThis as unknown as { frames: number }
+    scope.frames = 0
+    Worker.prototype.postMessage = function (this: Worker, message: { t?: string }, transfer: Transferable[]) {
+      if (message?.t === "frame") { scope.frames++ }
+      return post.call(this, message, { transfer })
+    } as typeof post
+  })
+  await open(page, "MousePosition()")
+  let x = 10
+  await expect.poll(async () => {
+    await page.mouse.move(x++, 10)
+    return page.evaluate(() => (globalThis as unknown as { frames: number }).frames)
+  }).toBeGreaterThan(0)
+  const worker = page.workers().find((w) => w.url().includes("fluent.worker"))!
+  // a long evaluation: the worker takes nothing for a few seconds
+  const busy = worker.evaluate(() => { const t = performance.now(); while (performance.now() - t < 2500) { } })
+  await page.waitForTimeout(500)
+  const before = await page.evaluate(() => (globalThis as unknown as { frames: number }).frames)
+  for (let i = 0; i < 30; i++) {
+    await page.mouse.move(100 + i * 5, 100)
+    await page.waitForTimeout(16)
+  }
+  const sent = await page.evaluate(() => (globalThis as unknown as { frames: number }).frames) - before
+  await busy
+  expect(sent).toBeLessThanOrEqual(1)
+})
+
 test("typing while a demo trains keeps the page at frame rate", async ({ page }) => {
   // the program runs in a worker: training, and re-evaluating on every keystroke,
   // never hold the page's frames (on the main thread this drew 29–52 frames in 6 s)

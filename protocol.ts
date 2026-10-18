@@ -64,7 +64,8 @@ export type ToWorker =
   | { t: "set", id: number, value: number | number[] | string | ImageBitmap, seq: number }
   | { t: "call", id: number }
   | { t: "drop", id: number, count: number }
-  // a frame from a source the worker asked for: pixels or samples
+  // a frame from a source the worker asked for: pixels or samples. The next goes once the
+  // worker has taken it – a busy worker gets the newest frame, not a queue of them.
   | { t: "frame", id: number, bitmap?: ImageBitmap, samples?: Float32Array }
   | { t: "sampleRate", value: number }
   // the last batch of live values is drawn: send the next
@@ -93,6 +94,8 @@ export type ToPage =
   // start or stop a source on the page: the camera, the microphone, the pointer
   | { t: "source", id: number, kind: SourceKind, size: number[], fps?: number }
   | { t: "stop", id: number }
+  // the source's last frame is taken
+  | { t: "took", id: number }
   | { t: "needSampleRate" }
   // the GPU is gone: the page starts another worker
   | { t: "lost", message: string }

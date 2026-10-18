@@ -1760,6 +1760,14 @@ describe("the evaluation host", () => {
     expect(warnings).toMatchObject([{ o: target.o }])
   })
 
+  test("a source's frame is answered as it is taken: the page sends the next after", async () => {
+    const start = inbox.length
+    await evaluate("MousePosition()")
+    const { id } = await after(start, "source")
+    toHost({ t: "frame", id, samples: Float32Array.of(0.25, 0.75) })
+    expect(await after(start, "took")).toMatchObject({ id })
+  })
+
   test("an Error of a statement before the last is marked where the statement is", async () => {
     let start = inbox.length
     expect(numberIn(await evaluate("f(x): x^2, 1 + 1"))).toBe(2)

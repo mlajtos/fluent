@@ -160,6 +160,7 @@ function receive({ data: m, target }: MessageEvent<ToPage>) {
     case "lives": case "tensor": { update(m); return }
     case "source": { startSource(m.id, m.kind, m.size, m.fps); return }
     case "stop": { pageSources.get(m.id)?.(); pageSources.delete(m.id); return }
+    case "took": { taking.delete(m.id); return }
     case "needSampleRate": { toWorker({ t: "sampleRate", value: sampleRate() }); return }
     case "lost": {
       // the GPU took the values with it: another worker runs the program again
@@ -214,21 +215,25 @@ const sampleRate = (): number => knownSampleRate ??= (() => {
 })()
 
 // The camera, the microphone, the pointer: the worker asks for a source, and the page
-// streams its frames there – one per display frame at most
+// streams its frames there – one per display frame at most, and none while the worker
+// has yet to take the last
+const taking = new Set<number>()
 const startSource = (id: number, kind: SourceKind, size: number[], fps = 30) => {
   let active = true
   const cleanups: (() => void)[] = []
-  pageSources.set(id, () => { active = false; cleanups.forEach((f) => f()) })
+  pageSources.set(id, () => { active = false; taking.delete(id); cleanups.forEach((f) => f()) })
   const everyFrame = (f: (now: number) => void) => {
     const tick = (now: number) => {
       if (!active) { return }
-      f(now)
+      if (!taking.has(id)) { f(now) }
       requestAnimationFrame(tick)
     }
     requestAnimationFrame(tick)
   }
-  const send = (frame: { bitmap?: ImageBitmap, samples?: Float32Array }) =>
+  const send = (frame: { bitmap?: ImageBitmap, samples?: Float32Array }) => {
+    taking.add(id)
     toWorker({ t: "frame", id, ...frame }, frame.bitmap ? [frame.bitmap] : [frame.samples!.buffer as ArrayBuffer])
+  }
   // a device granted after the source stopped is released at once
   const media = (constraints: MediaStreamConstraints, use: (stream: MediaStream) => void) =>
     navigator.mediaDevices.getUserMedia(constraints).then((stream) => {

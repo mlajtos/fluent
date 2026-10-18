@@ -685,7 +685,11 @@ const receive = (m: ToWorker) => {
       pictures.delete(m.id)
       return
     }
-    case "frame": { receiveFrame(m.id, { bitmap: m.bitmap, samples: m.samples }); return }
+    case "frame": {
+      receiveFrame(m.id, { bitmap: m.bitmap, samples: m.samples })
+      post({ t: "took", id: m.id })
+      return
+    }
     case "canvas": { painter.attach(m.slot, m.canvas); return }
     case "canvasGone": { painter.detach(m.slot); return }
     case "paint": {
