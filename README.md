@@ -68,9 +68,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | `.` | `pipe` | `FunctionPipe` |
 | `@` | `apply` | `FunctionApply` |
 | `$` | — | `Reactive` |
-| — | `watch` | `TensorWatch` |
 | `⊛` | `conv` | `TensorConvolution` |
-| — | `once` | `SignalOnce` |
 
 Some cells are still empty — the language is young, and names are earned.
 

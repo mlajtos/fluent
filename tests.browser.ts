@@ -270,14 +270,14 @@ test("a control bound to a ~ variable actually writes to it", async ({ page }) =
   // updateWithFresh discarded it, so Slider/Scrubber/Checkbox over a `~`
   // variable rendered fully interactive controls whose every write vanished.
   // Point2D and Trail already accepted both.
-  await open(page, "θ: ~(0.25), (Slider(θ), watch(θ) × 100)")
+  await open(page, "θ: ~(0.25), (Slider(θ), ${ θ × 100 })")
   await expect(panel(page)).toContainText("25")
   await page.locator("input[type=range]").fill("0.75")
   await expect(panel(page)).toContainText("75")
 })
 
 test("a checkbox bound to a ~ variable writes to it", async ({ page }) => {
-  await open(page, "on: ~(0), (Checkbox(on), watch(on) + 10)")
+  await open(page, "on: ~(0), (Checkbox(on), ${ on + 10 })")
   await expect(panel(page)).toContainText("10")
   await page.locator("input[type=checkbox]").check()
   await expect(panel(page)).toContainText("11")
@@ -309,6 +309,17 @@ test("a 2-channel image renders instead of reading past its buffer", async ({ pa
   await open(page, "fill([8, 8, 2], 0.5)")
   await expect(panel(page).locator("canvas").first()).toBeVisible()
   await expect(page.getByText("Something went wrong")).toHaveCount(0)
+})
+
+test("text decoded on the GPU from a value that changes every frame still shows", async ({ page }) => {
+  // a value too large for the host lives on the GPU, so its text is read back: each frame
+  // asks for a new read, and the page keeps the last finished text, never a blank
+  await open(page, "θ: ~fill([70000], 104), { θ:= θ × 1 } ⟳ 100000, Text(${ StringConcat(\"## \", CodesToString(slice(θ, [0], [2]))) })")
+  await expect(panel(page)).toContainText("hh")
+  for (let i = 0; i < 10; i++) {
+    await page.waitForTimeout(100)
+    expect(await panel(page).innerText()).toContain("hh")
+  }
 })
 
 test("button click updates a reactive value", async ({ page }) => {

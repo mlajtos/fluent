@@ -5,7 +5,6 @@
 
 import { grammar, type ActionDict } from "ohm-js"
 import { toAST as ohmToAST } from "ohm-js/extras"
-import { signal, Signal, Computed, computed, effect, untracked } from "@preact/signals-core"
 import dedent from "ts-dedent"
 import * as engine from "./engine/tensor.ts"
 import PRELUDE from "./prelude.fl" with { type: "text" }
@@ -336,6 +335,7 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
         params.forEach((p, i) => { local[p] = args[i] ?? null })
         return evaluateSyntaxTreeNode(node.content.expr, local)
       }
+      lambdas.add(fn)
       return located(made(fn), node)
     }
     case "Operation": {
@@ -385,11 +385,103 @@ const resolve = (name: string, env: CurrentScope): Value => {
 // its buffers owned by the engine. What crosses time – a variable's value, a signal's –
 // is settled into a leaf, so it never drags its history along.
 
-// A differentiated body can't change state: ∇ would have to undo the write along every
-// direction it takes. A write while differentiating throws this; ∇ and the optimizer
-// turn it into an Error value. It is control flow, so choosing passes it through.
+// MARK: Cells
+// Time is a sequence of instants: the program's run, a ⟳ tick, a button press, a write
+// from the page, a frame from a source. A cell – $, ~ or ~~ – holds a value that changes
+// only at an instant, by a write. A computed is a function of the cells: read, it runs
+// again when a cell it read has been written since, so looking at a value never changes
+// one. A read goes to whoever is reading – a computed keeps the cells it read, ∇ hands
+// back the values it differentiates with respect to – and with no one reading it is the
+// value now. While a value is computed or differentiated it writes only the cells it
+// made: any other write would depend on how often it was looked at.
+type Reader = { read: (cell: Signal) => unknown }
+let reader: Reader | null = null, instant = 0
+// In a definition – the program's body, a lambda it calls – a cell named bare is its
+// value over time. In an occurrence – a ⟳ step, a press, ∇, a computed's own body – it is
+// its value now.
+let sampling = false
+const occurring = <T,>(now: boolean, run: () => T): T => {
+  const outer = sampling
+  sampling = now
+  try { return run() } finally { sampling = outer }
+}
+const occurrence = <T,>(run: () => T): T => occurring(true, run)
+// the host hears of every write, to show what changed
+let written = () => { }
+const onWrite = (hear: () => void) => { written = hear }
+
+// A write where it isn't allowed throws this; ∇ and a computed turn it into an Error
+// value. It is control flow, so choosing passes it through.
 class StateWrite extends Error {}
-let differentiating = false
+
+class Signal<T = Value> {
+  // the instant its value last changed, and the evaluation that made it – the one reader
+  // that may write it
+  at = 0
+  readonly maker = reader
+  constructor(protected held: T) { }
+  // whether ∇ differentiates with respect to it
+  get trainable(): boolean { return false }
+  get value(): T { return reader ? reader.read(this as Signal) as T : this.peek() }
+  set value(next: T) { this.write(next) }
+  peek(): T { return this.held }
+  protected write(next: T): void {
+    if (reader && this.maker !== reader) { throw new StateWrite("a write") }
+    if (next !== this.held) { this.held = next; this.at = ++instant; written() }
+  }
+}
+
+// A computed runs again only when a cell it read has changed since it last looked – at
+// most once an instant – and a run that gives the same value changes nothing downstream
+class Computed<T = Value> extends Signal<T> {
+  sources: [Signal, number][] = []
+  checked = -1
+  running = false
+  constructor(readonly fn: () => T) { super(undefined as T) }
+  // it reads a trainable cell – or may: it has not run yet
+  override get trainable(): boolean { return this.checked < 0 || this.sources.some(([s]) => s.trainable) }
+  override peek(): T {
+    if (this.checked !== instant && (this.checked < 0 || this.sources.some(([s, at]) => (s.peek(), s.at !== at)))) { this.run() }
+    this.checked = instant
+    return this.held
+  }
+  protected override write(): void { throw new Error("a computed value is read-only: it follows what it reads") }
+  private run(): void {
+    if (this.running) { throw new Error("a value that reads itself") }
+    const outer = reader, sources: [Signal, number][] = []
+    reader = { read: (s) => { try { return s.peek() } finally { sources.push([s, s.at]) } } }
+    this.running = true
+    let value: T
+    try {
+      value = occurring(true, this.fn)
+    } catch (e) {
+      if (!(e instanceof StateWrite)) { throw e }
+      value = new Error("a computed value cannot change state – change it in a step { … }") as T
+    } finally {
+      reader = outer
+      this.running = false
+    }
+    if (value !== this.held) { this.held = value; this.at = instant }
+    this.sources = sources
+  }
+}
+const signal = <T,>(value: T) => new Signal<T>(value)
+const computed = <T,>(fn: () => T) => new Computed<T>(fn)
+
+// A variable (~): a cell holding one tensor, settled into a leaf, that ∇ differentiates
+// with respect to. A data slot (~~) is the same cell read like a constant: no gradient
+// flows into it, so no optimizer trains it. Both read bare – the name is the value now.
+class FluentVariable extends Signal<engine.Tensor> {
+  constructor(initial: engine.Tensor) { super(engine.settle(initial)) }
+  override get trainable(): boolean { return true }
+  get shape() { return this.value.shape }
+  get size() { return this.value.size }
+  assign(next: engine.Tensor): void { this.value = engine.settle(next) }
+  override toString() { return this.peek().toString() }
+}
+class FluentData extends FluentVariable {
+  override get trainable(): boolean { return false }
+}
 
 const isTensorish = (v: Value): boolean => isTensor(v) || v instanceof FluentVariable
 const isText = (v: Value): v is string | String => typeof v === "string" || v instanceof String
@@ -398,9 +490,8 @@ const isText = (v: Value): v is string | String => typeof v === "string" || v in
 // tour's words – numbers, a list of numbers [ … ], a ( … ) list – with the fix in the
 // message. An Error is a failure upstream: it passes through as it is.
 const operand = (v: any): any => {
-  if (v instanceof FluentVariable) { return v.current }
+  if (v instanceof Signal) { return operand(v.value) }
   if (v == null) { throw new Error("expected numbers, got ◌ – is an argument missing?") }
-  if (v instanceof Signal) { throw new Error("expected numbers, got a live value – read it with s()") }
   // an unbound name reached a numeric op (1 * x); as a value elsewhere it flows through
   if (typeof v === "symbol") { throw new Error(unknownName(v)) }
   // a list is a structure, not a bag of numbers – never coerced into a tensor
@@ -412,44 +503,18 @@ const operand = (v: any): any => {
 }
 const unknownName = (s: symbol): string => `unknown name: ${Symbol.keyFor(s) ?? s.description}`
 
-const shapeOf = (v: Value): number[] => (v instanceof FluentVariable ? v.current : (v as engine.Tensor)).shape
+const shapeOf = (v: Value): number[] => (v instanceof FluentVariable ? v.value : (v as engine.Tensor)).shape
 
 // A scalar is a rank-0 tensor holding a single phantom item (#(5) = 1), so index, sort
 // and softmax on it give the rank-0 identity, not an error about an axis it lacks.
 const isScalarTensor = (v: Value): boolean => isTensorish(v) && shapeOf(v).length === 0
 
-// While ∇ follows a loss's reads, reading a ~ variable hands back the value ∇
-// differentiates with respect to – set by gradientOfReads, null otherwise
-let readTracker: ((v: FluentVariable, value: engine.Tensor) => engine.Tensor) | null = null
-
-// Trainable variable: its current value, settled into a leaf; an assignment (drag,
-// optimizer step, :=) settles the new one and bumps the version signal.
-class FluentVariable {
-  #value: engine.Tensor
-  readonly version = signal(0)
-  constructor(initial: engine.Tensor) { this.#value = engine.settle(initial) }
-  get current(): engine.Tensor { return readTracker && !(this instanceof FluentData) ? readTracker(this, this.#value) : this.#value }
-  get shape() { return this.#value.shape }
-  get size() { return this.#value.size }
-  assign(next: engine.Tensor): void {
-    this.#value = engine.settle(next)
-    // a write, not a read: a program that assigns at its top level would else read the
-    // version it bumps, and run again
-    this.version.value = this.version.peek() + 1
-  }
-  toString() { return this.#value.toString() }
-}
-
-// Data slot (~~): a mutable tensor read like a constant – no gradient flows into it,
-// so no optimizer trains it. Gradients flow into ~, never into ~~.
-class FluentData extends FluentVariable {}
-
 // MARK: Evaluation generations
-// Each top-level evaluation owns what it starts – live sources (Time, Camera, …), ⟳
-// loops, effects. The next evaluation retires it: its loops stop, its sources let go of
-// their hardware. Its effects stop once the new UI has replaced the old – a still-shown
-// old island would recompute against a stopped source – so retirement waits for the next
-// frame, or a macrotask headless; tests and the host can flush at once.
+// Each top-level evaluation owns what it starts – live sources (Time, Camera, …) and ⟳
+// loops. The next evaluation retires it: its loops stop, its sources let go of their
+// hardware, once the new UI has replaced the old – a still-shown old island keeps moving
+// until then – so retirement waits for the next frame, or a macrotask headless; tests and
+// the host can flush at once.
 type Generation = { disposables: Set<() => void> }
 let currentGeneration: Generation | null = null
 const registerDisposable = (dispose: () => void) => { currentGeneration?.disposables.add(dispose) }
@@ -490,11 +555,19 @@ function evaluateGeneration<T>(evaluate: () => T): T {
 }
 
 // MARK: Applying
-// Signals may hide inside lists, so concat((a, b), axis) stays reactive when a, b are
-// computed. A signal may hold a signal – a result still on its way (CodesToString) – so
-// a lifted application reads through to the value and recomputes when either changes.
+// In a definition, an application that reads a cell – of any kind – is a computed that
+// follows it; a native that computes reads the cells inside lists too, so
+// concat((a, b), axis) follows a and b. In an occurrence, a native reads its cells now,
+// and a lambda receives the cell itself, which it may write or pass on.
 const containsSignal = (a: Value): boolean => a instanceof Signal || (Array.isArray(a) && a.some(containsSignal))
 const unwrapSignals = (a: any): any => a instanceof Signal ? unwrapSignals(a.value) : Array.isArray(a) ? a.map(unwrapSignals) : a
+const sampled = (a: Value): Value => a instanceof Signal ? sampled(a.value) : a
+// What a function reads of its arguments: a native that computes reads the numbers in a
+// list too; a lambda, and a function on lists, reads only what it is given – a list of
+// cells is a structure, its cells their identities
+const lambdas = new WeakSet<Function>(), shallow = new WeakSet<Function>()
+const readsCell = (fn: Function, args: Value[]): boolean =>
+  lambdas.has(fn) || shallow.has(fn) ? args.some((a) => a instanceof Signal) : args.some(containsSignal)
 
 // The one way a function is applied. A signal is called to read it, s(), or to write it,
 // s(v). An application whose arguments hold signals is a computed that recomputes with
@@ -504,9 +577,25 @@ const unwrapSignals = (a: any): any => a instanceof Signal ? unwrapSignals(a.val
 // only: inside the prelude the reader's call that reached it stays the site.
 // KNOWN WART: arity is not checked, so +(1, 2, 4) is 3 – see arity-plan.md.
 function safeApply(fn: Value, args: Value[], env: CurrentScope, node?: { origin: Origin }): Value {
-  if (!(isFn(fn) && !getMeta(fn).noAutoLift && args.some(containsSignal))) { return appliedAt(fn, args, env, node) }
-  // a lifted call is a live value, named by the call like any other
-  const live = computed(() => appliedAt(fn, args.map(unwrapSignals), env, node))
+  // a cell holding a function is applied as the function it holds – in a definition, as
+  // it holds it over time; a function is written into a cell with ←
+  if (fn instanceof Signal && args.length && isFn(fn.peek())) {
+    if (sampling) { return safeApply(fn.value, args, env, node) }
+    const live = computed(() => safeApply(fn.value, args, env, node))
+    return node ? located(live, node) : live
+  }
+  if (!isFn(fn) || getMeta(fn).noAutoLift) { return appliedAt(fn, args, env, node) }
+  if (sampling) {
+    if (lambdas.has(fn)) { return appliedAt(fn, args, env, node) }
+    // a value on its way makes the result one too: computed now, and again on arrival
+    const waiting = args.filter(isArriving), now = () => appliedAt(fn, args.map(sampled), env, node)
+    return waiting.length ? new Arriving(now(), Promise.all(waiting.map((a) => a.arrival)).then(now)) : now()
+  }
+  if (!readsCell(fn, args)) { return appliedAt(fn, args, env, node) }
+  // a lifted call is a live value, named by the call like any other; its body runs as an
+  // occurrence, so a lambda reads the cells it is given there
+  const read = lambdas.has(fn) ? (a: Value) => a : shallow.has(fn) ? sampled : unwrapSignals
+  const live = computed(() => appliedAt(fn, args.map(read), env, node))
   return node ? located(live, node) : live
 }
 const appliedAt = (fn: Value, args: Value[], env: CurrentScope, node?: { origin: Origin }): Value => {
@@ -633,15 +722,16 @@ const FunctionArity = (candidates: Function[]) => {
 // A tensor's data as nested JS arrays (a number for a scalar), for control flow and
 // structural arguments – the engine computes it if it isn't yet
 function getAsSyncList(value: unknown) {
-  if (value instanceof FluentVariable) { value = value.current }
+  if (value instanceof Signal) { return getAsSyncList(value.value) }
   if (value instanceof engine.Tensor) { return value.js() }
 }
 
 // MARK: Functions
 
 // Run Fluent source in the scope it is called from
+// A program is a definition, wherever it is run
 const CodeEvaluate = function (this: CurrentScope, program: Value) {
-  return evaluateSyntaxTreeNode(CodeParse(String(program)), this)
+  return occurring(false, () => evaluateSyntaxTreeNode(CodeParse(String(program)), this))
 }
 
 // The loop under ⍣. FunctionRepeat(f, n) is f applied n times; with a predicate p in
@@ -681,7 +771,7 @@ const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert
       if (until && i >= REPEAT_UNTIL_BUDGET) {
         return new Error(`\`(f ⍣ p)\`: the predicate didn't hold within ${REPEAT_UNTIL_BUDGET} steps`)
       }
-      const prev = value
+      const prev: Value = value
       value = step(prev)
       // a failed step is the answer – iterating an Error only repeats it
       if (value instanceof Error) { return value }
@@ -770,26 +860,25 @@ const yieldToInput = typeof scheduler?.yield === "function" ? () => scheduler.yi
 // holds ◌ while the steps succeed; a step that fails stops the loop, and the signal
 // holds its Error. (⍣ is the synchronous f(f(f(x))).)
 const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Value) {
-  const live = iterations instanceof Signal || iterations instanceof FluentVariable
+  const live = iterations instanceof Signal
   if (!isFn(fn) || !(iterations == null || isTensor(iterations) || live)) {
     throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` one number")
   }
   // The count is a BUDGET: f ⟳ n runs f n times in total. A live count is read fresh –
   // raise it and the loop runs on to the new total, lower it below what has run and it
-  // stops – so a constant signal means what the literal means.
+  // stops – so a constant signal means what the literal means. The loop samples it: a
+  // count is not something the loop is a function of.
   const readTarget = (): number => {
     if (iterations == null) { return 1 }
-    const n = getAsSyncList(iterations instanceof Signal ? iterations.value
-      : iterations instanceof FluentVariable ? (iterations.version.value, iterations.current) : iterations)
+    const n = getAsSyncList(iterations instanceof Signal ? iterations.peek() : iterations)
     // a non-scalar count is never reached – an infinite loop, not an error
     if (typeof n !== "number" || Number.isNaN(n)) {
       throw new Error("`FunctionIterate(fn, iterations)`: `iterations` must be one number")
     }
     return n
   }
-  // A bad count fails the call. Read untracked: the loop follows a live count itself, and
-  // a program that read it would run again – restarting its loop – whenever it moved.
-  untracked(readTarget)
+  // a bad count fails the call
+  readTarget()
 
   const generation = currentGeneration, scope = this, failure = signal<Value>(null)
   let i = 0, batch = 1, prev = 0, scheduled = false, cancelled = false
@@ -803,9 +892,9 @@ const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Va
   const frame = async (t: number) => {
     scheduled = false
     if (gone()) { return }
-    // idle, not finished: a live budget may grow again, and its effect re-arms the loop
+    // idle, not finished: a live budget may grow again, so the loop keeps looking
     const target = readTarget()
-    if (i >= target) { return }
+    if (i >= target) { if (live) { schedule() } return }
     if (prev) { batch = t - prev > 25 ? Math.max(1, batch >> 1) : Math.min(64, batch + Math.max(1, batch >> 2)) }
     prev = t
     // The batch is a plan: it ends once this frame's own step time passes 25 ms (time
@@ -818,7 +907,7 @@ const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Va
       await engine.gpuDrained(2)
       if (gone()) { return }
       const start = performance.now()
-      const result = safeApply(fn, [engine.scalar(i)], scope)
+      const result = occurrence(() => safeApply(fn, [engine.scalar(i)], scope))
       if (result instanceof Error) { cancelled = true; failure.value = result; return }
       i++
       stepTime += performance.now() - start
@@ -832,8 +921,6 @@ const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Va
   }
   // one pending frame at a time, or every wake-up would start another pump
   const schedule = () => { if (!scheduled && !cancelled) { scheduled = true; nextFrame(frame) } }
-  // a live budget re-arms the loop when it changes, also after it went idle
-  if (live) { registerDisposable(effect(() => { try { readTarget() } catch { return } schedule() })) }
   schedule()
   return failure
 }
@@ -846,25 +933,20 @@ const TensorScalarLive = (value: number): engine.Tensor => engine.scalar(value)
 // leaf, so a value written back every tick (⟳ with ←) never drags the previous ticks along
 const heldValue = (v: Value): Value => Array.isArray(v) ? v.map(heldValue) : isTensor(v) ? engine.settle(v) : v
 
-const SignalCreate = (<T,>(initial: T) => signal(heldValue(initial as Value))) as typeof signal
+const SignalCreate = (<T,>(initial: T) => signal(heldValue(sampled(initial as Value)))) as typeof signal
 const SignalComputed = computed
 const SignalRead = (s: Value) => s instanceof Signal ? s.value : new Error(`'SignalRead': expected a signal, got ${describeArg(s)}`)
+// A write stores the value now – a live value is read, never followed; a list keeps the
+// cells it holds, as identities. A value still on its way is written again when it
+// arrives. A variable's write is :=, for tensors only.
 const SignalUpdate = (s: Value, v: Value): Value => {
+  if (s instanceof FluentVariable) { return TensorAssign(s, v) }
   if (!(s instanceof Signal)) { return new Error(`'SignalUpdate': expected a signal, got ${describeArg(s)}`) }
   if (s instanceof Computed) { return new Error("this live value is made from others – write the values it is made from") }
-  if (differentiating) { throw new StateWrite("a signal write") }
-  s.value = heldValue(v)
+  if (isArriving(v)) { v.arrival.then(() => SignalUpdate(s, v)) }
+  s.value = heldValue(sampled(v))
   return null
 }
-// effects belong to the evaluation that created them – a re-evaluation stops them, or
-// stale effects would keep firing into disposed variables
-const SignalEffect = ((fn: () => void) => {
-  const dispose = made(effect(fn))
-  registerDisposable(dispose)
-  return dispose
-}) as typeof effect
-// a signal's value, read without subscribing to it
-const SignalOnce = (s: Value) => s instanceof Signal ? s.peek() : s
 // $v: a signal holding v, or a computed signal of a thunk
 const Reactive = (a: Value) => isFn(a) ? SignalComputed(a as () => Value) : SignalCreate(a)
 
@@ -888,7 +970,7 @@ const FunctionApply = function (this: CurrentScope, fn: Value, args: Value) {
 // itself, which every evaluation shares, stays as it is
 const FunctionNoAutoLift = (fn: Value) => {
   if (!isFn(fn)) { return new Error("`FunctionNoAutoLift(f)`: f must be a function") }
-  const wrapper = made(function (this: CurrentScope, ...args: Value[]) { return fn.apply(this, args) })
+  const wrapper = made(function (this: CurrentScope, ...args: Value[]) { return occurrence(() => fn.apply(this, args)) })
   setMeta(wrapper, { ...getMeta(fn), noAutoLift: true })
   return wrapper
 }
@@ -958,7 +1040,7 @@ const doc = (target: Value, signature: Value, description: Value, example: Value
 // These take what they are given as it is – a signal, a thunk, a loop's own count – so a
 // signal argument does not turn the call into a computed. ⟳ lifted would be a computed
 // that nothing reads, and would run no steps at all.
-for (const f of [FunctionCond, FunctionIterate, SignalRead, SignalUpdate, SignalEffect, SignalOnce, Reactive, SymbolAssign,
+for (const f of [FunctionCond, FunctionIterate, SignalRead, SignalUpdate, Reactive, SymbolAssign, Identical,
   FunctionNoAutoLift, FunctionGuard, FunctionTry, FunctionWhen, doc]) { setMeta(f, { noAutoLift: true }) }
 
 // MARK: Lists
@@ -1006,6 +1088,10 @@ const ListScan = function (this: CurrentScope, a: Value, fn: Value, init: Value)
   for (const v of a) { out.push(fn.call(this, out[out.length - 1]!, v)) }
   return out
 }
+// a list is a structure: these read the list they are given, not the cells inside it,
+// and List makes one of what it is given
+for (const f of [ListLength, ListConcat, ListGet, ListMap, ListReduce, ListScan]) { shallow.add(f) }
+setMeta(List, { noAutoLift: true })
 
 // MARK: Tensors
 // What a value is, for a message, in the tour's words: a number, a list of numbers
@@ -1014,12 +1100,12 @@ const describeArg = (v: Value): string =>
   typeof v === "symbol" ? `the unknown name ${Symbol.keyFor(v) ?? v.description}`
     : v == null ? "◌"
     : v instanceof Error ? "an Error"
+    : v instanceof FluentVariable ? "a trainable variable"
     : v instanceof Signal ? "a live value"
     : Array.isArray(v) ? `a ( … ) list of ${v.length}`
     : isText(v) ? "a string"
     : isFn(v) ? "a function"
     : isTensor(v) ? numbers(v.shape)
-    : v instanceof FluentVariable ? "a trainable variable"
     : "a value"
 const numbers = (shape: readonly number[]): string =>
   shape.length === 0 ? "a number"
@@ -1112,7 +1198,7 @@ for (const [op, reduction] of [["TensorAdd", "TensorSum"], ["TensorMultiply", "T
 // stack broadcasts its inputs to a common shape, as arithmetic does: stack(x - a, y - b)
 // works when the pieces only meet by broadcasting
 const broadcastRefs = (values: Value[]): engine.Tensor[] => {
-  const tensors = values.map((v) => v instanceof FluentVariable ? v.current : v)
+  const tensors = values.map((v) => v instanceof FluentVariable ? v.value : v)
   if (tensors.length === 0 || !tensors.every(isTensor)) { return tensors.map(operand) }
   const rank = Math.max(...tensors.map((t) => t.shape.length))
   const shape = Array.from({ length: rank }, (_, i) => Math.max(...tensors.map((t) => t.shape[t.shape.length - rank + i] ?? 1)))
@@ -1171,14 +1257,12 @@ const TensorRank = (f: Value, k?: Value) => {
       const r = frameRank(x.ndim), cell = x.shape.slice(r)
       return engine.broadcastTo(engine.reshape(x, [...Array(F.length - r).fill(1), ...x.shape]), [...F, ...cell])
     })
-    const outer = differentiating
-    differentiating = true
     try {
-      const view = engine.overFrame(F, framed, (cells) => safeApply(f, cells, this))
+      const view = differentiating(null, () => engine.overFrame(F, framed, (cells) => safeApply(f, cells, this)))
       if (view) { return view }
     } catch (e) {
       if (!(e instanceof StateWrite)) { throw e }
-    } finally { differentiating = outer }
+    }
     const cells = framed.map((x) => x.shape.slice(F.length)), n = F.reduce((p, q) => p * q, 1)
     if (n === 0) {
       const z = safeApply(f, cells.map((c) => engine.zeros(c)), this)
@@ -1199,7 +1283,7 @@ const TensorRank = (f: Value, k?: Value) => {
 // there; values still on the GPU – a minibatch drawn from a data slot – flow through
 // unchecked, as trusted data
 const cheapValues = (v: Value): Float32Array | undefined => {
-  const t = v instanceof FluentVariable ? v.current : v
+  const t = v instanceof FluentVariable ? v.value : v
   return isTensor(t) ? engine.hostValue(t) : undefined
 }
 // oneHot of an index outside 0..<depth would be an all-zero row: an off-by-one label, or a
@@ -1224,18 +1308,36 @@ const TensorSlice = (a: Value, begin: Value, size?: Value) => {
   return (operand(a) as engine.Tensor).slice(...spec)
 }
 
-// A differentiated body runs with state writes forbidden; one it tries is an Error that
-// names the body
-const differentiated = (body: string, run: () => Value): Value => {
-  const outer = differentiating
-  differentiating = true
+// A traced body reads through a reader of its own. What it reads is still read for
+// whoever reads around it; a trainable cell's value comes back through `trace`; a
+// computed that reads a trainable cell runs again inside, so ∇ differentiates its
+// definition, not its last value. The body writes only the cells it made: ∇ would have to
+// undo a write along every direction it takes.
+const differentiating = <T,>(trace: ((cell: Signal, value: unknown) => unknown) | null, run: () => T): T => {
+  const outer = reader, inside = new Map<Signal, unknown>(), outerSampling = sampling
+  sampling = true
+  reader = {
+    read: (s) => {
+      if (s instanceof Computed && (s.trainable || (s.peek(), s.trainable))) {
+        if (!inside.has(s)) { inside.set(s, s.fn()) }
+        return inside.get(s)
+      }
+      const v = outer ? outer.read(s) : s.peek()
+      return trace && s.trainable ? trace(s, v) : v
+    },
+  }
+  try { return run() } finally {
+    reader = outer
+    sampling = outerSampling
+  }
+}
+// a write a differentiated body tries is an Error that names the body
+const differentiated = (body: string, trace: ((cell: Signal, value: unknown) => unknown) | null, run: () => Value): Value => {
   try {
-    return run()
+    return differentiating(trace, run)
   } catch (e) {
     if (e instanceof StateWrite) { return new Error(`${body} cannot change state while it is differentiated (${e.message})`) }
     throw e
-  } finally {
-    differentiating = outer
   }
 }
 // vjp with a ones cotangent: a scalar output gives the classic gradient, an elementwise
@@ -1244,9 +1346,9 @@ const differentiated = (body: string, run: () => Value): Value => {
 // recomputes it.
 const TensorGradient = (f: Value) => {
   if (!isFn(f)) { return new Error(`\`grad(f)\`: \`f\` must be a function, got ${describeArg(f)} – write it in braces, { … }, so each step recomputes it`) }
-  return made((x: Value) => x == null ? gradientOfReads(f) : differentiated("`grad(f)`: `f`", () => {
+  return made((x: Value) => x == null ? gradientOfReads(f) : differentiated("`grad(f)`: `f`", null, () => {
     const [out, pullback] = engine.vjp((traced: engine.Tensor) => {
-      const value = SignalOnce(f(traced))
+      const value = unwrapSignals(f(traced))
       if (value instanceof Error) { throw value }
       if (!isTensor(value)) { throw new Error(`\`grad(f)\`: \`f\` must give numbers, got ${describeArg(value)}`) }
       return value
@@ -1255,18 +1357,16 @@ const TensorGradient = (f: Value) => {
   }))
 }
 // ∇(loss)(): with nothing to differentiate with respect to, the derivative is with respect
-// to the variables the loss reads – found by reading them, as a computed signal finds its
-// signals. It comes back with the value, all computed in one pass: (value, variables,
-// gradients). An enclosing ∇ still differentiates through it.
+// to the variables the loss reads – found by reading them, as a computed finds the cells
+// it depends on. It comes back with the value, all computed in one pass: (value,
+// variables, gradients). An enclosing ∇ still differentiates through it.
 const gradientOfReads = (loss: Function): Value => {
-  const reads = new Map<FluentVariable, engine.Tensor>(), outer = readTracker
-  readTracker = (v, value) => {
+  const reads = new Map<Signal, engine.Tensor>()
+  const value = differentiated("`∇(loss)()`: the loss", (v, value) => {
     let t = reads.get(v)
-    if (!t) { t = engine.traced(outer ? outer(v, value) : value); reads.set(v, t) }
+    if (!t) { t = engine.traced(value as engine.Tensor); reads.set(v, t) }
     return t
-  }
-  let value: Value
-  try { value = differentiated("`∇(loss)()`: the loss", () => SignalOnce(loss())) } finally { readTracker = outer }
+  }, () => unwrapSignals(loss()))
   if (value instanceof Error) { return value }
   if (!isTensor(value)) { return new Error(`\`∇(loss)()\`: the loss must give numbers, got ${describeArg(value)}`) }
   const variables = [...reads.keys()], grads = engine.gradients(value, [...reads.values()])
@@ -1355,18 +1455,25 @@ const TensorScatterAdd = (indices: Value, values: Value, size: Value) =>
   engine.scatterAdd(operand(indices), operand(values), asWhole(size))
 const TensorWhere = (a: Value, b: Value, c: Value) => engine.where(engine.truthy(operand(a)), operand(b), operand(c))
 
-const TensorVariable = (a: Value) =>
-  isTensorish(a) ? new FluentVariable(operand(a)) : new Error(`\`~(init)\`: the initial value must be numbers, got ${describeArg(a)}`)
-const TensorData = (a: Value) =>
-  isTensorish(a) ? new FluentData(operand(a)) : new Error(`\`~~(init)\`: the initial value must be numbers, got ${describeArg(a)} – one slot holds one list of numbers`)
+// A cell is made with its initial value as it is now: a live value is read, not followed
+const TensorVariable = (init: Value) => {
+  const a = sampled(init)
+  return isTensorish(a) ? new FluentVariable(operand(a)) : new Error(`\`~(init)\`: the initial value must be numbers, got ${describeArg(a)}`)
+}
+const TensorData = (init: Value) => {
+  const a = sampled(init)
+  return isTensorish(a) ? new FluentData(operand(a)) : new Error(`\`~~(init)\`: the initial value must be numbers, got ${describeArg(a)} – one slot holds one list of numbers`)
+}
+for (const f of [TensorVariable, TensorData]) { setMeta(f, { noAutoLift: true }) }
 
-const TensorAssign = (a: Value, b: Value): Value => {
+// A write is an occurrence: it stores the value now – a live value is read, not followed
+const TensorAssign = (a: Value, live: Value): Value => {
+  const b = unwrapSignals(live)
   // a list of variables takes a list of as many values, computed together
   if (Array.isArray(a)) {
     if (!Array.isArray(b) || b.length !== a.length) { return new Error("`:=`: a list of variables takes a list of as many values") }
     const bad = a.findIndex((v, i) => !(v instanceof FluentVariable) || !isTensorish(b[i]!))
     if (bad >= 0) { return TensorAssign(a[bad]!, b[bad]!) }
-    if (differentiating) { throw new StateWrite("a variable write") }
     const values = b.map(operand) as engine.Tensor[]
     engine.materialize(values)
     a.forEach((v, i) => { (v as FluentVariable).assign(values[i]!) })
@@ -1376,14 +1483,10 @@ const TensorAssign = (a: Value, b: Value): Value => {
   // an Error (an emptied corpus, a failed expression) doesn't corrupt the variable: it
   // keeps its last good value, and the Error surfaces
   if (!isTensorish(b)) { return new Error(`\`:=\`: the value must be numbers, got ${describeArg(b)}`) }
-  if (differentiating) { throw new StateWrite("a variable write") }
   a.assign(operand(b))
   return null
 }
-
-// watch(θ): a signal that updates on every assignment to a variable (drag, optimizer
-// step, :=)
-const TensorWatch = (a: Value): Value => a instanceof FluentVariable ? computed(() => (a.version.value, a.current)) : a
+setMeta(TensorAssign, { noAutoLift: true })
 
 // A fresh key per call, counted from 0 in each evaluation
 let rngCounter = 0
@@ -1411,7 +1514,7 @@ const StringLiteral = (v: Value): string => {
   if (v == null) { return "◌" }
   if (isText(v)) { return `"${String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` }
   if (typeof v === "symbol") { return Symbol.keyFor(v) ?? String(v) }
-  if (v instanceof FluentVariable) { return `${v instanceof FluentData ? "~~" : "~"}(${StringLiteral(v.current)})` }
+  if (v instanceof FluentVariable) { return `${v instanceof FluentData ? "~~" : "~"}(${StringLiteral(v.value)})` }
   if (v instanceof Signal) { return `$(${StringLiteral(v.peek())})` }
   if (isTensor(v)) { return nestedLiteral(getAsSyncList(v)) }
   // a one-element list needs its trailing comma, or the parens are just grouping
@@ -1449,17 +1552,34 @@ const codesText = (codes: ArrayLike<number>): string | Error => {
   }
   return text
 }
+// A value on its way: a cell that holds a placeholder until the value arrives. The
+// arrival is an occurrence of its own – it writes the cell – and a write made from the
+// value waits for it.
+class Arriving extends Signal {
+  settled = false
+  constructor(placeholder: Value, readonly arrival: Promise<Value>) {
+    super(placeholder)
+    arrival.then((v) => { this.settled = true; this.value = v }, (e) => { this.settled = true; this.value = asError(e) })
+  }
+}
+const isArriving = (a: Value): a is Arriving => a instanceof Arriving && !a.settled
 // Text is for showing, so it never makes the page wait: codes still being computed on the
-// GPU give a signal that holds "" until they arrive, then the text – whatever reads it
-// (StringConcat, Text) recomputes then. Codes already at hand give the string itself.
+// GPU give text on its way, "" until it arrives. Codes already at hand give the string.
 const CodesToString = (a: Value) => {
-  const t = a instanceof FluentVariable ? a.current : a
+  const t = a instanceof FluentVariable ? a.value : a
   if (!isTensor(t)) { return new Error(`\`CodesToString(codes)\`: expected a list of character codes, got ${describeArg(a)}`) }
   const known = engine.hostValue(t)
   if (known) { return codesText(known) }
-  const text = signal<Value>("")
-  t.read().then((codes) => { text.value = codesText(codes) }, (e) => { text.value = asError(e) })
-  return text
+  const arrival = t.read().then(codesText)
+  arrivals?.push(arrival)
+  return new Arriving("", arrival)
+}
+// The reads a computation starts that are still on their way: a value that started one
+// is not finished until they arrive
+let arrivals: Promise<unknown>[] | null = null
+const awaiting = <T,>(run: () => T): [T, Promise<unknown>[]] => {
+  const outer = arrivals, started: Promise<unknown>[] = arrivals = []
+  try { return [run(), started] } finally { arrivals = outer }
 }
 
 // MARK: Storage
@@ -1491,9 +1611,9 @@ const inStorageOrder = <T,>(op: () => Promise<T>): Promise<T> => {
   storageQueue = next.catch(() => undefined)
   return next
 }
-// the value now, as data: a variable is its value at this moment
+// the value now, as data: a cell is its value at this moment
 const storedNow = (v: Value): Value =>
-  v instanceof FluentVariable ? v.current : Array.isArray(v) ? v.map(storedNow) : v
+  v instanceof Signal ? storedNow(v.value) : Array.isArray(v) ? v.map(storedNow) : v
 const toStored = (v: Value): Promise<Stored> =>
   v == null ? Promise.resolve(null)
     : isText(v) ? Promise.resolve(String(v))
@@ -1503,33 +1623,37 @@ const toStored = (v: Value): Promise<Stored> =>
 const fromStored = (s: Stored): Value =>
   s === null ? null : typeof s === "string" ? s : Array.isArray(s) ? s.map(fromStored) : engine.tensor(s.data, { shape: s.shape })
 
-// a Storage signal sees every write, also one of the value it already holds
-const signalValue = Object.getOwnPropertyDescriptor(Signal.prototype, "value")!
-const Storage = (key: Value): Value => {
-  if (!isText(key)) { return new Error(`Storage(key): the key is a string, got ${describeArg(key)}`) }
-  const name = String(key), value = signal<Value>(null)
-  let written = false, gone = false
-  const show = (v: Value) => { signalValue.set!.call(value, v) }
-  inStorageOrder(() => storageRequest("readonly", (values) => values.get(name), () => storedInMemory.get(name))).then(
-    (s) => { if (!gone && !written && s !== undefined) { show(fromStored(s as Stored)) } },
-    (e) => { if (!gone && !written) { show(asError(e)) } })
-  Object.defineProperty(value, "value", {
-    get: () => signalValue.get!.call(value),
-    set: (v: Value) => {
-      if (v instanceof Error) { show(v); return }
-      written = true
-      const now = storedNow(v), stored = toStored(now)
-      stored.catch(() => undefined)
-      show(now)
-      inStorageOrder(() => stored.then((s) => storageRequest("readwrite",
-        (values) => s === null ? values.delete(name) : values.put(s, name),
-        () => s === null ? storedInMemory.delete(name) : storedInMemory.set(name, s))))
-        .catch((e) => { if (!gone) { show(asError(e)) } })
-    },
-  })
-  registerDisposable(() => { gone = true })
-  return value
+// A Storage cell saves every write, also one of the value it already holds. A saved value
+// that arrives after the run wrote its own is dropped.
+class StorageCell extends Signal {
+  written = false
+  gone = false
+  constructor(readonly key: string) {
+    super(null)
+    inStorageOrder(() => storageRequest("readonly", (values) => values.get(key), () => storedInMemory.get(key))).then(
+      (s) => { if (!this.gone && !this.written && s !== undefined) { this.show(fromStored(s as Stored)) } },
+      (e) => { if (!this.gone && !this.written) { this.show(asError(e)) } })
+    registerDisposable(() => { this.gone = true })
+  }
+  show(v: Value): void { super.write(v) }
+  protected override write(v: Value): void {
+    if (v instanceof Error) { this.show(v); return }
+    const now = storedNow(v)
+    this.show(now)
+    this.written = true
+    const stored = toStored(now)
+    stored.catch(() => undefined)
+    inStorageOrder(() => stored.then((s) => storageRequest("readwrite",
+      (values) => s === null ? values.delete(this.key) : values.put(s, this.key),
+      () => s === null ? storedInMemory.delete(this.key) : storedInMemory.set(this.key, s))))
+      .catch((e) => { if (!this.gone) { this.show(asError(e)) } })
+  }
 }
+const Storage = (key: Value): Value => {
+  const k = sampled(key)
+  return isText(k) ? new StorageCell(String(k)) : new Error(`Storage(key): the key is a string, got ${describeArg(k)}`)
+}
+setMeta(Storage, { noAutoLift: true })
 
 // MARK: Environment
 // Null-prototype: an environment is a bare name→value mapping. A plain `{}` would chain
@@ -1541,12 +1665,12 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   FunctionIterate, FunctionRepeat, FunctionMemo, FunctionThen, FunctionIs, TensorIs, ListIs, StringIs, ErrorIs, Identical,
   FunctionCascade, FunctionCond, FunctionArity, FunctionApply, FunctionNoAutoLift,
   FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc,
-  Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate, SignalEffect, SignalOnce,
+  Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate,
   ...UNARY, ...BINARY, ...REDUCTIONS,
   TensorStack, TensorUnstack, TensorConcat, TensorReduce, TensorRank, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
   TensorPermute, TensorBroadcast, TensorPadAxis, TensorWindow, TensorTake, TensorScatterAdd, TensorRange,
   TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorLength, TensorShape, TensorGather,
-  TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorWatch, TensorRandomUniform,
+  TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorRandomUniform,
   List, ListLength, ListConcat, ListGet, ListMap, ListReduce, ListScan,
   StringConcat, StringLiteral, StringLength, StringToCodes, CodesToString,
   Storage,
@@ -1597,6 +1721,6 @@ export {
   evaluateGeneration, flushRetirements, registerDisposable, nextFrame, asError,
   NoMatch, StringLiteral,
   DefaultEnvironment, extendEnvironment, setCodeNodePrinter, PRELUDE, createScope,
-  SignalCreate, SignalUpdate,
+  SignalCreate, SignalUpdate, Signal, signal, computed, onWrite, awaiting, occurrence,
 }
 export type { Value, CurrentScope, SyntaxTreeNode, Origin, ParseError, FunctionMeta }

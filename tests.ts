@@ -3,8 +3,7 @@
 // backend (Bun has no WebGPU). `bun test` runs this file.
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test"
-import { Signal, effect } from "@preact/signals-core"
-import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, getOrigin, PRELUDE, type Value } from "./language"
+import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, getOrigin, PRELUDE, Signal, occurrence, type Value } from "./language"
 import { startHost } from "./host"
 import { numberText, tensorView, connect, update, call, write, mirrors, type ToPage, type ToWorker } from "./protocol"
 import { EXAMPLES } from "./examples"
@@ -41,10 +40,9 @@ const run = (source: string) => evaluateIn(source)
 // the scope a program leaves behind
 const scopeOf = (source: string) => { const scope = createScope(); evaluateIn(source, scope); return scope }
 const symbolOf = (n: any): string | undefined => n?.type === "Symbol" ? (n.content?.value as string) : undefined
-// signals unwrap to their current value, variables to theirs, tensors to plain JS arrays/numbers
+// signals and variables unwrap to their current value, tensors to plain JS arrays/numbers
 const unwrap = (v: any): any => {
   while (v instanceof Signal) { v = v.value }
-  if (v instanceof FluentVariable) { v = v.current }
   return v instanceof engine.Tensor ? v.js() : v
 }
 const value = (source: string): any => unwrap(run(source))
@@ -619,9 +617,9 @@ describe("math functions", () => {
 
 // Contracts any future compilation of reactive recomputes must preserve
 describe("reactive recomputes stay dynamic", () => {
-  test("a signal holding a signal reads through to its value", () => {
+  test("a write stores a live value as it is now, and does not follow it", () => {
     expect(value("a: $(1), b: $(0), b(a), b + 1")).toBe(2)
-    expect(value("a: $(1), b: $(0), b(a), c: b + 1, a(5), c")).toBe(6)
+    expect(value("a: $(1), b: $(0), b(a), c: b + 1, a(5), c")).toBe(2)
   })
   test("repeated updates keep recomputing", () => {
     expect(value("x: $(2), y: (x × 3) + 1, x(4), x(5), y")).toBe(16)
@@ -651,8 +649,8 @@ describe("reactive recomputes stay dynamic", () => {
   test("untraceable middles keep the chain reactive", () => {
     expect(value("x: $([3, 1, 2]), m: mask(x, x > 1), s: sum(m), x([5, 0, 6]), s")).toBe(11)
   })
-  test("chains fed by watch(θ) track assignments", () => {
-    expect(value("θ: ~([2]), w: watch(θ), y: w + 1, θ := [7], y")).toEqual([8])
+  test("chains fed by a computed of θ track assignments", () => {
+    expect(value("θ: ~([2]), w: ${ θ }, y: w + 1, θ := [7], y")).toEqual([8])
   })
 })
 
@@ -667,27 +665,14 @@ describe("reactivity", () => {
   test("computed auto-lifts and unwraps", () => {
     expect(value("x: $(2), y: x + 1, y")).toBe(3)
   })
-  test("once reads without subscribing", () => {
-    expect(value("x: $(4), once(x) + 1")).toBe(5)
-  })
-  test("⟳ follows a live count without re-running the program that started it", () => {
-    // the IDE runs a program inside an effect: a program that read the count would
-    // run again – and restart its loop – each time the count moved
-    const budget = SignalCreate(engine.scalar(1) as Value)
-    let runs = 0
-    const stop = effect(() => {
-      runs++
-      const scope = createScope()
-      scope.budget = budget
-      evaluateIn("{ 0 } ⟳ budget", scope)
-    })
-    budget.value = engine.scalar(5) as Value
-    budget.value = engine.scalar(9) as Value
-    stop()
-    expect(runs).toBe(1)
-  })
-  test("watch bridges a variable into the signal world", () => {
-    expect(value("θ: ~([2]), w: watch(θ), θ := [8], w")).toEqual([8])
+  test("⟳ follows a live count: raised, the loop runs on to the new total", async () => {
+    const scope = scopeOf("budget: $1, n: $0, { n(n() + 1) } ⟳ budget")
+    await new Promise((r) => setTimeout(r, 120))
+    expect(unwrap(scope.n)).toBe(1)
+    ;(scope.budget as Signal).value = engine.scalar(4)
+    await new Promise((r) => setTimeout(r, 200))
+    expect(unwrap(scope.n)).toBe(4)
+    flushRetirements()
   })
   test("a signal can hold a list", () => {
     // a signal stores a value, a list included – the tasks demo's list, a loader's empty one
@@ -698,6 +683,62 @@ describe("reactivity", () => {
   test("a list-of-tensors signal survives churn (no use-after-free)", () => {
     // the signal holds each tensor of a list it stores, so none is reclaimed while it does
     expect(value("xy: $((fill([50], 7.0), fill([50], 3.0))), ({ i | xy((fill([50], 1.0), fill([50], 9.0))), i } ⍣ 20)(0), Σ(xy()_1)")).toBe(450)
+  })
+})
+
+// One model of time: a cell ($, ~, ~~) changes only at an instant, by a write; a
+// computed is a function of the cells now; an occurrence (the program's run, a ⟳ tick,
+// a press) reads the cells as they are and writes them.
+describe("one model of time: cells, computeds, occurrences", () => {
+  // the value is looked at first, as the IDE shows it, then the steps run
+  const steps = (source: string, step: string, times: number, show: string) => {
+    const scope = scopeOf(source)
+    unwrap(scope[show])
+    for (let i = 0; i < times; i++) { occurrence(() => (scope[step] as Function)()) }
+    return unwrap(scope[show])
+  }
+  test("looking never changes a value", () => {
+    expect(value("θ: ~1, j: ${ θ × 2 }, j(), θ:= 5, j()")).toBe(10)
+    expect(value("θ: ~1, j: ${ θ × 2 }, θ:= 5, j()")).toBe(10)
+  })
+  test("a computed of a variable follows it after the program has run", () => {
+    expect(steps("θ: ~1, j: ${ θ × 2 }, step: { θ:= θ + 1 }, (θ, j, step)", "step", 2, "j")).toBe(6)
+    // the cloth demo's case: a picture of the pose, with no copy of the pose published
+    expect(steps("θ: ~[0], mesh: ${ θ × 10 }, step: { θ:= θ + 1 }", "step", 2, "mesh")).toEqual([20])
+  })
+  test("a write happens whether or not anything shows it", () => {
+    expect(value("s: $[5], θ: ~[0], θ:= s, θ")).toEqual([5])
+    expect(value("s: $[5], θ: ~[0], r: θ:= s, θ")).toEqual([5])
+  })
+  test("a computed cannot change state; it may change cells it made", () => {
+    const scope = scopeOf("x: $1, c: ${ x(2), 3 }, c")
+    expect(unwrap(scope.c)).toBeInstanceOf(Error)
+    expect((unwrap(scope.c) as Error).message).toContain("cannot change state")
+    expect(unwrap(scope.x)).toBe(1)
+    expect(value("c: ${ y: $1, y(2), y() + 1 }, c")).toBe(3)
+  })
+  test("∇ sees through a computed, every time", () => {
+    const plain = (v: any): any => { while (v instanceof Signal) { v = v.value } return Array.isArray(v) ? v.map(plain) : unwrap(v) }
+    expect(plain(value("θ: ~[0], view: ${ θ × 10 }, 𝓛: { Σ((view() - 30)^2) }, opt: sgd(0.0025), r1: opt(𝓛), r2: opt(𝓛), (r1, r2, θ)")))
+      .toEqual([900, expect.closeTo(225, 3), [expect.closeTo(2.25, 5)]])
+    expect(plain(value("θ: ~2, c: ${ θ × 3 }, r1: (∇{ c() })(), r2: (∇{ c() })(), (ListGet(r1, 2), ListGet(r2, 2))"))).toEqual([[3], [3]])
+  })
+  test("a computed shown while ∇ runs keeps its own value", () => {
+    expect(value("θ: ~2, c: ${ θ × 3 }, c(), (∇{ c() })(), c()")).toBe(6)
+  })
+  test("a derived value is never seen half-updated, whatever reads it first", () => {
+    expect(value("a: $1, b: ${ a() × 2 }, c: ${ a() + b() }, a(5), [c(), b()]")).toEqual([15, 10])
+    expect(value("a: $1, b: ${ a() × 2 }, c: ${ a() + b() }, a(5), [b(), c()]")).toEqual([10, 15])
+  })
+  test("every cell reads with () and writes with (v); a variable's write is :=", () => {
+    expect(value("θ: ~[1], θ([4]), θ()")).toEqual([4])
+    expect(value("θ: ~[1], θ← [7], θ")).toEqual([7])
+    expect(run("θ: ~[1], θ(\"text\")")).toBeInstanceOf(Error)
+  })
+  test("the same occurrences give the same states", () => {
+    const program = "x: 0 ..< 8, θ: ~[0, 0], 𝓛: { μ((x × θ_0 + θ_1 - x × 3)^2) }, opt: adam(0.1), step: { opt(𝓛) }"
+    const train = () => steps(program, "step", 40, "θ")
+    expect(train()).toEqual(train())
   })
 })
 
@@ -730,8 +771,8 @@ describe("language fixes", () => {
   })
   test("FunctionNoAutoLift marks a new function, not the one it is given", () => {
     run("FunctionNoAutoLift(sin)")
-    expect(value("sin($(0))")).toBe(0)
-    expect(message("FunctionNoAutoLift(sin)($(0))")).toContain("live value")
+    expect(value("s: $(1), y: sin(s), s(0), y")).toBe(0)
+    expect(value("s: $(0), identical(FunctionNoAutoLift({ a | a })(s), s)")).toBe(1)
   })
   test("SignalRead and SignalUpdate take the signal itself", () => {
     expect(value("s: $3, SignalRead(s)")).toBe(3)
@@ -759,8 +800,9 @@ describe("language fixes", () => {
     expect(message(`StringConcat("a", ◌)`)).toContain("◌")
     expect(run(`StringConcat("a", Error("x"))`)).toBeInstanceOf(Error)
   })
-  test("String prints a data slot as ~~", () => {
-    expect(value("String(~~[1, 2])")).toBe("~~([1, 2])")
+  test("String of a cell is the text of its value, and follows it", () => {
+    expect(value("String(~~[1, 2])")).toBe("[1, 2]")
+    expect(value("x: ~~[1, 2], s: String(x), x:= [3], s")).toBe("[3]")
   })
   test("indexing an unknown name names it", () => {
     expect(message("a_0")).toContain("unknown name: a")
@@ -921,8 +963,8 @@ describe("data slots (~~)", () => {
     // not a candidate: a broken thunk is an Error, never a training step quietly skipped
     expect(run("when(1, { nonsense(3) })")).toBeInstanceOf(Error)
   })
-  test("SignalEffect writes a signal through into a data slot, and re-fires on updates", () => {
-    expect(value("corpus: $([1, 2]), D: ~~(once(corpus)), SignalEffect({ D := corpus() }), corpus ← [7, 8, 9], sum(D)")).toBe(24)
+  test("data that follows a corpus is a computed of it", () => {
+    expect(value("corpus: $([1, 2]), D: ${ corpus() × 2 }, corpus ← [7, 8, 9], sum(D())")).toBe(48)
   })
   test(":= with a non-tensor keeps the variable's last good value", () => {
     // deleting the demo's corpus makes load() an Error; := refuses to store it
@@ -1461,7 +1503,7 @@ describe("null is a value", () => {
 // steps – is settled into a leaf. Otherwise every later graph, and every ∇ walk over
 // it, drags the whole history along.
 describe("values that cross time carry no history", () => {
-  const size = (v: unknown) => engine.graphSize((v instanceof FluentVariable ? v.current : v) as engine.Tensor)
+  const size = (v: unknown) => engine.graphSize((v instanceof FluentVariable ? v.value : v) as engine.Tensor)
   test("a variable assigned in a loop stays a leaf", () => {
     expect(size(scopeOf("θ: ~([1, 2]), ({ s | θ := θ × 2 + 1 } ⍣ 50)(0)")["θ"])).toBe(1)
   })
@@ -1471,9 +1513,10 @@ describe("values that cross time carry no history", () => {
   test("an optimizer's parameters stay leaves however long it trains", () => {
     expect(size(scopeOf("θ: ~([0, 0]), opt: adam(0.1), ({ s | opt({ Σ((θ - [1, 2])^2) }) } ⍣ 30)(0)")["θ"])).toBe(1)
   })
-  test("a computed value is its own: a later assignment doesn't reach it", () => {
-    expect(value("θ: ~(5), s: Σ(θ), θ := 7, s")).toBe(5)
-    expect(value("θ: ~([[1, 2]]), m: moveaxis(θ, 1, 1), θ := [[0, 0]], m")).toEqual([[1, 2]])
+  test("a value defined from a variable follows it; one taken in a step is its own", () => {
+    expect(value("θ: ~(5), s: Σ(θ), θ := 7, s")).toBe(7)
+    expect(value("θ: ~([[1, 2]]), m: moveaxis(θ, 1, 1), θ := [[0, 0]], m")).toEqual([[0, 0]])
+    expect(value("θ: ~(5), s: $0, take: { s(Σ(θ)) }, take(), θ := 7, s()")).toBe(5)
   })
   test("∇ leaves what its body read untouched", () => {
     expect(value("θ: ~([1, 2]), c: [3, 4], ∇({ z | Σ(z × c × θ) })([1, 1]), θ")).toEqual([1, 2])
@@ -1589,7 +1632,7 @@ describe("gallery examples smoke suite", () => {
       try {
         if (v instanceof Error) { return `${path}: ${v.message}` }
         if (v instanceof Signal) { return walk(v.value, `${path}()`, depth + 1) }
-        if (v instanceof FluentVariable) { return walk(v.current, path, depth + 1) }
+        if (v instanceof FluentVariable) { return walk(v.value, path, depth + 1) }
         if (v instanceof engine.Tensor) { v.js() }
         if (Array.isArray(v)) { for (const [i, x] of v.entries()) { const bad = walk(x, `${path}[${i}]`, depth + 1); if (bad) { return bad } } }
       } catch (e: any) { return `${path}: threw ${e?.message ?? e}` }
@@ -1608,17 +1651,17 @@ describe("gallery examples smoke suite", () => {
       expect(evaluateGeneration(() => evaluateSyntaxTreeNode(tree, scope))).not.toBeInstanceOf(Error)
       expect(firstError(scope)).toBeNull()
       const trained = Object.keys(scope).filter((k) => scope[k] instanceof FluentVariable && !(scope[k] instanceof FluentData))
-      const before = trained.map((k) => JSON.stringify((scope[k] as FluentVariable).current.js()))
+      const before = trained.map((k) => JSON.stringify((scope[k] as FluentVariable).value.js()))
       const failures: string[] = []
       const call = (what: string, f: Function, ...args: Value[]) => {
-        try { const r = f(...args); if (r instanceof Error) { failures.push(`${what}: ${r.message}`) } } catch (e: any) { failures.push(`${what} threw: ${e?.message ?? e}`) }
+        try { const r = occurrence(() => f(...args)); if (r instanceof Error) { failures.push(`${what}: ${r.message}`) } } catch (e: any) { failures.push(`${what} threw: ${e?.message ?? e}`) }
       }
       const runSteps = () => { for (const step of steps.splice(0)) { call("⟳ step", step, engine.scalar(0)); call("⟳ step", step, engine.scalar(1)) } }
       runSteps()
       for (const press of presses.splice(0)) { call("button", press); runSteps() }
       expect(failures).toEqual([])
       expect(firstError(scope)).toBeNull()
-      expect(trained.filter((k, i) => JSON.stringify((scope[k] as FluentVariable).current.js()) === before[i])).toEqual([])
+      expect(trained.filter((k, i) => JSON.stringify((scope[k] as FluentVariable).value.js()) === before[i])).toEqual([])
       flushRetirements()
     }, 60_000)
   }
@@ -2287,6 +2330,25 @@ describe("the evaluation host", () => {
     start = inbox.length
     await evaluate("f(x): x^2")
     expect((await after(start, "warnings")).warnings).toEqual([])
+  })
+
+  test("a program runs once, and what it shows of a variable follows it", async () => {
+    // a top-level read and then a write of the same cell, as an optimizer's step does
+    for (const source of ["s: $0, s(s() + 1), s", "θ: ~[0], opt: sgd(0.1), opt({ Σ((θ - 1)^2) }), θ"]) {
+      const start = inbox.length
+      await evaluate(source)
+      await pause(200)
+      expect(inbox.slice(start).filter((m) => m.t === "lives" && m.lives.some((l) => l.id === 0)).length).toBe(1)
+    }
+    let start = inbox.length
+    const d = await evaluate("(θ: ~1, j: ${ θ × 2 }, j, θ:= 5, j)")
+    expect(numberIn(d.items[1].now)).toBe(10)
+    const go = await evaluate(`θ: ~[1], (Button("go", { θ:= θ + 1 }), \${ θ × 2 })`)
+    start = inbox.length
+    toHost({ t: "call", id: go.items[0].slots.onClick.id })
+    const { lives } = await after(start, "lives")
+    expect(lives.find((l: any) => l.id === go.items[1].id).desc.payload[0]).toBe(4)
+    toHost({ t: "drawn" })
   })
 
   test("the next batch waits until the page has drawn the last", async () => {
