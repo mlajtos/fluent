@@ -1443,7 +1443,13 @@ model: { ids |
   matmul(rms(x2), Wu) ; [batch, T, V] logits
 },
 
-loss: { crossEntropy(oneHot(slice(D, [0, 1], [-1, T]), V), model(slice(D, [0, 0], [-1, T]))) },
+; --- what it learns from: B random windows a step; a tenth held out to score it ---
+B: 64,
+cut: { floor((#D) × 0.9) }, ; windows past the cut are held out – never trained on
+lossOn: { d | crossEntropy(slice(d, [0, 1], [-1, T]), model(slice(d, [0, 0], [-1, T]))) },
+loss: { lossOn(take(D, floor(⚄([B]) × cut()))) },
+; a score: 256 windows spread evenly over n windows from from – steady, at a bounded cost
+score: { from, n | lossOn(take(D, from + floor(linspace([0, n - 1], 256)))) },
 
 ; --- sampling: gumbel-max, with a temperature you can drag ---
 τ: $0.5,
@@ -1460,23 +1466,29 @@ dreamNow: { dream(StringConcat("### ", dec(slice(gen(fill([T], 0), 48), T)))) },
 ; --- training: ⟳-paced, gated by the checkbox ---
 training: $1,
 opt: adamw(0.03, 0.001), ; a little weight decay – memorize less, invent more
-losses: $[],
+step: $0,
+; a row each time it measures: (step, training score, held-out score)
+history: $fill([0, 3], 0),
 stride: $4,
-{ i |
+{
   when(once(training), {
-    l: opt(loss),
-    when(i % once(stride) = 0, {
-      losses(losses() ++ (l ⍴ [1])),
+    opt(loss),
+    step← once(step) + 1,
+    s: once(step),
+    when(s % once(stride) = 0, {
+      measured: [s, score(0, cut()), score(cut(), (#D) - cut())],
+      history(concat((history(), measured ⍴ [1, 3]))),
       ; the plot keeps the whole story, bounded: when it fills up,
-      ; thin the history to every other point and log half as often
-      when((#losses()) ≥ 480, {
-        losses(losses()_(0..<240 × 2)),
+      ; thin the history to every other row and measure half as often
+      when((#history()) ≥ 240, {
+        history(history()_(0..<120 × 2)),
         stride← once(stride) × 2
       })
     }),
-    when(i % 200 = 0, dreamNow)
+    when(s % 200 = 0, dreamNow)
   })
 } ⟳ 1000000,
+curves: \${ h: transpose(history()), plot(h_0, (h_1, h_2), ("train", "held out")) },
 
 ; type a beginning – the model finishes it (works even while paused)
 prompt: $"kri",
@@ -1491,7 +1503,7 @@ finish: \${
 probeS: fill([T], 0) ++ enc("sophia"),
 probe: slice(probeS, [-T]),
 attn: \${
-  losses(),
+  history(),
   x: rms(matmul(oneHot(probe ⍴ [1, T], V), E) + P),
   softmax(einsum("btc,bsc->bts", matmul(x, Wq), matmul(x, Wk)) ÷ (√C) + nmask) ⍴ [T, T]
 },
@@ -1502,8 +1514,8 @@ editable: \${ 1 - training() },
   Text("A 12k-parameter transformer learns to invent names – live, in your tab."),
   Checkbox(training),
   Text("**training** – uncheck to pause; pause to edit the corpus below"),
-  Text("**loss** – the whole run, from first step to now:"),
-  losses,
+  Text("**loss** – on windows it trains on, and on the tenth it never sees; when held out climbs as train falls, it is memorizing:"),
+  curves,
   Text("**it dreams** – regenerated every 200 steps:"),
   Text(dream),
   Button("dream again", dreamNow),
@@ -1584,7 +1596,13 @@ embed: { ids | matmul(oneHot(ids, V), E) + P },
 model: { ids | matmul(cycle(cycle(cycle(embed(ids)))), Wu) }, ; training unrolls R=3 rounds
 modelAt: { ids, r | matmul((cycle ⍣ r)(embed(ids)), Wu) }, ; dreaming picks its own r
 
-loss: { crossEntropy(oneHot(slice(D, [0, 1], [-1, T]), V), model(slice(D, [0, 0], [-1, T]))) },
+; --- what it learns from: B random windows a step; a tenth held out to score it ---
+B: 64,
+cut: { floor((#D) × 0.9) }, ; windows past the cut are held out – never trained on
+lossOn: { d | crossEntropy(slice(d, [0, 1], [-1, T]), model(slice(d, [0, 0], [-1, T]))) },
+loss: { lossOn(take(D, floor(⚄([B]) × cut()))) },
+; a score: 256 windows spread evenly over n windows from from – steady, at a bounded cost
+score: { from, n | lossOn(take(D, from + floor(linspace([0, n - 1], 256)))) },
 
 ; --- sampling: gumbel-max, with temperature and rounds you can drag ---
 τ: $0.5,
@@ -1604,23 +1622,29 @@ training: $1,
 ; post-norm runs hotter than pre-norm: a cooler lr, and no
 ; weight decay – rms-normalized blocks shrink until they blow up
 opt: adamw(0.01, 0),
-losses: $[],
+step: $0,
+; a row each time it measures: (step, training score, held-out score)
+history: $fill([0, 3], 0),
 stride: $4,
-{ i |
+{
   when(once(training), {
-    l: opt(loss),
-    when(i % once(stride) = 0, {
-      losses(losses() ++ (l ⍴ [1])),
+    opt(loss),
+    step← once(step) + 1,
+    s: once(step),
+    when(s % once(stride) = 0, {
+      measured: [s, score(0, cut()), score(cut(), (#D) - cut())],
+      history(concat((history(), measured ⍴ [1, 3]))),
       ; the plot keeps the whole story, bounded: when it fills up,
-      ; thin the history to every other point and log half as often
-      when((#losses()) ≥ 480, {
-        losses(losses()_(0..<240 × 2)),
+      ; thin the history to every other row and measure half as often
+      when((#history()) ≥ 240, {
+        history(history()_(0..<120 × 2)),
         stride← once(stride) × 2
       })
     }),
-    when(i % 200 = 0, dreamNow)
+    when(s % 200 = 0, dreamNow)
   })
 } ⟳ 1000000,
+curves: \${ h: transpose(history()), plot(h_0, (h_1, h_2), ("train", "held out")) },
 
 ; type a beginning – the model finishes it (works even while paused)
 prompt: $"kri",
@@ -1637,8 +1661,8 @@ probe: slice(probeS, [-T]),
 attProbe: { x |
   softmax(einsum("btc,bsc->bts", matmul(x, Wq1), matmul(x, Wk1)) ÷ (√C) + nmask) ⍴ [T, T]
 },
-attn1: \${ losses(), attProbe(embed(probe ⍴ [1, T])) },
-attn3: \${ losses(), attProbe(cycle(cycle(embed(probe ⍴ [1, T])))) },
+attn1: \${ history(), attProbe(embed(probe ⍴ [1, T])) },
+attn3: \${ history(), attProbe(cycle(cycle(embed(probe ⍴ [1, T])))) },
 
 editable: \${ 1 - training() },
 (
@@ -1646,8 +1670,8 @@ editable: \${ 1 - training() },
   Text("Two transformer blocks, stored once, revisited three times – a 6-block-deep name dreamer for a third of the weights (~22k parameters)."),
   Checkbox(training),
   Text("**training** – uncheck to pause; pause to edit the corpus below"),
-  Text("**loss** – the whole run, from first step to now:"),
-  losses,
+  Text("**loss** – on windows it trains on, and on the tenth it never sees; when held out climbs as train falls, it is memorizing:"),
+  curves,
   Text("**it dreams** – regenerated every 200 steps:"),
   Text(dream),
   Button("dream again", dreamNow),

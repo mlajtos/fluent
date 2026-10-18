@@ -1460,6 +1460,19 @@ describe("gallery examples smoke suite", () => {
     expect(read("shape(f([1.5]))")).toEqual([1])
     flushRetirements()
   }, 60_000)
+  test("the dreamers train on random minibatches – a corpus of names.txt's size fits – and score a held-out tenth", () => {
+    for (const name of ["dreamer", "looped-dreamer"]) {
+      steps.length = 0
+      const scope = scopeOf(EXAMPLES[name as keyof typeof EXAMPLES])
+      const corpus = scope.corpus as Signal<string>
+      // ~200k windows: a step over all of them would need gigabytes
+      corpus.value = Array(300).fill(corpus.peek()).join(" ")
+      for (let i = 0; i < 4; i++) { expect([name, unwrap(steps[0]!(engine.scalar(i)))]).toEqual([name, null]) }
+      const [step, train, heldOut] = unwrap(evaluateSyntaxTreeNode(CodeParse("history()_0"), scope)) as number[]
+      expect([name, step, train! > 0, heldOut! > 0]).toEqual([name, 4, true, true])
+      flushRetirements()
+    }
+  }, 60_000)
   test("mnist logs no loss before its data has loaded", async () => {
     const loaded = DefaultEnvironment.LoadSafeTensorFromURL!
     extendEnvironment({ FunctionIterate: real.FunctionIterate, LoadSafeTensorFromURL: loading.LoadSafeTensorFromURL } as Record<string, Value>)
