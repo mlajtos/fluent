@@ -691,7 +691,8 @@ letters: DrawLetters: doc({ s, at, size |
     ; for each text, the glyph cell p falls in: a character is 3 cells and a gap wide, 5 tall
     c: floor(moveaxis(unsqueeze(p, -2) - corners ÷ size, -1, 0)),
     k: floor(c_0 ÷ 4), q: c_0 - 4×k, r: c_1,
-    lit: floor(take(g, 0..<m × n + clamp(k, 0, n-1)) ÷ 2^(14 - (3×r + q))) % 2,
+    ; the bit is read inside the glyph only: past it, 2 to the far power underflows to 0
+    lit: floor(take(g, 0..<m × n + clamp(k, 0, n-1)) ÷ 2^(14 - (3×clamp(r, 0, 4) + clamp(q, 0, 2)))) % 2,
     ; inside the text and lit – each factor is 0 or 1
     min(where((-1 < k) × (k < n) × (q < 3) × (-1 < r) × (r < 5) × lit, 0, 1e9), -1)
   }
