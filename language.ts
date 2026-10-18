@@ -261,6 +261,10 @@ interface FunctionMeta {
   example?: string
   noAutoLift?: boolean
   quotedArgs?: number[]
+  // a binary op's fold: what folding nothing gives, and a native reduction – `reduce +`
+  // runs Σ rather than folding slice by slice
+  identity?: Value
+  reducer?: (x: Value, axis?: Value) => Value
 }
 const NO_META: FunctionMeta = Object.freeze({})
 const getMeta = (fn: Function): FunctionMeta => (fn as any).__meta__ ?? NO_META
@@ -715,10 +719,6 @@ const FunctionCond = function (this: CurrentScope, ...candidates: Value[]): Valu
   return chooseFirst(candidates, [], this, (declines) => NoMatch.of("cond: no branch matched", { cause: declines.at(-1) }))
 }
 
-// reduce's fast path: a binary op with a native reduction, so `reduce +` runs engine.sum
-// rather than folding slice by slice. FunctionArity passes it on to its dispatchers.
-const nativeReducer = new WeakMap<Function, (x: Value, axis?: Value) => Value>()
-
 // Overloaded by arity: two operands run the binary op, one runs the unary op – how + is
 // add and abs. Unlike a cascade, a binary op that fails (1 + a, with a unknown) is not
 // retried as the unary one, so it is an Error, not a quiet abs(1).
@@ -726,8 +726,9 @@ const FunctionArity = (candidates: Function[]) => {
   const [binary, unary] = candidates
   const dispatch = made((a: Value, b: Value) => (b == null ? unary?.(a) : binary?.(a, b)))
   // its card is its candidates': `+` shows add and abs in one hover; a doc() on the
-  // dispatcher afterwards still wins
+  // dispatcher afterwards still wins. A fold of it is its binary's.
   const [b, u] = [binary, unary].map((f): FunctionMeta => typeof f === "function" ? getMeta(f) : {}) as [FunctionMeta, FunctionMeta]
+  setMeta(dispatch, { identity: b.identity, reducer: b.reducer })
   if (b.signature || u.signature) {
     setMeta(dispatch, {
       signature: [b.signature, u.signature].filter(Boolean).join("  ·  "),
@@ -735,9 +736,14 @@ const FunctionArity = (candidates: Function[]) => {
       example: [b.example, u.example].filter(Boolean).join("\n") || undefined,
     })
   }
-  const fast = typeof binary === "function" && nativeReducer.get(binary)
-  if (fast) { nativeReducer.set(dispatch, fast) }
   return dispatch
+}
+
+// identity(f, v): f, knowing v as its identity element – what folding nothing with f
+// gives. Written beside the card, as doc is, and given back the same way.
+const FunctionIdentity = (f: Value, v: Value): Value => {
+  if (isFn(f)) { setMeta(f, { identity: v }) }
+  return f
 }
 
 // A tensor's data as nested JS arrays (a number for a scalar), for control flow and
@@ -1093,7 +1099,7 @@ const doc = (target: Value, signature: Value, description: Value, example: Value
 // signal argument does not turn the call into a computed. ⟳ lifted would be a computed
 // that nothing reads, and would run no steps at all.
 for (const f of [FunctionCond, FunctionIterate, SignalRead, SignalUpdate, Reactive, SymbolAssign, Identical,
-  FunctionNoAutoLift, FunctionGuard, FunctionTry, FunctionWhen, doc]) { setMeta(f, { noAutoLift: true }) }
+  FunctionNoAutoLift, FunctionGuard, FunctionTry, FunctionWhen, doc, FunctionIdentity]) { setMeta(f, { noAutoLift: true }) }
 
 // MARK: Lists
 const List = (...args: Value[]) => args
@@ -1208,7 +1214,7 @@ const REDUCTIONS = natives({ TensorSum: engine.sum, TensorProduct: engine.prod, 
     return op(operand(a), axis, keep == null ? undefined : { keepdims: asNumber(keep) !== 0 })
   })
 for (const [op, reduction] of [["TensorAdd", "TensorSum"], ["TensorMultiply", "TensorProduct"], ["TensorMaximum", "TensorMax"], ["TensorMinimum", "TensorMin"]] as const) {
-  nativeReducer.set(BINARY[op]!, REDUCTIONS[reduction] as (x: Value, axis?: Value) => Value)
+  setMeta(BINARY[op]!, { reducer: REDUCTIONS[reduction] as (x: Value, axis?: Value) => Value })
 }
 
 // stack broadcasts its inputs to a common shape, as arithmetic does: stack(x - a, y - b)
@@ -1634,11 +1640,12 @@ const StringConcat = (...args: Value[]) => {
 }
 
 // The items folded left to right with f(acc, item), from init – or from the first item
-// when there is none
+// when there is none. Folding nothing gives f's identity: + folds nothing to 0.
+const emptyFold = (fn: Function): Value => getMeta(fn).identity ?? new Error("an empty fold needs f's identity – give one with identity(f, v)")
 const ListReduce = function (this: CurrentScope, a: Value, fn: Value, init?: Value) {
   if (!Array.isArray(a)) { return decline("a list", a) }
   if (!isFn(fn)) { return new Error("'ListReduce': `fn` must be a function") }
-  if (init == null && a.length === 0) { return new Error("'ListReduce': an empty list with no init has nothing to fold") }
+  if (init == null && a.length === 0) { return emptyFold(fn) }
   let acc: Value = init == null ? a[0]! : init
   for (const v of init == null ? a.slice(1) : a) { acc = fn.call(this, acc, v) }
   return acc
@@ -1650,16 +1657,17 @@ const StringReduce = function (this: CurrentScope, a: Value, fn: Value, init?: V
 const LEADING_AXIS: Value = engine.tensor(0)
 // A tensor's rows, or its slices along the axis given: `1 ..< 10 reduce +` = 45, `x reduce
 // { a, b | a - b }` = ((x_0-x_1)-x_2)-… A known op takes its native reduction, pinned to
-// the leading axis as a fold is – the native reductions default to every axis.
+// the leading axis as a fold is – the native reductions default to every axis. Folding
+// no slices gives f's identity in the shape of one.
 const TensorReduce = function (this: CurrentScope, a: Value, fn: Value, axis?: Value) {
   if (!isTensorish(a)) { return decline("numbers", a) }
   if (!isFn(fn)) { return new Error("`reduce(x, fn, axis?)`: the second argument must be a function") }
-  const fast = nativeReducer.get(fn)
-  if (fast) { return fast(a, axis == null ? LEADING_AXIS : axis) }
+  const { reducer } = getMeta(fn)
+  if (reducer) { return reducer(a, axis == null ? LEADING_AXIS : axis) }
   const parts = TensorUnstack(a, axis)
-  // a known op has an identity (Σ[] = 0); a custom fn's is unknown
-  if (parts.length === 0) { return new Error("`reduce`: an empty list of numbers has nothing to fold with a custom function") }
-  return ListReduce.call(this, parts, fn)
+  if (parts.length) { return ListReduce.call(this, parts, fn) }
+  const none = emptyFold(fn), shape = shapeOf(a), k = axis == null ? 0 : asWhole(axis)
+  return none instanceof Error ? none : engine.broadcastTo(tensorArg(none), shape.filter((_, i) => i !== (k + shape.length) % shape.length))
 }
 // fold(x, f, start): f walks the items from start. A tensor's reduce takes an axis
 // third, so its fold is a member of its own.
@@ -1769,7 +1777,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   SymbolAssign, CodeParse, CodeEvaluate,
   FunctionIterate, FunctionRepeat, FunctionMemo, FunctionThen, FunctionIs, TensorIs, ListIs, StringIs, ErrorIs, Identical,
   FunctionCascade, FunctionCond, FunctionArity, FunctionApply, FunctionNoAutoLift,
-  FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc,
+  FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc, FunctionIdentity,
   Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate,
   ...UNARY, ...BINARY, ...REDUCTIONS,
   TensorStack, TensorUnstack, TensorRank, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,

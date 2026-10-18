@@ -168,7 +168,7 @@ TensorReverse: doc(TensorOnly({ x, k |
 }), "TensorReverse(x, axes?)", "x's rows back to front – or x reversed along each of the axes given.", "TensorReverse([[1, 2], [3, 4]], 1) = [[2, 1], [4, 3]]"),
 reverse: doc(cascade((TensorReverse, ListReverse, StringReverse)), "reverse(x, axes?)", "x's items back to front; a tensor along the axes given, too.", "reverse(\"abc\") = \"cba\", reverse([[1, 2], [3, 4]]) = [[3, 4], [1, 2]]"),
 concat: doc(cascade((TensorConcat, ListConcat, StringConcat)), "a concat b  ·  concat(xs, axis?)", "a's items, then b's: tensors along the leading axis, lists, strings. concat(xs) joins the containers listed in xs – tensors along the axis given.", "(1, 2) concat (3,) = (1, 2, 3), concat((\"ab\", \"cd\")) = \"abcd\", concat(([[1], [2]], [[3], [4]]), 1) = [[1, 3], [2, 4]]"),
-reduce: doc(cascade((TensorReduce, ListReduce, StringReduce)), "x reduce f", "Fold x's items left to right with f – a tensor's along the axis given, too. Known ops (+, ×, ⌈, ⌊) fold numbers natively, so on a vector x reduce ⌈ is max.", "(1, 2, 3) reduce + = 6, [[1, 2], [3, 4]] reduce + = [4, 6], 1..<10 reduce + = 45"),
+reduce: doc(cascade((TensorReduce, ListReduce, StringReduce)), "x reduce f", "Fold x's items left to right with f – a tensor's along the axis given, too. Known ops (+, ×, ⌈, ⌊) fold numbers natively, so on a vector x reduce ⌈ is max. Folding nothing gives f's identity: () reduce + is 0.", "(1, 2, 3) reduce + = 6, [[1, 2], [3, 4]] reduce + = [4, 6], 1..<10 reduce + = 45"),
 TensorScan: doc(TensorOnly({ x, f, k |
   ax: cond(guard(identical(k, ◌), { 0 }), { k }),
   y: moveaxis(x, ax, 0), n: #y,
@@ -184,6 +184,7 @@ TensorScan: doc(TensorOnly({ x, f, k |
 }), "TensorScan(x, f, axis?)", "The running fold of x's rows with f – or of its slices along the axis given. f must be associative: the fold takes log₂ n steps.", "TensorScan([[1, 2, 3], [4, 5, 6]], +, 1) = [[1, 3, 6], [4, 9, 15]]"),
 scan: doc(cascade((TensorScan, ListScan, StringScan)), "x scan f", "The running fold: item i combines items 0 … i with f, so its last item is x reduce f. With + a cumulative sum, with ⌈ a running maximum.", "[1, 2, 3, 4] scan + = [1, 3, 6, 10], (1, 2, 3) scan + = (1, 3, 6)"),
 fold: doc(cascade((TensorFold, ListReduce, StringReduce)), "fold(x, f, start)", "Walk x's items from start, carrying what f makes: f(f(start, x_0), x_1) … – a loop over the items whose result can be of any kind.", "fold((1, 2, 3), { s, v | s × 10 + v }, 0) = 123"),
+identity: doc(FunctionIdentity, "identity(f, v)", "f, knowing v as its identity element – what folding nothing with f gives, as + folds nothing to 0.", "() reduce identity({ a, b | a + b }, 0) = 0"),
 TensorLength: doc(TensorLength, "TensorLength(x, axis?)", "How long x's leading axis is, or the axis given; a number is one item.", "TensorLength([[1, 2], [3, 4], [5, 6]]) = 3"),
 TensorGet: doc(TensorGet, "TensorGet(x, i)", "Row i of x; a negative i counts from the end.", "TensorGet([[1, 2], [3, 4]], -1) = [3, 4]"),
 TensorGather: doc(TensorGather, "TensorGather(x, indices)", "The rows of x at indices, any shape of them; a negative index counts from the end, and one out of range is an Error.", "TensorGather([10, 20, 30], [2, -3]) = [30, 10]"),
@@ -277,11 +278,11 @@ ListReduce: doc(ListReduce, "ListReduce(list, f, init?)", "Fold a list left to r
 ListScan: doc(ListScan, "ListScan(list, f, init?)", "Like ListReduce, but keep every step – the running fold, starting from init, or from the first element.", "ListScan((1, 2, 3), +, 0) = (0, 1, 3, 6)"),
 
 ; Arithmetic – + and × are the engine's; the rest are made from them
-add: doc(TensorAdd, "x + y", "Element-wise addition; shapes broadcast.", "[1, 2] + 10 = [11, 12]"),
-mul: doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcast.", "[1, 2] × 3 = [3, 6]"),
+add: identity(doc(TensorAdd, "x + y", "Element-wise addition; shapes broadcast.", "[1, 2] + 10 = [11, 12]"), 0),
+mul: identity(doc(TensorMultiply, "x × y", "Element-wise multiplication; shapes broadcast.", "[1, 2] × 3 = [3, 6]"), 1),
 neg: TensorNegate: doc({ x | x × -1 }, "neg(x)", "Negate each element.", "neg([1, -2]) = [-1, 2]"),
-sub: TensorSubtract: doc({ x, y | x + (y × -1) }, "x - y", "Element-wise subtraction; shapes broadcast.", "[3, 4] - 1 = [2, 3]"),
-div: doc(TensorDivide, "x ÷ y", "Element-wise division; shapes broadcast.", "[3, 4] ÷ 2 = [1.5, 2]"),
+sub: TensorSubtract: identity(doc({ x, y | x + (y × -1) }, "x - y", "Element-wise subtraction; shapes broadcast.", "[3, 4] - 1 = [2, 3]"), 0),
+div: identity(doc(TensorDivide, "x ÷ y", "Element-wise division; shapes broadcast.", "[3, 4] ÷ 2 = [1.5, 2]"), 1),
 (/): (÷): doc(FunctionArity((div, TensorReciprocal)), "x ÷ y  ·  ÷x", "Element-wise division; shapes broadcast. With one argument, the reciprocal: ÷x is 1 ÷ x.", "[3, 4] ÷ 2 = [1.5, 2], ÷(4) = 0.25"),
 (%): mod: TensorRemainder: doc({ a, b | m: a - (floor(a ÷ b) × b), where(abs(m) = abs(b), 0, m) }, "x % y", "The remainder of x ÷ y with the sign of y – a floored modulo, so it wraps around like a clock.", "[7, -7] % 3 = [1, 2]"),
 pow: doc(TensorPower, "x ^ y", "x to the power y, element by element.", "2 ^ [1, 2, 3] = [2, 4, 8]"),
@@ -371,8 +372,8 @@ mish: TensorMish: doc({ x | x × tanh(softplus(x)) }, "mish(x)", "A self-gated a
 (≠): (!=): notEqual: TensorNotEqual: doc({ x, y | 1 - (x = y) }, "x ≠ y", "Element-wise inequality: 1 where the operands differ, else 0; shapes broadcast.", "([1, 2, 3] ≠ 2) = [1, 0, 1]"),
 
 ; Logical
-(∨): or: TensorOr: doc({ x, y | x<0 ⌈ 0<x ⌈ (y<0 ⌈ 0<y) }, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]"),
-(∧): and: TensorAnd: doc({ x, y | x<0 ⌈ 0<x × (y<0 ⌈ 0<y) }, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]"),
+(∨): or: TensorOr: identity(doc({ x, y | x<0 ⌈ 0<x ⌈ (y<0 ⌈ 0<y) }, "x ∨ y", "Element-wise logical or: 1 where either operand is nonzero, else 0.", "[0, 1, 0] ∨ [0, 1, 1] = [0, 1, 1]"), 0),
+(∧): and: TensorAnd: identity(doc({ x, y | x<0 ⌈ 0<x × (y<0 ⌈ 0<y) }, "x ∧ y", "Element-wise logical and: 1 where both operands are nonzero, else 0.", "[0, 1, 1] ∧ [1, 1, 0] = [0, 1, 0]"), 1),
 (¬): not: TensorNot: doc({ x | 1 - (x<0 ⌈ 0<x) }, "¬x", "Logical not: 1 where x is zero, else 0.", "(¬[0, 2]) = [1, 0]"),
 (⊻): xor: TensorXor: doc({ x, y | abs(x<0 ⌈ 0<x - (y<0 ⌈ 0<y)) }, "x ⊻ y", "Element-wise exclusive or: 1 where exactly one operand is nonzero.", "[0, 1, 1] ⊻ [1, 1, 0] = [1, 0, 1]"),
 (⍲): nand: TensorNand: doc({ a, b | ¬(a ∧ b) }, "x ⍲ y", "Element-wise nand: 0 where both operands are nonzero, else 1. Functionally complete – every gate builds from it.", "[0, 1, 1] ⍲ [1, 1, 0] = [1, 0, 1]"),
@@ -389,8 +390,8 @@ mish: TensorMish: doc({ x | x × tanh(softplus(x)) }, "mish(x)", "A self-gated a
 ; and max(a, b) look alike, and the axis would be taken for an operand
 max: doc(TensorMax, "max(x, axis?)", "The largest element, over one axis or the whole tensor. The larger of two numbers is a ⌈ b.", "max([3, 1, 2]) = 3"),
 min: doc(TensorMin, "min(x, axis?)", "The smallest element, over one axis or the whole tensor. The smaller of two numbers is a ⌊ b.", "min([3, 1, 2]) = 1"),
-(⌈): FunctionArity((doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]"), TensorCeil)),
-(⌊): FunctionArity((doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]"), TensorFloor)),
+(⌈): FunctionArity((identity(doc(TensorMaximum, "x ⌈ y", "Element-wise maximum of two tensors.", "[1, 5] ⌈ [4, 2] = [4, 5]"), -1÷0), TensorCeil)),
+(⌊): FunctionArity((identity(doc(TensorMinimum, "x ⌊ y", "Element-wise minimum of two tensors.", "[1, 5] ⌊ [4, 2] = [1, 2]"), 1÷0), TensorFloor)),
 argmax: TensorArgMax: doc({ x, k |
   y: cond(guard(identical(k, ◌), { flat(x) }), guard(k % (#shape(x)) = (#shape(x))-1, { x }), { moveaxis(x, k, -1) }),
   n: #(y, -1),
@@ -958,7 +959,7 @@ StringGather: doc(StringGather, "StringGather(s, indices)", "The characters at t
 StringTake: doc(StringTake, "StringTake(s, n)", "The first n characters; with a negative n, the last n.", "StringTake(\"hello\", -2) = \"lo\""),
 StringDrop: doc(StringDrop, "StringDrop(s, n)", "All but the first n characters; with a negative n, all but the last n.", "StringDrop(\"hello\", 2) = \"llo\""),
 StringReverse: doc(StringReverse, "StringReverse(s)", "s back to front.", "StringReverse(\"abc\") = \"cba\""),
-StringConcat: doc(StringConcat, "StringConcat(a, b, …)  ·  StringConcat(strings)", "Strings joined end to end – after the first, a value that isn't a string as the source that writes it. One list of strings joins the strings in it.", "StringConcat(\"ab\", \"cd\") = \"abcd\""),
+StringConcat: identity(doc(StringConcat, "StringConcat(a, b, …)  ·  StringConcat(strings)", "Strings joined end to end – after the first, a value that isn't a string as the source that writes it. One list of strings joins the strings in it.", "StringConcat(\"ab\", \"cd\") = \"abcd\""), ""),
 StringReduce: doc(StringReduce, "StringReduce(s, f, init?)", "Fold the characters left to right with f, from init or from the first character.", "StringReduce(\"abc\", { a, c | StringConcat(c, a) }) = \"cba\""),
 StringScan: doc(StringScan, "StringScan(s, f, init?)", "The running fold of the characters, as a list: its last item is StringReduce(s, f).", "StringScan(\"abc\", StringConcat) = (\"a\", \"ab\", \"abc\")"),
 StringToCodes: doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\"abc\") = [97, 98, 99]"),

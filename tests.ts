@@ -827,7 +827,7 @@ describe("language fixes", () => {
   })
   test("list and string natives fail as values, not as JS errors", () => {
     expect(message("ListReduce(5, +)")).toContain("a list")
-    expect(message("ListReduce((), +)")).toContain("empty")
+    expect(message("ListReduce((), { a, b | a + b })")).toContain("empty")
     expect(value("ListReduce((1, 2), { a, b, i | identical(i, ◌) }, 0)")).toBe(1)
     expect(run("ListConcat((1,), 2)")).toBeInstanceOf(Error)
     expect(message(`StringConcat("a", ◌)`)).toContain("◌")
@@ -1680,6 +1680,20 @@ describe("one vocabulary for items: a tensor's rows, a list's elements, a string
   test("the list members read the list they are given, not the cells inside it", () => {
     expect(value("x: $1, identical(ListGet(ListConcat((x,), (2,)), 0), x)")).toBe(1)
     expect(value("x: $1, identical(ListGet(ListTake((x, 2), 1), 0), x)")).toBe(1)
+  })
+  test("folding nothing gives f's identity; with none, an Error says so", () => {
+    expect(value("() reduce +")).toBe(0)
+    expect(value("[] reduce -")).toBe(0)            // FunctionArity passes its binary's on
+    expect(value("[] reduce ÷")).toBe(1)
+    expect(value("() reduce ⌈")).toBe(-Infinity)
+    expect(value("[] reduce ∨")).toBe(0)
+    expect(value("() reduce ∧")).toBe(1)
+    expect(text('"" reduce StringConcat')).toBe("")
+    expect(value("fill([0, 3], 0) reduce identity({ a, b | a + b }, 1)")).toEqual([1, 1, 1])   // one row's shape
+    expect(value("() reduce identity({ a, b | a + b }, 7)")).toBe(7)
+    // an empty inner product of a ring whose fold has an identity
+    expect(value("fill([2, 0], 0) (× ∙ identity({ a, b | a + b }, 0)) fill([0, 3], 0)")).toEqual([[0, 0, 0], [0, 0, 0]])
+    expect((run("() reduce { a, b | a + b }") as Error).message).toBe("an empty fold needs f's identity – give one with identity(f, v)")
   })
 })
 
