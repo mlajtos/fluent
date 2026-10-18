@@ -32,6 +32,7 @@ const MATH_JVP: Record<string, (u: UOp, x: UOp, y: UOp) => UOp[]> = {
   atan2: (_u, y, x) => { const r = recip(add(sq(x), sq(y))); return [mul(x, r), neg(mul(y, r))]; },  // (x·dy − y·dx) ÷ (x² + y²)
   div: (u, _x, y) => { const r = recip(y); return [r, neg(mul(u, r))]; },  // dx ÷ y − (x ÷ y)·dy ÷ y
   pow: (u, x, y) => [mul(y, math("pow", x, add(y, konst(-1)))), mul(u, log(x))],  // y·xʸ⁻¹·dx + xʸ·ln x·dy
+  mul0: (_u, x, y) => [y, x],                                                // a product's: y·dx + x·dy
 };
 
 type Jvp = (u: UOp, d: (UOp | null)[]) => UOp | null;
@@ -65,12 +66,14 @@ export const JVP: Partial<Record<UOp["op"], Jvp>> = {
 
 // A cotangent of exactly 0 carries nothing back, whatever it meets. `where` routes 0 to
 // the branch it didn't take, and that branch's slope may be infinite or NaN there – the
-// slope of sin(x) ÷ x at 0 – where 0 × ∞ would poison the answer. A NaN the cotangent
-// itself carries still propagates; a finite constant factor needs no guard.
+// slope of sin(x) ÷ x at 0 – where 0 × ∞ would poison the answer. So the transpose is the
+// product in which 0 is strong, mul0; its derivative is the product's, so an outer ∇ still
+// sees ct × f change with ct at ct = 0. A NaN the cotangent itself carries still
+// propagates; a finite constant factor needs no guard.
 const finite = (f: UOp): boolean =>
   (f.op === "CONSTANT" && Array.from(f.arg as Float32Array).every(Number.isFinite)) ||
   ((f.op === "BROADCAST" || f.op === "RESHAPE") && finite(f.src[0]!));
-const times = (ct: UOp, f: UOp): UOp => (finite(f) ? mul(ct, f) : where(math("eq", ct, konst(0)), zeros(ct.shape), mul(ct, f)));
+const times = (ct: UOp, f: UOp): UOp => (finite(f) ? mul(ct, f) : math("mul0", ct, f));
 
 type Tr = (u: UOp, ct: UOp, isLin: (s: UOp) => boolean) => (UOp | null)[];
 export const TRANSPOSE: Partial<Record<UOp["op"], Tr>> = {

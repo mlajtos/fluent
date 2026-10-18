@@ -679,6 +679,12 @@ describe("differentiation and optimization", () => {
   test("higher-order gradient", () => {
     expect(value("∇(∇({ x | x^3 }))(2)")).toBe(12)
   })
+  test("a higher derivative holds where a cotangent is exactly 0", () => {
+    // the 0 × ∞ guard keeps the product's derivative, so an outer ∇ still sees it at 0
+    expect(value("(∇(∇{ x | x × sin(x) }))(0)")).toBe(2)
+    expect(value("(∇(∇gelu))(0)")).toBeCloseTo(0.798, 3)
+    expect(value("(∇{ v | (∇{ z | v × z^3 })(2) })(0)")).toBe(12)
+  })
   test("gradient of an elementwise function maps over vectors", () => {
     // a non-scalar output pulls back a ones cotangent
     expect(value("∇({ x | x^2 })([1, 2, 3])")).toEqual([2, 4, 6])
@@ -1110,6 +1116,11 @@ describe("inverse and ⍢ around", () => {
     expect(value("inverse({ x | x^3 + x })(10)")).toBeCloseTo(2, 5)
     expect(value("2 inverse(^) 8")).toBeCloseTo(3, 5)
     expect(value("inverse(log)([1, 2, 3])")).toEqual([Math.E, Math.E ** 2, Math.E ** 3].map((x) => expect.closeTo(x, 4)))
+  })
+  test("∇ of an inverse is 1 ÷ the slope, also where Newton lands exactly", () => {
+    // Newton's residual is exactly 0 when it lands: its cotangent too, which the 0 × ∞ guard must not drop
+    expect(value("g: { x | x^3 + x }, (∇{ y | (g ⍣ -1)(y) })([10, 2, 30])")).toEqual([1 / 13, 1 / 4, 1 / 28].map((x) => expect.closeTo(x, 5)))
+    expect(value("(∇{ y | (square ⍣ -1)(y) })(9)")).toBeCloseTo(1 / 6, 5)
   })
   test("a failed seed falls through to another with try", () => {
     expect(value("cond(try({ solve(cos, 0, 0) }), { solve(cos, 0, 1) })")).toBeCloseTo(Math.PI / 2, 5)
@@ -1928,7 +1939,7 @@ describe("the engine", () => {
     const { gradAll } = await import("./engine/grad.ts")
     const { matmul } = await import("./engine/tests/vocab.ts")
     const X = ir.buffer("X", [256, 128]), W = ir.buffer("W", [128, 64]), y = matmul(X, W)
-    const [dW, dX] = gradAll(ir.sum(ir.mul(y, y)), [W, X])               // ∇'s products are guarded where the cotangent is 0
+    const [dW, dX] = gradAll(ir.sum(ir.mul(y, y)), [W, X])               // ∇'s products are mul0: 0 × ∞ is 0
     expect([tiled(await lowered(y)), tiled(await lowered(dW)), tiled(await lowered(dX))]).toEqual([true, true, true])
   })
   test("a tile grid past 65,535 workgroups on an axis folds into two", async () => {

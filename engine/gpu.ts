@@ -89,7 +89,7 @@ ${c.scopes[0]!.join("\n")}
 // ── tiling as a schedule rule: match the LOOP NEST, never a name. A tiled matmul is a
 // schedule for `for i,j: out[i,j] = Σₖ f(a[…], b[…])`, visible in the IR as an ADD-ACC whose
 // body is a sum of terms, each an elementwise function of two reads: a product, or ∇'s
-// product guarded where the cotangent is 0. Cooperative staging requires a[…] independent
+// product in which 0 is strong (mul0). Cooperative staging requires a[…] independent
 // of col and b[…] of row — PROVED by rewriting each index over fresh row, col and k
 // variables: the index simplifier drops a variable the index does not read, and a read
 // that still names both is declined (a wrong assumption here is a silent miscompile).
