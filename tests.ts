@@ -2027,9 +2027,9 @@ describe("the engine", () => {
     expect(joined.slice(200).js()).toEqual(pieces[200]!.slice(0).js())
   })
   // a WebGPU device that only counts what the GPU executor asks of it
-  const fakeGpu = async () => {
+  const fakeGpu = async ({ failFirst = false } = {}) => {
     const { GPU } = await import("./engine/gpu.ts")
-    const log = { pipelines: 0, destroyed: 0, done: [] as WeakRef<Promise<void>>[] }
+    const log = { pipelines: 0, destroyed: 0, popped: 0, done: [] as WeakRef<Promise<void>>[] }
     const buffer = (size: number) => ({ size, destroy: () => { log.destroyed++ } }) as unknown as GPUBuffer
     const pass = { setPipeline() {}, setBindGroup() {}, dispatchWorkgroups() {}, end() {} }
     const dev = {
@@ -2037,7 +2037,7 @@ describe("the engine", () => {
       createComputePipeline: () => { log.pipelines++; return { getBindGroupLayout: () => ({}) } },
       createCommandEncoder: () => ({ beginComputePass: () => pass, copyBufferToBuffer() {}, finish: () => ({}) }),
       queue: { writeBuffer() {}, submit() {}, onSubmittedWorkDone: () => { const p = Promise.resolve(); log.done.push(new WeakRef(p)); return p } },
-      pushErrorScope() {}, popErrorScope: async () => null,
+      pushErrorScope() {}, popErrorScope: async () => (failFirst && !log.popped++ ? { message: "invalid" } : null),
     }
     ;(globalThis as any).GPUBufferUsage ??= { STORAGE: 128, COPY_SRC: 4, COPY_DST: 8 }
     return { gpu: new GPU(dev as unknown as GPUDevice, false), log, buffer }
@@ -2047,6 +2047,20 @@ describe("the engine", () => {
     const { CPU } = await import("./engine/cpu.ts")
     const inputs = new Map([["i", { data: Float32Array.of(0, 1, 1), shape: [3] }], ["v", { data: Float32Array.of(Infinity, 1, 2), shape: [3] }]])
     expect(Array.from(new CPU().realizeSync([ir.scatterAdd(ir.buffer("i", [3]), ir.buffer("v", [3]), 2)], inputs)[0]!.data)).toEqual([Infinity, 3])
+  })
+  test("a GPU validation error belongs to its own plan's results, not the next call", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { gpu, buffer } = await fakeGpu({ failFirst: true }), x = ir.buffer("x", [8]), xb = buffer(32)
+    const [a] = gpu.computeSync([ir.mul(x, ir.konst(2))], () => xb)
+    await new Promise((r) => setTimeout(r, 0))
+    // an unrelated plan runs: the error is not raised there
+    const [b] = gpu.computeSync([ir.add(x, ir.konst(3))], () => xb)
+    expect(b).toBeDefined()
+    await expect(gpu.readAsync(a!, 8)).rejects.toThrow("gpu validation: invalid")
+    expect(() => gpu.readSync(a!, 8)).toThrow("gpu validation: invalid")
+    // a plan that computes from the failed result fails the same way
+    const [c] = gpu.computeSync([ir.mul(ir.buffer("a", [8]), ir.konst(4))], () => a!)
+    await expect(gpu.readAsync(c!, 8)).rejects.toThrow("gpu validation: invalid")
   })
   test("roots that compute one value still get a buffer each", async () => {
     const ir = await import("./engine/ir.ts")

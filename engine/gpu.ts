@@ -2,8 +2,8 @@
 // the executor never mentions an op. Index math, view folding and reduce loops are all
 // decided in the IR — cpu.ts walks the same nodes. Every value is f32.
 
-import type { UOp, Syntax } from "./ir.ts";
-import { node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM, range, iconst, iadd, imul, idiv, imod, load, rebuild, nest, planUses, render, bind, infix, INDEX_SYNTAX } from "./ir.ts";
+import type { UOp, Syntax, Site } from "./ir.ts";
+import { siteLabel, node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM, range, iconst, iadd, imul, idiv, imod, load, rebuild, nest, planUses, render, bind, infix, INDEX_SYNTAX } from "./ir.ts";
 import { graphRewriteMany } from "./rewrite.ts";
 import { optimizeMany, COST, planner, checkMemory, rangesIn, MEMORY_BUDGET } from "./opt.ts";
 
@@ -381,13 +381,15 @@ export class GPU {
 
   #reader: ((buffer: GPUBuffer, bytes: number) => Uint8Array) | null = null;
   readSync(b: GPUBuffer, n: number): Float32Array {
-    this.#raiseLate();
+    const failed = this.#failed.get(b);
+    if (failed) throw failed;
     this.#reader ??= syncReader(this.#dev);
     const bytes = this.#reader(b, Math.max(n, 1) * 4);
     return new Float32Array(bytes.buffer, bytes.byteOffset, Math.max(n, 1)).slice(0, n);
   }
   async readAsync(b: GPUBuffer, n: number): Promise<Float32Array> {
-    this.#raiseLate();
+    const failed = await this.#validated.get(b);
+    if (failed) throw failed;
     const size = Math.max(n, 1) * 4, staging = this.#dev.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }), enc = this.#dev.createCommandEncoder();
     enc.copyBufferToBuffer(b, 0, staging, 0, size);
     this.#dev.queue.submit([enc.finish()]);
@@ -397,10 +399,11 @@ export class GPU {
     return out;
   }
   // Profiling: while `profile` collects, each kernel runs in a pass of its own between two
-  // timestamps, labelled by its shape and form – measured attribution of a step's GPU time.
-  profile: { label: string; ms: number; wgsl: string }[] | null = null;
+  // timestamps, labelled by its source line, shape and form – measured attribution of a
+  // step's GPU time. A plan's kernels carry the sites of the graph that compiled it.
+  profile: { label: string; ms: number; wgsl: string; site?: Site }[] | null = null;
   #pending: Promise<void>[] = [];
-  async profiled(): Promise<{ label: string; ms: number; wgsl: string }[]> { await Promise.all(this.#pending); this.#pending = []; const p = this.profile ?? []; this.profile = null; return p; }
+  async profiled(): Promise<{ label: string; ms: number; wgsl: string; site?: Site }[]> { await Promise.all(this.#pending); this.#pending = []; const p = this.profile ?? []; this.profile = null; return p; }
   // Work in flight, one promise per computeSync until it is done. A display frame waits
   // behind whatever is queued ahead of it, so a loop that keeps submitting starves the
   // screen: it should wait for `drained(depth)` before its next step.
@@ -408,16 +411,16 @@ export class GPU {
   async drained(depth: number): Promise<void> { while (this.#inflight.size > depth) await Promise.race(this.#inflight); }
   #uploaded = new WeakMap<UOp, GPUBuffer>();
   #freeOnCollect = new FinalizationRegistry<GPUBuffer>((b) => b.destroy());
-  #late: Error | null = null;
-  #raiseLate(): void { const e = this.#late; if (e) { this.#late = null; throw e; } }
+  // A validation error arrives after its call returns. It belongs to that call's results:
+  // a read of one raises it, and a later plan that computes from one fails the same way.
+  #validated = new WeakMap<GPUBuffer, Promise<Error | null>>();
+  #failed = new WeakMap<GPUBuffer, Error>();
 
   // ── the live path: synchronous, results stay on the device ────────────────────────
   // computeSync runs the graph and returns one fresh buffer per root, which the caller owns
   // (free it with release). A BUFFER leaf binds the buffer `resolve` names; a CONSTANT is
-  // uploaded once and kept as long as its node lives. Validation errors arrive late and are
-  // raised by the next call.
+  // uploaded once and kept as long as its node lives.
   computeSync(roots: UOp[], resolve: (name: string) => GPUBuffer | undefined): GPUBuffer[] {
-    this.#raiseLate();
     const { plan, bind } = this.#plan(roots), dev = this.#dev;
     dev.pushErrorScope("validation");
     const store = new Map<number, GPUBuffer>(), transient: GPUBuffer[] = [];
@@ -442,7 +445,7 @@ export class GPU {
     const kernels = plan.waves.flat();
     let enc = dev.createCommandEncoder(), dispatched = 0;
     const flush = () => { dev.queue.submit([enc.finish()]); enc = dev.createCommandEncoder(); dispatched = 0; };
-    const timed = this.profile && this.#timestamps && kernels.length ? { qs: dev.createQuerySet({ type: "timestamp", count: Math.min(4096, 2 * kernels.length) }), labels: [] as string[], wgsl: [] as string[] } : null;
+    const timed = this.profile && this.#timestamps && kernels.length ? { qs: dev.createQuerySet({ type: "timestamp", count: Math.min(4096, 2 * kernels.length) }), labels: [] as string[], wgsl: [] as string[], sites: [] as (Site | undefined)[] } : null;
     for (const ks of plan.waves) {
       const tw = (j: number) => (timed ? { timestampWrites: { querySet: timed.qs, beginningOfPassWriteIndex: 2 * (timed.labels.length + j), endOfPassWriteIndex: 2 * (timed.labels.length + j) + 1 } } : undefined);
       let p = enc.beginComputePass(tw(0));
@@ -454,7 +457,7 @@ export class GPU {
         p.dispatchWorkgroups(a.dispatch[0]!, a.dispatch[1] ?? 1, a.dispatch[2] ?? 1); dispatched++;
       });
       p.end();
-      if (timed) for (const u of ks) { const w = (u.arg as { wgsl: string }).wgsl; timed.wgsl.push(w); timed.labels.push(`[${u.shape}] ${w.includes("var<workgroup> As") ? "tile" : w.includes("var<workgroup> part") ? "gemv" : "map"}/${u.src.length}in`); }
+      if (timed) for (const u of ks) { const w = (u.arg as { wgsl: string }).wgsl; timed.wgsl.push(w); timed.sites.push(u.site); timed.labels.push(`${u.site ? siteLabel(u.site) + " " : ""}[${u.shape}] ${w.includes("var<workgroup> As") ? "tile" : w.includes("var<workgroup> part") ? "gemv" : "map"}/${u.src.length}in`); }
       if (dispatched >= SUBMIT_CHUNK) flush();
     }
     // every root returns a buffer of its own: a root that is a leaf (the graph simplified to
@@ -475,15 +478,22 @@ export class GPU {
       this.#pending.push((async () => {
         await dev.queue.onSubmittedWorkDone(); await read.mapAsync(GPUMapMode.READ);
         const t = new BigUint64Array(read.getMappedRange().slice(0)); read.unmap();
-        timed.labels.forEach((label, j) => profile.push({ label, ms: Number(t[2 * j + 1]! - t[2 * j]!) / 1e6, wgsl: timed.wgsl[j]! }));
+        timed.labels.forEach((label, j) => profile.push({ label, ms: Number(t[2 * j + 1]! - t[2 * j]!) / 1e6, wgsl: timed.wgsl[j]!, site: timed.sites[j] }));
         read.destroy(); resolve.destroy(); timed.qs.destroy();
       })());
     }
     flush();
     const done: Promise<void> = dev.queue.onSubmittedWorkDone().then(() => { this.#inflight.delete(done); });
     this.#inflight.add(done);
-    // a pop rejects only when its device is gone (a reload, a GPU reset): nothing is left to validate
-    dev.popErrorScope().then((e) => { if (e) this.#late = new Error(`gpu validation: ${e.message}`); }, () => {});
+    // a pop rejects only when its device is gone (a reload, a GPU reset): nothing is left to
+    // validate. An input that failed fails what is computed from it.
+    const site = roots.find((r) => r.site)?.site;
+    const own = dev.popErrorScope().then((e) => (e ? Object.assign(new Error(`gpu validation: ${e.message}${site ? ` (${siteLabel(site)})` : ""}`), { site }) : null), () => null);
+    const inputs = plan.leaves.map((u) => this.#validated.get(bufOf(u))).filter((p) => p !== undefined);
+    const validated = inputs.length ? Promise.all([own, ...inputs]).then((es) => es.find((e) => e) ?? null) : own;
+    for (const b of result) { this.#validated.set(b, validated); this.#failed.delete(b); }
+    // a buffer released and reused since belongs to its new call
+    validated.then((e) => { if (e) for (const b of result) if (this.#validated.get(b) === validated) this.#failed.set(b, e); });
     for (const b of transient) this.release(b);
     return result;
   }
