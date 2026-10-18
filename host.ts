@@ -9,7 +9,7 @@ import {
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, getOrigin, SignalCreate, SignalUpdate, StringLiteral,
   Signal, computed, signal, onWrite, awaiting, occurrence, keepingFrom, density,
-  engine, isTensor, TensorScalarLive, asError, nextFrame,
+  engine, isTensor, TensorScalarLive, asError, nextFrame, stepsWaiting,
   type Value, type SyntaxTreeNode, type Origin, type CurrentScope,
 } from "./language"
 import {
@@ -131,14 +131,16 @@ const valueOf = (target: Signal): Value => {
 // A live's value now, if it changed since it was shown. A sample that started reads from
 // the GPU (text decoded from codes) is shown once they arrive, and the page keeps the last
 // one until then: a value that changes every frame shows a little late, never blank.
-// Looking at a live takes at most a twentieth of the worker: after a sample that took
-// s ms, its next waits 19s ms – a cheap value is shown every frame, a costly one less
-// often, and the program's own steps keep the rest.
+// While the program has steps waiting – a ⟳ loop behind its count – looking at a live
+// takes at most a twentieth of the worker, over time: a sample that took s ms makes its
+// next due 20s ms after this one was due, or now if it was idle. A cheap value is shown
+// every frame, a costly one less often, and the steps keep the rest. With no steps
+// waiting, every change is shown.
 const sampleOf = (live: Live): void => {
-  const start = performance.now()
-  if (start < live.quiet) { stale = true; return }
+  const start = performance.now(), share = stepsWaiting()
+  if (share && start < live.quiet) { stale = true; return }
   const [value, reads] = awaiting(() => valueOf(live.target))
-  live.quiet = performance.now() + 19 * (performance.now() - start)
+  live.quiet = share ? Math.max(live.quiet + 20 * (performance.now() - start), start) : start
   if (live.target.at === live.at) { return }
   live.at = live.target.at
   live.sample = { value }
@@ -150,25 +152,24 @@ const sampleOf = (live: Live): void => {
 
 let flushScheduled = false
 let pageDrawing = false
-// a write happened: the next display frame looks at what changed – once a frame, however
+// a write happened: what changed is looked at as soon as the page can take it – on the
+// next display frame, or when the page has drawn the last batch – so once a frame, however
 // often the program writes
 let stale = false
 const markDirty = (live?: Live) => {
   if (live) { dirty.add(live) } else { stale = true }
   if (flushScheduled || pageDrawing) { return }
   flushScheduled = true
-  nextFrame(() => flush(true))
+  nextFrame(() => { flushScheduled = false; flush() })
 }
 onWrite(() => markDirty())
-const flush = (frame = false) => {
-  if (frame) { flushScheduled = false }
+const flush = () => {
   // the frame before the last is still on the GPU: the next waits for it
   if (pageDrawing || painter.pending > 1) { if (stale) { markDirty() } return }
-  if (stale && !frame) { markDirty() }
-  if (stale && frame) {
+  if (stale) {
     stale = false
-    // a sample waiting to be shown is shown before the next is taken
-    for (const live of lives.values()) { if (live.reading === 0 && !live.sample) { sampleOf(live) } }
+    // a sample waiting to be shown, or for its reads, is shown before the next is taken
+    for (const live of lives.values()) { if (live.reading === 0 && !live.sample) { sampleOf(live) } else { stale = true } }
     // a live still waiting its turn is looked at in a later frame
     if (stale) { markDirty() }
   }

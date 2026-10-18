@@ -1781,6 +1781,47 @@ describe("gallery examples smoke suite", () => {
     }, 60_000)
   }
 
+  test("a demo you drag descends on the clock: so many steps a second, on any machine", () => {
+    const clock = SignalCreate(engine.scalar(0)), budgets: Value[] = []
+    const record = (_: Value, n: Value) => { budgets.push(n); return null }
+    setMeta(record, { noAutoLift: true })
+    const time = DefaultEnvironment.Time
+    extendEnvironment({ FunctionIterate: record, Time: () => clock } as Record<string, Value>)
+    try {
+      const rates = ["differentiable-reach", "differentiable-aim", "gradient-paint", "geometric-median", "differentiable-cloth"].map((name) => {
+        budgets.length = 0
+        scopeOf(EXAMPLES[name as keyof typeof EXAMPLES])
+        clock.value = engine.scalar(0.5)
+        const rate = unwrap(budgets[0]) * 2
+        clock.value = engine.scalar(0)
+        return [name, rate]
+      })
+      expect(rates).toEqual([["differentiable-reach", 60], ["differentiable-aim", 60], ["gradient-paint", 120], ["geometric-median", 60], ["differentiable-cloth", 240]])
+    } finally {
+      extendEnvironment({ FunctionIterate: stepLater, Time: time } as Record<string, Value>)
+      flushRetirements()
+    }
+  })
+
+  test("the cloth swings like a mass on springs: its far corner lags, overshoots, then comes to rest within a second", () => {
+    steps.length = 0
+    const scope = scopeOf(EXAMPLES["differentiable-cloth"])
+    const step = steps[0]!, rate = 240
+    const corner = () => ((scope.θ as FluentVariable).value.js() as number[][][]).at(-1)![0]!
+    for (let i = 0; i < 4 * rate; i++) { step(engine.scalar(i)) }
+    const from = corner()[0]!
+    ;(scope.pinL as Signal).value = engine.tensor([-0.85, -0.25])
+    const xs: number[] = []
+    for (let i = 0; i < 2 * rate; i++) { step(engine.scalar(i)); xs.push(corner()[0]!) }
+    const to = xs.at(-1)!, travel = to - from
+    // a tenth of a second on, it has gone less than half the way; it swings past where it
+    // comes to rest, and is within 5% of the way there after a second
+    expect((xs[rate / 10]! - from) / travel).toBeLessThan(0.5)
+    expect(Math.max(...xs.map((x) => (x - to) / travel))).toBeGreaterThan(0.1)
+    expect(Math.max(...xs.slice(rate * 1.2).map((x) => Math.abs(x - to) / Math.abs(travel)))).toBeLessThan(0.05)
+    flushRetirements()
+  }, 60_000)
+
   test("deep-delta-learning learns a function: one number in, one out, right where it never trained", () => {
     steps.length = 0
     const scope = scopeOf(EXAMPLES["deep-delta-learning"])
@@ -2541,6 +2582,66 @@ describe("the evaluation host", () => {
     const batch = await after(start, "lives", id)
     expect(batch.lives.find((l: any) => l.id === id).ack).toBe(2)
     expect(numberIn(descOf(batch, id))).toBeCloseTo(0.2)
+  })
+
+  test("a change made while the page draws goes when the page has drawn, not a frame later", async () => {
+    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), x)`)
+    const go = d.items[0].slots.onClick.id, x = d.items[1].id
+    const draw = hold("frames")
+    let start = inbox.length
+    toHost({ t: "call", id: go })
+    await after(start, "lives", x)
+    // no display frame comes: the page's answer alone lets the next batch go
+    const frames: ((t: number) => void)[] = []
+    ;(globalThis as any).requestAnimationFrame = (f: (t: number) => void) => frames.push(f)
+    try {
+      start = inbox.length
+      toHost({ t: "call", id: go })
+      await pause(20)
+      draw()
+      expect(numberIn(descOf(await after(start, "lives", x), x))).toBe(2)
+    } finally {
+      delete (globalThis as any).requestAnimationFrame
+      frames.forEach((f) => f(performance.now()))
+    }
+  })
+
+  // A look that takes 2 ms, after a loop's statement – none, or one with steps always
+  // waiting – and a frame every so many ms, on a clock moved by hand: of 20 frames, how
+  // many show it
+  const costlyLooks = async (loop: string, spacing: number): Promise<number> => {
+    let now = performance.now()
+    const clock = performance.now
+    const spin = (v: Value) => { now += 2; return v }
+    extendEnvironment({ TestSpin: spin } as Record<string, Value>)
+    const d = await evaluate(`x: $(0), ${loop}(Button("go", { x(x() + 1) }), \${ TestSpin(x()) })`)
+    const go = d.items[0].slots.onClick.id, y = d.items[1].id
+    const frames: ((t: number) => void)[] = []
+    ;(globalThis as any).requestAnimationFrame = (f: (t: number) => void) => frames.push(f)
+    performance.now = () => now
+    try {
+      const start = inbox.length
+      for (let i = 0; i < 20; i++) {
+        toHost({ t: "call", id: go })
+        await pause(1)
+        now += spacing
+        frames.splice(0).forEach((f) => f(now))
+      }
+      await pause(10)
+      return inbox.slice(start).filter((m) => m.t === "lives" && m.lives.some((l) => l.id === y)).length
+    } finally {
+      performance.now = clock
+      delete (globalThis as any).requestAnimationFrame
+      frames.forEach((f) => f(performance.now()))
+      await evaluate("0")
+    }
+  }
+  test("while steps wait, a look that costs a little over a twentieth of a frame is shown nearly every frame, not every other", async () => {
+    // a frame every 38 ms: a twentieth of the worker is 1.9 ms a frame
+    expect(await costlyLooks("{ 0 } ⟳ 1000000, ", 36)).toBeGreaterThanOrEqual(16)
+  })
+  test("with no steps waiting, a look is shown every frame, whatever it costs", async () => {
+    expect(await costlyLooks("", 8)).toBe(20)
   })
 
   test("a run waits for the page as any change does: one batch at most is on its way", async () => {

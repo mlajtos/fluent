@@ -882,6 +882,11 @@ const Identical = (a: Value, b: Value) => bit(a === b)
 const scheduler = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler
 const yieldToInput = typeof scheduler?.yield === "function" ? () => scheduler.yield!() : null
 
+// The loops with steps still to run: while there is one, the display takes only its share
+// of the worker (host.ts)
+const behind = new Set<object>()
+const stepsWaiting = (): boolean => behind.size > 0
+
 // Async repeat (⟳): runs fn between frames so the UI stays live. The loop belongs to the
 // evaluation that started it – a re-evaluation cancels it. It gives back a signal that
 // holds ◌ while the steps succeed; a step that fails stops the loop, and the signal
@@ -909,7 +914,7 @@ const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Va
 
   const generation = currentGeneration, scope = this, failure = signal<Value>(null)
   let i = 0, batch = 1, prev = 0, scheduled = false, cancelled = false
-  registerDisposable(() => { cancelled = true })
+  registerDisposable(() => { cancelled = true; behind.delete(failure) })
   const gone = () => generation !== currentGeneration || cancelled
 
   // Paced by display frames: steps align to the display, a hidden tab pauses the loop,
@@ -921,7 +926,8 @@ const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Va
     if (gone()) { return }
     // idle, not finished: a live budget may grow again, so the loop keeps looking
     const target = readTarget()
-    if (i >= target) { if (live) { schedule() } return }
+    if (i >= target) { behind.delete(failure); if (live) { schedule() } return }
+    behind.add(failure)
     if (prev) { batch = t - prev > 25 ? Math.max(1, batch >> 1) : Math.min(64, batch + Math.max(1, batch >> 2)) }
     prev = t
     // The batch is a plan: it ends once this frame's own step time passes 25 ms (time
@@ -935,7 +941,7 @@ const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Va
       if (gone()) { return }
       const start = performance.now()
       const result = occurrence(() => safeApply(fn, [engine.scalar(i)], scope))
-      if (result instanceof Error) { cancelled = true; failure.value = result; return }
+      if (result instanceof Error) { cancelled = true; behind.delete(failure); failure.value = result; return }
       i++
       stepTime += performance.now() - start
       if (stepTime > 25) { break }
@@ -944,6 +950,7 @@ const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Va
         if (gone()) { return }
       }
     }
+    if (i >= target) { behind.delete(failure) }
     schedule()
   }
   // one pending frame at a time, or every wake-up would start another pump
@@ -1834,7 +1841,7 @@ export {
   engine, FluentVariable, FluentData, isTensor, TensorScalarLive,
   CodeParse, getParseErrors,
   evaluateSyntaxTreeNode, CodeEvaluate, getAsSyncList, getMeta, setMeta, getOrigin,
-  evaluateGeneration, flushRetirements, registerDisposable, nextFrame, asError,
+  evaluateGeneration, flushRetirements, registerDisposable, nextFrame, stepsWaiting, asError,
   NoMatch, StringLiteral,
   DefaultEnvironment, extendEnvironment, setCodeNodePrinter, PRELUDE, createScope,
   SignalCreate, SignalUpdate, Signal, signal, computed, onWrite, awaiting, occurrence, keepingFrom, density,

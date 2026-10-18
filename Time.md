@@ -124,17 +124,24 @@ it is now, and does not follow it".
 ## 4. The display
 
 The program's value is live 0 (protocol.ts); every value it shows that is a cell or a
-computed is a live of its own. After a write, the next display frame takes a sample of
-each live whose value changed. Three rules pace it:
+computed is a live of its own. After a write, a sample of each live whose value changed
+is taken as soon as the page can show it: on the next display frame, or when the page has
+drawn the last batch. Three rules pace it:
 
 - **Reads pace updates.** A sample whose numbers or text need a GPU read is shown when
   the read lands; the page keeps the last one until then. A value that changes every
   frame – the Dreamers' live completion – shows a little late, never blank. Test: "text
   decoded on the GPU from a value that changes every frame still shows" (browser).
-- **The page paces batches.** None while the page still draws the last one.
-- **A look costs at most a twentieth of the worker.** After a sample that took `s` ms,
-  that live's next sample waits `19·s` ms. A cheap value is shown every frame, a costly
-  one less often, and the program's own steps keep the rest.
+- **The page paces batches.** None while the page still draws the last one. Test: "a
+  change made while the page draws goes when the page has drawn, not a frame later".
+- **While steps wait, a look costs at most a twentieth of the worker.** While a ⟳ loop is
+  behind its count – training, as fast as it can go – a sample that took `s` ms makes
+  that live's next one due `20·s` ms after this one was due, or at once if the live was
+  idle. A cheap value is shown every frame, a costly one less often, and the steps keep
+  the rest. With no steps waiting – a loop paced by `Time()`, an animation, a drag – every
+  change is shown. Tests: "while steps wait, a look that costs a little over a twentieth
+  of a frame is shown nearly every frame, not every other", "with no steps waiting, a
+  look is shown every frame, whatever it costs".
 
 `Text(s)` takes its text as a live slot, like `Button`'s label, so a text still arriving
 shows when it lands.

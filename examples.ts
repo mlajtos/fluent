@@ -566,7 +566,7 @@ F: { p | dist(p, a()) + dist(p, b()) + dist(p, c()) },
 p: ~[1.6, 1.6],
 opt: adam(0.06),
 𝓛: { F(p) },
-{ opt(𝓛) } ⟳ 100000,
+{ opt(𝓛) } ⟳ Time()×60, ; 60 steps a second
 
 ; the distance field as a heatmap, recomputed as the anchors move. Read the
 ; anchors to concrete tensors first (av/bv/cv), so the ⊗ lambda works on plain
@@ -651,7 +651,7 @@ target: $[0.72, -0.12], ; drag me (orange)
 
 opt: adam(0.06), ; optimiser
 path: \${ fly(vel) }, ; live trajectory for the glow
-{ opt(𝓛) } ⟳ 100000, ; descend the miss
+{ opt(𝓛) } ⟳ Time()×60, ; descend the miss, 60 steps a second
 
 view: [[-1, 1], [-1, 1]], gres: 280,
 gg: linspace([-1, 1], gres),
@@ -695,7 +695,7 @@ a0: 0..<K × (2×π ÷ K), ; blobs start as a tiny huddle at the middle
 
 opt: adam(0.02),
 shown: \${ paint(θ, vg, vres) }, ; the fine picture, for display
-{ opt(𝓛) } ⟳ 100000, ; descend the mismatch
+{ opt(𝓛) } ⟳ Time()×120, ; descend the mismatch, 120 steps a second
 
 view: [[-1, 1], [-1, 1]],
 (
@@ -705,8 +705,8 @@ view: [[-1, 1], [-1, 1]],
 )
 `,
 "differentiable-cloth": `
-; 🧵 Differentiable cloth – a mass-spring sheet hangs and re-poses when you drag a corner;
-; ∇ descends its elastic energy
+; 🧵 Differentiable cloth – a mass-spring sheet hangs from two corners and swings when you
+; drag one; ∇ descends its elastic energy, with momentum
 nx: 6, ny: 6,
 xs: linspace([-0.45, 0.45], nx),
 ys: linspace([-0.4, 0.4], ny), ; row 0 is the top edge (+y is downward on screen)
@@ -738,28 +738,28 @@ pinR: $[0.55, -0.4], ; drag me (cyan) – the top-right corner
   springs + gravity + pinW×pins
 },
 
-opt: adam(0.03),
-{ opt(𝓛) } ⟳ 100000, ; descend the energy
+opt: sgd(0.02, 0.975), ; momentum is the sheet's inertia, 1 - 0.975 its friction
+{ opt(𝓛) } ⟳ Time()×240, ; 240 steps a second
 
 view: [[-1, 1], [-1, 1]],
 gres: 240,
 gg: linspace([-1, 1], gres),
+gx: gg ⍴ [1, gres, 1], gy: gg ⍴ [gres, 1, 1], ; the grid, ready to broadcast
+wt: { m | [1, 1, 1] ⊗(×) m }, ; the same weight for 3 points along an edge
+w: concat((z ⍴ [1, ny, nx], wt(inCol × z), wt(inRow × z)), 0) ⍴ [1, 1, -1], ; wrap edges weighted 0
 mesh: \${ ; glow at every node + 3 samples along each edge → continuous strands
   P: θ,
   seg: { B | P + ([0.25, 0.5, 0.75] ⊗(×) (B - P)) }, ; 3 points along an edge → [3, ny, nx, 2]
-  wt: { m | [1, 1, 1] ⊗(×) m }, ; the same weight for those 3 points
   pts: concat((P ⍴ [1, ny, nx, 2], seg(roll(P, -1, 1)), seg(roll(P, -1, 0))), 0) ⍴ [-1, 2],
-  w: concat((z ⍴ [1, ny, nx], wt(inCol × z), wt(inRow × z)), 0) ⍴ [-1], ; wrap edges weighted 0
-  M: #w,
   q: transpose(pts),
-  dx: gg ⍴ [1, gres, 1] - (q_0 ⍴ [1, 1, M]),
-  dy: gg ⍴ [gres, 1, 1] - (q_1 ⍴ [1, 1, M]),
-  Σ(w ⍴ [1, 1, M] × exp(-(dx^2 + dy^2) ÷ 0.0007), 2)
+  dx: gx - (q_0 ⍴ [1, 1, -1]),
+  dy: gy - (q_1 ⍴ [1, 1, -1]),
+  Σ(w × exp(-(dx^2 + dy^2) ÷ 0.0007), 2)
 },
 
 (
   Text("# 🧵 Differentiable cloth"),
-  Text("Drag either **corner** — the whole elastic sheet re-hangs itself. Springs on every edge, shear diagonals to keep it from folding flat, and gravity; gradient descent on the node positions minimises the total energy each frame. IK on a soft body."),
+  Text("Drag either **corner** — the elastic sheet swings and settles. Springs on every edge, shear diagonals to keep it from folding flat, and gravity add up to one energy. Gradient descent with momentum rolls the node positions down it like a heavy ball: the momentum is the sheet's inertia, so it sways before it comes to rest."),
   Layers(mesh, Point2D(pinL, view, "orange"), Point2D(pinR, view, "cyan")),
 )
 `,
