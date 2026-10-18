@@ -77,7 +77,7 @@ Some cells are still empty — the language is young, and names are earned.
 
 ## IDE
 
-Live evaluation on every keystroke, hover docs, unicode completion (type `alpha`, get `α`), syntax trees for quoted code, camera and microphone as tensor sources, and LLM code generation — write `;;a bouncing ball;;` and it appears (bring your own Anthropic API key, set via the command palette). Hover any built-in for its doc card, or open the built-in [Documentation](https://mlajtos.github.io/fluent/?code=RG9jdW1lbnRhdGlvbg) for the reference.
+Live evaluation on every keystroke, hover docs, unicode completion (type `alpha`, get `α`), syntax trees for quoted code, and camera and microphone as live inputs. Hover any built-in for its doc card, or open the built-in [Documentation](https://mlajtos.github.io/fluent/?code=RG9jdW1lbnRhdGlvbg) for the reference.
 
 <kbd>Ctrl</kbd>+<kbd>O</kbd> examples · <kbd>Ctrl</kbd>+<kbd>S</kbd> share as URL · <kbd>Ctrl</kbd>+<kbd>P</kbd> commands · <kbd>Ctrl</kbd>+<kbd>Space</kbd> complete — Safari reserves ⌘O, use <kbd>⇧</kbd><kbd>⌘</kbd><kbd>O</kbd> there
 

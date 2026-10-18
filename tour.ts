@@ -1,7 +1,7 @@
 // The Tour: a challenge-checked walkthrough of the language, written IN the
 // language. Evaluating the symbol `Tour` in the playground yields this whole
 // interactive value – prose, live editable cells, checked challenges,
-// navigation. client.tsx binds it as a lazy environment entry, so each
+// navigation. host.ts binds it as a lazy environment entry, so each
 // evaluation builds a fresh instance and an unused Tour costs nothing.
 //
 // The arc: rooms 1–9 are the everyday language (reading order → lists →
