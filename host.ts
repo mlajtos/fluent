@@ -8,7 +8,7 @@ import {
   CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate, createScope, DefaultEnvironment,
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, getOrigin, SignalCreate, SignalUpdate, StringLiteral,
-  Signal, computed, signal, onWrite, awaiting, occurrence, keepingFrom,
+  Signal, computed, signal, onWrite, awaiting, occurrence, keepingFrom, density,
   engine, isTensor, TensorScalarLive, asError, nextFrame,
   type Value, type SyntaxTreeNode, type Origin, type CurrentScope,
 } from "./language"
@@ -258,10 +258,14 @@ const windowOf = (t: engine.Tensor): engine.Tensor => {
   return engine.where(engine.tensor(inside), engine.take(t, engine.tensor(at)), NaN)
 }
 
+// the display's pixels a unit, now
+const densityNow = (): number => getAsSyncList(density.peek()) as number
+
 // A tensor's picture, and the numbers that cross with it for the page's labels: its values
 // when they are labelled, otherwise the finite range they span. A heatmap and bars are made
-// when they are painted – a heatmap with its maps laid out and magnified, bars for the
-// canvas's size – and live only until they are on the screen.
+// when they are painted, at the display's density – a heatmap with its maps laid out and
+// magnified, its size in units, bars for the canvas's size – and live only until they are
+// on the screen.
 const prepare = (view: TensorView, t: engine.Tensor): { picture: Picture, numbers: engine.Tensor, size?: [number, number] } => {
   const numbers = (range: engine.Tensor) => (labelled(t.shape) ? t : range)
   if (view === "image") {
@@ -274,12 +278,12 @@ const prepare = (view: TensorView, t: engine.Tensor): { picture: Picture, number
     // the maps' layout is known before anything is computed
     const range = tensorOf(seeing.DrawExtent(t)), [h = 1, w = 1] = tensorOf(seeing.DrawTiles(t)).shape, k = heatScale(h, w)
     engine.materialize([t, range])
-    return { picture: () => tensorOf(seeing.DrawHeatOf(t, range, engine.scalar(k))), numbers: numbers(range), size: [w * k, h * k] }
+    return { picture: () => tensorOf(seeing.DrawHeatOf(t, range, engine.scalar(Math.max(1, Math.round(k * densityNow()))))), numbers: numbers(range), size: [w * k, h * k] }
   }
   const v = windowOf(t), n = engine.scalar(t.size), range = tensorOf(seeing.DrawExtent(v))
   engine.materialize([t, v, range])
   return {
-    picture: ([w, h]) => (w >= 1 && h >= 1 ? tensorOf(seeing.DrawBarsOf(v, n, range, ...[w, h, roomy(w), roomy(h)].map(engine.scalar))) : null),
+    picture: ([w, h]) => (w >= 1 && h >= 1 ? tensorOf(seeing.DrawBarsOf(v, n, range, ...[w, h, roomy(w), roomy(h), densityNow()].map(engine.scalar))) : null),
     numbers: numbers(range),
   }
 }
@@ -770,9 +774,10 @@ const receive = (m: ToWorker) => {
     case "canvas": { painter.attach(m.slot, m.canvas); return }
     case "canvasGone": { painter.detach(m.slot); return }
     case "paint": {
-      const picture = pictures.get(m.id)
+      // the canvas's box, from units to the display's pixels
+      const picture = pictures.get(m.id), D = densityNow()
       if (!picture) { return }
-      painter.paint(m.slot, picture, m.size).then(
+      painter.paint(m.slot, picture, [m.size[0] * D, m.size[1] * D]).then(
         () => { if (dirty.size) { flush() } },
         (e) => { post({ t: "tensor", id: m.id, error: asError(e).message }) },
       )
@@ -782,6 +787,11 @@ const receive = (m: ToWorker) => {
       // the page answers once a frame, so the next batch can go now
       pageDrawing = false
       flush()
+      return
+    }
+    case "density": {
+      // a picture drawn in units follows it, and the page paints its canvases again
+      if (m.value !== densityNow()) { density.value = TensorScalarLive(m.value) }
       return
     }
     case "sampleRate": {

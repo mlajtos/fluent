@@ -17,7 +17,8 @@ Each claim names its test in `tests.ts` or `tests.browser.ts`, or is marked as r
 - a `⟳` step;
 - a button press;
 - a write from the page (a slider, a drag, typing);
-- a frame from a source (camera, microphone, pointer, the `Time()` clock);
+- a frame from a source (camera, microphone, pointer, the `Time()` clock), or a new
+  density of the display (`Density()`);
 - an arrival (a fetch, a value read back from the GPU).
 
 Nothing changes between instants.
@@ -137,6 +138,22 @@ each live whose value changed. Three rules pace it:
 
 `Text(s)` takes its text as a live slot, like `Button`'s label, so a text still arriving
 shows when it lands.
+
+**Pictures are drawn in units**, a CSS pixel each. `Density()` is a source cell: how many of
+the display's pixels make a unit – the page's devicePixelRatio, written at the start and
+whenever it changes (another screen, a zoom), and 1 with no page, as in the tests.
+`canvas`, `pixels`, `draw`, `bars`, `plot` and the IDE's heatmaps and bars read it: a
+picture has the display's own pixels, and its edges are one of them wide. A picture defined
+in the program reads it where the program is defined, so it follows it like any computed and
+draws again at a new density; the page shows a picture with its pixels as the display's.
+
+The cost is that a picture's shape depends on the display: `shape(canvas(520, 160))` is
+[320, 1040, 3] at density 2. Code that draws with shapes never notices; code that indexes
+pixels sees Density()² as many. A drawing at density 2 is 4 times the pixels.
+
+Tests: "a picture is drawn in units, with the display's pixels", "a drawing follows the
+display's density, and the IDE paints heatmaps and bars at it"; in the browser, "a drawing
+has the display's pixels, and follows a change of density".
 
 What live values cost (Apple M1, Chrome, training steps a second over 10 s, two runs
 each): the Dreamer 125–129; makemore 132; the Looped Dreamer 60, or 80–82 with only

@@ -39,7 +39,7 @@ export type Desc = { o?: Where } & (
   // message that follows. A picture with `paint` never crosses: the page hands the worker
   // a canvas to paint it in, and gets numbers for its labels – the values when they are
   // labelled, otherwise the finite range they span. A heatmap's `size` is its picture's,
-  // [width, height] in pixels: its maps laid out and magnified.
+  // [width, height] in units: its maps laid out and magnified.
   | { k: "tensor", id: number, shape: number[], payload?: Float32Array, paint?: true, size?: [number, number] }
   // a signal or a variable and its value now; later values arrive as "live" messages
   | { k: "live", id: number, now?: Desc }
@@ -61,7 +61,9 @@ export const tensorView = (shape: readonly number[]): TensorView =>
 // numbers
 export const FEW = 20
 export const labelled = (shape: readonly number[]): boolean => shape.length <= 2 && shape.reduce((a, b) => a * b, 1) < FEW
-// a heatmap is magnified by a whole number, to about 256 pixels a side
+// A picture shows at its size in units, a CSS pixel each. A heatmap's cells are magnified
+// by a whole number of units, to about 256 a side; an image under 128 units – a raster of
+// data, not a drawing – by the same rule (client.tsx, TensorPlot).
 export const heatScale = (height: number, width: number): number => Math.ceil(256 / Math.max(height, width, 1))
 
 // A number as Fluent writes it, on the page and in String alike. A float32 is the shortest
@@ -98,10 +100,12 @@ export type ToWorker =
   // the last batch of live values is drawn: send the next
   | { t: "drawn" }
   // a canvas the worker paints pictures into, by a slot the page numbers it with; and
-  // the picture to paint there now, with the canvas's size in device pixels
+  // the picture to paint there now, with the canvas's size in units
   | { t: "canvas", slot: number, canvas: OffscreenCanvas }
   | { t: "canvasGone", slot: number }
   | { t: "paint", slot: number, id: number, size: [number, number] }
+  // the display's pixels a unit (devicePixelRatio), at start and on each change
+  | { t: "density", value: number }
 
 export type SourceKind = "camera" | "microphone" | "spectrum" | "pointer"
 

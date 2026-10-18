@@ -225,7 +225,7 @@ s10: Grid(1)(
 ring: { p | abs(dot(p) - 0) }, ; ← a ring: 40 away
 canvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)",
     { r, s |
-      min(shape(r) = [120, 160, 3])
+      min(shape(r) = shape(canvas(160, 120)))
         ∧ (appended(s, "ring([120, 60])") = 0)
         ∧ (appended(s, "ring([80, 20])") = 0)
         ∧ (appended(s, "ring([80, 60])") = 40)
