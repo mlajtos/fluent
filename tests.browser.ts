@@ -294,14 +294,13 @@ test("PointPlot says what it wanted instead of plotting the index", async ({ pag
   await expect(panel(page)).toContainText("must be a tensor")
 })
 
-test("a rank-4 tensor reports its shape instead of plotting a flattened lie", async ({ page }) => {
-  // regression: this warned to the console that rank > 3 is unsupported and
-  // then handed the tensor to BarPlot anyway, which flattens it – a
-  // real-looking chart of something the tensor is not
+test("a rank-4 tensor shows as small multiples on one scale, with its shape", async ({ page }) => {
+  // never flattened to a chart of something the tensor is not: its last two axes are maps,
+  // laid out by the axes before them
   await open(page, "reshape(0 ..< 16, [2, 2, 2, 2])")
-  await expect(panel(page)).toContainText("2, 2, 2, 2")
-  await expect(panel(page)).toContainText("reshape or slice it to plot")
-  await expect(panel(page).locator("canvas, svg")).toHaveCount(0)
+  await expect(panel(page)).toContainText("[2, 2, 2, 2]")
+  await expect(panel(page)).toContainText("15")
+  await expect.poll(() => spreadOf(panel(page).locator("canvas").first())).toBeGreaterThan(10)
 })
 
 test("a 2-channel image renders instead of reading past its buffer", async ({ page }) => {

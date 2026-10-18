@@ -38,8 +38,9 @@ export type Desc = { o?: Where } & (
   // A number shows its value: here when it was on the host, otherwise in a "tensor"
   // message that follows. A picture with `paint` never crosses: the page hands the worker
   // a canvas to paint it in, and gets numbers for its labels – the values when they are
-  // fewer than FEW, otherwise the finite range they span. An image has no numbers.
-  | { k: "tensor", id: number, shape: number[], payload?: Float32Array, paint?: true }
+  // labelled, otherwise the finite range they span. A heatmap's `size` is its picture's,
+  // [width, height] in pixels: its maps laid out and magnified.
+  | { k: "tensor", id: number, shape: number[], payload?: Float32Array, paint?: true, size?: [number, number] }
   // a signal or a variable and its value now; later values arrive as "live" messages
   | { k: "live", id: number, now?: Desc }
   | { k: "callback", id: number }
@@ -48,12 +49,20 @@ export type Desc = { o?: Where } & (
   | { k: "ui", uid: number, type: string, props: Record<string, unknown>, slots: Record<string, Desc>, children: Desc[] }
 )
 
-// How a tensor shows, by its rank – both sides agree: the worker sends what the view needs
-export type TensorView = "number" | "bars" | "heat" | "image" | "shape"
+// How a tensor shows – the one rule both sides follow. Rank 0 is a number and rank 1 bars.
+// [h, w, 3] and [h, w, 4] are a picture's colors, RGB and RGBA: an image. Anything else is
+// a heatmap: a matrix is one map, and a tensor of rank 3 or more shows its last two axes
+// as maps side by side, all on one scale (prelude.fl, DrawTiles).
+export type TensorView = "number" | "bars" | "heat" | "image"
 export const tensorView = (shape: readonly number[]): TensorView =>
-  (["number", "bars", "heat", "image"] as const)[shape.length] ?? "shape"
-// bars or heatmap cells this few are labelled with their values, so they cross as numbers
+  shape.length === 0 ? "number" : shape.length === 1 ? "bars"
+    : shape.length === 3 && (shape[2] === 3 || shape[2] === 4) ? "image" : "heat"
+// Bars, or the cells of one map, this few are labelled with their values, which cross as
+// numbers
 export const FEW = 20
+export const labelled = (shape: readonly number[]): boolean => shape.length <= 2 && shape.reduce((a, b) => a * b, 1) < FEW
+// a heatmap is magnified by a whole number, to about 256 pixels a side
+export const heatScale = (height: number, width: number): number => Math.ceil(256 / Math.max(height, width, 1))
 
 // A number as Fluent writes it, on the page and in String alike. A float32 is the shortest
 // decimal that reads back as the same float32 – 65.4, not 65.400002 – and any other number
