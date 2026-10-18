@@ -54,7 +54,7 @@ grammar is written in Ohm, Alessandro Warth's successor to OMeta.
 | `rewrite.ts` | 58 | The rewrite engine: bottom-up, innermost, to fixpoint, interning as it goes |
 | `opt.ts` | 349 | Exact simplification laws; fusion by substitution, priced by a cost model; plan keys; the memory budget |
 | `grad.ts` | 166 | ∇ = transpose ∘ linearize: one JVP table, one transpose table |
-| `gpu.ts` | 582 | WGSL printers (map, 16×16 tile, split-K GEMV) and the WebGPU executor |
+| `gpu.ts` | 534 | WGSL printers (map, 16×16 tile, a reduction split over workgroups) and the WebGPU executor |
 | `cpu.ts` | 154 | The CPU backend: each kernel printed as a JS function, every value op `fround`ed to match f32 |
 | `tensor.ts` | 681 | The Tensor the language calls: placement, folding, realization, and the natives built on the IR |
 
