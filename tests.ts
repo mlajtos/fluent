@@ -2401,6 +2401,13 @@ describe("numbers come out right", () => {
     expect(value("[1, 2, 3, 4] scan +")).toEqual([1, 3, 6, 10])
     expect(value("[3, 1, 4, 1, 5, 9, 2, 6] scan ⌈")).toEqual([3, 3, 4, 4, 5, 9, 9, 9])
     expect(value("scan([[1, 2, 3], [4, 5, 6]], +, 0)")).toEqual([[1, 2, 3], [5, 7, 9]])
+    // along the leading axis, as reduce folds: the scan's last item is the reduction, at any rank
+    expect(value("[[1, 2, 3], [4, 5, 6]] scan +")).toEqual([[1, 2, 3], [5, 7, 9]])
+    for (const f of ["+", "⌈", "×"]) {
+      for (const x of ["[3, 1, 2]", "[[1, 5, 3], [4, 2, 6]]", "fill([2, 3, 2], 2) - (0..<2)"]) {
+        expect(value(`x: ${x}, (x scan ${f})_(-1) ≡ (x reduce ${f})`)).toBe(1)
+      }
+    }
     expect(value("∇({ x | Σ((x scan +) × [1, 10, 100]) })([1, 2, 3])")).toEqual([111, 110, 100])
   })
   test("pipe, apply and zerosLike", () => {
