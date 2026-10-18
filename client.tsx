@@ -156,6 +156,7 @@ function receive({ data: m, target }: MessageEvent<ToPage>) {
       return
     }
     case "parsed": { showParseErrors(m); return }
+    case "warnings": { showWarnings(m); return }
     case "lives": case "tensor": { update(m); return }
     case "source": { startSource(m.id, m.kind, m.size, m.fps); return }
     case "stop": { pageSources.get(m.id)?.(); pageSources.delete(m.id); return }
@@ -713,10 +714,18 @@ const setHoverHighlight = (origin: Where | null) => {
   collection.set([{ range: rangeOf(origin), options: { className: "ast-hover-highlight" } }])
 }
 
+const markersOf = (list: { message: string, o: Where }[], severity: monaco.MarkerSeverity) =>
+  list.map(({ message, o }) => ({ message, severity, ...rangeOf(o) }))
 // The worker parses every edit: its errors mark each editor that shows the document
 const showParseErrors = ({ d, errors }: Extract<ToPage, { t: "parsed" }>) => {
-  const markers = errors.map(({ message, o }) => ({ message, severity: monaco.MarkerSeverity.Error, ...rangeOf(o) }))
-  for (const ed of editorsShowing(d)) { monaco.editor.setModelMarkers(ed.getModel()!, "fluent-syntax", markers) }
+  for (const ed of editorsShowing(d)) { monaco.editor.setModelMarkers(ed.getModel()!, "fluent-syntax", markersOf(errors, monaco.MarkerSeverity.Error)) }
+}
+// The warnings since the program last ran mark each editor that shows their document
+const showWarnings = ({ warnings }: Extract<ToPage, { t: "warnings" }>) => {
+  for (const ed of editorRegistry) {
+    const model = ed.getModel(), d = model && documentHash(model.getValue())
+    if (model) { monaco.editor.setModelMarkers(model, "fluent-run", markersOf(warnings.filter(({ o }) => o.d === d), monaco.MarkerSeverity.Warning)) }
+  }
 }
 
 // laid out once, re-tinted on hover

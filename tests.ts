@@ -1748,6 +1748,18 @@ describe("the evaluation host", () => {
     expect(numberIn(lives.find((l: any) => l.id === squared.id).desc)).toBeCloseTo(0.64)
   })
 
+  test("a write to a computed value is answered, and the editor says where it can't be made", async () => {
+    const d = await evaluate("x: $(5), Slider(x × 2)")
+    const target = d.slots.target
+    const start = inbox.length
+    toHost({ t: "set", id: target.id, value: 3, seq: 1 })
+    const batch = await after(start, "lives", target.id)
+    expect(batch.lives.find((l: any) => l.id === target.id).ack).toBe(1)
+    expect(numberIn(descOf(batch, target.id))).toBe(10)
+    const { warnings } = await after(start, "warnings")
+    expect(warnings).toMatchObject([{ o: target.o }])
+  })
+
   test("the next batch waits until the page has drawn the last", async () => {
     const d = await evaluate("x: $(0), (Slider(x), x)")
     const id = d.items[0].slots.target.id

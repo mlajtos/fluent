@@ -208,6 +208,29 @@ test("hovering one AST graph doesn't tint the others", async ({ page }) => {
   await expect(svgs.nth(1).locator(lit)).toHaveCount(0)
 })
 
+test("a control bound to a computed value goes back to its value, and the editor says why", async ({ page }) => {
+  // regression: the write threw before it was answered – the slider kept its own value,
+  // and the uncaught error replaced the output with "The evaluator stopped"
+  await open(page, "x: $(0.25), (Slider(x × 2), x)")
+  await expect(panel(page)).toContainText("0.25")
+  const slider = page.locator("input[type=range]")
+  await slider.fill("0.9")
+  await expect(page.locator(".monaco-editor .squiggly-warning").first()).toBeAttached()
+  await expect(slider).toHaveValue("0.5")
+  await expect(panel(page)).not.toContainText("stopped")
+  await expect(panel(page)).toContainText("0.25")
+})
+
+test("an exception in the worker leaves the output as it is, and the worker running", async ({ page }) => {
+  await open(page, "x: $(0.5), (Slider(x), x ^ 2)")
+  await expect(panel(page)).toContainText("0.25")
+  // a message the worker fails on
+  await page.evaluate(() => { (globalThis as unknown as { __fluentWorker: Worker }).__fluentWorker.postMessage({ t: "parse" }) })
+  await page.locator("input[type=range]").fill("0.8")
+  await expect(panel(page)).toContainText("0.64")
+  await expect(panel(page)).not.toContainText("stopped")
+})
+
 test("slider drives a reactive recompute", async ({ page }) => {
   await open(page, "x: $(0.5), (Slider(x), x ^ 2)")
   await expect(panel(page)).toContainText("0.25")

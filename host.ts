@@ -237,6 +237,14 @@ const describeError = (error: Error): Desc => {
   }
 }
 
+// What the program computed that nothing shows, marked where it arose: one per place
+const warnings = new Map<string, { message: string, o: Where }>()
+const warn = (error: Error, origin: Origin | undefined) => {
+  const o = where(origin)
+  if (o) { warnings.set(JSON.stringify(o), { message: error.message, o }) }
+}
+const sendWarnings = () => post({ t: "warnings", warnings: [...warnings.values()] })
+
 // a built-in's doc card, from its metadata
 const docOf = (value: unknown): Doc | undefined => {
   const meta = typeof value === "function" ? getMeta(value) : {}
@@ -600,6 +608,7 @@ const run = () => {
     if (!first) { scheduleRun(); return }
     first = false
     sampleRateRead = false
+    warnings.clear()
     let value: Value
     try {
       value = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(code), createScope()) ?? null)
@@ -610,6 +619,7 @@ const run = () => {
     program.value = value
     dirty.add(root)
     flush()
+    sendWarnings()
   })
 }
 
@@ -639,18 +649,22 @@ const receive = (m: ToWorker) => {
         if (typeof m.value === "object" && !Array.isArray(m.value)) { m.value.close() }
         return
       }
-      const value = fromPage(m.value)
-      if (!(live.target instanceof FluentVariable)) { SignalUpdate(live.target, value) } else if (isTensor(value)) { live.target.assign(value) }
-      // answered even when the write changed nothing (a read-only signal): the page
-      // stops showing its own value once it hears back
+      // answered whether or not the write can be made: the page stops showing its own
+      // value once it hears back
       live.ack = m.seq
       markDirty(live)
+      const value = fromPage(m.value)
+      let written: Value = null
+      try {
+        if (!(live.target instanceof FluentVariable)) { written = SignalUpdate(live.target, value) } else if (isTensor(value)) { live.target.assign(value) }
+      } catch (e) {
+        written = asError(e)
+      }
+      // a computed value can't be set: the editor says so where it is computed
+      if (written instanceof Error) { warn(written, getOrigin(live.target)); sendWarnings() }
       return
     }
-    case "call": {
-      try { callbacks.get(m.id)?.fn() } catch (e) { console.error(e) }
-      return
-    }
+    case "call": { callbacks.get(m.id)?.fn(); return }
     case "drop": {
       // what the page shows no more stops, and is let go of
       const live = lives.get(m.id), callback = callbacks.get(m.id)

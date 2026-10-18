@@ -83,6 +83,9 @@ export type ToPage =
   | { t: "ready", names: [string, string, Doc | null][] }
   // a document's parse errors, by its hash
   | { t: "parsed", d: number, errors: { message: string, o: Where }[] }
+  // what the program computed that nothing shows: an Error of a statement before the
+  // last, a write a control couldn't make – all there are since the program last ran
+  | { t: "warnings", warnings: { message: string, o: Where }[] }
   // live values that changed, as they are now; `ack` is the page's last write each has seen
   | { t: "lives", lives: { id: number, desc: Desc, ack: number }[] }
   // a tensor's values, or why they couldn't be computed
