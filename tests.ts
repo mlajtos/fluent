@@ -1006,14 +1006,18 @@ describe("prelude list helpers", () => {
     expect(value("ListLength(ListScan((1, 2, 3), { a, b | a + b }, 0))")).toBe(4)
     expect(value("ListGet(ListScan((1, 2, 3), { a, b | a + b }, 0), 3)")).toBe(6)
   })
-  test("windows, chunks, stencil slide over a vector", () => {
-    expect(value("windows(2, [1, 2, 3, 4])")).toEqual([[1, 2], [2, 3], [3, 4]])
-    expect(value("chunks(2, [1, 2, 3, 4])")).toEqual([[1, 2], [3, 4]])
+  test("window and stencil slide over a vector", () => {
+    expect(value("window([1, 2, 3, 4], [2])")).toEqual([[1, 2], [2, 3], [3, 4]])
     // stencil reduces each window with f
     expect(value("stencil(3, Σ, [1, 2, 3, 4, 5])")).toEqual([6, 9, 12])
     expect(value("stencil(2, μ, [2, 4, 6, 8])")).toEqual([3, 5, 7])
     // along the leading axis at any rank: each window of rows reduces to a row
     expect(value("stencil(2, Σ, [[1, 2], [3, 4], [5, 6]])")).toEqual([[4, 6], [8, 10]])
+    // a shape-keeping f keeps each window
+    expect(value("stencil(3, sort, [3, 1, 2, 5, 4])")).toEqual([[1, 2, 3], [1, 2, 5], [2, 4, 5]])
+    // ⌺ is the operator: f and the width give the function
+    expect(value("(Σ ⌺ 3)([1, 2, 3, 4, 5])")).toEqual([6, 9, 12])
+    expect(value("(μ ⌺ 2)([[1, 2], [3, 4], [5, 6]])")).toEqual([[2, 3], [4, 5]])
   })
 })
 
@@ -1042,6 +1046,13 @@ describe("operator arity", () => {
     expect(value("+([-3, 4])")).toEqual([3, 4])   // unary abs
     expect(value("-([1, 2])")).toEqual([-1, -2])  // unary negate
     expect(value("×(-7)")).toBe(-1)               // unary sign
+    expect(value("÷([2, 4])")).toEqual([0.5, 0.25]) // unary reciprocal
+    expect(value("^(0)")).toBe(1)                 // unary exp: ^x is e^x
+    expect(value("^(1)")).toBeCloseTo(Math.E, 6)
+    expect(value("[3, 4] ÷ 2")).toEqual([1.5, 2])
+    expect(value("2 ^ [1, 2, 3]")).toEqual([2, 4, 8])
+    // resistors in parallel: add the reciprocals, and come back
+    expect(value("(∥): ÷ ⍢ +, 6 ∥ 3")).toBeCloseTo(2, 5)
   })
 })
 
@@ -2379,10 +2390,10 @@ describe("numbers come out right", () => {
     expect(value("argmax([1, 0 ÷ 0, 3])")).toBe(1)                        // the first NaN, as numpy
     expect(value("argmin([3, 1, 0 ÷ 0])")).toBe(2)
   })
-  test("windows and chunks are views of the same numbers", () => {
-    expect(value("windows(3, [1, 2, 3, 4, 5])")).toEqual([[1, 2, 3], [2, 3, 4], [3, 4, 5]])
-    expect(value("windows(2, [[1, 2], [3, 4], [5, 6]])")).toEqual([[[1, 2], [3, 4]], [[3, 4], [5, 6]]])
-    expect(value("chunks(2, [1, 2, 3, 4, 5, 6])")).toEqual([[1, 2], [3, 4], [5, 6]])
+  test("window is a view of the same numbers, over the trailing axes", () => {
+    expect(value("window([1, 2, 3, 4, 5], [3])")).toEqual([[1, 2, 3], [2, 3, 4], [3, 4, 5]])
+    expect(value("window([[1, 2, 3], [4, 5, 6]], [2])")).toEqual([[[1, 2], [2, 3]], [[4, 5], [5, 6]]])
+    expect(value("window([[1, 2, 3], [4, 5, 6]], [2, 2])")).toEqual([[[[1, 2], [4, 5]], [[2, 3], [5, 6]]]])
   })
   test("fft's fast path agrees with the DFT", () => {
     for (const n of [64, 256]) {
