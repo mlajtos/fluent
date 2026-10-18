@@ -150,22 +150,21 @@ const sampleOf = (live: Live): void => {
 
 let flushScheduled = false
 let pageDrawing = false
-// a write happened: the next display frame looks at what changed – once a frame, however
+// a write happened: what changed is looked at as soon as the page can take it – on the
+// next display frame, or when the page has drawn the last batch – so once a frame, however
 // often the program writes
 let stale = false
 const markDirty = (live?: Live) => {
   if (live) { dirty.add(live) } else { stale = true }
   if (flushScheduled || pageDrawing) { return }
   flushScheduled = true
-  nextFrame(() => flush(true))
+  nextFrame(() => { flushScheduled = false; flush() })
 }
 onWrite(() => markDirty())
-const flush = (frame = false) => {
-  if (frame) { flushScheduled = false }
+const flush = () => {
   // the frame before the last is still on the GPU: the next waits for it
   if (pageDrawing || painter.pending > 1) { if (stale) { markDirty() } return }
-  if (stale && !frame) { markDirty() }
-  if (stale && frame) {
+  if (stale) {
     stale = false
     // a sample waiting to be shown is shown before the next is taken
     for (const live of lives.values()) { if (live.reading === 0 && !live.sample) { sampleOf(live) } }

@@ -2501,6 +2501,28 @@ describe("the evaluation host", () => {
     expect(numberIn(descOf(batch, id))).toBeCloseTo(0.2)
   })
 
+  test("a change made while the page draws goes when the page has drawn, not a frame later", async () => {
+    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), x)`)
+    const go = d.items[0].slots.onClick.id, x = d.items[1].id
+    const draw = hold("frames")
+    let start = inbox.length
+    toHost({ t: "call", id: go })
+    await after(start, "lives", x)
+    // no display frame comes: the page's answer alone lets the next batch go
+    const frames: ((t: number) => void)[] = []
+    ;(globalThis as any).requestAnimationFrame = (f: (t: number) => void) => frames.push(f)
+    try {
+      start = inbox.length
+      toHost({ t: "call", id: go })
+      await pause(20)
+      draw()
+      expect(numberIn(descOf(await after(start, "lives", x), x))).toBe(2)
+    } finally {
+      delete (globalThis as any).requestAnimationFrame
+      frames.forEach((f) => f(performance.now()))
+    }
+  })
+
   test("a run waits for the page as any change does: one batch at most is on its way", async () => {
     const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), x)`)
     const go = d.items[0].slots.onClick.id
