@@ -1999,7 +1999,7 @@ describe("every name in shipped Fluent source resolves", () => {
       for (const k of Object.keys(n)) { if (k !== "origin") { walk(n[k]) } }
     }
     for (const source of [PRELUDE, TOUR_SOURCE, ...Object.values(EXAMPLES)]) { walk(CodeParse(source)) }
-    expect(counts.sort()).toEqual(["#b"])
+    expect(counts.sort()).toEqual(["#b", "arrow", "dots", "Σ(k)"].sort())
   })
 
   test("the README's names at a glance are each one function", async () => {

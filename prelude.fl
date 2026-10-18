@@ -124,7 +124,7 @@ under: FunctionUnder: doc(⍨ around, "x (f under g) y", "APL's Under, in APL's 
       cond(guard((#sa) ≠ (#sb), { 0 }), guard(Σ(sa ≠ sb) > 0, { 0 }), { Σ(¬(a=b ∨ (abs(a - b) ≤ (2^(-20) × (abs(a) ⌈ abs(b)))))) = 0 })
     }),
     guard(isList(a) ∧ isList(b), {
-      cond(guard(ListLength(a) ≠ ListLength(b), { 0 }), { ListReduce(ListMap(a, { v, i | match(v, ListGet(b, i)) }), { p, q | p ∧ q }, 1) })
+      cond(guard((#a) ≠ (#b), { 0 }), { ListMap(a, { v, i | match(v, b_i) }) reduce ∧ })
     }),
     guard(isString(a) ∧ isString(b), { ca: StringToCodes(a), cb: StringToCodes(b), cond(guard((#ca) ≠ (#cb), { 0 }), { Σ(ca ≠ cb) = 0 }) }),
     { identical(a, b) }
@@ -425,7 +425,7 @@ roll: TensorRoll: doc({ x, s, k |
   },
   cond(
     guard(identical(k, ◌), { one(flat(x), s, 0) ⍴ shape(x) }),
-    { ss: s ⍴ [-1], ks: k ⍴ [-1], ListReduce(unstack(0..<(#ks)), { y, j | one(y, ss_(j % (#ss)), ks_j) }, x) }
+    { ss: s ⍴ [-1], ks: k ⍴ [-1], fold(0..<(#ks), { y, j | one(y, ss_(j % (#ss)), ks_j) }, x) }
   )
 }, "roll(x, shift, axis?)", "Shift elements along an axis, wrapping around the edge (a torus).", "roll([1, 2, 3, 4], 1) = [4, 1, 2, 3]"),
 mask: TensorMask: doc({ x, keep |
@@ -433,7 +433,7 @@ mask: TensorMask: doc({ x, keep |
     guard((#shape(keep)) > 1, { Error(StringConcat("mask: the mask must be a vector, got a tensor ", String(shape(keep)), " – flatten it, or index with `_`")) }),
     {
       n: #x, k: keep<0 ⌈ 0<keep,
-      x _ slice(⍋where(k, 0..<n, n + 0..<n), [0], [Σ(k)])
+      x_take(⍋where(k, 0..<n, n + 0..<n), Σ(k))
     }
   )
 }, "mask(x, keep)", "Keep the elements of x where the boolean mask is true, dropping the rest.", "mask([5, 0, 6], [5, 0, 6] > 1) = [5, 6]"),
@@ -474,7 +474,7 @@ fft: TensorFFT: doc({ x |
   cond(guard(n≥64 ∧ 2^round(log2(n))=n, radix2), dft)
 }, "fft(x)", "The spectrum of x along its last axis: the m = n ÷ 2 + 1 frequencies of a real signal, stacked as (real, imaginary). A power-of-two length takes the fast path.", "fft([1, 0, 0, 0]) = [[1, 1, 1], [0, 0, 0]]"),
 meshgrid: doc(TensorMeshgrid, "meshgrid(xs, ys, …)", "Coordinate grids: each argument spread over the whole grid – the first varies along the columns, the second down the rows.", "meshgrid([1, 2], [3, 4])_0 = [[1, 2], [1, 2]]"),
-pad: TensorPad: doc({ x, w | ListReduce(unstack(0..<(#shape(x))), { y, k | padAxis(y, k, w, w) }, x) }, "pad(x, w)", "w zeros around x, on both sides of every axis.", "pad([1, 2], 1) = [0, 1, 2, 0]"),
+pad: TensorPad: doc({ x, w | fold(0..<(#shape(x)), { y, k | padAxis(y, k, w, w) }, x) }, "pad(x, w)", "w zeros around x, on both sides of every axis.", "pad([1, 2], 1) = [0, 1, 2, 0]"),
 repeat: TensorRepeat: doc({ x, n | f: flat(x), broadcast(f ⍴ [-1, 1], [#f, n]) ⍴ [-1] }, "repeat(x, n)", "Each element of x, n times in a row.", "repeat([1, 2], 2) = [1, 1, 2, 2]"),
 sinc: TensorSinc: doc({ x | px: π × x, where(x = 0, 1, sin(px) ÷ px) }, "sinc(x)", "sin(πx) ÷ πx, and 1 at 0 – the normalized sinc.", "sinc(0) = 1"),
 topk: doc(TensorTopK, "topk(x, k)", "The k largest elements, largest first, and where they were: (values, indices).", "topk([3, 9, 2], 2)_0 = [9, 3]"),
@@ -492,22 +492,22 @@ einsum: TensorEinsum: doc({
     ; "..." stands for the axes nobody labelled, numbered from the right
     ; so they line up the way broadcasting does
     expand: { l, e | dots: min(where(l = 46, 0 ..< #(l), #(l))),
-      cond(guard(dots < #(l), { concat((slice(l, [0], [dots]), 256 + reverse(0 ..< e), slice(l, [dots + 3], [-1]))) }), { l }) },
+      cond(guard(dots < #(l), { concat((take(l, dots), 256 + reverse(0 ..< e), drop(l, dots + 3))) }), { l }) },
     codes: StringToCodes(spec),
     n: #(codes),
     arrow: min(where(codes = 45, 0 ..< n, n)),
-    ins: slice(codes, [0], [arrow]),
+    ins: take(codes, arrow),
     commas: mask(0 ..< arrow, ins = 44),
     starts: concat(([0], commas + 1)),
     ends: concat((commas, [arrow])),
     count: #(commas) + 1,
-    given: count ⌊ ListLength(shapes),
+    given: count ⌊ (#shapes),
     ls: ListMap(unstack(0 ..< given), { g | l: slice(ins, [starts_g], [ends_g - starts_g]), expand(l, #(shapes_g) - (#(l) - 3)) }),
     all: concat(ls),
     u: mask(all, firstOf(all) = (0 ..< #(all))),
     e: Σ(u ≥ 256),
     ; without an arrow: the broadcast axes, then every label used once, alphabetically
-    lo: cond(guard(arrow < n, { expand(slice(codes, [arrow + 2], [-1]), e) }),
+    lo: cond(guard(arrow < n, { expand(drop(codes, arrow + 2), e) }),
       { concat((256 + reverse(0 ..< e), sort(mask(u, (Σ(all ⊗(=) u, 0) = 1) ∧ (u < 256))))) }),
     ; a label written twice in one operand ("ii") reads its diagonal: the axes that go,
     ; the mask that keeps the diagonal, and the shape and labels left
@@ -516,7 +516,7 @@ einsum: TensorEinsum: doc({
       first: firstOf(l),
       again: mask(k, first ≠ k),
       along: { j | (0 ..< s_j) ⍴ where(k = j, s_j, 1) },
-      δ: ListReduce(unstack(again), { d, j | d × (along(j) = along(first_j)) }, 1),
+      δ: fold(again, { d, j | d × (along(j) = along(first_j)) }, 1),
       (again, δ, mask(s, first = k), mask(l, first = k))
     },
     ; each operand's diagonal, and its size along every label – 0 where it lacks one
@@ -759,13 +759,13 @@ plot: DrawPlot: doc({ x, ys, names |
     at: (scan(sy(last)_order - steps, ⌈) + steps)_argsort(order),
     values: DrawDigits(last),
     words: ListMap(unstack(0..<k), { i |
-      cond(guard(isList(names), { concat((StringToCodes(ListGet(names, i)), [32], values_i)) }), { values_i })
+      cond(guard(isList(names), { concat((StringToCodes(names_i), [32], values_i)) }), { values_i })
     }),
     frame: canvas(W, H)
       . draw(line([[L - 6, T], [L - 6, B]]), faint, 1)
       . draw(line([[L, B + 6], [R, B + 6]]), faint, 1)
       . draw(letters(unstack(ends), corners, 12), faint, 1),
-    ListReduce(unstack(0..<k), { pic, i | pic . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 2) }, frame)
+    fold(0..<k, { pic, i | pic . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 2) }, frame)
       . draw(letters(words, stack((fill([k], R + 8), clamp(at - 7, 0, H - 14)), -1), 12), ink, 1)
   })
 }, "plot(x, ys, names?)", "Lines on one pair of axes: ys is a list of vectors, or a matrix of rows, each over the points x. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
@@ -779,7 +779,7 @@ plot: DrawPlot: doc({ x, ys, names |
 TensorOptimizerStep: { loss, only |
   r: (∇loss)(),
   cond(guard(isError(r), { r }), {
-    vs: ListGet(r, 1), gs: ListGet(r, 2), n: ListLength(vs),
+    vs: r_1, gs: r_2, n: #vs,
     among: { o, list | ListReduce(ListMap(list, { v | identical(o, v) }), { p, q | p ⌈ q }, 0) },
     cond(
       guard(n = 0, { Error("no trainable variables – the loss reads no ~ variable") }),
@@ -791,7 +791,7 @@ TensorOptimizerStep: { loss, only |
           {
             ; in the list's order, which is the order of the memory made for them
             at: ListMap(only, { o | ListReduce(ListMap(vs, { v, i | identical(o, v) × i }), { p, q | p + q }, 0) }),
-            (ListGet(r, 0), only, ListGather(gs, at))
+            (r_0, only, gs_at)
           }
         )
       }),
@@ -805,36 +805,35 @@ TensorOptimizerSlots: FunctionNoAutoLift({ held, vs, make |
   h: held(),
   same: cond(
     guard(identical(h, ◌), { 0 }),
-    guard(ListLength(ListGet(h, 0)) ≠ ListLength(vs), { 0 }),
-    { ListReduce(ListMap(vs, { v, i | identical(v, ListGet(ListGet(h, 0), i)) }), { p, q | p ∧ q }, 1) }),
-  cond(guard(same, { ListGet(h, 1) }), { fresh: ListMap(vs, { v | make(v) }), held((vs, fresh)), fresh })
+    guard((#h_0) ≠ (#vs), { 0 }),
+    { ListMap(vs, { v, i | identical(v, h_0_i) }) reduce ∧ }),
+  cond(guard(same, { h_1 }), { fresh: ListMap(vs, { v | make(v) }), held((vs, fresh)), fresh })
 }),
 ; Making an optimizer makes its memory, and a step writes it: both are occurrences,
 ; which take their arguments as they are – a live rate is read at each step.
 optimizer: Optimizer: doc(FunctionNoAutoLift({ init, rule, lr, only |
   ; a variable's memory: its step count, then its slots
-  memory: { v | TensorMemoryOf(v, init, { ListConcat((~~0,), ListMap(init(v), { x | ~~x })) }) },
+  memory: { v | TensorMemoryOf(v, init, { (~~0,) concat ListMap(init(v), { x | ~~x }) }) },
   ; given its variables, it makes their memory at once, so := can restore it before a step
   held: $cond(guard(isList(only), { (only, ListMap(only, memory)) }), ◌),
-  joined: { ls | ListReduce(ls, { p, q | ListConcat(p, q) }, List()) },
   step: { loss |
     s: TensorOptimizerStep(loss, only),
     cond(guard(isError(s), { s }), {
-      vs: ListGet(s, 1), gs: ListGet(s, 2),
+      vs: s_1, gs: s_2,
       slots: TensorOptimizerSlots(held, vs, memory),
-      t: ListGet(ListGet(slots, 0), 0) + 1,
+      t: slots_0_0 + 1,
       rate: cond(guard(isFunction(lr), { lr(t) }), { lr }),
       norm: √ListReduce(ListMap(gs, { g | Σ(g × g) }), { p, q | p + q }),
-      next: ListMap(vs, { v, i | rule(ListGet(gs, i), v, ListDrop(ListGet(slots, i), 1), t, rate, norm) }),
+      next: ListMap(vs, { v, i | rule(gs_i, v, drop(slots_i, 1), t, rate, norm) }),
       ; each variable, its step count and its slots, assigned together
-      joined(ListMap(vs, { v, i | ListConcat((v,), ListGet(slots, i)) }))
-        := joined(ListMap(next, { n | ListConcat((ListGet(n, 0), t), ListGet(n, 1)) })),
-      ListGet(s, 0)
+      concat(ListMap(vs, { v, i | (v,) concat slots_i }))
+        := concat(ListMap(next, { n | (n_0, t) concat n_1 })),
+      s_0
     })
   },
   ; with no loss, what it remembers: every variable's memory, one list of ~~ slots
   ; a step is an occurrence: it reads its variables now and writes them
-  FunctionNoAutoLift({ loss | cond(guard(identical(loss, ◌), { cond(guard(identical(held(), ◌), { List() }), { joined(ListGet(held(), 1)) }) }), { step(loss) }) })
+  FunctionNoAutoLift({ loss | cond(guard(identical(loss, ◌), { cond(guard(identical(held(), ◌), { List() }), { concat(held()_1) }) }), { step(loss) }) })
 }), "optimizer(init, rule, lr, vars?)", "Make an optimizer from its rule. init(v) gives a variable's slots (a list of tensors); rule(g, v, slots, t, lr, norm) gives (v′, slots′) – the variable's next value and its slots'. t counts steps from 1, norm is the gradient's norm over every variable, and lr is a number or a schedule – a function of t. opt(loss) takes a step; opt() is what it remembers – each variable's step count and slots, as one list of ~~ data slots to save with the weights and restore with :=. Given its variables, it has that memory from the start.", "opt: optimizer({ v | List() }, { g, v, s, t, lr | (v - lr×g, List()) }, 0.1)"),
 zerosLike: TensorZerosLike: doc({ v | fill(shape(v), 0) }, "zerosLike(x)", "Zeros in x's shape.", "zerosLike([1, 2, 3]) = [0, 0, 0]"),
 ; the hyperparameters a constructor takes: a number in place of the default, and a
@@ -854,44 +853,44 @@ sgd: OptimizerSGD: doc(FunctionNoAutoLift({ lr, a, b |
     { v | cond(guard(momentum = 0, { List() }), { (zerosLike(v),) }) },
     { g, v, s, t, lr | cond(
       guard(momentum = 0, { (v - lr×g, List()) }),
-      { m: ListGet(s, 0) × momentum + g, (v - lr×m, (m,)) }) },
+      { m: s_0 × momentum + g, (v - lr×m, (m,)) }) },
     lr, TensorOptimizerVars(a, b))
 }), "sgd(lr, momentum?, vars?)", "Stochastic gradient descent, with optional momentum. A trailing list picks the variables to train.", "opt: sgd(0.01, 0.9)"),
 ; Adam's moments – running averages of the gradient and its square – and the same two
 ; bias-corrected for their start at 0, shared by its family
 adamInit: OptimizerAdamInit: doc({ v | (zerosLike(v), zerosLike(v)) }, "adamInit", "Adam's slots for a variable – its two moments, zero to start – for optimizer(adamInit, …).", "opt: optimizer(adamInit, adamRule(0), 0.01)"),
 TensorAdamMoments: { g, s, t, b1, b2 |
-  m: g × (1 - b1) + (ListGet(s, 0) × b1),
-  n: g × g × (1 - b2) + (ListGet(s, 1) × b2),
+  m: g × (1 - b1) + (s_0 × b1),
+  n: g × g × (1 - b2) + (s_1 × b2),
   (m, n, m ÷ (1 - b1^t), n ÷ (1 - b2^t))
 },
 adamRule: OptimizerAdamRule: doc({ wd | { g, v, s, t, lr |
   q: TensorAdamMoments(g, s, t, 0.9, 0.999),
-  u: ListGet(q, 2) ÷ ((√ListGet(q, 3)) + 1e-8) × (-lr),
-  (v + cond(guard(wd = 0, { u }), { u + (v × -(lr × wd)) }), (ListGet(q, 0), ListGet(q, 1)))
+  u: q_2 ÷ ((√q_3) + 1e-8) × (-lr),
+  (v + cond(guard(wd = 0, { u }), { u + (v × -(lr × wd)) }), (q_0, q_1))
 } }, "adamRule(weightDecay)", "Adam's update rule, for optimizer(adamInit, …): the moments of the gradient and its square, bias-corrected, and decoupled weight decay.", "opt: optimizer(adamInit, adamRule(0), 0.01)"),
 adam: OptimizerAdam: doc(FunctionNoAutoLift({ lr, a | optimizer(adamInit, adamRule(0), lr, a) }), "adam(lr, vars?)", "Adam: per-variable step sizes from running averages of the gradient and its square. A trailing list picks the variables to train.", "opt: adam(0.01)"),
 adamw: OptimizerAdamW: doc(FunctionNoAutoLift({ lr, a, b | optimizer(adamInit, adamRule(TensorOptimizerArg(a, 1e-4)), lr, TensorOptimizerVars(a, b)) }),
   "adamw(lr, weightDecay?, vars?)", "Adam with decoupled weight decay. A trailing list picks the variables to train.", "opt: adamw(0.01, 0.001)"),
 adagrad: OptimizerAdaGrad: doc(FunctionNoAutoLift({ lr, a | optimizer({ v | (zerosLike(v),) }, { g, v, s, t, lr |
-  acc: g × g + ListGet(s, 0), (v - lr×(g ÷ ((√acc) + 1e-7)), (acc,))
+  acc: g × g + s_0, (v - lr×(g ÷ ((√acc) + 1e-7)), (acc,))
 }, lr, a) }), "adagrad(lr, vars?)", "AdaGrad: each variable's step shrinks with the gradients it has seen. A trailing list picks the variables to train.", "opt: adagrad(0.5)"),
 rmsprop: OptimizerRMSProp: doc(FunctionNoAutoLift({ lr, a | optimizer({ v | (zerosLike(v),) }, { g, v, s, t, lr |
-  n: ListGet(s, 0) × 0.9 + (g × g × 0.1), (v - lr×(g ÷ ((√n) + 1e-8)), (n,))
+  n: s_0 × 0.9 + (g × g × 0.1), (v - lr×(g ÷ ((√n) + 1e-8)), (n,))
 }, lr, a) }), "rmsprop(lr, vars?)", "RMSprop: steps divided by a running root-mean-square of the gradient.", "opt: rmsprop(0.01)"),
 adadelta: OptimizerAdaDelta: doc(FunctionNoAutoLift({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
-  e: ListGet(s, 0) × 0.9 + (g × g × 0.1),
-  Δ: g × (√(ListGet(s, 1) + 1e-6) ÷ √(e + 1e-6)),
-  (v - lr×Δ, (e, ListGet(s, 1) × 0.9 + (Δ × Δ × 0.1)))
+  e: s_0 × 0.9 + (g × g × 0.1),
+  Δ: g × (√(s_1 + 1e-6) ÷ √(e + 1e-6)),
+  (v - lr×Δ, (e, s_1 × 0.9 + (Δ × Δ × 0.1)))
 }, lr, a) }), "adadelta(lr, vars?)", "Adadelta: steps in the units of the variable, from running averages of past gradients and past steps; lr 1 is the classic method.", "opt: adadelta(1)"),
 adamax: OptimizerAdaMax: doc(FunctionNoAutoLift({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
-  m: g × 0.1 + (ListGet(s, 0) × 0.9), u: ListGet(s, 1) × 0.999 ⌈ abs(g),
+  m: g × 0.1 + (s_0 × 0.9), u: s_1 × 0.999 ⌈ abs(g),
   (v - lr×(m ÷ (1 - 0.9^t) ÷ (u + 1e-8)), (m, u))
 }, lr, a) }), "adamax(lr, vars?)", "Adamax: Adam with the infinity norm – steps divided by the largest recent gradient.", "opt: adamax(0.01)"),
 nadam: OptimizerNAdam: doc(FunctionNoAutoLift({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
   q: TensorAdamMoments(g, s, t, 0.9, 0.999),
-  mh: ListGet(q, 0) × 0.9 ÷ (1 - 0.9^(t+1)) + (g × 0.1 ÷ (1 - 0.9^t)),
-  (v - lr×(mh ÷ ((√ListGet(q, 3)) + 1e-8)), (ListGet(q, 0), ListGet(q, 1)))
+  mh: q_0 × 0.9 ÷ (1 - 0.9^(t+1)) + (g × 0.1 ÷ (1 - 0.9^t)),
+  (v - lr×(mh ÷ ((√q_3) + 1e-8)), (q_0, q_1))
 }, lr, a) }), "nadam(lr, vars?)", "NAdam: Adam with Nesterov momentum – the first moment looks one step ahead.", "opt: nadam(0.01)"),
 radam: OptimizerRAdam: doc(FunctionNoAutoLift({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
   q: TensorAdamMoments(g, s, t, 0.9, 0.999),
@@ -899,36 +898,36 @@ radam: OptimizerRAdam: doc(FunctionNoAutoLift({ lr, a | optimizer(adamInit, { g,
   u: cond(
     guard(ρ ≥ 5, {
       ρ - 4 × (ρ - 2) × ρmax ÷ (ρmax - 4 × (ρmax - 2) × ρ) √ 2
-        × (ListGet(q, 2) ÷ ((√ListGet(q, 3)) + 1e-8))
+        × (q_2 ÷ ((√q_3) + 1e-8))
     }),
-    { ListGet(q, 2) }),
-  (v - lr×u, (ListGet(q, 0), ListGet(q, 1)))
+    { q_2 }),
+  (v - lr×u, (q_0, q_1))
 }, lr, a) }), "radam(lr, vars?)", "RAdam: Adam whose adaptive step is switched in as its variance estimate becomes reliable – no warmup needed.", "opt: radam(0.01)"),
 amsgrad: OptimizerAMSGrad: doc(FunctionNoAutoLift({ lr, a | optimizer({ v | (zerosLike(v), zerosLike(v), zerosLike(v)) }, { g, v, s, t, lr |
   ; the largest raw second moment, bias-corrected at this step – as PyTorch does
-  q: TensorAdamMoments(g, s, t, 0.9, 0.999), top: ListGet(s, 2) ⌈ ListGet(q, 1),
-  (v - lr×(ListGet(q, 2) ÷ (√(top ÷ (1 - 0.999^t)) + 1e-8)), (ListGet(q, 0), ListGet(q, 1), top))
+  q: TensorAdamMoments(g, s, t, 0.9, 0.999), top: s_2 ⌈ q_1,
+  (v - lr×(q_2 ÷ (√(top ÷ (1 - 0.999^t)) + 1e-8)), (q_0, q_1, top))
 }, lr, a) }), "amsgrad(lr, vars?)", "AMSGrad: Adam that divides by the largest second moment seen so far, so a step never grows from a forgotten large gradient.", "opt: amsgrad(0.01)"),
 adabelief: OptimizerAdaBelief: doc(FunctionNoAutoLift({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
-  m: g × 0.1 + (ListGet(s, 0) × 0.9), d: g - m,
-  b: d × d × 0.001 + (ListGet(s, 1) × 0.999) + 1e-16,
+  m: g × 0.1 + (s_0 × 0.9), d: g - m,
+  b: d × d × 0.001 + (s_1 × 0.999) + 1e-16,
   (v - lr×(m ÷ (1 - 0.9^t) ÷ (√(b ÷ (1 - 0.999^t)) + 1e-16)), (m, b))
 }, lr, a) }), "adabelief(lr, vars?)", "AdaBelief: Adam that divides by how far the gradient strays from its running average – large steps where the gradient is predictable.", "opt: adabelief(0.01)"),
 yogi: OptimizerYogi: doc(FunctionNoAutoLift({ lr, a | optimizer({ v | (zerosLike(v), fill(shape(v), 1e-6)) }, { g, v, s, t, lr |
-  m: g × 0.1 + (ListGet(s, 0) × 0.9), g2: g × g,
-  n: ListGet(s, 1) - (sign(ListGet(s, 1) - g2) × g2 × 0.001),
+  m: g × 0.1 + (s_0 × 0.9), g2: g × g,
+  n: s_1 - (sign(s_1 - g2) × g2 × 0.001),
   (v - lr×(m ÷ ((√n) + 1e-3)), (m, n))
 }, lr, a) }), "yogi(lr, vars?)", "Yogi: Adam whose second moment moves additively, so it cannot blow up or vanish suddenly.", "opt: yogi(0.01)"),
 lion: OptimizerLion: doc(FunctionNoAutoLift({ lr, a, b | wd: TensorOptimizerArg(a, 1e-3), optimizer({ v | (zerosLike(v),) }, { g, v, s, t, lr |
-  c: ListGet(s, 0) × 0.9 + (g × 0.1),
-  (v - lr×(sign(c) + (v × wd)), (ListGet(s, 0) × 0.99 + (g × 0.01),))
+  c: s_0 × 0.9 + (g × 0.1),
+  (v - lr×(sign(c) + (v × wd)), (s_0 × 0.99 + (g × 0.01),))
 }, lr, TensorOptimizerVars(a, b)) }), "lion(lr, weightDecay?, vars?)", "Lion: the sign of an interpolated momentum – every step has the same size, lr; found by program search.", "opt: lion(0.001)"),
 lamb: OptimizerLAMB: doc(FunctionNoAutoLift({ lr, a, b | wd: TensorOptimizerArg(a, 0), optimizer(adamInit, { g, v, s, t, lr |
   q: TensorAdamMoments(g, s, t, 0.9, 0.999),
-  u: ListGet(q, 2) ÷ ((√ListGet(q, 3)) + 1e-6) + (v × wd),
+  u: q_2 ÷ ((√q_3) + 1e-6) + (v × wd),
   pv: norm(v), pu: norm(u),
   trust: where(pv>0 ∧ pu>0, pv ÷ (pu ⌈ 1e-30), 1),
-  (v - lr×(u × trust), (ListGet(q, 0), ListGet(q, 1)))
+  (v - lr×(u × trust), (q_0, q_1))
 }, lr, TensorOptimizerVars(a, b)) }), "lamb(lr, weightDecay?, vars?)", "LAMB: Adam rescaled per variable by the ratio of the variable's norm to its update's – large batches train stably.", "opt: lamb(0.01)"),
 ; Muon: momentum, then for a matrix its update made orthogonal – five Newton–Schulz
 ; steps to the nearest semi-orthogonal matrix; anything else steps as momentum SGD
@@ -945,7 +944,7 @@ TensorNewtonSchulz: { G |
   cond(guard(tall, { transpose(X) }), { X })
 },
 muon: OptimizerMuon: doc(FunctionNoAutoLift({ lr, a, b | momentum: TensorOptimizerArg(a, 0.95), optimizer({ v | (zerosLike(v),) }, { g, v, s, t, lr |
-  m: ListGet(s, 0) × momentum + g, look: g + (m × momentum),
+  m: s_0 × momentum + g, look: g + (m × momentum),
   u: cond(
     guard((#shape(v)) = 2, { TensorNewtonSchulz(look) × √(shape(v)_0 ÷ shape(v)_1 ⌈ 1) }),
     { look }),
