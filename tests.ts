@@ -732,7 +732,7 @@ describe("training: ∇ follows what the loss reads", () => {
       const θ = value(`θ: ~([0, 0]), 𝓛: { Σ((θ - [3, -1]) ^ 2) }, opt: ${opt}, ({ s | opt(𝓛) } ⍣ 300)(0), θ`) as number[]
       expect([opt, Math.abs(θ[0]! - 3) < 0.02 && Math.abs(θ[1]! + 1) < 0.02]).toEqual([opt, true])
     }
-  })
+  }, 20_000) // 17 training loops – slow under load, don't flake on the 5s default
   test("amsgrad keeps the largest raw second moment and bias-corrects it, as PyTorch does", () => {
     // torch.optim.Adam(amsgrad=True), in float64, on Σ a(θ - c)²
     const a = [1, 10, 0.1], c = [0.3, 0.1, -0.7], θ = [1, -2, 0.5], m = [0, 0, 0], v = [0, 0, 0], top = [0, 0, 0]
