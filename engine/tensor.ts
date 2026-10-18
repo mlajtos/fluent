@@ -433,6 +433,7 @@ const join = (xs: UOp[], ax: number): UOp => {
   return xs.map((x) => { const p = ir.pad(x, ax, off, total - off - x.shape[ax]!); off += x.shape[ax]!; return p; }).reduce(ir.add);
 };
 export function stack(arrays: readonly Tensor[], axis = 0): Tensor {
+  if (!arrays.length) throw new Error("stack: needs at least one array");
   const r = arrays[0]!.ndim + 1, ax = normAxis(axis, r);
   const shapes = arrays.map((a) => [...a.shape.slice(0, ax), 1, ...a.shape.slice(ax)]);
   const shape = [...arrays[0]!.shape.slice(0, ax), arrays.length, ...arrays[0]!.shape.slice(ax)];
@@ -570,13 +571,15 @@ export function oneHot(a: Like, n: number): Tensor {
   const hit = (x: UOp, y: UOp) => ir.mul(ir.add(ir.konst(1), ir.mul(ir.cmplt(x, y), ir.konst(-1))), ir.add(ir.konst(1), ir.mul(ir.cmplt(y, x), ir.konst(-1))));
   return wrap(hit(ir.broadcastTo(ir.reshape(idx, [...idx.shape, 1]), shape), ir.broadcastTo(ir.iota(n), shape)));
 }
-// N-d cross-correlation of a field with a kernel of the same rank, SAME zero padding:
-// every position's window of the padded field, times the kernel, summed — one reduction
-// over the taps, the windows a view that never materializes
+// N-d cross-correlation of a field with a kernel, SAME zero padding: every position's
+// window of the padded field, times the kernel, summed — one reduction over the taps, the
+// windows a view that never materializes. The kernel runs over the field's trailing axes;
+// any axes before them are a frame.
 export function conv(field: Like, kernel: Like): Tensor {
-  const x = nodeOf(field), k = nodeOf(kernel), sp = x.shape, ks = k.shape;
+  const x = nodeOf(field), k = nodeOf(kernel), sp = x.shape, ks = k.shape, off = sp.length - ks.length;
+  if (off < 0) throw new Error(`conv: a kernel of rank ${ks.length} needs a field of rank ${ks.length} or more, got [${sp}]`);
   let f = x;
-  sp.forEach((_, d) => { const K = ks[d]!, lo = Math.floor((K - 1) / 2); if (K > 1) f = ir.pad(f, d, lo, K - 1 - lo); });
+  ks.forEach((K, j) => { const lo = Math.floor((K - 1) / 2); if (K > 1) f = ir.pad(f, off + j, lo, K - 1 - lo); });
   const w = ir.windows(f, ks);
   let out = ir.mul(w, ir.broadcastTo(ir.reshape(k, [...sp.map(() => 1), ...ks]), w.shape));
   for (let d = ks.length - 1; d >= 0; d--) out = ir.reduceAxis(out, sp.length + d, false);

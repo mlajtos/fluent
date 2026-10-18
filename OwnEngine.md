@@ -100,8 +100,11 @@ GPU. `worker.ts` calls `init()` before it evaluates anything.
   faster. SLICE's transpose is PAD, an index predicate. As a scatter, one ∇ of a 4k
   slice ran 3.4·10⁷ loop iterations.
 - **Contractions.** A contraction is spliced into a reduction's body only when it becomes
-  the whole, tileable body: 17.5 → 9.2 ms a dreamer step. `conv` is one reduction over a
-  WINDOW view; as shifted copies, a 27×27 lenia kernel was 729 graph terms.
+  the whole, tileable body: 17.5 → 9.2 ms a dreamer step. From K = 8 a contraction runs
+  as a tile (`engine/tests/bench-tile.ts` re-derives the gate), and a loop nest the plan
+  materializes is read by every reader, never recomputed in some: the dreamer step's GPU
+  time went from 8.3 to 3.5 ms. `conv` is one reduction over a WINDOW view; as shifted
+  copies, a 27×27 lenia kernel was 729 graph terms.
 - **Sorting.** `sort`, `argsort` and `topK` are natives in `engine/tensor.ts`. Data the
   host has is sorted there. Data on the GPU is sorted there by a bitonic network built
   in TypeScript: log₂m·(log₂m + 1)/2 passes, each one gather and one select with the
@@ -126,7 +129,9 @@ differentiates with respect to the `~` variables the loss reads and gives (value
 variables, gradients) in one pass. A state write while differentiating is an Error.
 
 - The branch of a `where` not taken gets an exact zero cotangent, and a zero cotangent
-  times an infinite factor stays zero, so NaN from the branch not taken never leaks.
+  times an infinite factor stays zero, so NaN from the branch not taken never leaks. The
+  product is `mul0`, in which 0 is strong; its derivative is the product's, so a higher
+  derivative still holds where a cotangent is 0.
 - `∇max` splits ties evenly, as JAX does.
 - The engine has no law x × 0 = 0 (0 × ∞ is NaN).
 
@@ -147,8 +152,10 @@ constants. `=` is exact; `≡` matches within a relative 2⁻²⁰ (APL's tolera
 `stack`, `meshgrid`; when it is evaluation, reflection, signals, strings or I/O; or when
 a Fluent version costs too much host time. A Fluent application costs ~1–3 µs of host
 time, so code that runs dozens of them per call stays native: `matmul`, `dot`, the
-bitonic network (30–110 ms to build in Fluent), `conv`, `oneHot`. einsum is Fluent: it
-costs about 2.8 ms a call to build, which a compiled training step pays once.
+bitonic network (30–110 ms to build in Fluent), `conv`, `oneHot`. einsum is Fluent:
+reading a spec takes about 3 ms, and a training step builds its graph afresh every tick
+(the plan cache skips lowering, not building), so einsum keeps what it read with `memo`,
+per spec and operand shapes. After the first call, a call costs about 0.05 ms.
 
 **Prelude**, in `prelude.fl`: `-`, `neg`, `>`, `≤`, `≥`, `≠`, `∨ ∧ ¬ ⊻ ⍲ ⍱`, `ceil`,
 `trunc`, `%`, `hypot`, `sinc`, `erf`, `mean`, `variance`, `std`, `norm`, `softmax`,
@@ -166,7 +173,7 @@ Prelude definitions against the jax-js natives they replaced:
 | erf | Abramowitz–Stegun 7.1.26, the polynomial jax-js uses | 0; ∇ 1.3e-6 |
 | softmax | `e: exp(x - max(x, ax, 1)), e ÷ Σ(e, ax, 1)` | 0; ∇ 7e-9 |
 | fft | DFT matrix; radix-2 butterflies for a power of two from 64 | 1.5e-6; ∇ matches |
-| einsum | labels from the spec's codes, `moveaxis` and `⍴`, broadcast `×`, `Σ` | 0 on 17 patterns; ∇ 0 |
+| einsum | labels from the spec's codes, `permute` and `⍴`, broadcast `×`, `Σ` | 0 on 17 patterns; ∇ 0 |
 | randn | Box–Muller from uniform | 20k samples: μ −0.005, σ 1.0008, kurtosis 3.02 |
 | sgd, adagrad, adam | `~`, `~~`, `:=`, `∇` | 0, 0, 3.6e-6 after 10, 10, 20 steps |
 

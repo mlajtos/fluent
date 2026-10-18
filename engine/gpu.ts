@@ -5,7 +5,7 @@
 import type { UOp, Syntax } from "./ir.ts";
 import { node, numel, kInputs, bufName, toposort, MATHS, WGSL_HASH_UNIFORM, range, iconst, iadd, imul, idiv, imod, load, rebuild, nest, planUses, render, bind, infix, INDEX_SYNTAX } from "./ir.ts";
 import { graphRewriteMany } from "./rewrite.ts";
-import { optimizeMany, COST, planner, checkMemory, rangesIn, MEMORY_BUDGET } from "./opt.ts";
+import { optimizeMany, COST, planner, checkMemory, rangesIn, accCost, MEMORY_BUDGET } from "./opt.ts";
 
 // Dispatches per queue.submit. Submitting each kernel alone costs ~15× in dispatch
 // overhead; one submit per step wedges some drivers and starves the compositor. 16–32 is
@@ -89,7 +89,7 @@ ${c.scopes[0]!.join("\n")}
 // ── tiling as a schedule rule: match the LOOP NEST, never a name. A tiled matmul is a
 // schedule for `for i,j: out[i,j] = Σₖ f(a[…], b[…])`, visible in the IR as an ADD-ACC whose
 // body is a sum of terms, each an elementwise function of two reads: a product, or ∇'s
-// product guarded where the cotangent is 0. Cooperative staging requires a[…] independent
+// product in which 0 is strong (mul0). Cooperative staging requires a[…] independent
 // of col and b[…] of row — PROVED by rewriting each index over fresh row, col and k
 // variables: the index simplifier drops a variable the index does not read, and a read
 // that still names both is declined (a wrong assumption here is a silent miscompile).
@@ -111,7 +111,7 @@ function tileNest(u: UOp, nIn: number): Printed | null {
   const shT = u.shape.filter((d) => d !== 1), sh = shT.length >= 2 ? shT : u.shape;
   const N = sh.at(-1) ?? 1, M = Math.floor(Math.max(numel(u.shape), 1) / Math.max(N, 1)), K = chain.reduce((p, r) => p * extent(r), 1);
   if (M < Math.max(2, COST.tileMinM) || N < 2 || K < 2) return null;   // M = 1 keeps the streaming nest — a tile would idle 15/16 threads
-  if (K < 64 && chain.length === 1) return null;                       // tiny K cannot amortize tile staging (K=32 tiles lose to the plain nest)
+  if (K < COST.tileMinK && chain.length === 1) return null;            // a short K cannot amortize tile staging
   // Occupancy: a tile grid smaller than the machine (weight-grad shapes like [32,96] with
   // K = 5344 give 12 workgroups) leaves the GPU idle on long serial tile loops. A K-GROUP
   // axis fixes it: workgroup z owns a K-slice, runs the same coalesced tile loop over it,
@@ -261,13 +261,14 @@ export function lowerMany(roots: UOp[]): UOp[] {
     if (u.op !== "FUSED") return null;
     const ins = kInputs(u);
     if (ins.length + 1 > MAX_BINDINGS) throw new Error(`gpu: kernel needs ${ins.length + 1} bindings — over the ${MAX_BINDINGS} storage buffers per stage (shape [${u.shape}])`);
-    const kernel = (src: readonly UOp[], wgsl: string, dispatch: number[], shape: readonly number[]): UOp => {
+    // `work` counts the loop steps a kernel runs, for the profile's FLOP rate
+    const kernel = (src: readonly UOp[], wgsl: string, dispatch: number[], shape: readonly number[], work: number): UOp => {
       if (dispatch.some((d) => d > MAX_GROUPS)) throw new Error(`gpu: dispatch [${dispatch}] is over ${MAX_GROUPS} workgroups on an axis (shape [${u.shape}])`);
-      return node("KERNEL", src, { wgsl: withHelpers(wgsl), dispatch }, shape);
+      return node("KERNEL", src, { wgsl: withHelpers(wgsl), dispatch, work }, shape);
     };
-    const k = tileNest(u, ins.length) ?? coopGemv(u, ins.length) ?? printFused(u, ins.length);
+    const k = tileNest(u, ins.length) ?? coopGemv(u, ins.length) ?? printFused(u, ins.length), work = numel(u.shape) * accCost(u.src[1]!);
     // split-K tile: partials kernel + G-sum kernel, chained
-    return k.wgsl2 ? kernel([kernel(ins, k.wgsl, k.dispatch, k.pShape!)], k.wgsl2, k.dispatch2!, u.shape) : kernel(ins, k.wgsl, k.dispatch, u.shape);
+    return k.wgsl2 ? kernel([kernel(ins, k.wgsl, k.dispatch, k.pShape!, work)], k.wgsl2, k.dispatch2!, u.shape, numel(k.pShape!)) : kernel(ins, k.wgsl, k.dispatch, u.shape, work);
   }]);
 }
 
@@ -314,6 +315,7 @@ function syncReader(dev: GPUDevice): (buffer: GPUBuffer, bytes: number) => Uint8
 }
 
 // ── the executor: plans, buffers, bind groups, dispatches in chunked submits ──────────
+export interface Profiled { label: string; ms: number; wgsl: string; bytes: number; work: number }
 const USAGE = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
 export class GPU {
   readonly name = "gpu";
@@ -397,10 +399,11 @@ export class GPU {
     return out;
   }
   // Profiling: while `profile` collects, each kernel runs in a pass of its own between two
-  // timestamps, labelled by its shape and form – measured attribution of a step's GPU time.
-  profile: { label: string; ms: number; wgsl: string }[] | null = null;
+  // timestamps, labelled by its shape and form – measured attribution of a step's GPU time,
+  // with the bytes of the buffers each kernel binds and the loop steps it runs.
+  profile: Profiled[] | null = null;
   #pending: Promise<void>[] = [];
-  async profiled(): Promise<{ label: string; ms: number; wgsl: string }[]> { await Promise.all(this.#pending); this.#pending = []; const p = this.profile ?? []; this.profile = null; return p; }
+  async profiled(): Promise<Profiled[]> { await Promise.all(this.#pending); this.#pending = []; const p = this.profile ?? []; this.profile = null; return p; }
   // Work in flight, one promise per computeSync until it is done. A display frame waits
   // behind whatever is queued ahead of it, so a loop that keeps submitting starves the
   // screen: it should wait for `drained(depth)` before its next step.
@@ -442,7 +445,7 @@ export class GPU {
     const kernels = plan.waves.flat();
     let enc = dev.createCommandEncoder(), dispatched = 0;
     const flush = () => { dev.queue.submit([enc.finish()]); enc = dev.createCommandEncoder(); dispatched = 0; };
-    const timed = this.profile && this.#timestamps && kernels.length ? { qs: dev.createQuerySet({ type: "timestamp", count: Math.min(4096, 2 * kernels.length) }), labels: [] as string[], wgsl: [] as string[] } : null;
+    const timed = this.profile && this.#timestamps && kernels.length ? { qs: dev.createQuerySet({ type: "timestamp", count: Math.min(4096, 2 * kernels.length) }), labels: [] as string[], kernels: [] as UOp[] } : null;
     for (const ks of plan.waves) {
       const tw = (j: number) => (timed ? { timestampWrites: { querySet: timed.qs, beginningOfPassWriteIndex: 2 * (timed.labels.length + j), endOfPassWriteIndex: 2 * (timed.labels.length + j) + 1 } } : undefined);
       let p = enc.beginComputePass(tw(0));
@@ -454,7 +457,7 @@ export class GPU {
         p.dispatchWorkgroups(a.dispatch[0]!, a.dispatch[1] ?? 1, a.dispatch[2] ?? 1); dispatched++;
       });
       p.end();
-      if (timed) for (const u of ks) { const w = (u.arg as { wgsl: string }).wgsl; timed.wgsl.push(w); timed.labels.push(`[${u.shape}] ${w.includes("var<workgroup> As") ? "tile" : w.includes("var<workgroup> part") ? "gemv" : "map"}/${u.src.length}in`); }
+      if (timed) for (const u of ks) { const w = (u.arg as { wgsl: string }).wgsl; timed.kernels.push(u); timed.labels.push(`[${u.shape}] ${w.includes("var<workgroup> As") ? "tile" : w.includes("var<workgroup> part") ? "gemv" : "map"}/${u.src.length}in`); }
       if (dispatched >= SUBMIT_CHUNK) flush();
     }
     // every root returns a buffer of its own: a root that is a leaf (the graph simplified to
@@ -475,7 +478,10 @@ export class GPU {
       this.#pending.push((async () => {
         await dev.queue.onSubmittedWorkDone(); await read.mapAsync(GPUMapMode.READ);
         const t = new BigUint64Array(read.getMappedRange().slice(0)); read.unmap();
-        timed.labels.forEach((label, j) => profile.push({ label, ms: Number(t[2 * j + 1]! - t[2 * j]!) / 1e6, wgsl: timed.wgsl[j]! }));
+        timed.labels.forEach((label, j) => {
+          const u = timed.kernels[j]!, a = u.arg as { wgsl: string; work: number };
+          profile.push({ label, ms: Number(t[2 * j + 1]! - t[2 * j]!) / 1e6, wgsl: a.wgsl, bytes: [...u.src, u].reduce((n, x) => n + this.#bytes(x), 0), work: a.work });
+        });
         read.destroy(); resolve.destroy(); timed.qs.destroy();
       })());
     }

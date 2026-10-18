@@ -62,6 +62,11 @@ export default async function (): Promise<{ fails: number }> {
       const a = await realize(cpu, g, i2), b = gpu ? await realize(gpu, g, i2) : a;
       check(`parity: ${nm}`, rel(b.data, a.data) < 1e-5);
     }
+    { // an index names the row of its whole part; NaN names none
+      const at = new Map<string, HostData>([["ids", T(new Float32Array([2.5, -0.5, 4.9, NaN, 5]), [5])], ["V", T(rv(20), [5, 4])]]);
+      const s2 = scatterAdd(ids, buffer("V", [5, 4]), 6), a = await realize(cpu, s2, at), b = gpu ? await realize(gpu, s2, at) : a;
+      check("parity: scatterAdd at fractional and NaN indices", rel(b.data, a.data) < 1e-5);
+    }
     const tbl = (await realize(cpu, g1, i2)).data;
     const Wd = i2.get("W")!.data;
     check("gather values", [0, 1, 2, 3].every((c) => tbl[c] === Wd[2 * 4 + c]));
@@ -103,12 +108,12 @@ export default async function (): Promise<{ fails: number }> {
   check("matmul is ONE kernel", kernels(matmul(x, transpose(y))).length === 1);
   check("matvec + bias + silu epilogue is ONE kernel", kernels(silu(add(matmul(buffer("h", [1, 32]), buffer("Wg", [32, 16])), buffer("b", [16])))).length === 1);
   {
-    const fat = wgslOf(matmul(buffer("A", [128, 64]), buffer("B", [64, 128])));   // a grid that fills the GPU, K ≥ 64: smaller ones run faster as plain nests
+    const fat = wgslOf(matmul(buffer("A", [128, 64]), buffer("B", [64, 128])));   // a grid that fills the GPU, K past COST.tileMinK
     const thin = wgslOf(matmul(buffer("h", [1, 1024]), buffer("W", [1024, 512])));
     check("fat-M matmul is TILED (As/Bs tiles)", fat.length === 1 && fat[0]!.includes("var<workgroup> As"));
     check("M=1 matvec is NOT tiled — it's coop split-K GEMV (part[] tree-reduce, 1 wg/output)", thin.length === 1 && !thin[0]!.includes("var<workgroup> As") && thin[0]!.includes("var<workgroup> part") && thin[0]!.includes("workgroup_id"));
   }
-  { // a tile's term is any function of its two reads: ∇'s guarded products, and exp(a·b), which is not 0 where the staged reads are 0 past K
+  { // a tile's term is any function of its two reads: ∇'s mul0 products, and exp(a·b), which is not 0 where the staged reads are 0 past K
     const Xb = buffer("X", [256, 128]), Wb = buffer("W", [128, 64]), y = matmul(Xb, Wb), P = buffer("P", [128, 72]), Q = buffer("Q", [72, 96]);
     const [dW, dX] = gradAll(sum(mul(y, y)), [Wb, Xb]) as [UOp, UOp];
     const e = reduceAxis(exp(mul(broadcastTo(reshape(P, [128, 72, 1]), [128, 72, 96]), broadcastTo(reshape(Q, [1, 72, 96]), [128, 72, 96]))), 1, false);

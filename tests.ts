@@ -324,6 +324,21 @@ describe("tensors", () => {
     expect(value("reverse([[1, 2], [3, 4]], 1)")).toEqual([[2, 1], [4, 3]])
     expect(value("sinc(0)")).toBe(1)   // sinc(0) = 1 by definition
   })
+  test("memo keeps an answer by the value of its arguments", () => {
+    let calls = 0
+    const kept = createScope().memo as Function, echo = kept((x: Value) => { calls++; return x })
+    for (const x of ["ab", "ab", engine.tensor([1, 2]), engine.tensor([1, 2]), engine.tensor([[1, 2]]), [engine.tensor(1), "ab"], [engine.tensor(1), "ab"]]) echo(x)
+    expect(calls).toBe(4)
+  })
+  test("einsum reads a spec once for the shapes it meets", async () => {
+    // a training step calls it every tick: the second call only multiplies and sums
+    const { konst } = await import("./engine/ir.ts")
+    const f = run(`q: randn([4, 3, 2]), k: randn([4, 3, 2]), { einsum("btc,bsc->bts", q, k) }`) as () => unknown
+    f()
+    const before = konst(0).id
+    f()
+    expect(konst(0).id - before).toBeLessThan(40)
+  })
   test("stack with axis and broadcasting", () => {
     expect(value("stack(([1, 2], [3, 4]), 1)")).toEqual([[1, 3], [2, 4]])
     expect(value("stack(0 ..< 3, 9)")).toEqual([[0, 1, 2], [9, 9, 9]])
@@ -378,6 +393,17 @@ describe("tensors", () => {
     expect(value("(Σ ⍤ -1)([[[1,2],[3,4]],[[5,6],[7,8]]])")).toEqual([10, 26])   // sum each 2×2
     expect(value("(Σ ⍤ 1)([[[1,2],[3,4]],[[5,6],[7,8]]])")).toEqual([[3, 7], [11, 15]])   // sum each row
   })
+  test("rank ⍤'s two frames agree as they do under +", () => {
+    expect(run("[[1,2,3],[4,5,6]] (+ ⍤ 0) [[10,20],[30,40],[50,60]]")).toBeInstanceOf(Error)   // [2 3] vs [3 2]
+    expect(run("[1,2,3,4,5,6] (+ ⍤ 0) [[10,20],[30,40],[50,60]]")).toBeInstanceOf(Error)
+    expect(value("[1,2] (+ ⍤ 0) [[10],[20]]")).toEqual(value("[1,2] + [[10],[20]]"))          // f ⍤ 0 is f for a scalar f
+  })
+  test("rank ⍤ over an empty frame gives an empty result", () => {
+    expect(value("(sin ⍤ 0)([])")).toEqual([])
+    expect(value("shape((softmax ⍤ 1)(fill([0, 3], 1)))")).toEqual([0, 3])
+    expect(value("shape((Σ ⍤ 1)(fill([0, 3], 1)))")).toEqual([0])
+    expect((run("stack(())") as Error).message).toBe("stack: needs at least one array")
+  })
   test("inner product ∙ is matmul, and swaps its ring", () => {
     expect(value("[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]]")).toEqual([[19, 22], [43, 50]])   // ×∙+ = matmul
     expect(value("[1,2,3] (× ∙ +) [4,5,6]")).toBe(32)                                     // vectors → dot
@@ -401,6 +427,11 @@ describe("tensors", () => {
     expect(value("conv(0 ..< 6, [1, 2, 1])")).toEqual([1, 4, 8, 12, 16, 14])
     expect(value("conv([[0, 0, 0], [0, 1, 0], [0, 0, 0]], [[0, 1, 0], [1, -4, 1], [0, 1, 0]])"))
       .toEqual([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
+  })
+  test("a kernel of lower rank runs over the last axes, each row on its own", () => {
+    expect(value("[[1,2,3,4],[10,20,30,40]] ⊛ [1,1,1]")).toEqual([[3, 6, 9, 7], [30, 60, 90, 70]])
+    expect(value("[[3,1,2],[6,4,5]] ⊛ [1,1]")).toEqual([value("[3,1,2] ⊛ [1,1]"), value("[6,4,5] ⊛ [1,1]")])
+    expect(value("shape(fill([2,3,4],1) ⊛ [1,1,1])")).toEqual([2, 3, 4])
   })
 })
 
@@ -678,6 +709,12 @@ describe("differentiation and optimization", () => {
   })
   test("higher-order gradient", () => {
     expect(value("∇(∇({ x | x^3 }))(2)")).toBe(12)
+  })
+  test("a higher derivative holds where a cotangent is exactly 0", () => {
+    // the 0 × ∞ guard keeps the product's derivative, so an outer ∇ still sees it at 0
+    expect(value("(∇(∇{ x | x × sin(x) }))(0)")).toBe(2)
+    expect(value("(∇(∇gelu))(0)")).toBeCloseTo(0.798, 3)
+    expect(value("(∇{ v | (∇{ z | v × z^3 })(2) })(0)")).toBe(12)
   })
   test("gradient of an elementwise function maps over vectors", () => {
     // a non-scalar output pulls back a ones cotangent
@@ -1110,6 +1147,11 @@ describe("inverse and ⍢ around", () => {
     expect(value("inverse({ x | x^3 + x })(10)")).toBeCloseTo(2, 5)
     expect(value("2 inverse(^) 8")).toBeCloseTo(3, 5)
     expect(value("inverse(log)([1, 2, 3])")).toEqual([Math.E, Math.E ** 2, Math.E ** 3].map((x) => expect.closeTo(x, 4)))
+  })
+  test("∇ of an inverse is 1 ÷ the slope, also where Newton lands exactly", () => {
+    // Newton's residual is exactly 0 when it lands: its cotangent too, which the 0 × ∞ guard must not drop
+    expect(value("g: { x | x^3 + x }, (∇{ y | (g ⍣ -1)(y) })([10, 2, 30])")).toEqual([1 / 13, 1 / 4, 1 / 28].map((x) => expect.closeTo(x, 5)))
+    expect(value("(∇{ y | (square ⍣ -1)(y) })(9)")).toBeCloseTo(1 / 6, 5)
   })
   test("a failed seed falls through to another with try", () => {
     expect(value("cond(try({ solve(cos, 0, 0) }), { solve(cos, 0, 1) })")).toBeCloseTo(Math.PI / 2, 5)
@@ -1906,6 +1948,17 @@ describe("the engine", () => {
     const count = (op: string) => ir.toposort(kernels[0]!.src[1]!).filter((u) => u.op === op).length
     expect([kernels.length, count("MULTIPLY"), count("LOAD")]).toEqual([1, 6, 1])
   })
+  test("a contraction several kernels read is computed once", async () => {
+    // an RMS norm of an embedding plus positions: its variance and its scaled output both
+    // read the matmul through the sum
+    const ir = await import("./engine/ir.ts")
+    const { optimizeMany } = await import("./engine/opt.ts")
+    const { matmul, rmsNorm } = await import("./engine/tests/vocab.ts")
+    const x = ir.add(matmul(ir.buffer("X", [512, 27]), ir.buffer("E", [27, 32])), ir.buffer("P", [512, 32]))
+    const y = rmsNorm(x, ir.broadcastTo(ir.buffer("g", [32]), [512, 32]))
+    const loops = ir.toposort(optimizeMany([y])[0]!).filter((u) => u.op === "RANGE" && (u.arg as { extent: number }).extent === 27)
+    expect(loops.length).toBe(1)
+  })
   const lowered = async (root: any) => {
     const ir = await import("./engine/ir.ts")
     const { lowerMany } = await import("./engine/gpu.ts")
@@ -1917,7 +1970,7 @@ describe("the engine", () => {
     const { gradAll } = await import("./engine/grad.ts")
     const { matmul } = await import("./engine/tests/vocab.ts")
     const X = ir.buffer("X", [256, 128]), W = ir.buffer("W", [128, 64]), y = matmul(X, W)
-    const [dW, dX] = gradAll(ir.sum(ir.mul(y, y)), [W, X])               // ∇'s products are guarded where the cotangent is 0
+    const [dW, dX] = gradAll(ir.sum(ir.mul(y, y)), [W, X])               // ∇'s products are mul0: 0 × ∞ is 0
     expect([tiled(await lowered(y)), tiled(await lowered(dW)), tiled(await lowered(dX))]).toEqual([true, true, true])
   })
   test("a tile grid past 65,535 workgroups on an axis folds into two", async () => {
@@ -1955,6 +2008,12 @@ describe("the engine", () => {
     const { CPU } = await import("./engine/cpu.ts")
     const inputs = new Map([["i", { data: Float32Array.of(0, 1, 1), shape: [3] }], ["v", { data: Float32Array.of(Infinity, 1, 2), shape: [3] }]])
     expect(Array.from(new CPU().realizeSync([ir.scatterAdd(ir.buffer("i", [3]), ir.buffer("v", [3]), 2)], inputs)[0]!.data)).toEqual([Infinity, 3])
+  })
+  test("a scatter-add puts a fractional index in the row a gather reads, folded or not", () => {
+    // 256 values fold as they are built; 257 run as a kernel
+    expect([value("scatterAdd([1.5], [10], 256)_1"), value("scatterAdd([1.5], [10], 257)_1")]).toEqual([10, 10])
+    expect(value("scatterAdd([-0.5, 2.9, 0 ÷ 0], [1, 2, 4], 300)_(0 ..< 4)")).toEqual(value("scatterAdd([-0.5, 2.9, 0 ÷ 0], [1, 2, 4], 4)"))
+    expect(value("[10, 20, 30]_([1.5] ⍴ [1])")).toEqual([20])
   })
   test("roots that compute one value still get a buffer each", async () => {
     const ir = await import("./engine/ir.ts")
