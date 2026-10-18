@@ -126,6 +126,21 @@ test("a picture wider than the GPU's textures still paints", async ({ page }) =>
   await expect.poll(() => spreadOf(panel(page).locator("canvas").first())).toBeGreaterThan(10)
 })
 
+test("a NaN is a hole in a painted heatmap, not the smallest value's color", async ({ page }) => {
+  // regression: the painter gave NaN the minimum's color; every other cell here is the
+  // minimum, so without a hole the picture is one flat color
+  await open(page, "x: 0 ..< 25, where(x = 12, 0 ÷ 0, 1) ⍴ [5, 5]")
+  await expect.poll(() => spreadOf(panel(page).locator("canvas").first())).toBeGreaterThan(10)
+})
+
+test("a number shows as Fluent writes it", async ({ page }) => {
+  // regression: the page grouped digits with _, Fluent's subscript, and showed 1e-7 as 0
+  await open(page, "(1234567, 1e-7)")
+  await expect(panel(page)).toContainText("1234567")
+  await expect(panel(page)).toContainText("1e-7")
+  await expect(panel(page)).not.toContainText("_")
+})
+
 test("a view that fails to draw says why", async ({ page }) => {
   // regression: the fallback said "Something went wrong" and hid the error. A tree node
   // without a label is what a broken description would send.

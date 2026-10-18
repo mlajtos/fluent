@@ -76,7 +76,7 @@
 
 import { Signal, signal, computed, effect } from "@preact/signals-core"
 import {
-  tensorView, documentHash, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
+  tensorView, numberText, FEW, documentHash, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
   type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
@@ -93,7 +93,6 @@ import { renderMarkdown } from "monaco-editor/esm/vs/base/browser/markdownRender
 // @ts-ignore
 import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/common/quickInput"
 import dedent from "ts-dedent"
-import { interpolateViridis } from "d3-scale-chromatic"
 import { Base64 } from "js-base64"
 import "./index.css"
 
@@ -571,7 +570,7 @@ const ScrubberView = ({ d }: { d: UIDesc }) => {
       style={{ color: `#${tokenColors.number}`, cursor: "ew-resize", userSelect: "none" }}
       onPointerDown={onPointerDown} onKeyDown={onKeyDown}
     >
-      {formatNumber(value, decimals)}
+      {numberText(value)}
     </span>
   )
 }
@@ -1071,9 +1070,20 @@ function ResultPanel(): JSX.Element {
   return <Framed d={result.value} />
 }
 
+// a function's source, whole – a long line wraps – colored as the editor colors it
+const SourceView = ({ source }: { source: string }) => {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    let current = true
+    colorize(source).then((html) => { if (current && ref.current) { ref.current.innerHTML = html } }, () => { })
+    return () => { current = false }
+  }, [source])
+  return <div ref={ref} className="text-sm font-mono whitespace-pre-wrap [overflow-wrap:anywhere]">{source}</div>
+}
+
 // a built-in shows its doc card; a Fluent lambda its source
 function FunctionView({ d }: { d: Extract<Desc, { k: "function" }> }): JSX.Element {
-  const source = d.source !== undefined ? <CodeView value={d.source} /> : null
+  const source = d.source !== undefined ? <SourceView source={d.source} /> : null
   if (d.doc) { return <><Markdown text={docCard(d.doc)} />{source}</> }
   return source ?? <Markdown text={`\`${d.name}\` — a built-in without a doc card yet`} />
 }
@@ -1098,27 +1108,25 @@ function ErrorView({ d }: { d: Extract<Desc, { k: "error" }> }): JSX.Element {
 
 // MARK: Plots
 // A tensor draws by its rank (tensorView): a number, bars, a heatmap, an image. The worker
-// paints the pictures; a number, or a few bars, shows its values, which arrive with its
-// description or right after it. Until new values arrive, the view keeps the last.
+// paints the pictures, the page labels them: a number shows its value, and a few bars or
+// cells theirs; more show the range they span. The numbers arrive with the description or
+// right after it, and until new ones arrive, the view keeps the last.
 
-const formatNumber = (value: number, digits: number) =>
-  value.toLocaleString("en-US", { maximumFractionDigits: digits }).replace(/,/g, "_")
 // three significant digits, for labels
-const short = (value: number) => formatNumber(Number(value.toPrecision(3)), 20)
+const short = (value: number) => numberText(value, 3)
 
-// the smallest and the largest, NaN aside
+// the smallest and the largest finite value, [0, 0] when there is none
 const extent = (values: ArrayLike<number>): [number, number] => {
   let lo = Infinity, hi = -Infinity
   for (let i = 0; i < values.length; i++) {
     const v = values[i]!
-    if (v < lo) { lo = v }
-    if (v > hi) { hi = v }
+    if (Number.isFinite(v)) {
+      lo = Math.min(lo, v)
+      hi = Math.max(hi, v)
+    }
   }
   return lo > hi ? [0, 0] : [lo, hi]
 }
-
-// a value's color: its place between lo and hi, through viridis
-const viridis = (v: number, lo: number, hi: number) => interpolateViridis(hi > lo ? (v - lo) / (hi - lo) : 0)
 
 // A plot's frame: the y range to its left, the x range below
 const Axes = ({ y, x, children }: { y?: [number, number], x?: [number, number], children: JSX.Element }) => (
@@ -1129,19 +1137,14 @@ const Axes = ({ y, x, children }: { y?: [number, number], x?: [number, number], 
   </div>
 )
 
-// A few bars, drawn here, each with its value and colored by it
-const Bars = ({ values }: { values: Float32Array }) => {
-  const [lo, hi] = extent([...values, 0]), [vlo, vhi] = extent(values)
-  const y = (v: number) => (hi - v) / (hi - lo || 1) * 100, n = values.length
+// A few bars, each labelled with its value at its end – a NaN at zero, ∞ at the top
+const Bars = ({ id, values = new Float32Array() }: { id: number, values?: Float32Array }) => {
+  const [lo, hi] = extent([...values, 0]), n = values.length
+  const y = (v: number) => (hi - (Number.isNaN(v) ? 0 : Math.min(Math.max(v, lo), hi))) / (hi - lo || 1) * 100
   return (
     <Axes>
       <div className="absolute inset-x-0 top-4 bottom-4">
-        <svg className="absolute inset-0 w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-          {[...values].map((v, i) => (
-            <rect key={i} x={(i + 0.1) / n * 100} width={0.8 / n * 100} y={y(Math.max(v, 0))} height={Math.abs(y(v) - y(0))} fill={viridis(v, vlo, vhi)} />
-          ))}
-          <line x1={0} x2={100} y1={y(0)} y2={y(0)} stroke="#444444" vectorEffect="non-scaling-stroke" />
-        </svg>
+        <PaintedCanvas id={id} fill />
         {[...values].map((v, i) => (
           <span key={i} className="absolute text-neutral-300" style={{ left: `${(i + 0.5) / n * 100}%`, top: `${y(v)}%`, transform: `translate(-50%, ${v < 0 ? 0 : -100}%)` }}>{short(v)}</span>
         ))}
@@ -1150,28 +1153,38 @@ const Bars = ({ values }: { values: Float32Array }) => {
   )
 }
 
-// A small heatmap, drawn here: each cell colored by its value and labelled with it
-const Cells = ({ values, shape: [rows = 1, columns = 1] }: { values: Float32Array, shape: number[] }) => {
-  const [lo, hi] = extent(values)
+// A small heatmap, each cell labelled with its value: dark on the bright part of viridis,
+// from 0.45 of the range up, where dark text stands out more than light
+const Cells = ({ id, values, shape: [rows = 1, columns = 1] }: { id: number, values?: Float32Array, shape: number[] }) => {
+  const [lo, hi] = extent(values ?? [])
   return (
-    <div className="grid gap-px text-xs font-mono max-w-sm" style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }}>
-      {[...values].slice(0, rows * columns).map((v, i) => (
-        <div key={i} className="aspect-square grid place-items-center text-neutral-300" style={{ background: viridis(v, lo, hi), textShadow: "0 0 2px black" }}>{short(v)}</div>
-      ))}
+    <div className="relative max-w-sm" style={{ aspectRatio: `${columns / rows}` }}>
+      <PaintedCanvas id={id} style={{ position: "absolute", width: "100%", height: "100%", imageRendering: "pixelated" }} />
+      <div className="absolute inset-0 grid text-xs font-mono" style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }}>
+        {[...(values ?? [])].slice(0, rows * columns).map((v, i) => (
+          <div key={i} className={`grid place-items-center ${(v - lo) / (hi - lo) > 0.45 ? "text-neutral-900" : "text-neutral-100"}`} style={{ boxShadow: "inset 0 0 0 0.5px #171717" }}>{short(v)}</div>
+        ))}
+      </div>
     </div>
   )
 }
 
+// a heatmap's range under it, on the viridis scale; one value alone when they are all the same
 const VIRIDIS_CSS = "linear-gradient(to right, #440154, #3b528b, #21918c, #5ec962, #fde725)"
+const Legend = ({ range: [lo, hi] }: { range: Float32Array }) => lo! > hi! ? null : (
+  <div className="flex items-center gap-2 text-xs text-neutral-500 font-mono">
+    {short(lo!)}{lo! < hi! && <><div className="h-1.5 w-16 rounded-full" style={{ background: VIRIDIS_CSS }} />{short(hi!)}</>}
+  </div>
+)
 
 function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
   useSignals()
-  const view = tensorView(d.shape), key = `${view}${d.paint}`
+  const view = tensorView(d.shape), few = d.shape.reduce((a, b) => a * b, 1) < FEW, key = `${view}${few}`
   const fresh = payloads.get(d.id)?.value
   const last = useRef<{ key: string, values: Float32Array } | null>(null)
   if (typeof fresh === "string") { return <ErrorView d={{ k: "error", chain: [{ message: fresh }] }} /> }
   if (fresh) { last.current = { key, values: fresh } }
-  // for a picture, the range it spans
+  // a picture's values when they are few, otherwise the range they span
   const values = last.current?.key === key ? last.current.values : undefined
   const [height = 1, width = 1] = d.shape
 
@@ -1182,12 +1195,12 @@ function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
         <span className="text-neutral-500">rank {d.shape.length} – reshape or slice it to plot</span>
       </div>
     )
-    case "number": return <span style={{ color: `#${tokenColors.number}`, opacity: values ? 1 : 0.5 }}>{values ? formatNumber(values[0]!, 6) : "…"}</span>
+    case "number": return <span style={{ color: `#${tokenColors.number}`, opacity: values ? 1 : 0.5 }}>{values ? numberText(values[0]!) : "…"}</span>
     case "bars":
-      if (!d.paint) { return values ? <Bars values={values} /> : <Axes><span /></Axes> }
+      if (few) { return <Bars id={d.id} values={values} /> }
       return <Axes y={values && [Math.min(values[0]!, 0), Math.max(values[1]!, 0)]}><PaintedCanvas id={d.id} fill /></Axes>
     case "heat":
-      if (!d.paint) { return values ? <Cells values={values} shape={d.shape} /> : <span className="opacity-50">…</span> }
+      if (few) { return <Cells id={d.id} values={values} shape={d.shape} /> }
   }
   // a small heatmap is magnified by a whole number, to about 256 pixels; images and large
   // heatmaps show at their own size
@@ -1195,11 +1208,7 @@ function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
   return (
     <div className="grid gap-1">
       <PaintedCanvas id={d.id} style={canvasStyle(width, height, displayWidth)} />
-      {view === "heat" && values && (
-        <div className="flex items-center gap-2 text-xs text-neutral-500 font-mono">
-          {short(values[0]!)}<div className="h-1.5 w-16 rounded-full" style={{ background: VIRIDIS_CSS }} />{short(values[1]!)}
-        </div>
-      )}
+      {view === "heat" && values && <Legend range={values} />}
     </div>
   )
 }

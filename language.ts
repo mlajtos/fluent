@@ -9,7 +9,7 @@ import { signal, Signal, Computed, computed, effect, untracked } from "@preact/s
 import dedent from "ts-dedent"
 import * as engine from "./engine/tensor.ts"
 import PRELUDE from "./prelude.fl" with { type: "text" }
-import { OPERATOR_RANGES, IDENTIFIER_RANGES } from "./protocol"
+import { OPERATOR_RANGES, IDENTIFIER_RANGES, numberText } from "./protocol"
 
 const isTensor = (v: unknown): v is engine.Tensor => v instanceof engine.Tensor
 
@@ -1396,7 +1396,7 @@ const TensorRandomUniform = (a: Value) => engine.uniform(rngCounter++, asWholeLi
 // scope; never as its JavaScript. It cannot hold for values with identity – a signal or a
 // `~` variable round-trips to a NEW one, equal but not the same. Those are best effort.
 const numberLiteral = (n: number): string =>
-  Number.isFinite(n) ? String(n)
+  Number.isFinite(n) ? numberText(n)
     // no literal for these, but these expressions evaluate to them
     : Number.isNaN(n) ? "(0 ÷ 0)"
     : n > 0 ? "(1 ÷ 0)" : "(0 - 1 ÷ 0)"

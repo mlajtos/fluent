@@ -14,11 +14,11 @@ import {
 } from "./language"
 import {
   tensorView, documentHash, FEW,
-  type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree, type Where,
+  type Desc, type Doc, type SourceKind, type TensorView, type ToPage, type ToWorker, type Tree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
 import { TOUR_SOURCE } from "./tour"
-import { CpuPainter, GpuPainter, prepare, type Picture } from "./painter"
+import { CpuPainter, GpuPainter, type Picture } from "./painter"
 
 type Post = (message: ToPage, transfer?: Transferable[]) => void
 let post: Post = () => { }
@@ -216,15 +216,59 @@ const numbersOf = (id: number, t: engine.Tensor): { payload?: Float32Array } => 
   return {}
 }
 
+// How a tensor looks is the prelude's own heat and bars (prelude.fl, Drawing), so a
+// program that binds its own doesn't change how values show
+let seeing: Record<"heat" | "DrawBarsOf" | "DrawExtent", (...args: Value[]) => Value>
+const tensorOf = (v: Value): engine.Tensor => {
+  if (v instanceof Error) { throw v }
+  return v as engine.Tensor
+}
+
+// A vector is drawn through a window a power of two long, NaN past its end, with its
+// length as data: the engine compiles a plan for each shape, and a vector that grows a
+// value a frame – a loss curve – keeps its plan until it doubles
+const windowOf = (t: engine.Tensor): engine.Tensor => {
+  const n = t.size, N = 2 ** Math.ceil(Math.log2(n))
+  if (N === n) { return t }
+  const at = Float32Array.from({ length: N }, (_, i) => Math.min(i, n - 1)), inside = Float32Array.from({ length: N }, (_, i) => +(i < n))
+  return engine.where(engine.tensor(inside), engine.take(t, engine.tensor(at)), NaN)
+}
+
+// A tensor's picture, and the numbers that cross with it for the page's labels: its values
+// when they are few, otherwise the finite range they span; an image has none. A heatmap
+// and bars are made when they are painted – bars for the canvas's size – and live only
+// until they are on the screen.
+const prepare = (view: TensorView, t: engine.Tensor): { picture: Picture, numbers?: engine.Tensor } => {
+  if (view === "image") {
+    engine.materialize([t])
+    return { picture: t }
+  }
+  if (view === "heat") {
+    const range = tensorOf(seeing.DrawExtent(t))
+    engine.materialize([t, range])
+    return { picture: () => tensorOf(seeing.heat(t, range)), numbers: t.size < FEW ? t : range }
+  }
+  if (!t.size) { return { picture: () => null, numbers: t } }
+  const v = windowOf(t), n = engine.scalar(t.size), range = tensorOf(seeing.DrawExtent(v))
+  engine.materialize([t, v, range])
+  return {
+    picture: ([w, h]) => (w >= 1 && h >= 1 ? tensorOf(seeing.DrawBarsOf(v, n, range, ...[w, h, roomy(w), roomy(h)].map(engine.scalar))) : null),
+    numbers: t.size < FEW ? t : range,
+  }
+}
+// Bars are drawn in a picture a little larger than their canvas – each side rounded up to
+// 128 pixels – so a canvas resized within that keeps its plan
+const roomy = (s: number) => Math.ceil(s / 128) * 128
+
 const describeTensor = (t: engine.Tensor): Desc => {
   const id = ++nextId, shape = [...t.shape], view = tensorView(shape)
   try {
     if (view === "shape") { return { k: "tensor", id, shape } }
-    if (view === "number" || ((view === "bars" || view === "heat") && t.size < FEW)) { return { k: "tensor", id, shape, ...numbersOf(id, t) } }
-    const picture = prepare(view, t)
+    if (view === "number") { return { k: "tensor", id, shape, ...numbersOf(id, t) } }
+    const { picture, numbers } = prepare(view, t)
     pictures.set(id, picture)
     owner?.pictures.push(id)
-    return { k: "tensor", id, shape, paint: true, ...(picture.range && numbersOf(id, picture.range)) }
+    return { k: "tensor", id, shape, paint: true, ...(numbers && numbersOf(id, numbers)) }
   } catch (e) {
     return describeError(asError(e))
   }
@@ -718,6 +762,9 @@ export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
   })
   // every name in the environment, with its doc card – for hover and completion on the page
   const scope = createScope(), names: [string, string, Doc | null][] = []
+  seeing = scope as unknown as typeof seeing
+  // the color table, decoded once
+  engine.materialize([scope["DrawViridisTable"] as engine.Tensor])
   for (const key in scope) {
     const value = scope[key], meta = typeof value === "function" ? getMeta(value) : {}
     names.push([key, meta.signature ?? (typeof value === "function" ? "function" : String(value).slice(0, 50)), docOf(value) ?? null])

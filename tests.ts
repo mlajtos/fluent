@@ -6,7 +6,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test"
 import { Signal, effect } from "@preact/signals-core"
 import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, getOrigin, PRELUDE, type Value } from "./language"
 import { startHost } from "./host"
-import type { ToPage, ToWorker } from "./protocol"
+import { numberText, type ToPage, type ToWorker } from "./protocol"
 import { EXAMPLES } from "./examples"
 import { TOUR_SOURCE } from "./tour"
 
@@ -1534,6 +1534,18 @@ describe("String is the inverse of CodeEvaluate", () => {
       expect(value(`String(${source})`)).not.toMatch(/=>|function|return|const /)
     }
   })
+
+  test("a number is the shortest decimal that reads back as the same float32", () => {
+    // regression: 65.4 printed as 65.4000015258789, its float32 widened to a double
+    expect(value("String(65.4)")).toBe("65.4")
+    expect(value("String([1 ÷ 3, 1e-7, -3e-8, 1e20, 16777217, 0 - 0])")).toBe("[0.33333334, 1e-7, -3e-8, 1e20, 1.6777216e7, 0]")
+  })
+
+  test("every float32 round-trips, from the smallest to the largest", () => {
+    const xs = [...Array.from({ length: 2000 }, (_, i) => Math.fround((i % 2 ? -1 : 1) * Math.exp((i - 1000) / 25) * (1 + ((i * 7919) % 1000) / 1000))), 3.4028234663852886e38, 1.401298464324817e-45, 1.1754943508222875e-38]
+    const literal = `[${xs.join(", ")}]`
+    expect(value(`min(CodeEvaluate(String(${literal})) = ${literal})`)).toBe(1)
+  })
 })
 
 // A name that resolves to nothing is the shape almost every language change leaves
@@ -1752,6 +1764,24 @@ describe("error messages carry context", () => {
   })
 })
 
+describe("pictures", () => {
+  test("a shape that measures the whole picture at once is an Error, not an empty canvas", () => {
+    // regression: norm(p - c) without its axis is one number for every pixel together, and
+    // draw silently drew nothing
+    const v = run("canvas(20, 20) . draw({ p | abs(norm(p - [10, 10]) - 6) }, [1, 1, 1], 2)")
+    expect(v).toBeInstanceOf(Error)
+    expect((v as Error).message).toContain("norm(p - c, -1)")
+    expect(value("Σ(canvas(20, 20) . draw({ p | abs(norm(p - [10, 10], -1) - 6) }, [1, 1, 1], 2) ≠ canvas(20, 20))")).toBeGreaterThan(100)
+  })
+  test("viridis has no color for NaN, and the ends' colors past them", () => {
+    expect(value("isNaN(viridis(0 ÷ 0))")).toEqual([1, 1, 1])
+    expect(value("viridis([-1 ÷ 0, 2]) = viridis([0, 1])")).toEqual([[1, 1, 1], [1, 1, 1]])
+  })
+  test("heatmaps given one span share one scale", () => {
+    expect(value("heat([[1, 2]], [0, 4]) = [[viridis(0.25), viridis(0.5)]]")).toEqual([[[1, 1, 1], [1, 1, 1]]])
+  })
+})
+
 // The host speaks to the page in plain data (protocol.ts): values cross as
 // descriptions, live ones as ids the page holds, writes back to, and lets go of.
 describe("the evaluation host", () => {
@@ -1808,6 +1838,76 @@ describe("the evaluation host", () => {
     toHost({ t: "paint", slot: 1, id: picture.id, size: [0, 0] })
     await pause(50)
     expect(painted).toBe(1)
+  })
+
+  // What the painter puts on a canvas for a described picture, at a size in device pixels:
+  // [r, g, b, a] per pixel, row by row
+  let slots = 100
+  const paintOf = async (d: any, size: [number, number] = [0, 0]): Promise<{ width: number, height: number, px: (i: number) => number[] }> => {
+    let image: { width: number, height: number, data: Uint8ClampedArray } | null = null
+    const canvas = { width: 0, height: 0, getContext: () => ({ createImageData: (w: number, h: number) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }), putImageData: (i: typeof image) => { image = i } }) }
+    const slot = ++slots
+    toHost({ t: "canvas", slot, canvas: canvas as unknown as OffscreenCanvas })
+    toHost({ t: "paint", slot, id: d.id, size })
+    for (let i = 0; i < 400 && !image; i++) { await pause(5) }
+    toHost({ t: "canvasGone", slot })
+    const { width, height, data } = image!
+    return { width, height, px: (i) => [...data.subarray(4 * i, 4 * i + 4)] }
+  }
+
+  test("one ∞ doesn't blank a bar chart: the range is the finite values'", async () => {
+    // regression: ∞ set the range, and every bar, the ∞ one too, came out 0 pixels high
+    const d = await evaluate("x: 0 ..< 30, x + 1 ÷ (29 - x)")
+    expect([...d.payload].map((v: number) => +v.toFixed(3))).toEqual([0.034, 29])
+    const { width, height, px } = await paintOf(d, [30, 20])
+    const inked = Array.from({ length: width }, (_, x) => Array.from({ length: height }, (_, y) => px(y * width + x)).filter(([r, g, b, a]) => a && !(r === 68 && g === 68 && b === 68)).length)
+    expect(inked.reduce((a, b) => a + b)).toBeGreaterThan(50)
+    expect(inked.at(-2)).toBe(height - 1)
+    expect(inked.at(-1)).toBe(height - 1)
+  })
+
+  test("one ∞ doesn't flatten a heatmap, and a NaN is a hole, not the minimum's color", async () => {
+    // regression: ∞ set the range, so every finite cell got the minimum's color, and so
+    // did the ∞ and the NaN
+    const d = await evaluate("x: 0 ..< 25, where(x = 24, 1 ÷ 0, where(x = 12, 0 ÷ 0, x)) ⍴ [5, 5]")
+    expect([...d.payload]).toEqual([0, 23])
+    const { px } = await paintOf(d)
+    expect(px(0)).toEqual([68, 1, 84, 255])
+    expect(px(23)).toEqual([253, 231, 37, 255])
+    expect(px(24)).toEqual([253, 231, 37, 255])
+    expect(px(12)[3]).toBe(0)
+    expect(new Set(Array.from({ length: 25 }, (_, i) => String(px(i)))).size).toBe(24)
+  })
+
+  test("a heatmap of tiny values shows them apart", async () => {
+    // regression: the range was at least 1e-6 wide, so values closer than that took one color
+    const { px } = await paintOf(await evaluate("[[0, 1e-8], [2e-8, 3e-8]]"))
+    expect(px(0)).toEqual([68, 1, 84, 255])
+    expect(px(3)).toEqual([253, 231, 37, 255])
+  })
+
+  test("a few values cross with their picture, for its labels", async () => {
+    const d = await evaluate("[3, 1, 0 ÷ 0]")
+    expect(d.paint).toBe(true)
+    expect([...d.payload]).toEqual([3, 1, NaN])
+    const { width, px } = await paintOf(d, [30, 10])
+    expect(px(width - 1)[3]).toBe(0)
+  })
+
+  test("the IDE paints a vector's bars as bars(v, width, height) draws them", async () => {
+    // the IDE draws through a longer window, into a larger picture, so the plan outlives a
+    // growing vector and a resized canvas: what shows is the same
+    const source = "sin(0 ..< 300 ÷ 9) × (0 ..< 300) - 20"
+    const { width, height, px } = await paintOf(await evaluate(source), [123, 45])
+    const drawn = value(`bars(${source}, 123, 45)`) as number[][][]
+    expect([width, height]).toEqual([123, 45])
+    const differ = drawn.flat().filter((c, i) => String(c.some((x) => x !== x) ? [0, 0, 0, 0] : [...c.map((x) => Math.round(x * 255)), 255]) !== String(px(i))).length
+    expect(differ).toBe(0)
+  })
+
+  test("a program's own heat doesn't change how its values show", async () => {
+    const { px } = await paintOf(await evaluate("heat: { x | 0 }, [[1, 2], [3, 4]]"))
+    expect(px(0)).toEqual([68, 1, 84, 255])
   })
 
   test("Fetch of a missing file is an Error, not the server's 404 page", async () => {
@@ -1949,6 +2049,23 @@ describe("numbers come out right", () => {
     expect(value("(1, 2) pipe add")).toBe(3)
     expect(value("add apply (1, 2)")).toBe(3)
     expect(value("zerosLike([1, 2])")).toEqual([0, 0])
+  })
+  test("the page writes numbers as Fluent reads them, and a label never misleads", () => {
+    // regression: the page grouped digits with _, which is Fluent's subscript (1_000 is 1),
+    // printed a float32 65.4 as 65.400002, and 1e-7 as 0
+    const f = Math.fround
+    expect(numberText(1234567)).toBe("1234567")
+    expect(numberText(f(65.4))).toBe("65.4")
+    expect(numberText(f(1e-7))).toBe("1e-7")
+    expect(numberText(f(-3e-8), 3)).toBe("-3e-8")
+    expect(numberText(f(Math.sin(f(Math.PI))), 3)).toBe("-8.74e-8")
+    expect(numberText(-0)).toBe("0")
+    expect(numberText(f(1 / 3), 3)).toBe("0.333")
+    // a label keeps every digit of the whole part: 1234568, not a made-up 1230000
+    expect(numberText(1234567.8, 3)).toBe("1234568")
+    expect(numberText(f(1e20), 3)).toBe("1e20")
+    expect(numberText(0.1 + 0.2)).toBe("0.30000000000000004")
+    expect([Infinity, -Infinity, NaN].map((n) => numberText(n))).toEqual(["∞", "-∞", "NaN"])
   })
   test("a literal is exactly its numbers", () => {
     const n = 8192
