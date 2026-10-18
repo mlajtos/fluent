@@ -1219,8 +1219,6 @@ const TensorMeshgrid = (...args: Value[]) => engine.meshgrid(args.map(operand))
 const TensorTopK = (a: Value, k: Value) => engine.topK(operand(a), asWhole(k))
 // x ⍴ shape reshapes; ⍴x alone is x's shape
 const TensorReshape = (a: Value, b?: Value) => b != null ? engine.reshape(operand(a), asWholeList(b)) : engine.tensor(shapeOf(a))
-// einsum("ij,jk->ik", a, b) is a matrix multiply
-const TensorEinsum = (subscripts: Value, ...args: Value[]) => engine.einsum(String(subscripts), ...args.map(operand))
 
 // A missing axis has size 1, never NaN: a scalar is one item along its phantom leading
 // axis, so #(5) is 1 (APL's tally ≢), as broadcasting treats an absent axis. An empty
@@ -1394,7 +1392,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorStack, TensorUnstack, TensorConcat, TensorReduce, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
   TensorPermute, TensorBroadcast, TensorPadAxis, TensorWindow, TensorTake, TensorScatterAdd, TensorRange,
   TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorLength, TensorShape, TensorGather,
-  TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorWatch, TensorRandomUniform, TensorEinsum,
+  TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorWatch, TensorRandomUniform,
   List, ListLength, ListConcat, ListGet, ListMap, ListReduce, ListScan,
   StringConcat, StringLiteral, StringLength, StringToCodes, CodesToString,
 })

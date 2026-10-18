@@ -76,7 +76,7 @@
 
 import { Signal, signal, computed, effect } from "@preact/signals-core"
 import {
-  tensorView, documentHash, FEW_BARS, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
+  tensorView, documentHash, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
   type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
@@ -93,6 +93,7 @@ import { renderMarkdown } from "monaco-editor/esm/vs/base/browser/markdownRender
 // @ts-ignore
 import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/common/quickInput"
 import dedent from "ts-dedent"
+import { interpolateViridis } from "d3-scale-chromatic"
 import { Base64 } from "js-base64"
 import "./index.css"
 
@@ -145,7 +146,6 @@ const mirrors = new Map<number, Mirror>()
 const payloads = new Map<number, Signal<Float32Array | string | undefined>>()
 const result = signal<Desc | null>(null)
 const environmentNames = signal(new Map<string, { detail: string, doc: Doc | null }>())
-let prelude = ""
 
 // A hot update starts a fresh evaluator and stops the old one's sources; so does a lost GPU
 const hot = globalThis as { __fluentWorker?: Worker, __fluentSources?: Map<number, () => void> }
@@ -201,7 +201,6 @@ function receive({ data: m }: MessageEvent<ToPage>) {
   switch (m.t) {
     case "ready": {
       environmentNames.value = new Map(m.names.map(([name, detail, doc]) => [name, { detail, doc }]))
-      prelude = m.prelude
       return
     }
     case "parsed": { showParseErrors(m); return }
@@ -1118,6 +1117,9 @@ const extent = (values: ArrayLike<number>): [number, number] => {
   return lo > hi ? [0, 0] : [lo, hi]
 }
 
+// a value's color: its place between lo and hi, through viridis
+const viridis = (v: number, lo: number, hi: number) => interpolateViridis(hi > lo ? (v - lo) / (hi - lo) : 0)
+
 // A plot's frame: the y range to its left, the x range below
 const Axes = ({ y, x, children }: { y?: [number, number], x?: [number, number], children: JSX.Element }) => (
   <div className="grid gap-x-2 text-xs text-neutral-500 font-mono" style={{ gridTemplateColumns: "auto 1fr" }}>
@@ -1127,16 +1129,16 @@ const Axes = ({ y, x, children }: { y?: [number, number], x?: [number, number], 
   </div>
 )
 
-// A few bars, drawn here, each with its value
+// A few bars, drawn here, each with its value and colored by it
 const Bars = ({ values }: { values: Float32Array }) => {
-  const [lo, hi] = extent([...values, 0])
+  const [lo, hi] = extent([...values, 0]), [vlo, vhi] = extent(values)
   const y = (v: number) => (hi - v) / (hi - lo || 1) * 100, n = values.length
   return (
     <Axes>
       <div className="absolute inset-x-0 top-4 bottom-4">
         <svg className="absolute inset-0 w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
           {[...values].map((v, i) => (
-            <rect key={i} x={(i + 0.1) / n * 100} width={0.8 / n * 100} y={y(Math.max(v, 0))} height={Math.abs(y(v) - y(0))} fill={`#${tokenColors.number}`} />
+            <rect key={i} x={(i + 0.1) / n * 100} width={0.8 / n * 100} y={y(Math.max(v, 0))} height={Math.abs(y(v) - y(0))} fill={viridis(v, vlo, vhi)} />
           ))}
           <line x1={0} x2={100} y1={y(0)} y2={y(0)} stroke="#444444" vectorEffect="non-scaling-stroke" />
         </svg>
@@ -1145,6 +1147,18 @@ const Bars = ({ values }: { values: Float32Array }) => {
         ))}
       </div>
     </Axes>
+  )
+}
+
+// A small heatmap, drawn here: each cell colored by its value and labelled with it
+const Cells = ({ values, shape: [rows = 1, columns = 1] }: { values: Float32Array, shape: number[] }) => {
+  const [lo, hi] = extent(values)
+  return (
+    <div className="grid gap-px text-xs font-mono max-w-sm" style={{ gridTemplateColumns: `repeat(${columns}, 1fr)` }}>
+      {[...values].slice(0, rows * columns).map((v, i) => (
+        <div key={i} className="aspect-square grid place-items-center text-neutral-300" style={{ background: viridis(v, lo, hi), textShadow: "0 0 2px black" }}>{short(v)}</div>
+      ))}
+    </div>
   )
 }
 
@@ -1172,6 +1186,8 @@ function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
     case "bars":
       if (!d.paint) { return values ? <Bars values={values} /> : <Axes><span /></Axes> }
       return <Axes y={values && [Math.min(values[0]!, 0), Math.max(values[1]!, 0)]}><PaintedCanvas id={d.id} fill /></Axes>
+    case "heat":
+      if (!d.paint) { return values ? <Cells values={values} shape={d.shape} /> : <span className="opacity-50">…</span> }
   }
   // a small heatmap is magnified by a whole number, to about 256 pixels; images and large
   // heatmaps show at their own size
@@ -1242,93 +1258,6 @@ const example404 = (name: string) => dedent`
 // what a ?example= URL resolves to – a gallery example by name, or the 404
 const exampleSource = (name: string) =>
   name in EXAMPLES ? getExample(name as keyof typeof EXAMPLES) : example404(name)
-
-// MARK: Generated Code
-
-const generationSystemPrompt = () => `
-
-You are an expert Fluent code generator. Follow these rules when generating Fluent code:
-
-1. You generate Fluent code. Output ONLY valid code, no explanations.
-2. Make sure the generated code is syntactically correct.
-3. Use built-in functions and environment variables where appropriate.
-4. Follow best practices for Fluent code style and structure.
-5. Refer to the examples below for guidance.
-6. Ensure interactive/reactive elements (Slider, Button, etc.) are part of the program's return value, i.e. inside the final parentheses.
-7. Keep the code concise and efficient.
-8. If you want to add label to a Slider, use Grid to compose it with a Text element – \`Grid(2)(Text("Label"), Slider(x))\`
-9. Slider can use only values between 0 and 1 for its range. To map to other ranges, use arithmetic operations.
-
-Here is some documentation for Fluent:
-
-${Documentation}
-
-\`\`\`fluent
-${Object.entries(EXAMPLES).map(([name, source]) => `; ${name}\n${source.trim()}`).join("\n\n")}
-\`\`\`
-
-You can use the following built-in functions and environment variables:
-${[...environmentNames.peek().keys()].join(", ")}
-
-## Operator Definitions (Prelude)
-The following operators are defined as aliases to canonical functions:
-\`\`\`fluent
-${prelude.trim()}
-\`\`\`
-`
-
-const GENERATION_COMMENT_REGEX = /;;(.+?);;/g
-
-const ANTHROPIC_API_KEY_STORAGE = "fluent-anthropic-api-key"
-const getAnthropicApiKey = () => localStorage.getItem(ANTHROPIC_API_KEY_STORAGE) ?? ""
-const setAnthropicApiKey = (key: string) => localStorage.setItem(ANTHROPIC_API_KEY_STORAGE, key)
-
-async function generateFluentCode(instruction: string, context: string, apiKey: string): Promise<string> {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-5",
-      max_tokens: 16000,
-      thinking: { type: "enabled", budget_tokens: 10000 },
-      system: generationSystemPrompt(),
-      messages: [{ role: "user", content: `Current code context:\n\`\`\`\n${context}\n\`\`\`\n\nGenerate Fluent code for: ${instruction}` }],
-    }),
-  })
-  const data = await response.json()
-  if (data.error) { throw new Error(data.error.message) }
-  // the answer is the text block, after the thinking one, without code fences
-  const text = data.content.find((block: { type: string }) => block.type === "text")?.text
-  if (text === undefined) { throw new Error("No text block in response") }
-  return text.trim().replace(/^```(?:fluent)?\n?/gm, "").replace(/```$/gm, "").trim()
-}
-
-// Generation comments (;; … ;;) are answered by the model, in place: the answer replaces
-// the comment where it is when the answer arrives, so what was typed meanwhile stays
-const pendingGenerations = new Set<string>()
-const answerGenerationComments = (editor: editor.IStandaloneCodeEditor, apiKey: string) => {
-  const model = editor.getModel()
-  if (!model) { return }
-  for (const [comment, instruction] of model.getValue().matchAll(GENERATION_COMMENT_REGEX)) {
-    if (pendingGenerations.has(comment)) { continue }
-    pendingGenerations.add(comment)
-    generateFluentCode(instruction!.trim(), model.getValue(), apiKey)
-      .catch((err) => {
-        console.error("[Generation] Failed:", err)
-        return `; ERROR: ${err.message}`
-      })
-      .then((text) => {
-        pendingGenerations.delete(comment)
-        const [found] = model.isDisposed() ? [] : model.findMatches(comment, false, false, true, null, false)
-        if (found) { editor.executeEdits("generation", [{ range: found.range, text }]) }
-      })
-  }
-}
 
 // MARK: Editor
 
@@ -1405,13 +1334,11 @@ function CodeEditorView({ value, onChange, auto }: { value: string, onChange: (c
   const shownHeight = useRef(height)
   const changed = useRef(onChange)
   changed.current = onChange
-  const mounted = useRef<editor.IStandaloneCodeEditor | null>(null)
   // each editor's text is parsed on its own (REPL cells stay independent)
   const validate = (source: string) => toWorker({ t: "parse", source })
 
   const onMount: OnMount = (editor) => {
     editorOnMount(editor)
-    mounted.current = editor
     editorRegistry.add(editor)
     // Global shortcuts (⌘O gallery, ⌘S share) target the app's MAIN editor – the one
     // that fills its panel. Auto-grown editors are embedded cells that mount first and
@@ -1448,8 +1375,6 @@ function CodeEditorView({ value, onChange, auto }: { value: string, onChange: (c
         if (next === undefined) { return }
         changed.current(next)
         validate(next)
-        const apiKey = getAnthropicApiKey()
-        if (apiKey && mounted.current) { answerGenerationComments(mounted.current, apiKey) }
       }}
       options={EDITOR_OPTIONS}
     />
@@ -1664,7 +1589,7 @@ const SYMBOL_TABLE: [string, string, string, string][] = [
   ["↦", "maps to", "Maps to", "maps to mapsto"],
   ["⟳", "loop", "Loop / Repeat", "loop repeat cycle"],
   ["⍣", "power", "Power / Inverse / Until", "power iterate repeat star inverse until fixpoint"],
-  ["⍢", "under", "Under – do it in g's world", "under dual conjugate"],
+  ["⍢", "around", "Around – do f in g's world", "around under dual conjugate"],
   // Number sets
   ["ℕ", "naturals", "Natural numbers", "naturals N natural numbers"],
   ["ℤ", "integers", "Integers", "integers Z integer numbers"],
@@ -1704,7 +1629,7 @@ registeredProviders.push(monaco.languages.registerCompletionItemProvider("fluent
   },
 }))
 
-// the gallery (⌘O), sharing as a URL (⌘S) and the API key, for every editor
+// the gallery (⌘O) and sharing as a URL (⌘S), for every editor
 const editorOnMount = (editor: editor.IStandaloneCodeEditor) => {
   const quickInput = editor.addCommand(0, (accessor, use) => use(accessor.get(IQuickInputService)))!
   // the URL names a pristine example; a saved program is its own document, in ?code=
@@ -1740,18 +1665,6 @@ const editorOnMount = (editor: editor.IStandaloneCodeEditor) => {
     label: "Save example",
     keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
     run: (editor) => setUrl("code", StringSerialize(editor.getModel()?.getValue() ?? "")),
-  })
-  editor.addAction({
-    id: "fluent-set-api-key",
-    label: "Set Anthropic API Key",
-    contextMenuGroupId: "navigation",
-    contextMenuOrder: 1.6,
-    run: (editor) => {
-      editor.trigger("", quickInput, (service: any) => {
-        service.input({ placeHolder: "Enter your Anthropic API key (sk-ant-...)", value: getAnthropicApiKey(), password: true })
-          .then((value: string | undefined) => { if (value !== undefined) { setAnthropicApiKey(value) } })
-      })
-    },
   })
 }
 

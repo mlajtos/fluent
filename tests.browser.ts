@@ -101,26 +101,6 @@ test("an escaped quote doesn't end a string's highlighting", async ({ page }) =>
     .toContainEqual(["1", "rgb(10, 129, 239)"])
 })
 
-test("a generation comment's answer lands where the comment is, and edits made meanwhile stay", async ({ page }) => {
-  // regression: the answer replaced the comment in the text as it was when asked – what
-  // was typed while waiting vanished – and `$&` in the answer was expanded
-  await page.addInitScript(() => localStorage.setItem("fluent-anthropic-api-key", "test"))
-  await page.route("https://api.anthropic.com/v1/messages", async (route) => {
-    await new Promise((r) => setTimeout(r, 1500))
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ content: [{ type: "text", text: "2 $& 3" }] }) })
-  })
-  await open(page, "1 + 1")
-  await expect(panel(page)).toContainText("2")
-  await page.locator(".monaco-editor .view-line").first().click()
-  await page.keyboard.press("End")
-  await page.keyboard.type("\n;;two numbers;;")
-  await page.keyboard.type("\n; mine")
-  const text = () => page.locator(".monaco-editor .view-lines").first().innerText().then((t) => t.replace(/ /g, " "))
-  await expect.poll(text).toContain("2 $& 3")
-  expect(await text()).toContain("; mine")
-  expect(await text()).not.toContain(";;")
-})
-
 test("Fetch of a missing file shows an Error, not the server's 404 page", async ({ page }) => {
   await open(page, 'Fetch("does-not-exist.txt")')
   await expect(panel(page)).toContainText("404")

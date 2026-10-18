@@ -564,43 +564,6 @@ export function dot(a: Like, b: Like): Tensor {
   const B = ir.reshape(ir.permute(y, [r - 2, ...others]), [K, Math.max(ir.numel(freeB), 1)]);
   return wrap(ir.reshape(cellMatmul(A, B), [...freeA, ...freeB]));
 }
-// Einstein summation: label every axis, line the operands up label by label (a label
-// written twice in one operand reads its diagonal), multiply, sum the labels the output lacks
-export function einsum(spec: string, ...operands: Tensor[]): Tensor {
-  const [lhs, rhsGiven] = spec.replace(/\s/g, "").split("->") as [string, string | undefined];
-  const groups = lhs.split(",");
-  if (groups.length !== operands.length) throw new Error(`einsum: ${groups.length} operand specs for ${operands.length} operands`);
-  const extent = Math.max(0, ...operands.map((o, i) => o.ndim - groups[i]!.replace("...", "").length));
-  const dots = Array.from({ length: extent }, (_, i) => String.fromCodePoint(0x2460 + i));   // "..." axes get private labels, right-aligned
-  const expand = (g: string, rank: number) => (g.includes("...") ? g.replace("...", dots.slice(extent - (rank - (g.length - 3))).join("")) : g);
-  const labels = groups.map((g, i) => [...expand(g, operands[i]!.ndim)]);
-  const counts = new Map<string, number>(); for (const l of labels.flat()) counts.set(l, (counts.get(l) ?? 0) + 1);
-  const out = rhsGiven === undefined ? [...dots, ...[...counts.keys()].filter((l) => counts.get(l) === 1 && !dots.includes(l)).sort()] : [...expand(rhsGiven, extent + rhsGiven.replace("...", "").length)];
-  const all = [...new Set(labels.flat())];
-  const size = new Map<string, number>();
-  labels.forEach((ls, i) => ls.forEach((l, k) => { const d = operands[i]!.shape[k]!; if (d !== 1 || !size.has(l)) size.set(l, Math.max(size.get(l) ?? 1, d)); }));
-  const aligned = operands.map((o, i) => {
-    let x = o.node, ls = labels[i]!;
-    for (let k = ls.length - 1; k >= 0; k--) {                                // a repeated label: keep the diagonal, sum the copy away
-      const j = ls.indexOf(ls[k]!);
-      if (j === k) continue;
-      const n = x.shape[k]!, eye = ir.data(Float32Array.from({ length: n * n }, (_, q) => (q % (n + 1) === 0 ? 1 : 0)), [n, n]);
-      x = ir.reduceAxis(ir.mul(x, ir.broadcastTo(ir.reshape(eye, x.shape.map((d, q) => (q === j || q === k ? n : 1))), x.shape)), k, false);
-      ls = ls.filter((_, q) => q !== k);
-    }
-    const order = all.filter((l) => ls.includes(l)).map((l) => ls.indexOf(l));
-    if (order.some((p, q) => p !== q)) x = ir.permute(x, order);
-    return ir.reshape(x, all.map((l) => (ls.includes(l) ? x.shape[all.filter((m) => ls.includes(m)).indexOf(l)]! : 1)));
-  });
-  let z = aligned.reduce((p, q) => ir.mul(p, q));
-  z = ir.broadcastTo(z, all.map((l) => size.get(l)!));
-  const gone = all.map((l, i) => (out.includes(l) ? -1 : i)).filter((i) => i >= 0);
-  for (let i = gone.length - 1; i >= 0; i--) z = ir.reduceAxis(z, gone[i]!, false);
-  const kept = all.filter((l) => out.includes(l));
-  const perm = out.map((l) => kept.indexOf(l));
-  return wrap(perm.some((p, q) => p !== q) ? ir.permute(z, perm) : z);
-}
-
 // ── composites the natives still call ───────────────────────────────────────────
 export function oneHot(a: Like, n: number): Tensor {
   const idx = nodeOf(a), shape = [...idx.shape, n];

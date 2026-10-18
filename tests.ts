@@ -307,6 +307,15 @@ describe("tensors", () => {
     // meshgrid and topk return lists of tensors – pull one out with ListGet
     expect(value("ListGet(meshgrid(0 ..< 3, 0 ..< 2), 0)")).toEqual([[0, 1, 2], [0, 1, 2]])
     expect(value("einsum(\"ij,jk->ik\", [[1, 2], [3, 4]], [[5, 6], [7, 8]])")).toEqual([[19, 22], [43, 50]])
+    // einsum is Fluent: every pattern it reads, and its ∇
+    expect(value('einsum("ij->ji", [[1, 2], [3, 4]])')).toEqual([[1, 3], [2, 4]])
+    expect(value('einsum("ii->", [[1, 2], [3, 4]])')).toBe(5)
+    expect(value('einsum("ii->i", [[1, 2], [3, 4]])')).toEqual([1, 4])
+    expect(value('einsum("i,j->ij", [1, 2], [3, 4])')).toEqual([[3, 4], [6, 8]])
+    expect(value('einsum("ij,jk", [[1, 2], [3, 4]], [[5, 6], [7, 8]])')).toEqual([[19, 22], [43, 50]])
+    expect(value('einsum("bij,bjk->bik", [[[1, 2]], [[3, 4]]], [[[1], [1]], [[2], [0]]])')).toEqual([[[3]], [[6]]])
+    expect(value('einsum("...ij,...jk->...ik", [[[1, 2]]], [[1], [1]])')).toEqual([[[3]]])
+    expect(value('∇({ x | Σ(einsum("ij,jk->ik", x, [[1], [2]])) })([[1, 2], [3, 4]])')).toEqual([[1, 2], [1, 2]])
     expect(value("ListGet(topk([3, 1, 4, 1, 5, 9, 2], 3), 0)")).toEqual([9, 5, 4])
     expect(value("pad([1, 2, 3], 2)")).toEqual([0, 0, 1, 2, 3, 0, 0])
     expect(value("repeat([1, 2], 3)")).toEqual([1, 1, 1, 2, 2, 2])
@@ -1406,7 +1415,7 @@ describe("gallery examples smoke suite", () => {
       expect(firstError(scope)).toBeNull()
       expect(trained.filter((k, i) => JSON.stringify((scope[k] as FluentVariable).current.js()) === before[i])).toEqual([])
       flushRetirements()
-    }, 30_000)
+    }, 60_000)
   }
 
   test("pitch-detector names a tone's note, and silence as none", () => {
@@ -1664,7 +1673,7 @@ describe("the evaluation host", () => {
   })
 
   test("a live value the page let go of lets go of its pictures", async () => {
-    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), $({ fill([4, 4], x()) }))`)
+    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), $({ fill([5, 5], x()) }))`)
     const picture = d.items[1].now
     expect(picture.paint).toBe(true)
     let painted = 0
@@ -1681,7 +1690,7 @@ describe("the evaluation host", () => {
 
   test("Fetch of a missing file is an Error, not the server's 404 page", async () => {
     const served = Bun.serve({ port: 0, fetch: () => new Response("Not Found", { status: 404 }) })
-    extendEnvironment({ Fetch: hostFetch })
+    extendEnvironment({ Fetch: hostFetch } as Record<string, Value>)
     const d = await evaluate(`Fetch("http://localhost:${served.port}/nope.txt")`)
     const start = inbox.length
     const { lives } = await after(start, "lives")

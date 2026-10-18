@@ -47,8 +47,8 @@ export type Desc = { o?: Where } & (
 export type TensorView = "number" | "bars" | "heat" | "image" | "shape"
 export const tensorView = (shape: readonly number[]): TensorView =>
   (["number", "bars", "heat", "image"] as const)[shape.length] ?? "shape"
-// bars this few show their values, so they cross as numbers
-export const FEW_BARS = 20
+// bars or heatmap cells this few show their values, so they cross as numbers
+export const FEW = 20
 
 // page → worker
 export type ToWorker =
@@ -75,9 +75,8 @@ export type SourceKind = "camera" | "microphone" | "spectrum" | "pointer"
 
 // worker → page
 export type ToPage =
-  // the environment's documented names, for hover cards and completion, and the prelude's
-  // source
-  | { t: "ready", names: [string, string, Doc | null][], prelude: string }
+  // the environment's documented names, for hover cards and completion
+  | { t: "ready", names: [string, string, Doc | null][] }
   | { t: "result", desc: Desc }
   // a document's parse errors, by its hash
   | { t: "parsed", d: number, errors: { message: string, o: Where }[] }

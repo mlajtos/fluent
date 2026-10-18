@@ -57,7 +57,6 @@ grammar is written in Ohm, Alessandro Warth's successor to OMeta.
 | `gpu.ts` | 582 | WGSL printers (map, 16×16 tile, split-K GEMV) and the WebGPU executor |
 | `cpu.ts` | 154 | The CPU backend: each kernel printed as a JS function, every value op `fround`ed to match f32 |
 | `tensor.ts` | 681 | The Tensor the language calls: placement, folding, realization, and the natives built on the IR |
-| `einsum.fl` | 63 | A Fluent einsum; matches the native on 17 patterns and their ∇; not loaded (§4) |
 
 **Primitives** (`ir.ts`): leaves CONSTANT, BUFFER, IOTA; ADD, MULTIPLY, RECIPROCAL, EXP,
 LOG, SQRT, LESS_THAN, WHERE, DETACH; RANDOM (uniform, a pure function of seed and index,
@@ -147,9 +146,9 @@ constants. `=` is exact; `≡` matches within a relative 2⁻²⁰ (APL's tolera
 (a lambda takes a fixed number of parameters): `List`, `cond`, `cascade`, `concat`,
 `stack`, `meshgrid`; when it is evaluation, reflection, signals, strings or I/O; or when
 a Fluent version costs too much host time. A Fluent application costs ~1–3 µs of host
-time, so code that runs dozens of them per call stays native: `matmul`, `dot`, `einsum`
-(`einsum.fl` took 12.7 ms a call), the bitonic network (30–110 ms to build in Fluent),
-`conv`, `oneHot`.
+time, so code that runs dozens of them per call stays native: `matmul`, `dot`, the
+bitonic network (30–110 ms to build in Fluent), `conv`, `oneHot`. einsum is Fluent: it
+costs about 2.8 ms a call to build, which a compiled training step pays once.
 
 **Prelude**, in `prelude.fl`: `-`, `neg`, `>`, `≤`, `≥`, `≠`, `∨ ∧ ¬ ⊻ ⍲ ⍱`, `ceil`,
 `trunc`, `%`, `hypot`, `sinc`, `erf`, `mean`, `variance`, `std`, `norm`, `softmax`,
@@ -167,7 +166,7 @@ Prelude definitions against the jax-js natives they replaced:
 | erf | Abramowitz–Stegun 7.1.26, the polynomial jax-js uses | 0; ∇ 1.3e-6 |
 | softmax | `e: exp(x - max(x, ax, 1)), e ÷ Σ(e, ax, 1)` | 0; ∇ 7e-9 |
 | fft | DFT matrix; radix-2 butterflies for a power of two from 64 | 1.5e-6; ∇ matches |
-| einsum (`einsum.fl`) | labels from the spec's codes, `moveaxis` and `⍴`, broadcast `×`, `Σ` | 0 on 17 patterns; ∇ 0 |
+| einsum | labels from the spec's codes, `moveaxis` and `⍴`, broadcast `×`, `Σ` | 0 on 17 patterns; ∇ 0 |
 | randn | Box–Muller from uniform | 20k samples: μ −0.005, σ 1.0008, kurtosis 3.02 |
 | sgd, adagrad, adam | `~`, `~~`, `:=`, `∇` | 0, 0, 3.6e-6 after 10, 10, 20 steps |
 
@@ -393,7 +392,7 @@ lookahead; Shampoo and SOAP wait for S9.
    other browsers later. Subgroups and immediates may be used, and every kernel keeps a
    core path.
 3. **What can live in user space, does.** A built-in stays native only for the reasons
-   in §4. einsum is native until a Fluent application is cheap enough for `einsum.fl`.
+   in §4.
 4. **GPU results are checked in headless Chrome** (`bun engine/tests/run.ts`), never
    only in Deno or Bun, whose WebGPU does not enforce the browser's limits. The CPU
    gates run in Bun (`bun run test:engine`).

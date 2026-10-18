@@ -9,11 +9,11 @@ import {
   CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate, createScope, DefaultEnvironment,
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, getOrigin, SignalCreate, SignalUpdate, StringLiteral,
-  engine, FluentVariable, isTensor, TensorScalarLive, PRELUDE,
+  engine, FluentVariable, isTensor, TensorScalarLive,
   type Value, type SyntaxTreeNode, type Origin,
 } from "./language"
 import {
-  tensorView, documentHash, FEW_BARS,
+  tensorView, documentHash, FEW,
   type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
@@ -220,7 +220,7 @@ const describeTensor = (t: engine.Tensor): Desc => {
   const id = ++nextId, shape = [...t.shape], view = tensorView(shape)
   try {
     if (view === "shape") { return { k: "tensor", id, shape } }
-    if (view === "number" || (view === "bars" && t.size < FEW_BARS)) { return { k: "tensor", id, shape, ...numbersOf(id, t) } }
+    if (view === "number" || ((view === "bars" || view === "heat") && t.size < FEW)) { return { k: "tensor", id, shape, ...numbersOf(id, t) } }
     const picture = prepare(view, t)
     pictures.set(id, picture)
     owner?.pictures.push(id)
@@ -722,6 +722,6 @@ export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
     const value = scope[key], meta = typeof value === "function" ? getMeta(value) : {}
     names.push([key, meta.signature ?? (typeof value === "function" ? "function" : String(value).slice(0, 50)), docOf(value) ?? null])
   }
-  post({ t: "ready", names, prelude: PRELUDE })
+  post({ t: "ready", names })
   return receive
 }

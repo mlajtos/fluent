@@ -3,7 +3,7 @@
 // on the GPU the tensor's buffer goes straight to the screen, and only its range is read
 // back, for the page's label. A picture is an image – one channel is gray, three are RGB,
 // anything else shows its first channel – a heatmap, its values colored through viridis
-// over their range, or bars, one per value, from zero. A picture larger than the canvas
+// over their range, or bars, one per value, from zero and colored the same way. A picture larger than the canvas
 // allows shows every n-th pixel.
 
 import { interpolateViridis } from "d3-scale-chromatic"
@@ -15,7 +15,7 @@ const VIRIDIS = Uint8Array.from(Array.from({ length: 256 }, (_, i) => {
   const c = rgb(interpolateViridis(i / 255))
   return [c.r, c.g, c.b]
 }).flat())
-const BAR = [10, 129, 239], ZERO = [68, 68, 68]
+const ZERO = [68, 68, 68]
 
 // what a picture paints from: its values, and for a heatmap or bars the range they span,
 // a NaN taking no part in it
@@ -77,8 +77,15 @@ struct Picture { mode: u32, width: u32, channels: u32, step: u32, n: u32, w: u32
   return vec4f(vec2f(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0, 0.0, 1.0);
 }
 
-// a column narrower than its values shows their extremes; bars 4 pixels wide or more
-// keep a gap between them
+// a value's color: its place in the range, through viridis
+fn color(x: f32) -> vec4f {
+  let t = (x - range[0]) / max(range[1] - range[0], 1e-6);
+  let j = select(0u, u32(round(min(t, 1.0) * 255.0)), t > 0.0) * 3u;
+  return vec4f(viridis[j], viridis[j + 1u], viridis[j + 2u], 1.0);
+}
+
+// a column narrower than its values shows their extremes, colored by the one farther
+// from zero; bars 4 pixels wide or more keep a gap between them
 fn bar(p: vec2f) -> vec4f {
   let n = f32(picture.n);
   let w = f32(picture.w);
@@ -97,18 +104,14 @@ fn bar(p: vec2f) -> vec4f {
   if (abs(v) <= 0.5 * span / h) { return vec4f(${ZERO.map((c) => c / 255)}, 1.0); }
   let slot = fract(p.x * n / w);
   let gap = n * 4.0 <= w && (slot < 0.1 || slot > 0.9);
-  if (!gap && v <= max(hi, 0.0) && v >= min(lo, 0.0)) { return vec4f(${BAR.map((c) => c / 255)}, 1.0); }
+  if (!gap && v <= max(hi, 0.0) && v >= min(lo, 0.0)) { return color(select(lo, hi, hi >= -lo)); }
   return vec4f(0.0);
 }
 
 @fragment fn pixel(@builtin(position) p: vec4f) -> @location(0) vec4f {
   if (picture.mode == 2u) { return bar(p.xy); }
   let at = (u32(p.y) * picture.width + u32(p.x)) * picture.step * picture.channels;
-  if (picture.mode == 1u) {
-    let t = (values[at] - range[0]) / max(range[1] - range[0], 1e-6);
-    let j = select(0u, u32(round(min(t, 1.0) * 255.0)), t > 0.0) * 3u;
-    return vec4f(viridis[j], viridis[j + 1u], viridis[j + 2u], 1.0);
-  }
+  if (picture.mode == 1u) { return color(values[at]); }
   let rgb = select(vec3u(at), vec3u(at, at + 1u, at + 2u), picture.channels == 3u);
   return vec4f(clamp(vec3f(values[rgb.x], values[rgb.y], values[rgb.z]), vec3f(0.0), vec3f(1.0)), 1.0);
 }
@@ -195,27 +198,28 @@ export class CpuPainter extends Painter<CpuTarget> {
     const [values, [lo = 0, hi = 1]] = await Promise.all([picture.values.read(), picture.range?.read() ?? [0, 1]])
     const image = context.createImageData(width, height), out = image.data
     const put = (p: number, r: number, g: number, b: number) => { out[p] = r; out[p + 1] = g; out[p + 2] = b; out[p + 3] = 255 }
+    const span = Math.max(hi - lo, 1e-6)
+    const color = (p: number, v: number) => { const t = (v - lo) / span, j = (t > 0 ? Math.round(Math.min(t, 1) * 255) : 0) * 3; put(p, VIRIDIS[j]!, VIRIDIS[j + 1]!, VIRIDIS[j + 2]!) }
     if (picture.view === "bars") {
-      const n = values.length, top = Math.max(hi, 0), span = Math.max(top - Math.min(lo, 0), 1e-30)
+      const n = values.length, top = Math.max(hi, 0), extent = Math.max(top - Math.min(lo, 0), 1e-30)
       for (let x = 0; x < width; x++) {
         const i0 = Math.floor(x * n / width), i1 = Math.max(i0 + 1, Math.floor((x + 1) * n / width))
         let a = Infinity, b = -Infinity
         for (let i = i0; i < Math.min(i1, n); i++) { const v = values[i]!; if (v === v) { a = Math.min(a, v); b = Math.max(b, v) } }
         const slot = (x + 0.5) * n / width % 1, gap = n * 4 <= width && (slot < 0.1 || slot > 0.9)
         for (let y = 0; y < height; y++) {
-          const v = top - (y + 0.5) / height * span, p = 4 * (y * width + x)
-          if (Math.abs(v) <= 0.5 * span / height) { put(p, ZERO[0]!, ZERO[1]!, ZERO[2]!) }
-          else if (!gap && v <= Math.max(b, 0) && v >= Math.min(a, 0)) { put(p, BAR[0]!, BAR[1]!, BAR[2]!) }
+          const v = top - (y + 0.5) / height * extent, p = 4 * (y * width + x)
+          if (Math.abs(v) <= 0.5 * extent / height) { put(p, ZERO[0]!, ZERO[1]!, ZERO[2]!) }
+          else if (!gap && v <= Math.max(b, 0) && v >= Math.min(a, 0)) { color(p, b >= -a ? b : a) }
         }
       }
     } else {
-      const span = Math.max(hi - lo, 1e-6), c = channels === 3 ? 1 : 0
+      const c = channels === 3 ? 1 : 0
       for (let y = 0, p = 0; y < height; y++) {
         for (let x = 0; x < width; x++, p += 4) {
           const at = (y * w + x) * step * channels
           if (picture.view === "heat") {
-            const t = (values[at]! - lo) / span, j = (t > 0 ? Math.round(Math.min(t, 1) * 255) : 0) * 3
-            put(p, VIRIDIS[j]!, VIRIDIS[j + 1]!, VIRIDIS[j + 2]!)
+            color(p, values[at]!)
           } else {
             put(p, values[at]! * 255, values[at + c]! * 255, values[at + 2 * c]! * 255)
           }
