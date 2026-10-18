@@ -152,7 +152,7 @@ test("controls are named and reachable from the keyboard", async ({ page }) => {
 
 test("a typo'd axis renders an Error, not a silently wrong number", async ({ page }) => {
   await open(page, "sum([[1, 2], [3, 4]], axs)")
-  await expect(panel(page)).toContainText("expected a tensor, got unbound symbol 'axs'")
+  await expect(panel(page)).toContainText("unknown name: axs")
 })
 
 test("unparseable code inside backticks shows the parse error, panel stays alive", async ({ page }) => {
@@ -390,7 +390,7 @@ test("PointPlot draws an x/y plot (custom x axis)", async ({ page }) => {
 test("PointPlot surfaces an error argument, not a blank chart", async ({ page }) => {
   // `::` was removed; an unbound operator must show the error, not draw empty
   await open(page, "PointPlot(1 ..< 10, 1::10)")
-  await expect(panel(page)).toContainText(/not a function/i)
+  await expect(panel(page)).toContainText("unknown name: ::")
 })
 
 test("Layers: a lower Point2D is draggable, not just the top one", async ({ page }) => {
