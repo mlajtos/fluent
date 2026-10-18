@@ -2564,6 +2564,38 @@ describe("the evaluation host", () => {
     }
   })
 
+  // A look that takes 2 ms, after a loop's statement – none, or one with steps always
+  // waiting – and a frame every so many ms: of 20 frames, how many show it
+  const costlyLooks = async (loop: string, spacing: number): Promise<number> => {
+    const spin = (v: Value) => { const t = performance.now(); while (performance.now() - t < 2) { } return v }
+    extendEnvironment({ TestSpin: spin } as Record<string, Value>)
+    const d = await evaluate(`x: $(0), ${loop}(Button("go", { x(x() + 1) }), \${ TestSpin(x()) })`)
+    const go = d.items[0].slots.onClick.id, y = d.items[1].id
+    const frames: ((t: number) => void)[] = []
+    ;(globalThis as any).requestAnimationFrame = (f: (t: number) => void) => frames.push(f)
+    try {
+      const start = inbox.length
+      for (let i = 0; i < 20; i++) {
+        toHost({ t: "call", id: go })
+        await pause(spacing)
+        frames.splice(0).forEach((f) => f(performance.now()))
+      }
+      await pause(10)
+      return inbox.slice(start).filter((m) => m.t === "lives" && m.lives.some((l) => l.id === y)).length
+    } finally {
+      delete (globalThis as any).requestAnimationFrame
+      frames.forEach((f) => f(performance.now()))
+      await evaluate("0")
+    }
+  }
+  test("while steps wait, a look that costs a little over a twentieth of a frame is shown nearly every frame, not every other", async () => {
+    // a frame every 36 ms or so: a twentieth of the worker is 1.8 ms a frame
+    expect(await costlyLooks("{ 0 } ⟳ 1000000, ", 33)).toBeGreaterThanOrEqual(14)
+  })
+  test("with no steps waiting, a look is shown every frame, whatever it costs", async () => {
+    expect(await costlyLooks("", 8)).toBeGreaterThanOrEqual(19)
+  })
+
   test("a run waits for the page as any change does: one batch at most is on its way", async () => {
     const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), x)`)
     const go = d.items[0].slots.onClick.id
