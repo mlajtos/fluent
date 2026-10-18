@@ -1999,10 +1999,10 @@ describe("String is the inverse of CodeEvaluate", () => {
 // scope still looks fine. That is how the Tour shipped broken with the suite green.
 // And a name the source binds must not be a built-in's: a reader takes it for one.
 describe("every name in shipped Fluent source resolves", () => {
-  // prelude names are own keys of a scope; the natives, widgets and sources are on
-  // its prototype
-  const scope = createScope()
-  const builtins = new Set([...Object.keys(scope), ...Object.keys(DefaultEnvironment)])
+  // a program's scope sits under the prelude's, whose own keys are the prelude names; the
+  // natives, widgets and sources are under that
+  const prelude = Object.getPrototypeOf(createScope())
+  const builtins = new Set([...Object.keys(prelude), ...Object.keys(DefaultEnvironment)])
   const names = (source: string) => {
     const tree: any = CodeParse(source)
     const bound = new Set<string>(), used = new Set<string>()
@@ -2207,6 +2207,11 @@ describe("error messages carry context", () => {
     for (const source of ["sine(1)", "x: [1, 2, 3], x[0]", "2 x 3", "f: x → x^2, f(3)", "(double ⍣ 5)(1)", "x: $(1), x(1, 2)", "a: $(1), b: a + 1, b(5)"]) {
       for (const { message } of chain(source)) { expect(message).not.toMatch(/Symbol\(|Attempted|'1,2,3'|Error: |poor signal/) }
     }
+  })
+  test("a program's names shadow the prelude's for the program, not inside the prelude's own functions", () => {
+    expect(value("max: 10, softmax([0, 0])")).toEqual([0.5, 0.5])
+    expect(value("floor: { x | 99 }, [1, 2, 3] scan +")).toEqual([1, 3, 6])
+    expect(value("max: 10, max")).toBe(10)
   })
   test("a binding inside a function binds there, and its value is the function's", () => {
     expect(value("f: { x | y: x + 1, y × 2 }, f(1)")).toBe(4)

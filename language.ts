@@ -1830,10 +1830,13 @@ const setCodeNodePrinter = (printer: CodeNodePrinter): CodeNodePrinter => {
 // on first use: createScope runs on every evaluation, and a page that only parses never
 // needs it.
 let preludeTree: SyntaxTreeNode | null = null
+// A program binds in a scope of its own, under the prelude's: its names shadow the
+// prelude's for the program, while the prelude's functions keep reading their own –
+// a program's `max: 10` doesn't reach into softmax
 const createScope = (): CurrentScope => {
-  const scope = Object.create(DefaultEnvironment) as CurrentScope
-  evaluateSyntaxTreeNode(preludeTree ??= CodeParse(PRELUDE), scope)
-  return scope
+  const prelude = Object.create(DefaultEnvironment) as CurrentScope
+  evaluateSyntaxTreeNode(preludeTree ??= CodeParse(PRELUDE), prelude)
+  return Object.create(prelude) as CurrentScope
 }
 
 // MARK: Exports

@@ -668,7 +668,8 @@ draw: DrawShape: doc({ shape, color, width |
     ; stroke -r to r: the overlap is how much of the pixel it covers
     D: Density(),
     d: shape(pixels(picture)) × D, r: width × D ÷ 2,
-    cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ (-r)) ⌈ 0, -1),
+    ; a fraction of the pixel: in f32 the overlap can round past 1
+    cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ (-r)) ⌈ 0 ⌊ 1, -1),
     ; one distance for the whole picture is a shape that measured all its pixels together
     cond(guard((#TensorShape(d)) < 2, { Error("draw: the shape gave one distance for the whole picture, not one for each pixel – p is every pixel at once, [height, width, 2]; measure along its last axis: norm(p - c, -1)") }), {
       ; mixed as light mixes – in linear intensity, not in the screen's gamma-encoded values
