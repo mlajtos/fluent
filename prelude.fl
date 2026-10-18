@@ -755,24 +755,24 @@ DrawDigits: { x |
 ; stroke at p reaches
 DrawTrace: { u, v, from, to, width |
   n: #u,
-  ; each point's column; how many points fall before each column, and in it
+  ; each point's column, and the points in each column, [C, n]
   c0: floor(from × 2), C: floor(to × 2) - c0 + 1,
   c: clamp(floor(u × 2) - c0, 0, C - 1),
-  count: scatterAdd(c, fill([n], 1), C), start: (count scan +) - count, last: start + count - 1 ⌈ 0,
-  ; at each point, the smallest and the largest v of its column so far, each as its column,
-  ; v and index: a point carries on only within its own column
-  extreme: broadcast(stack((c, v, 0..<n), -1) ⍴ [n, 1, 3], [n, 2, 3]) scan { a, b |
-    A: unstack(a, -1), B: unstack(b, -1),
-    where(unsqueeze(A_0 = B_0 × (A_1 × [1, -1] < (B_1 × [1, -1])), -1), a, b)
-  },
+  in: 0..<C ⊗(=) c,
+  ; how many points fall before each column and in it; its first and last points – the
+  ; last point of all when it has none – and the first of its points at its top and bottom,
+  ; a point outside the column moved past every value and every index
+  start: Σ(0..<C ⊗(>) c, 1), count: Σ(in, 1),
+  first: start ⌊ n-1, last: start + count - 1 ⌈ 0,
+  earliest: { e | hit: in×(v = (e ⍴ [C, 1])), min(0..<n + (1 - hit)×n, 1) ⌊ n-1 },
+  top: earliest(min(v + (1 - in)×1e30, 1)), bottom: earliest(max(v + (in - 1)×1e30, 1)),
   ; where the line enters each column, on its way from the point before the column
   at: { i | stack((u_i, v_i), -1) },
-  edge: c0 + 0..<C ÷ 2, before: start - 1 ⌈ 0, first: start ⌊ n-1,
+  edge: c0 + 0..<C ÷ 2, before: start - 1 ⌈ 0,
   f: clamp(edge - u_before ÷ (u_first - u_before ⌈ 1e-9), 0, 1),
   enter: at(before) + (f ⍴ [C, 1] × (at(first) - at(before))) ⍴ [C, 1, 2],
   ; five points a column, in order; a column no point falls in is where the line crosses it
-  i: unstack(extreme_last, -1)_2,
-  own: at(stack((first, min(i, -1), max(i, -1), last), -1)),
+  own: at(stack((first, top ⌊ bottom, top ⌈ bottom, last), -1)),
   points: concat((enter, where(count ⍴ [C, 1, 1] > 0, own, enter)), 1) ⍴ [-1, 2],
   ; draw reads a shape out to half the stroke's width and half a pixel, K columns each side:
   ; near_(5×k) is column k's window, the points of the K columns before it, its own, the K
@@ -784,13 +784,15 @@ DrawTrace: { u, v, from, to, width |
     q: unstack(moveaxis(p, -1, 0)),
     ; the window of p's column: the x and the y of its points, […, S+1] each
     w: unstack(moveaxis(near_(5 × clamp(floor(q_0 × 2) - c0, 0, C - 1)), -2, 0)),
-    ; each segment's start and end – the points s and s + 1 – and from its start to p; t
-    ; is how far along the segment the point nearest p lies
+    ; each segment, from point j of the window to point j + 1, and p from either end. The
+    ; segment's point nearest p is its start where p lies before it, its end where p lies
+    ; past it – along runs from 0 at the start to L at the end – and p's foot between them
     x: unstack(window(w_0, [S]), -2), y: unstack(window(w_1, [S]), -2),
-    dx: x_1 - x_0, dy: y_1 - y_0,
-    px: unsqueeze(q_0, -1) - x_0, py: unsqueeze(q_1, -1) - y_0,
-    t: clamp(px×dx + py×dy ÷ (dx^2 + dy^2 ⌈ 1e-12), 0, 1),
-    √(min((px - t×dx)^2 + (py - t×dy)^2, -1))
+    dx: x_1 - x_0, dy: y_1 - y_0, L: dx^2 + dy^2,
+    ux: unsqueeze(q_0, -1), uy: unsqueeze(q_1, -1),
+    ax: ux - x_0, ay: uy - y_0, bx: ux - x_1, by: uy - y_1,
+    along: ax×dx + ay×dy,
+    min(where(along > 0, where(along < L, abs(ax×dy - ay×dx) ÷ √(L), √(bx^2 + by^2)), √(ax^2 + ay^2)), -1)
   }
 },
 plot: DrawPlot: doc({ x, ys, names |
@@ -799,18 +801,23 @@ plot: DrawPlot: doc({ x, ys, names |
   ; the picture, and the box the data fills
   W: 520, H: 160, L: 68, R: 404, T: 8, B: 136,
   cond(guard(n < 2, { canvas(W, H) }), {
+    ; the points padded to a power of two with the last one again, their count as data: a
+    ; plot that grows a point at a time keeps its plan until its length doubles
+    pad: 0 ..< 2^ceil(log2(n)) ⌊ (shape(x) - 1),
+    px: x_pad, N: #px,
+    py: cond(guard(isList(ys), { stack(ListMap(ys, { y | y_pad })) }), { transpose(transpose(rows)_pad) }),
     ink: [0.765, 0.761, 0.718], faint: [0.537, 0.529, 0.506],
     colors: [[0.224, 0.529, 0.898], [0.851, 0.349, 0.149], [0.098, 0.62, 0.439], [0.788, 0.522, 0], [0.835, 0.318, 0.506], [0, 0.514, 0], [0.565, 0.522, 0.914], [0.902, 0.404, 0.404]],
-    lo: min(rows), hi: max(rows),
-    sx: { v | v - x_0 ÷ (x_(-1) - x_0 ⌈ 1e-9) × (R - L) + L },
+    lo: min(py), hi: max(py),
+    sx: { v | v - px_0 ÷ (px_(-1) - px_0 ⌈ 1e-9) × (R - L) + L },
     sy: { v | hi - v ÷ (hi - lo ⌈ 1e-9) × (B - T) + T },
     ; a range frame: each axis spans the data, labeled at its ends – at a font size of 12, a
     ; character 7.2 wide and a digit's middle 7 below the top
-    ends: DrawDigits([hi, lo, x_0, x_(-1)]), w: Σ(ends ≠ 32, -1) × 7.2,
+    ends: DrawDigits([hi, lo, px_0, px_(-1)]), w: Σ(ends ≠ 32, -1) × 7.2,
     corners: [[L - 10 - w_0, T - 7], [L - 10 - w_1, B - 7], [L, B + 9], [R - w_3, B + 9]],
     ; each line labeled at its end with its name and last value, the labels pushed apart
     ; so they never overlap
-    last: slice(rows, [0, n-1]) ⍴ [k],
+    last: slice(py, [0, N-1]) ⍴ [k],
     order: argsort(sy(last)),
     steps: 0..<k × 13,
     at: (scan(sy(last)_order - steps, ⌈) + steps)_argsort(order),
@@ -822,7 +829,7 @@ plot: DrawPlot: doc({ x, ys, names |
       . draw(line([[L - 6, T], [L - 6, B]]), faint, 1)
       . draw(line([[L, B + 6], [R, B + 6]]), faint, 1)
       . draw(letters(unstack(ends), corners, 12), faint, 1),
-    fold(0..<k, { pic, i | pic . draw(DrawTrace(sx(x), sy(rows_i), L, R, 1.25), colors_(i % 8), 1.25) }, frame)
+    fold(0..<k, { pic, i | pic . draw(DrawTrace(sx(px), sy(py_i), L, R, 1.25), colors_(i % 8), 1.25) }, frame)
       . draw(letters(words, stack((fill([k], R + 8), clamp(at - 7, 0, H - 14)), -1), 12), ink, 1)
   })
 }, "plot(x, ys, names?)", "Lines on one pair of axes, a picture 520 × 160 units: ys is a list of vectors, or a matrix of rows, each over the points x, in ascending order. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value. However many points a line has, it costs what the picture's width does: in each column half a unit wide, it keeps its first, top, bottom and last points.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
