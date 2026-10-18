@@ -313,31 +313,34 @@ test("camera (fake device) streams into a canvas", async ({ page }) => {
 test("a busy worker gets the newest pointer position, not a queue of them", async ({ page }) => {
   // regression: the page sent a frame every display frame whatever the worker did – a
   // worker busy for 3 s had 420 frames (21 MB of camera pictures) waiting for it
+  type Scope = { frames: number, busy: boolean }
   await page.addInitScript(() => {
-    const post = Worker.prototype.postMessage, scope = globalThis as unknown as { frames: number }
+    const scope = globalThis as unknown as Scope
     scope.frames = 0
+    scope.busy = false
+    const post = Worker.prototype.postMessage
     Worker.prototype.postMessage = function (this: Worker, message: { t?: string }, transfer: Transferable[]) {
       if (message?.t === "frame") { scope.frames++ }
       return post.call(this, message, { transfer })
     } as typeof post
+    // a busy worker takes no frame: while busy, the page hears no "took"
+    const listen = Object.getOwnPropertyDescriptor(Worker.prototype, "onmessage")!.set!
+    Object.defineProperty(Worker.prototype, "onmessage", {
+      set(this: Worker, receive: (e: MessageEvent) => void) { listen.call(this, (e: MessageEvent) => { if (!(scope.busy && e.data?.t === "took")) { receive(e) } }) },
+    })
   })
   await open(page, "MousePosition()")
   let x = 10
   await expect.poll(async () => {
     await page.mouse.move(x++, 10)
-    return page.evaluate(() => (globalThis as unknown as { frames: number }).frames)
+    return page.evaluate(() => (globalThis as unknown as Scope).frames)
   }).toBeGreaterThan(0)
-  const worker = page.workers().find((w) => w.url().includes("fluent.worker"))!
-  // a long evaluation: the worker takes nothing for a few seconds
-  const busy = worker.evaluate(() => { const t = performance.now(); while (performance.now() - t < 2500) { } })
-  await page.waitForTimeout(500)
-  const before = await page.evaluate(() => (globalThis as unknown as { frames: number }).frames)
+  const before = await page.evaluate(() => { (globalThis as unknown as Scope).busy = true; return (globalThis as unknown as Scope).frames })
   for (let i = 0; i < 30; i++) {
     await page.mouse.move(100 + i * 5, 100)
     await page.waitForTimeout(16)
   }
-  const sent = await page.evaluate(() => (globalThis as unknown as { frames: number }).frames) - before
-  await busy
+  const sent = await page.evaluate(() => (globalThis as unknown as Scope).frames) - before
   expect(sent).toBeLessThanOrEqual(1)
 })
 
