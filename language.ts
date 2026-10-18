@@ -473,6 +473,8 @@ const scheduleRetirementFlush = () => {
 function evaluateGeneration<T>(evaluate: () => T): T {
   const previous = currentGeneration
   currentGeneration = { disposables: new Set() }
+  // every run draws the same random numbers, so the same program trains the same weights
+  rngCounter = 0
   try {
     return evaluate()
   } finally {
@@ -1381,7 +1383,7 @@ const TensorAssign = (a: Value, b: Value): Value => {
 // step, :=)
 const TensorWatch = (a: Value): Value => a instanceof FluentVariable ? computed(() => (a.version.value, a.current)) : a
 
-// A fresh key per call – deterministic per page load, not across reloads
+// A fresh key per call, counted from 0 in each evaluation
 let rngCounter = 0
 const TensorRandomUniform = (a: Value) => engine.uniform(rngCounter++, asWholeList(a))
 
@@ -1458,6 +1460,75 @@ const CodesToString = (a: Value) => {
   return text
 }
 
+// MARK: Storage
+// Storage(key) is a signal whose value is kept under key and survives a reload: ◌ until
+// a saved value arrives; a write saves it. What is saved is the value at the write – a
+// variable's value then, a tensor's numbers (read without blocking), strings and lists as
+// they are; ◌ forgets the key. The browser keeps the values in IndexedDB; without it, as
+// in Bun, they last as long as the process.
+type Stored = null | string | { shape: number[], data: Float32Array } | Stored[]
+const storedInMemory = new Map<string, Stored>()
+let storageDatabase: Promise<IDBDatabase | null> | undefined
+const storageRequest = <T,>(mode: IDBTransactionMode, request: (values: IDBObjectStore) => IDBRequest, fallback: () => T): Promise<T> => {
+  storageDatabase ??= typeof indexedDB === "undefined" ? Promise.resolve(null) : new Promise((resolve) => {
+    const open = indexedDB.open("fluent-storage", 1)
+    open.onupgradeneeded = () => { open.result.createObjectStore("values") }
+    open.onsuccess = () => resolve(open.result)
+    open.onerror = () => resolve(null)
+  })
+  return storageDatabase.then((db) => db === null ? fallback() : new Promise<T>((resolve, reject) => {
+    const r = request(db.transaction("values", mode).objectStore("values"))
+    r.onsuccess = () => resolve(r.result as T)
+    r.onerror = () => reject(r.error)
+  }))
+}
+// one queue for every key, so a read sees each write made before it
+let storageQueue: Promise<unknown> = Promise.resolve()
+const inStorageOrder = <T,>(op: () => Promise<T>): Promise<T> => {
+  const next = storageQueue.then(op, op)
+  storageQueue = next.catch(() => undefined)
+  return next
+}
+// the value now, as data: a variable is its value at this moment
+const storedNow = (v: Value): Value =>
+  v instanceof FluentVariable ? v.current : Array.isArray(v) ? v.map(storedNow) : v
+const toStored = (v: Value): Promise<Stored> =>
+  v == null ? Promise.resolve(null)
+    : isText(v) ? Promise.resolve(String(v))
+      : isTensor(v) ? v.read().then((data) => ({ shape: [...v.shape], data: Float32Array.from(data) }))
+        : Array.isArray(v) ? Promise.all(v.map(toStored))
+          : Promise.reject(new Error(`Storage: ${describeArg(v)} can't be stored – only tensors, strings, lists of them and ◌`))
+const fromStored = (s: Stored): Value =>
+  s === null ? null : typeof s === "string" ? s : Array.isArray(s) ? s.map(fromStored) : engine.tensor(s.data, { shape: s.shape })
+
+// a Storage signal sees every write, also one of the value it already holds
+const signalValue = Object.getOwnPropertyDescriptor(Signal.prototype, "value")!
+const Storage = (key: Value): Value => {
+  if (!isText(key)) { return new Error(`Storage(key): the key is a string, got ${describeArg(key)}`) }
+  const name = String(key), value = signal<Value>(null)
+  let written = false, gone = false
+  const show = (v: Value) => { signalValue.set!.call(value, v) }
+  inStorageOrder(() => storageRequest("readonly", (values) => values.get(name), () => storedInMemory.get(name))).then(
+    (s) => { if (!gone && !written && s !== undefined) { show(fromStored(s as Stored)) } },
+    (e) => { if (!gone && !written) { show(asError(e)) } })
+  Object.defineProperty(value, "value", {
+    get: () => signalValue.get!.call(value),
+    set: (v: Value) => {
+      if (v instanceof Error) { show(v); return }
+      written = true
+      const now = storedNow(v), stored = toStored(now)
+      stored.catch(() => undefined)
+      show(now)
+      inStorageOrder(() => stored.then((s) => storageRequest("readwrite",
+        (values) => s === null ? values.delete(name) : values.put(s, name),
+        () => s === null ? storedInMemory.delete(name) : storedInMemory.set(name, s))))
+        .catch((e) => { if (!gone) { show(asError(e)) } })
+    },
+  })
+  registerDisposable(() => { gone = true })
+  return value
+}
+
 // MARK: Environment
 // Null-prototype: an environment is a bare name→value mapping. A plain `{}` would chain
 // to Object.prototype, so `constructor`, `toString` or `valueOf` would resolve to JS
@@ -1477,6 +1548,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorWatch, TensorRandomUniform,
   List, ListLength, ListConcat, ListGet, ListMap, ListReduce, ListScan,
   StringConcat, StringLiteral, StringLength, StringToCodes, CodesToString,
+  Storage,
 })
 
 // NoMatch, the decline a hand-written candidate returns: a fresh one per read, so each

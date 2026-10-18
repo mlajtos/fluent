@@ -500,6 +500,16 @@ describe("math functions", () => {
   test("crossEntropy", () => {
     expect(value("crossEntropy([0, 1, 0], [1, 2, 0.5])")).toBeCloseTo(0.4644, 3)
   })
+  test("crossEntropy takes class indices as well as one-hot rows: the same value and the same ∇", () => {
+    const L = "[[2, 0, 0], [0, 2, 0], [0, 0, 2]]"
+    expect(value(`crossEntropy([0, 1, 2], ${L})`)).toBeCloseTo(0.2395, 4)
+    expect(value(`crossEntropy([0, 1, 2], ${L}) = crossEntropy(oneHot([0, 1, 2], 3), ${L})`)).toBe(1)
+    expect(value(`(∇{ x | crossEntropy([0, 2, 1], x) })(${L}) ≡ (∇{ x | crossEntropy(oneHot([0, 2, 1], 3), x) })(${L})`)).toBe(1)
+    // a [batch, time] label tensor against [batch, time, classes] logits
+    const B = "[[[1, 2, 0.5], [0, -1, 3]], [[2, 2, 2], [0.1, 0.2, 0.3]]]"
+    expect(value(`crossEntropy([[2, 0], [1, 1]], ${B}) = crossEntropy(oneHot([[2, 0], [1, 1]], 3), ${B})`)).toBe(1)
+    expect(run(`crossEntropy([3], [[1, 2, 0.5]])`)).toBeInstanceOf(Error)
+  })
   test("roots, powers, logs", () => {
     expect(value("sqrt(9)")).toBe(3)
     expect(value("square(4)")).toBe(16)
@@ -775,6 +785,34 @@ describe("training: ∇ follows what the loss reads", () => {
       const θ = value(`θ: ~([0, 0]), 𝓛: { Σ((θ - [3, -1]) ^ 2) }, opt: ${opt}, ({ s | opt(𝓛) } ⍣ 300)(0), θ`) as number[]
       expect([opt, Math.abs(θ[0]! - 3) < 0.02 && Math.abs(θ[1]! + 1) < 0.02]).toEqual([opt, true])
     }
+  }, 20_000) // 17 training loops – slow under load, don't flake on the 5s default
+  test("amsgrad keeps the largest raw second moment and bias-corrects it, as PyTorch does", () => {
+    // torch.optim.Adam(amsgrad=True), in float64, on Σ a(θ - c)²
+    const a = [1, 10, 0.1], c = [0.3, 0.1, -0.7], θ = [1, -2, 0.5], m = [0, 0, 0], v = [0, 0, 0], top = [0, 0, 0]
+    const [step, read] = run(`θ: ~[${θ}], 𝓛: { Σ([${a}] × (θ - [${c}])^2) }, opt: amsgrad(0.1), ({ opt(𝓛) }, { θ })`) as Value[] as Function[]
+    for (let t = 1; t <= 8; t++) {
+      step!()
+      for (let i = 0; i < 3; i++) {
+        const g = 2 * a[i]! * (θ[i]! - c[i]!)
+        m[i] = 0.9 * m[i]! + 0.1 * g
+        v[i] = 0.999 * v[i]! + 0.001 * g * g
+        top[i] = Math.max(top[i]!, v[i]!)
+        θ[i] = θ[i]! - 0.1 * (m[i]! / (1 - 0.9 ** t)) / (Math.sqrt(top[i]! / (1 - 0.999 ** t)) + 1e-8)
+      }
+      const got = unwrap(read!()) as number[]
+      got.forEach((x, i) => expect(x).toBeCloseTo(θ[i]!, 4))
+    }
+  })
+  test("opt() is the optimizer's memory: saved with the weights, := resumes training exactly", () => {
+    // 5 steps, a snapshot, 5 more; then back to the snapshot and the same 5 again
+    const [first, again] = value(`θ: ~[3, -2], 𝓛: { Σ((θ - [1, 2])^2) }, opt: adam(warmup(0.1, 4), (θ,)),
+      state: ListConcat((θ,), opt()), steps: { ({ s | opt(𝓛) } ⍣ 5)(0) },
+      steps(), saved: ListMap(state, detach), steps(), first: θ + 0,
+      state := saved, steps(), stack((first, θ + 0))`) as number[][]
+    expect(again).toEqual(first!)
+    // given its variables, the memory is there before the first step: a step count and two moments
+    expect(value("θ: ~[1, 2], opt: adam(0.1, (θ,)), ListLength(opt())")).toBe(3)
+    expect(value("θ: ~[1, 2], opt: adam(0.1), ListLength(opt())")).toBe(0)
   })
   test("an optimizer is a value: optimizer(init, rule, lr)", () => {
     // plain gradient descent, written out
@@ -789,6 +827,11 @@ describe("training: ∇ follows what the loss reads", () => {
     const θ = value("θ: ~([0, 0]), 𝓛: { Σ(θ × [30, 40]) }, opt: optimizer({ v | List() }, clipNorm({ g, v | (v - g, List()) }, 5), 1), opt(𝓛), θ") as number[]
     expect(θ[0]).toBeCloseTo(-3, 5)
     expect(θ[1]).toBeCloseTo(-4, 5)
+  })
+  test("the same program trains the same weights on every run", () => {
+    // random init, and a fresh random batch every step
+    const src = "W: ~randn([3, 2]), 𝓛: { x: ⚄([4, 3]), mean((matmul(x, W) - 1)^2) }, opt: adam(0.1), ({ s | opt(𝓛) } ⍣ 5)(0), W"
+    expect(value(src)).toEqual(value(src))
   })
   test("a loss that reads no variable is a loud error", () => {
     expect(run("opt: adam(0.1), opt({ 3 })")).toBeInstanceOf(Error)
@@ -829,6 +872,36 @@ describe("data slots (~~)", () => {
   })
   test("passing ~~ in an explicit var list is a loud error, never silent filtering", () => {
     expect(run("x: ~~([1]), θ: ~([0]), 𝓛: { mean((θ_0 - 1)^2) }, opt: sgd(0.1, (θ, x)), opt(𝓛)")).toBeInstanceOf(Error)
+  })
+})
+
+describe("Storage: a signal kept across runs", () => {
+  const arrive = () => new Promise((r) => setTimeout(r, 10))
+  const data = (v: Value) => JSON.parse(JSON.stringify(unwrap(v).map(unwrap)))
+  test("a write is saved as the value it had then; the next run gets it back", async () => {
+    const written = run(`θ: ~[1, 2], s: Storage("test: kept"), s((θ, "hi", [[3]])), θ:= [5, 6], s`)
+    expect(data(written)).toEqual([[1, 2], "hi", [[3]]])
+    const later = run(`Storage("test: kept")`) as Signal<Value>
+    expect(later.value).toBe(null)
+    await arrive()
+    expect(data(later)).toEqual([[1, 2], "hi", [[3]]])
+  })
+  test("◌ forgets – also written to a signal that holds ◌ – and what can't be saved is an Error", async () => {
+    run(`s: Storage("test: forgotten"), s([1])`)
+    await arrive()
+    run(`s: Storage("test: forgotten"), s(◌)`)
+    const later = run(`Storage("test: forgotten")`) as Signal<Value>
+    await arrive()
+    expect(later.value).toBe(null)
+    const fn = run(`s: Storage("test: a function"), s({ x | x }), s`) as Signal<Value>
+    await arrive()
+    expect(fn.value).toBeInstanceOf(Error)
+  })
+  test("a run that writes first keeps its value when an older one arrives", async () => {
+    run(`s: Storage("test: race"), s(1)`)
+    const s = run(`s: Storage("test: race"), s(2), s`) as Signal<Value>
+    await arrive()
+    expect(unwrap(s)).toBe(2)
   })
 })
 
@@ -1427,9 +1500,11 @@ describe("gallery examples smoke suite", () => {
     const header = JSON.parse(new TextDecoder().decode(bytes.subarray(8, 8 + length)))
     const mnist = Object.entries(header).map(([name, t]: [string, any]) =>
       [name, engine.tensor(Float32Array.from(bytes.subarray(8 + length + t.data_offsets[0], 8 + length + t.data_offsets[1])), { shape: t.shape })])
-    extendEnvironment({ FunctionIterate: stepLater, Button: pressLater, LoadSafeTensorFromURL: () => SignalCreate(mnist) } as Record<string, Value>)
+    // makemore's names, as the dev server serves them
+    const names = await Bun.file(new URL("names.txt", import.meta.url)).text()
+    extendEnvironment({ FunctionIterate: stepLater, Button: pressLater, LoadSafeTensorFromURL: () => SignalCreate(mnist), Fetch: (url: Value) => SignalCreate(String(url) === "names.txt" ? names : "") } as Record<string, Value>)
   })
-  afterAll(() => { extendEnvironment({ ...real, LoadSafeTensorFromURL: loading.LoadSafeTensorFromURL } as Record<string, Value>) })
+  afterAll(() => { extendEnvironment({ ...real, LoadSafeTensorFromURL: loading.LoadSafeTensorFromURL, Fetch: loading.Fetch } as Record<string, Value>) })
 
   // Force every value the example binds, following signals, variables and lists, and
   // read each tensor off the device: the top-level value of a demo is almost always a
@@ -1476,6 +1551,82 @@ describe("gallery examples smoke suite", () => {
     }, 60_000)
   }
 
+  test("deep-delta-learning learns a function: one number in, one out, right where it never trained", () => {
+    steps.length = 0
+    const scope = scopeOf(EXAMPLES["deep-delta-learning"])
+    for (let i = 0; i < 300; i++) { steps[0]!(engine.scalar(i)) }
+    const read = (expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope))
+    // the mean squared error on 200 points between the 24 it trained on; 0.5 is guessing 0
+    expect(read("unseen()")).toBeLessThan(0.01)
+    expect(read("shape(f([1.5]))")).toEqual([1])
+    flushRetirements()
+  }, 60_000)
+  test("the dreamers train on random minibatches – a corpus of names.txt's size fits – and score a held-out tenth", () => {
+    for (const name of ["dreamer", "looped-dreamer"]) {
+      steps.length = 0
+      const scope = scopeOf(EXAMPLES[name as keyof typeof EXAMPLES])
+      const corpus = scope.corpus as Signal<string>
+      // ~200k windows: a step over all of them would need gigabytes
+      corpus.value = Array(300).fill(corpus.peek()).join(" ")
+      for (let i = 0; i < 20; i++) { expect([name, unwrap(steps[0]!(engine.scalar(i)))]).toEqual([name, null]) }
+      const [step, train, heldOut] = unwrap(evaluateSyntaxTreeNode(CodeParse("history()_0"), scope)) as number[]
+      expect([name, step, train! > 0, heldOut! > 0]).toEqual([name, 20, true, true])
+      flushRetirements()
+    }
+  }, 60_000)
+  test("makemore learns, and a new run resumes from the checkpoint the last one saved", async () => {
+    // the demo, smaller: 3000 names, a narrower model, an evaluation every 25 steps
+    const names = (await Bun.file(new URL("names.txt", import.meta.url)).text()).split("\n").slice(0, 3000).join("\n")
+    const fetch = DefaultEnvironment.Fetch!
+    extendEnvironment({ Fetch: () => SignalCreate(names) } as Record<string, Value>)
+    const small = EXAMPLES.makemore.replace('run: "names",', 'run: "test: names",').replace("B: 64,", "B: 16,")
+      .replace("C: 64, F: 256,", "C: 32, F: 64,").replace("every: 100,", "every: 25,").replace("⍣ 64", "⍣ 24")
+    const read = (scope: Record<string, Value>, expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope))
+    try {
+      steps.length = 0
+      const first = scopeOf(small)
+      for (let i = 0; i < 75; i++) { expect(unwrap(steps[0]!(engine.scalar(i)))).toBe(null) }
+      const history = read(first, "history") as number[][]
+      expect(history.map((row) => row[0])).toEqual([25, 50, 75])
+      // the held-out loss falls, well under the 3.3 of guessing among 27 characters
+      expect(history[2]![2]!).toBeLessThan(history[0]![2]!)
+      expect(history[2]![2]!).toBeLessThan(2.8)
+      expect(String(read(first, "samples()"))).toMatch(/^[a-z ]{24}$/)
+      const weights = read(first, "Wq")
+      await new Promise((r) => setTimeout(r, 20))
+      // a reload: the same program from the top, at step 0, paused – until the checkpoint arrives
+      steps.length = 0
+      const second = scopeOf(small)
+      ;(second.training as Signal<Value>).value = engine.scalar(0)
+      expect(read(second, "step")).toBe(0)
+      await new Promise((r) => setTimeout(r, 20))
+      steps[0]!(engine.scalar(0))
+      expect(read(second, "step")).toBe(75)
+      expect(read(second, "Wq")).toEqual(weights)
+      expect(read(second, "ListGet(opt(), 0)")).toBe(75)
+      expect((read(second, "history") as number[][]).length).toBe(3)
+      // and training goes on from there
+      ;(second.training as Signal<Value>).value = engine.scalar(1)
+      steps[0]!(engine.scalar(1))
+      expect(read(second, "step")).toBe(76)
+    } finally {
+      extendEnvironment({ Fetch: fetch } as Record<string, Value>)
+      flushRetirements()
+    }
+  }, 60_000)
+  test("mnist logs no loss before its data has loaded", async () => {
+    const loaded = DefaultEnvironment.LoadSafeTensorFromURL!
+    extendEnvironment({ FunctionIterate: real.FunctionIterate, LoadSafeTensorFromURL: loading.LoadSafeTensorFromURL } as Record<string, Value>)
+    try {
+      // the real ⟳ runs its frames; the data never arrives
+      const scope = scopeOf(EXAMPLES.mnist)
+      await new Promise((r) => setTimeout(r, 50))
+      expect(unwrap(scope.losses)).toEqual([])
+    } finally {
+      extendEnvironment({ FunctionIterate: stepLater, LoadSafeTensorFromURL: loaded } as Record<string, Value>)
+      evaluateIn("0")
+    }
+  })
   test("pitch-detector names a tone's note, and silence as none", () => {
     const microphone = DefaultEnvironment.Microphone
     const hear = (wave: (i: number) => number) => {
@@ -2190,6 +2341,29 @@ describe("numbers come out right", () => {
     const got = value(`[${Array.from({ length: n }, (_, i) => i).join(", ")}]`) as number[]
     expect(got.every((v, i) => v === i)).toBe(true)
   }, 30_000)
+})
+
+describe("plot: lines on one pair of axes", () => {
+  test("a number as the codes of its digits, worked out without reading it back", () => {
+    const shown = (x: number) => value(`CodesToString(DrawDigits(${x}))`).trimEnd()
+    expect([2.31, 0.052, 1200, -0.5, 9.996, 0.99999, 0.00014, 0, 3, 38.44].map(shown)).toEqual(["2.31", "0.0520", "1200", "-0.500", "10.0", "1.00", "0.00014", "0", "3", "38.4"])
+  })
+  test("letters are their glyphs' lit cells", () => {
+    // "1" lights 8 of its 15 cells, in three channels
+    expect(value(`Σ(canvas(4, 5, 0) . draw(letters("1", [0, 0], 1), 1, 1))`)).toBe(24)
+    expect(value(`Σ(canvas(8, 5, 0) . draw(letters("i ", [0, 0], 1), 1, 1)) = Σ(canvas(8, 5, 0) . draw(letters("I", [0, 0], 1), 1, 1))`)).toBe(1)
+    // several texts in one shape, each at its own corner
+    expect(value(`Σ(canvas(8, 5, 0) . draw(letters(("1", [49]), [[0, 0], [4, 0]], 1), 1, 1))`)).toBe(48)
+  })
+  test("each series draws in its own color, and a series of fewer than 2 points draws nothing", () => {
+    // how many pixels of the first two series colors the picture has
+    const count = (p: string) => value(`p: ${p}, near: { c | Σ(Σ(abs(p - c), -1) < 0.05) }, stack((near([0.224, 0.529, 0.898]), near([0.851, 0.349, 0.149])))`) as number[]
+    const [blue, orange] = count(`plot(0..<50, (0..<50, 50 - 0..<50), ("up", "down"))`)
+    expect(blue).toBeGreaterThan(300)
+    expect(orange).toBeGreaterThan(300)
+    expect(count(`plot(0..<1, [3])`)).toEqual([0, 0])
+    expect(value(`shape(plot(linspace([-1, 1], 9), [[1, 2, 3, 4, 5, 6, 7, 8, 9]]))`)).toEqual([160, 520, 3])
+  })
 })
 
 describe("the engine", () => {

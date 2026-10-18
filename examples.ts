@@ -453,10 +453,10 @@ opt: adam(0.02),
 losses: $[],
 half: $(φ(X) ⍴ [96]), ; φ(x) – climbs to sit between x and eˣ
 whole: $(φ(φ(X)) ⍴ [96]), ; φ(φ(x)) – snaps onto eˣ
-{
+{ i |
   losses(losses() ++ [opt(𝓛)]),
-  half(φ(X) ⍴ [96]),
-  whole(φ(φ(X)) ⍴ [96])
+  ; redrawn every 10th step
+  when(i % 10 = 0, { half(φ(X) ⍴ [96]), whole(φ(φ(X)) ⍴ [96]) })
 } ⟳ 2000,
 
 (
@@ -464,52 +464,64 @@ whole: $(φ(φ(X)) ⍴ [96]), ; φ(φ(x)) – snaps onto eˣ
   Text("A net **φ** trained on one rule — **φ(φ(x)) = eˣ** — with no labels, only self-consistency. It learns √exp, a function with no closed form."),
   Text("**loss** — self-consistency, converging:"),
   losses,
-  Text("**φ(x)** (middle) settles between **x** (line) and **eˣ** (top) — genuinely halfway:"),
-  (x, half, exp(x)),
+  Text("**φ(x)** (middle) settles between **x** (bottom) and **eˣ** (top) — genuinely halfway:"),
+  plot(x, (x, half, exp(x)), ("x", "phi(x)", "exp(x)")),
   Text("**φ(φ(x))** lands on **eˣ**:"),
-  (exp(x), whole),
+  plot(x, (exp(x), whole), ("exp(x)", "phi(phi(x))")),
 )
 `,
   "deep-delta-learning": `
-; Deep Delta Learning – learns sin(x)
-; Uses delta rule: x' = x + β·k·(v - k·x)
+; Deep Delta Learning – a stack of delta blocks learns sin(x) from 24 points.
+; A delta block edits its state x along one direction k, by the delta rule:
+;   x' = x + β·k·(v − k·x)
+; It reads from x where to write (k, a unit vector), what to write (v), and how
+; hard (β, from 0 to 2): β = 0 keeps x, 1 replaces its k-part with v, 2 reflects it.
 
-d: 160,
+d: 16, depth: 3,
 
-; Learnable parameters
-w: ~(randn([d]) × 0.1),
-κ: ~(randn([d]) × 0.1),
-ν: ~[0],
-β: ~[0],
+; Learnable parameters: an embedding, Wk, wv and wβ for each block, a readout
+E: ~(randn([d]) × 1.5),
+e: ~randn([d]),
+Wk: ~(randn([depth, d, d]) ÷ √(d)),
+wv: ~(randn([depth, d]) ÷ √(d)),
+wβ: ~(randn([depth, d]) ÷ √(d)),
+u: ~(randn([d]) ÷ √(d)),
 
-; Delta block
-Δ: { x |
-  k: κ ÷ √(Σ(κ^2) + 1e-7),
-  x + (2 × sigmoid(β) × (ν - Σ(k × x)) × k)
+; Delta block i, on a batch of states x [n, d]
+Δ: { x, i |
+  q: matmul(x, Wk_i), k: q ÷ (norm(q, -1, 1) + 1e-6),
+  v: Σ(x × wv_i, -1, 1),
+  β: 2 × sigmoid(Σ(x × wβ_i, -1, 1)),
+  x + (β × (v - Σ(k × x, -1, 1)) × k)
 },
 
-; Model & data
-f: { t | Δ(t × w) },
-τ: linspace([0, 2×π], d),
-ŷ: sin(τ),
+; The model: one number in, d features, the blocks in turn, one number out
+f: { t | h: tanh(unsqueeze(t, -1) × E + e), Σ(ListReduce(unstack(0..<depth), Δ, h) × u, -1) },
+
+; Data: 24 points to learn from, and 200 in between that it never sees
+xs: ⚄([24]) × 2×π,
+grid: linspace([0, 2×π], 200),
 
 ; Training
 (++): TensorConcat,
-(++=): FunctionNoAutoLift({ a, b | a(a() ++ b) }),
-
-𝓛: { mean((f(τ) - ŷ)^2) },
-opt: adam(0.001),
+𝓛: { mean((f(xs) - sin(xs))^2) },
+unseen: { mean((f(grid) - sin(grid))^2) },
+opt: adam(0.01),
 losses: $[],
-pred: $f(τ),
-
-{ losses ++= [opt(𝓛)], pred(f(τ)) } ⟳ 500,
+tests: $[],
+pred: $f(grid),
+; a step at a time; every 10th, the errors are logged and the prediction redrawn
+{ i |
+  l: opt(𝓛),
+  when(i % 10 = 0, { losses(losses() ++ [l]), tests(tests() ++ [unseen()]), pred(f(grid)) })
+} ⟳ 600,
 
 ; Results
 (
-  Text("**Loss:**"),
-  losses,
-  Text("**Prediction vs Target:**"),
-  (ŷ, pred),
+  Text("**sin(x) and the model**, on the 200 points it never trained on:"),
+  plot(grid, (sin(grid), pred), ("sin(x)", "model")),
+  Text("**How far off it is** (root-mean-square), on the 24 training points and on the 200 unseen ones:"),
+  \${ plot(0..<(#losses()) × 10, (√(losses()), √(tests())), ("train", "unseen")) },
 )
 `,
 "loss-landscape": `
@@ -1209,10 +1221,11 @@ model: { X |
 ; cross-entropy over the 10 classes (numerically-stable log-softmax on axis 0)
 loss: { -mean(Σ(Ytr() × logSoftmax(model(Xtr()), 0), 0)) },
 
-; train – each tick is gated on the data being loaded (a no-op 0 until then)
+; train 1500 steps once the data has loaded – the budget is 0 until then
 opt: adam(0.05),
 losses: $[],
-{ losses(losses() ++ [cond(guard(loaded(), { opt(loss) }), 0)]) } ⟳ 1500,
+budget: \${ loaded() × 1500 },
+{ losses(losses() ++ [opt(loss)]) } ⟳ budget,
 
 ; live accuracy on the held-out test set, recomputed every training step
 accuracy: \${
@@ -1434,7 +1447,13 @@ model: { ids |
   matmul(rms(x2), Wu) ; [batch, T, V] logits
 },
 
-loss: { crossEntropy(oneHot(slice(D, [0, 1], [-1, T]), V), model(slice(D, [0, 0], [-1, T]))) },
+; --- what it learns from: B random windows a step; a tenth held out to score it ---
+B: 64,
+cut: { floor((#D) × 0.9) }, ; windows past the cut are held out – never trained on
+lossOn: { d | crossEntropy(slice(d, [0, 1], [-1, T]), model(slice(d, [0, 0], [-1, T]))) },
+loss: { lossOn(take(D, floor(⚄([B]) × cut()))) },
+; a score: 256 windows spread evenly over n windows from from – steady, at a bounded cost
+score: { from, n | lossOn(take(D, from + floor(linspace([0, n - 1], 256)))) },
 
 ; --- sampling: gumbel-max, with a temperature you can drag ---
 τ: $0.5,
@@ -1451,23 +1470,29 @@ dreamNow: { dream(StringConcat("### ", dec(slice(gen(fill([T], 0), 48), T)))) },
 ; --- training: ⟳-paced, gated by the checkbox ---
 training: $1,
 opt: adamw(0.03, 0.001), ; a little weight decay – memorize less, invent more
-losses: $[],
-stride: $4,
-{ i |
+step: $0,
+; a row each time it measures: (step, training score, held-out score)
+history: $fill([0, 3], 0),
+stride: $20, ; steps between measurements
+{
   when(once(training), {
-    l: opt(loss),
-    when(i % once(stride) = 0, {
-      losses(losses() ++ (l ⍴ [1])),
+    opt(loss),
+    step← once(step) + 1,
+    s: once(step),
+    when(s % once(stride) = 0, {
+      measured: [s, score(0, cut()), score(cut(), (#D) - cut())],
+      history(concat((history(), measured ⍴ [1, 3]))),
       ; the plot keeps the whole story, bounded: when it fills up,
-      ; thin the history to every other point and log half as often
-      when((#losses()) ≥ 480, {
-        losses(losses()_(0..<240 × 2)),
+      ; thin the history to every other row and measure half as often
+      when((#history()) ≥ 240, {
+        history(history()_(0..<120 × 2)),
         stride← once(stride) × 2
       })
     }),
-    when(i % 200 = 0, dreamNow)
+    when(s % 200 = 0, dreamNow)
   })
 } ⟳ 1000000,
+curves: \${ h: transpose(history()), plot(h_0, (h_1, h_2), ("train", "held out")) },
 
 ; type a beginning – the model finishes it (works even while paused)
 prompt: $"kri",
@@ -1482,7 +1507,7 @@ finish: \${
 probeS: fill([T], 0) ++ enc("sophia"),
 probe: slice(probeS, [-T]),
 attn: \${
-  losses(),
+  history(),
   x: rms(matmul(oneHot(probe ⍴ [1, T], V), E) + P),
   softmax(einsum("btc,bsc->bts", matmul(x, Wq), matmul(x, Wk)) ÷ (√C) + nmask) ⍴ [T, T]
 },
@@ -1493,8 +1518,8 @@ editable: \${ 1 - training() },
   Text("A 12k-parameter transformer learns to invent names – live, in your tab."),
   Checkbox(training),
   Text("**training** – uncheck to pause; pause to edit the corpus below"),
-  Text("**loss** – the whole run, from first step to now:"),
-  losses,
+  Text("**loss** – on windows it trains on, and on the tenth it never sees; when held out climbs as train falls, it is memorizing:"),
+  curves,
   Text("**it dreams** – regenerated every 200 steps:"),
   Text(dream),
   Button("dream again", dreamNow),
@@ -1575,7 +1600,13 @@ embed: { ids | matmul(oneHot(ids, V), E) + P },
 model: { ids | matmul(cycle(cycle(cycle(embed(ids)))), Wu) }, ; training unrolls R=3 rounds
 modelAt: { ids, r | matmul((cycle ⍣ r)(embed(ids)), Wu) }, ; dreaming picks its own r
 
-loss: { crossEntropy(oneHot(slice(D, [0, 1], [-1, T]), V), model(slice(D, [0, 0], [-1, T]))) },
+; --- what it learns from: B random windows a step; a tenth held out to score it ---
+B: 64,
+cut: { floor((#D) × 0.9) }, ; windows past the cut are held out – never trained on
+lossOn: { d | crossEntropy(slice(d, [0, 1], [-1, T]), model(slice(d, [0, 0], [-1, T]))) },
+loss: { lossOn(take(D, floor(⚄([B]) × cut()))) },
+; a score: 256 windows spread evenly over n windows from from – steady, at a bounded cost
+score: { from, n | lossOn(take(D, from + floor(linspace([0, n - 1], 256)))) },
 
 ; --- sampling: gumbel-max, with temperature and rounds you can drag ---
 τ: $0.5,
@@ -1595,23 +1626,29 @@ training: $1,
 ; post-norm runs hotter than pre-norm: a cooler lr, and no
 ; weight decay – rms-normalized blocks shrink until they blow up
 opt: adamw(0.01, 0),
-losses: $[],
-stride: $4,
-{ i |
+step: $0,
+; a row each time it measures: (step, training score, held-out score)
+history: $fill([0, 3], 0),
+stride: $20, ; steps between measurements
+{
   when(once(training), {
-    l: opt(loss),
-    when(i % once(stride) = 0, {
-      losses(losses() ++ (l ⍴ [1])),
+    opt(loss),
+    step← once(step) + 1,
+    s: once(step),
+    when(s % once(stride) = 0, {
+      measured: [s, score(0, cut()), score(cut(), (#D) - cut())],
+      history(concat((history(), measured ⍴ [1, 3]))),
       ; the plot keeps the whole story, bounded: when it fills up,
-      ; thin the history to every other point and log half as often
-      when((#losses()) ≥ 480, {
-        losses(losses()_(0..<240 × 2)),
+      ; thin the history to every other row and measure half as often
+      when((#history()) ≥ 240, {
+        history(history()_(0..<120 × 2)),
         stride← once(stride) × 2
       })
     }),
-    when(i % 200 = 0, dreamNow)
+    when(s % 200 = 0, dreamNow)
   })
 } ⟳ 1000000,
+curves: \${ h: transpose(history()), plot(h_0, (h_1, h_2), ("train", "held out")) },
 
 ; type a beginning – the model finishes it (works even while paused)
 prompt: $"kri",
@@ -1628,8 +1665,8 @@ probe: slice(probeS, [-T]),
 attProbe: { x |
   softmax(einsum("btc,bsc->bts", matmul(x, Wq1), matmul(x, Wk1)) ÷ (√C) + nmask) ⍴ [T, T]
 },
-attn1: \${ losses(), attProbe(embed(probe ⍴ [1, T])) },
-attn3: \${ losses(), attProbe(cycle(cycle(embed(probe ⍴ [1, T])))) },
+attn1: \${ history(), attProbe(embed(probe ⍴ [1, T])) },
+attn3: \${ history(), attProbe(cycle(cycle(embed(probe ⍴ [1, T])))) },
 
 editable: \${ 1 - training() },
 (
@@ -1637,8 +1674,8 @@ editable: \${ 1 - training() },
   Text("Two transformer blocks, stored once, revisited three times – a 6-block-deep name dreamer for a third of the weights (~22k parameters)."),
   Checkbox(training),
   Text("**training** – uncheck to pause; pause to edit the corpus below"),
-  Text("**loss** – the whole run, from first step to now:"),
-  losses,
+  Text("**loss** – on windows it trains on, and on the tenth it never sees; when held out climbs as train falls, it is memorizing:"),
+  curves,
   Text("**it dreams** – regenerated every 200 steps:"),
   Text(dream),
   Button("dream again", dreamNow),
@@ -1654,6 +1691,144 @@ editable: \${ 1 - training() },
   attn3,
   Text("**the training data** – uncheck training to edit; resuming keeps the weights:"),
   TextEditor(corpus, editable),
+)
+`,
+  "makemore": `
+; makemore, the nanoGPT way – a small transformer learns 32,033 names and makes up
+; new ones, with what a real training run has: a dataset fetched and split, random
+; minibatches, AdamW, warmup and cosine decay, gradient clipping, evaluation, a log,
+; a checkpoint that survives a reload, sampling and a clock. A program draws the
+; same random numbers each time it runs, so a run from step 0 repeats exactly.
+
+(++): TensorConcat,
+
+; --- config ---
+run: "names", ; the checkpoint's name – rename it to start a fresh run
+B: 64, T: 16, ; windows a step, characters a window
+V: 27, C: 64, F: 256, ; vocabulary, width, hidden width
+steps: 4000, warm: 200, peak: 0.003, ; the learning rate's schedule
+every: 100, ; steps between evaluations, checkpoints and samples
+
+; --- data: makemore's names.txt, a name a line, from the most common to the rarest ---
+text: Fetch("names.txt"), ; ◌ until it arrives
+loaded: { cond(guard(isString(text()), { (#text()) > 0 }), 0) },
+; a character as a token: a newline, which ends a name, is 0; a to z are 1 to 26
+encode: { s | clamp(StringToCodes(s) - 96, 0, 26) },
+decode: { t | CodesToString(where(t = 0, 32, t + 96)) },
+; every tenth name is held out – never trained on, only scored. Once the text has
+; arrived, its two token streams are held as data
+streams: $◌,
+SignalEffect({ when(loaded(), {
+  ids: encode(text()),
+  name: (ids = 0) scan +, ; which name each character belongs to
+  held: name % 10 = 9,
+  streams((mask(ids, ¬held), mask(ids, held)))
+}) }),
+; a window is T+1 characters in a row: each of the first T is followed by the next
+train: { windows(T + 1, streams()_0) },
+val: { windows(T + 1, streams()_1) },
+batch: { d | take(d, floor(⚄([B]) × (#d))) }, ; B windows of d, at random
+
+; --- the model: one transformer block, as in nanoGPT, its weights drawn small ---
+E: ~(randn([V, C]) × 0.02), ; a vector for each token
+P: ~(randn([T, C]) × 0.02), ; and for each position
+Wq: ~(randn([C, C]) × 0.02),
+Wk: ~(randn([C, C]) × 0.02),
+Wv: ~(randn([C, C]) × 0.02),
+Wo: ~(randn([C, C]) × 0.02),
+W1: ~(randn([C, F]) × 0.02),
+W2: ~(randn([F, C]) × 0.02),
+Wu: ~(randn([C, V]) × 0.02),
+g1: ~fill([C], 1), g2: ~fill([C], 1), g3: ~fill([C], 1), ; the norms' gains
+
+rms: { x, g | x ÷ √(mean(x × x, -1, 1) + 1e-5) × g },
+causal: where(0..<T ⊗(≥) 0..<T, 0, -1e9), ; each position sees itself and before
+attend: { x |
+  q: matmul(x, Wq), k: matmul(x, Wk), v: matmul(x, Wv),
+  a: softmax(matmul(q, permute(k, [0, 2, 1])) ÷ √(C) + causal),
+  matmul(matmul(a, v), Wo)
+},
+model: { ids |
+  x0: take(E, ids) + P,
+  x1: x0 + attend(rms(x0, g1)),
+  x2: x1 + matmul(gelu(matmul(rms(x1, g2), W1)), W2),
+  matmul(rms(x2, g3), Wu) ; [windows, T, V] scores for each next character
+},
+lossOn: { d | crossEntropy(slice(d, [0, 1], [-1, T]), model(slice(d, [0, 0], [-1, T]))) },
+loss: { lossOn(batch(train())) },
+; the loss on 1024 windows spread evenly over a split: steady, at a bounded cost
+score: { d | lossOn(take(d, floor(linspace([0, (#d) - 1], 1024)))) },
+
+; --- optimization: AdamW, decaying only the matrices; warmup, cosine decay; clipping ---
+params: (E, P, Wq, Wk, Wv, Wo, W1, W2, Wu, g1, g2, g3),
+decay: { v | 0.1 × ((#shape(v)) ≥ 2) }, ; the gains don't decay
+; up to peak in warm steps, then down along a cosine to a tenth of it
+schedule: { t | warmup(1, warm)(t) × (0.1×peak + cosine(0.9×peak, steps)(t)) },
+; each step's gradients scaled to a norm of at most 1
+rule: clipNorm({ g, v, s, t, lr | adamRule(decay(v))(g, v, s, t, lr) }, 1),
+opt: optimizer(adamInit, rule, schedule, params),
+
+; --- the run: everything a checkpoint keeps ---
+step: ~~0,
+history: ~~fill([0, 3], 0), ; a row an evaluation: (step, train loss, val loss)
+state: ListConcat((step, history), params, opt()), ; opt() is the optimizer's memory
+; kept in this browser, under the run's name and the model's shapes
+checkpoint: Storage(StringConcat(run, String(ListMap(params, shape)))),
+
+; --- sampling: a character at a time, from the model's softmax at temperature τ ---
+τ: $0.8,
+next: { s |
+  l: model(slice(s, [-T]) ⍴ [1, T]) ⍴ [T, V] _ T-1, ; scores for the next character
+  ; the Gumbel trick: the largest of l ÷ τ plus noise is a draw from softmax(l ÷ τ)
+  s ++ (argmax(l ÷ (once(τ) ⌈ 0.05) - log(-log(⚄([V])))) ⍴ [1])
+},
+samples: $"",
+sample: { samples(decode(slice((next ⍣ 64)(fill([T], 0)), [T]))) },
+
+; --- training ---
+training: $1,
+clock: Time(),
+since: $0,
+speed: $0, ; tokens a second, over the steps since the last evaluation
+{
+  ; resume: a checkpoint ahead of this run – one read from storage – becomes the run
+  saved: once(checkpoint),
+  when(isList(saved), { when(saved_0 > step, { state := saved }) }),
+  when(once(training) ∧ isList(streams()) ∧ step<steps, {
+    when(step % every = 0, { since← once(clock) }),
+    opt(loss),
+    step:= step + 1,
+    when(step % every = 0, {
+      speed← round(B × T × every ÷ (once(clock) - once(since))),
+      history:= concat((history, [[step, score(train()), score(val())]])),
+      checkpoint(state),
+      sample()
+    })
+  })
+} ⟳ 1000000,
+
+; --- what it shows ---
+about: \${ cond(
+  guard(isError(text()), { text() }),
+  guard(isList(streams()), {
+    StringConcat(String(#streams()_0), " characters to train on, ", String(#streams()_1), " held out")
+  }),
+  { "fetching names.txt…" }
+) },
+curves: \${ h: transpose(watch(history)()), plot(h_0, (h_1, h_2), ("train", "val")) },
+rate: \${ schedule(watch(step)()) },
+(
+  Text("# makemore, the nanoGPT way"),
+  Text("A one-block transformer learns 32,033 names and makes up new ones. Reload the page: training resumes from its last checkpoint."),
+  Text(about),
+  Grid(3)(Text("**step**"), Text("**tokens a second**"), Text("**learning rate**"), watch(step), speed, rate),
+  Grid([1, 6])(Checkbox(training), Text("**training** – uncheck to pause")),
+  Text("**loss** every 100 steps, on names it trains on and on the tenth it never sees:"),
+  curves,
+  Text("**new names**, sampled at each evaluation:"),
+  Text(samples),
+  Grid([1, 6])(Text("**temperature**"), Slider(τ)),
+  Button("more names", sample),
 )
 `,
   "camera-edges": `

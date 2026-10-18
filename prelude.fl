@@ -324,7 +324,11 @@ logSoftmax: TensorLogSoftmax: doc({ x, k |
   cond(guard((#shape(x)) = 0, { x × 0 }), { s: x - max(x, ax, 1), s - log(Σ(exp(s), ax, 1)) })
 }, "logSoftmax(x, axis?)", "log(softmax(x)), computed without overflow – for losses.", "logSoftmax([0, 0]) ≈ [-0.6931, -0.6931]"),
 oneHot: doc(TensorOneHot, "oneHot(indices, n)", "Each index as a length-n vector: 1 at the index, 0 elsewhere.", "oneHot([0, 2], 3) = [[1, 0, 0], [0, 0, 1]]"),
-crossEntropy: TensorCrossEntropy: doc({ labels, logits | μ(-Σ(labels × logSoftmax(logits), -1)) }, "crossEntropy(labels, logits)", "How surprised the model's scores are by the true labels (one-hot), averaged – the classification loss.", "crossEntropy([[1, 0]], [[0, 0]]) ≈ 0.6931"),
+crossEntropy: TensorCrossEntropy: doc({ labels, logits |
+  ; labels one rank short of the logits are class indices
+  p: cond(guard((#shape(labels)) < (#shape(logits)), { oneHot(labels, shape(logits)_(-1)) }), { labels }),
+  μ(-Σ(p × logSoftmax(logits), -1))
+}, "crossEntropy(labels, logits)", "How surprised the model's scores are by the true labels, averaged – the classification loss. A label is a class index, or a row of probabilities (one-hot) as long as the logits.", "crossEntropy([1], [[0, 0]]) ≈ 0.6931"),
 
 ; Trigonometry
 sin: doc(TensorSine, "sin(x)", "The sine of each element, in radians.", "sin(0) = 0"),
@@ -629,6 +633,78 @@ draw: DrawShape: doc({ shape, color, width |
   }
 }, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width pixels wide in color, its edges antialiased. The shape is given every pixel at once, p as [height, width, 2], and gives each its distance, so it measures along the last axis: norm(p - c, -1).", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
 
+; Plotting – lines on one pair of axes, drawn with the words above, and text drawn as a
+; shape: letters, in a 3×5 pixel font – a glyph for each code from 32 (space) to 90 (Z),
+; each a 15-bit number, top row first
+DrawGlyphs: [0, 0, 0, 0, 0, 21157, 0, 0, 10530, 8778, 0, 1488, 20, 448, 2, 4772, 31599, 11415, 29671, 29391, 23497, 31183, 31215, 29330, 31727, 31695, 1040, 0, 0, 3640, 0, 0, 0, 11245, 27566, 14627, 27502, 31143, 31140, 14699, 23533, 29847, 4714, 23469, 18727, 24557, 27501, 11114, 27556, 11123, 27565, 14478, 29842, 23407, 23402, 23549, 23213, 23186, 29351],
+letters: DrawLetters: doc({ s, at, size |
+  codesOf: { t | cond(guard(isString(t), { StringToCodes(t) }), { t }) },
+  texts: cond(guard(isList(s), { ListMap(s, codesOf) }), { (codesOf(s),) }),
+  ; a row of codes for each text, filled out with spaces to one length
+  n: max(stack(ListMap(texts, { t | #t }))) ⌈ 1,
+  codes: stack(ListMap(texts, { t | concat((t, fill([n - (#t)], 32))) })),
+  ; a to z draw as A to Z; a code with no glyph draws as a space
+  i: where(codes ≥ 97, codes - 64, codes - 32),
+  g: flat(take(DrawGlyphs, where(0≤i ∧ i<59, i, 0))),
+  corners: at ⍴ [-1, 2], m: #corners,
+  { p |
+    ; for each text, the glyph cell p falls in: a character is 3 cells and a gap wide, 5 tall
+    c: floor(moveaxis(unsqueeze(p, -2) - corners ÷ size, -1, 0)),
+    k: floor(c_0 ÷ 4), q: c_0 - 4×k, r: c_1,
+    lit: floor(take(g, 0..<m × n + clamp(k, 0, n-1)) ÷ 2^(14 - (3×r + q))) % 2,
+    ; inside the text and lit – each factor is 0 or 1
+    min(where((-1 < k) × (k < n) × (q < 3) × (-1 < r) × (r < 5) × lit, 0, 1e9), -1)
+  }
+}, "letters(text, at, size)", "The shape of a line of text, from its top-left corner at, in a 3×5 pixel font scaled by size: distance 0 on the letters, far elsewhere. Letters draw as capitals. text may be character codes, or a list of texts with a row of at for each.", "Σ(canvas(4, 5, 0) . draw(letters(\"1\", [0, 0], 1), 1, 1)) = 24"),
+; x as the codes of 3 significant digits, at most 5 decimals – "2.31", "-0.0520", "1200" –
+; spaces filling 8 cells; arithmetic only, so it never waits for x to be read back
+DrawDigits: { x |
+  a: abs(x),
+  P: [1, 10, 100, 1000, 10000, 100000, 1000000],
+  ; ⌊log₁₀ a⌋, where 0.9995 counts as 1, since it shows as 1.00; a whole number has no decimals
+  e: Σ([0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000, 100000] × 0.9995 ≤ a) - 4,
+  d: clamp(2 - e, 0, 5) × (a ≠ round(a)),
+  m: round(a × take(P, d)),
+  n: Σ(P ≤ m) ⌈ (d + 1),
+  point: n - d,
+  j: 0..<8 - (x < 0),
+  t: j - (d>0 ∧ j>point),
+  digit: 48 + (floor(m + 0.5 ÷ take(P, clamp(n-1 - t, 0, 6))) % 10),
+  where(j < 0, 45, where(d>0 ∧ j=point, 46, where(t < n, digit, 32)))
+},
+plot: DrawPlot: doc({ x, ys, names |
+  rows: cond(guard(isList(ys), { stack(ys) }), guard((#shape(ys)) = 1, { ys ⍴ [1, -1] }), { ys }),
+  k: #rows, n: shape(rows)_1,
+  ; the picture, and the box the data fills
+  W: 520, H: 160, L: 68, R: 404, T: 8, B: 136,
+  cond(guard(n < 2, { canvas(W, H) }), {
+    ink: [0.765, 0.761, 0.718], faint: [0.537, 0.529, 0.506],
+    colors: [[0.224, 0.529, 0.898], [0.851, 0.349, 0.149], [0.098, 0.62, 0.439], [0.788, 0.522, 0], [0.835, 0.318, 0.506], [0, 0.514, 0], [0.565, 0.522, 0.914], [0.902, 0.404, 0.404]],
+    lo: min(rows), hi: max(rows),
+    sx: { v | v - x_0 ÷ (x_(-1) - x_0 ⌈ 1e-9) × (R - L) + L },
+    sy: { v | hi - v ÷ (hi - lo ⌈ 1e-9) × (B - T) + T },
+    width: { c | Σ(c ≠ 32) × 8 - 2 },
+    ; a range frame: each axis spans the data, labeled at its ends
+    top: DrawDigits(hi), bottom: DrawDigits(lo), first: DrawDigits(x_0), end: DrawDigits(x_(-1)),
+    ends: [[L - 10 - width(top), T - 4], [L - 10 - width(bottom), B - 5], [L, B + 12], [R - width(end), B + 12]],
+    ; each line labeled at its end with its name and last value, the labels pushed apart
+    ; so they never overlap
+    last: slice(rows, [0, n-1]) ⍴ [k],
+    order: argsort(sy(last)),
+    steps: 0..<k × 12,
+    at: take(scan(take(sy(last), order) - steps, ⌈) + steps, argsort(order)),
+    words: ListMap(unstack(0..<k), { i |
+      cond(guard(isList(names), { concat((StringToCodes(ListGet(names, i)), [32], DrawDigits(last_i))) }), { DrawDigits(last_i) })
+    }),
+    frame: canvas(W, H)
+      . draw(line([[L - 6, T], [L - 6, B]]), faint, 1)
+      . draw(line([[L, B + 6], [R, B + 6]]), faint, 1)
+      . draw(letters((top, bottom, first, end), ends, 2), faint, 1),
+    ListReduce(unstack(0..<k), { pic, i | pic . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 2) }, frame)
+      . draw(letters(words, stack((fill([k], R + 8), clamp(at - 5, 0, H - 10)), -1), 2), ink, 1)
+  })
+}, "plot(x, ys, names?)", "Lines on one pair of axes: ys is a list of vectors, or a matrix of rows, each over the points x. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
+
 ; Optimization
 ; Optimizers. A step differentiates the loss with respect to the variables it reads –
 ; ∇(loss)() gives (value, variables, gradients) – and moves each variable against its
@@ -648,8 +724,9 @@ TensorOptimizerStep: { loss, only |
             Error("a listed variable isn't a ~ the loss reads – a ~~ slot holds data, and nothing trains it")
           }),
           {
-            keep: mask(0..<n, stack(ListMap(vs, { v | among(v, only) }))),
-            (ListGet(r, 0), ListGather(vs, unstack(keep)), ListGather(gs, unstack(keep)))
+            ; in the list's order, which is the order of the memory made for them
+            at: ListMap(only, { o | ListReduce(ListMap(vs, { v, i | identical(o, v) × i }), { p, q | p + q }, 0) }),
+            (ListGet(r, 0), only, ListGather(gs, at))
           }
         )
       }),
@@ -668,24 +745,29 @@ TensorOptimizerSlots: FunctionNoAutoLift({ held, vs, make |
   cond(guard(same, { ListGet(h, 1) }), { fresh: ListMap(vs, { v | make(v) }), held((vs, fresh)), fresh })
 }),
 optimizer: Optimizer: doc({ init, rule, lr, only |
-  held: $◌,
-  { loss |
+  ; a variable's memory: its step count, then its slots
+  memory: { v | ListConcat((~~0,), ListMap(init(v), { x | ~~x })) },
+  ; given its variables, it makes their memory at once, so := can restore it before a step
+  held: $cond(guard(isList(only), { (only, ListMap(only, memory)) }), ◌),
+  joined: { ls | ListReduce(ls, { p, q | ListConcat(p, q) }, List()) },
+  step: { loss |
     s: TensorOptimizerStep(loss, only),
     cond(guard(isError(s), { s }), {
       vs: ListGet(s, 1), gs: ListGet(s, 2),
-      slots: TensorOptimizerSlots(held, vs, { v | ListConcat((~~0,), ListMap(init(v), { x | ~~x })) }),
+      slots: TensorOptimizerSlots(held, vs, memory),
       t: ListGet(ListGet(slots, 0), 0) + 1,
       rate: cond(guard(isFunction(lr), { lr(t) }), { lr }),
       norm: √ListReduce(ListMap(gs, { g | Σ(g × g) }), { p, q | p + q }),
       next: ListMap(vs, { v, i | rule(ListGet(gs, i), v, ListDrop(ListGet(slots, i), 1), t, rate, norm) }),
       ; each variable, its step count and its slots, assigned together
-      joined: { ls | ListReduce(ls, { p, q | ListConcat(p, q) }) },
       joined(ListMap(vs, { v, i | ListConcat((v,), ListGet(slots, i)) }))
         := joined(ListMap(next, { n | ListConcat((ListGet(n, 0), t), ListGet(n, 1)) })),
       ListGet(s, 0)
     })
-  }
-}, "optimizer(init, rule, lr, vars?)", "Make an optimizer from its rule. init(v) gives a variable's slots (a list of tensors); rule(g, v, slots, t, lr, norm) gives (v′, slots′) – the variable's next value and its slots'. t counts steps from 1, norm is the gradient's norm over every variable, and lr is a number or a schedule – a function of t.", "opt: optimizer({ v | List() }, { g, v, s, t, lr | (v - lr×g, List()) }, 0.1)"),
+  },
+  ; with no loss, what it remembers: every variable's memory, one list of ~~ slots
+  { loss | cond(guard(identical(loss, ◌), { cond(guard(identical(held(), ◌), { List() }), { joined(ListGet(held(), 1)) }) }), { step(loss) }) }
+}, "optimizer(init, rule, lr, vars?)", "Make an optimizer from its rule. init(v) gives a variable's slots (a list of tensors); rule(g, v, slots, t, lr, norm) gives (v′, slots′) – the variable's next value and its slots'. t counts steps from 1, norm is the gradient's norm over every variable, and lr is a number or a schedule – a function of t. opt(loss) takes a step; opt() is what it remembers – each variable's step count and slots, as one list of ~~ data slots to save with the weights and restore with :=. Given its variables, it has that memory from the start.", "opt: optimizer({ v | List() }, { g, v, s, t, lr | (v - lr×g, List()) }, 0.1)"),
 zerosLike: TensorZerosLike: doc({ v | fill(shape(v), 0) }, "zerosLike(x)", "Zeros in x's shape.", "zerosLike([1, 2, 3]) = [0, 0, 0]"),
 ; the hyperparameters a constructor takes: a number in place of the default, and a
 ; trailing list picks the variables to train
@@ -755,8 +837,9 @@ radam: OptimizerRAdam: doc({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
   (v - lr×u, (ListGet(q, 0), ListGet(q, 1)))
 }, lr, a) }, "radam(lr, vars?)", "RAdam: Adam whose adaptive step is switched in as its variance estimate becomes reliable – no warmup needed.", "opt: radam(0.01)"),
 amsgrad: OptimizerAMSGrad: doc({ lr, a | optimizer({ v | (zerosLike(v), zerosLike(v), zerosLike(v)) }, { g, v, s, t, lr |
-  q: TensorAdamMoments(g, s, t, 0.9, 0.999), top: ListGet(s, 2) ⌈ ListGet(q, 3),
-  (v - lr×(ListGet(q, 2) ÷ ((√top) + 1e-8)), (ListGet(q, 0), ListGet(q, 1), top))
+  ; the largest raw second moment, bias-corrected at this step – as PyTorch does
+  q: TensorAdamMoments(g, s, t, 0.9, 0.999), top: ListGet(s, 2) ⌈ ListGet(q, 1),
+  (v - lr×(ListGet(q, 2) ÷ (√(top ÷ (1 - 0.999^t)) + 1e-8)), (ListGet(q, 0), ListGet(q, 1), top))
 }, lr, a) }, "amsgrad(lr, vars?)", "AMSGrad: Adam that divides by the largest second moment seen so far, so a step never grows from a forgotten large gradient.", "opt: amsgrad(0.01)"),
 adabelief: OptimizerAdaBelief: doc({ lr, a | optimizer(adamInit, { g, v, s, t, lr |
   m: g × 0.1 + (ListGet(s, 0) × 0.9), d: g - m,
@@ -821,6 +904,7 @@ SignalComputed: doc(SignalComputed, "SignalComputed(thunk)", "A signal whose val
 SignalRead: doc(SignalRead, "SignalRead(s)", "A signal's value – the same as s().", "s: $3, SignalRead(s) = 3"),
 SignalUpdate: doc(SignalUpdate, "SignalUpdate(s, v)", "Write v into the signal s – the same as s(v).", "s: $3, SignalUpdate(s, 4), s() = 4"),
 SignalEffect: doc(SignalEffect, "SignalEffect(thunk)", "Run the thunk now, and again whenever a signal it reads changes – for side effects.", "SignalEffect({ ◌ })"),
+Storage: doc(Storage, "Storage(key)", "A signal kept in this browser under key: it survives a reload. It is ◌ until a saved value arrives; writing it saves the value – a variable's value at that moment, tensors, strings and lists of them – and writing ◌ forgets it. A checkpoint is one: save the weights and the optimizer's memory, and := puts them back.", "s: Storage(\"notes\"), s(\"hello\"), s() = \"hello\""),
 
 ; Misc
 ($): doc(Reactive, "$value", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $0.5, x^2 = 0.25"),
