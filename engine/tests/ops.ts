@@ -1,8 +1,10 @@
 // Gates for the ops beyond the 18 generators: the MATHS table, RANDOM, PAD, the product
-// reduce and the sorting network — CPU == GPU, values == reference, ∇ == finite differences.
+// reduce, the sorting network and the batching pass — CPU == GPU, values == reference,
+// ∇ == finite differences.
 //   bun engine/tests/run.ts engine/tests/ops.ts
 
-import { buffer, konst, add, mul, math, MATHS, random, pad, slice, reshape, reduceAxis, gather, sum, windows, broadcastTo, type UOp } from "../ir.ts";
+import { buffer, konst, add, mul, recip, math, MATHS, random, pad, slice, reshape, permute, reduceAxis, gather, scatterAdd, sum, windows, broadcastTo, type UOp } from "../ir.ts";
+import { batch } from "../batch.ts";
 import { grad } from "../grad.ts";
 import { CPU, type HostData } from "../cpu.ts";
 import { realize } from "./realize.ts";
@@ -143,6 +145,28 @@ export default async function (): Promise<{ fails: number }> {
     const gx = await both(grad(loss(X, K), X), at(xd, kd)), gk = await both(grad(loss(X, K), K), at(xd, kd));
     check("∇ conv w.r.t. the field == finite-diff (cpu, gpu)", maxDiff(gx.a, await fd("x", 30)) < 1e-2 && maxDiff(gx.b, gx.a) < 1e-5);
     check("∇ conv w.r.t. the kernel == finite-diff (cpu, gpu)", maxDiff(gk.a, await fd("k", 9)) < 1e-2 && maxDiff(gk.b, gk.a) < 1e-5);
+  }
+
+  // ── 8. batch: a cell's graph over a frame == the graph on each cell (cpu, gpu) ─────
+  {
+    const R = 5, n = 6, X = buffer("X", [R, n]), xd = Float32Array.from({ length: R * n }, (_, i) => Math.sin(i * 1.7) * 3);
+    const inp = new Map([["X", T(xd, [R, n])]]), table = buffer("X", [R, n]);
+    const cells: [string, (p: UOp) => UOp][] = [
+      ["elementwise, reduce", (p) => mul(math("tanh", p), recip(add(reduceAxis(p, 0, true, "MAX"), konst(9))))],
+      ["permute, reshape, broadcast", (p) => reshape(permute(broadcastTo(reshape(p, [2, 3, 1]), [2, 3, 2]), [2, 0, 1]), [12])],
+      ["slice, pad, window", (p) => reduceAxis(windows(pad(slice(p, 0, 1, 4), 0, 2, 1), [3]), 1, false)],
+      ["gather, the cell's own table", (p) => gather(reshape(p, [n, 1]), reshape(add(math("floor", mul(math("abs", p), konst(1.9))), konst(0)), [n]))],
+      ["gather, a shared table", (p) => gather(reshape(slice(table, 1, 0, 1), [R]), math("floor", mul(add(p, konst(3)), konst(0.6))))],
+      ["scatterAdd", (p) => scatterAdd(math("floor", mul(add(p, konst(3)), konst(0.5))), p, 4)],
+      ["the bitonic network", (p) => bitonic(reshape(p, [1, n]), 1, n, false)],
+    ];
+    for (const [name, g] of cells) {
+      const p = buffer("%cell", [n]), batched = batch(g(p), new Map([[p, X]]), [R]);
+      const rows = await Promise.all(Array.from({ length: R }, async (_, r) => (await realize(cpu, g(reshape(slice(X, 0, r, 1), [n])), inp)).data));
+      const ref = Float32Array.from(rows.flatMap((d) => [...d]));
+      const { a, b } = await both(batched, inp);
+      check(`batch: ${name} (cpu, gpu)`, maxDiff(a, ref) === 0 && maxDiff(b, ref) < 1e-6, `cpu ${maxDiff(a, ref).toExponential(1)} gpu ${maxDiff(b, ref).toExponential(1)}`);
+    }
   }
 
   return { fails };

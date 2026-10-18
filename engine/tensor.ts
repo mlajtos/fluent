@@ -6,6 +6,7 @@ import * as ir from "./ir.ts";
 import { CPU, type HostData } from "./cpu.ts";
 import { GPU } from "./gpu.ts";
 import { vjp as graphVjp } from "./grad.ts";
+import { batch } from "./batch.ts";
 
 type Axis = number | number[] | null | undefined;
 export type Like = Tensor | number | boolean | readonly unknown[];
@@ -65,7 +66,13 @@ function cut(roots: UOp[]): { roots: UOp[]; hostOnly: boolean } {
   }
   return { roots: roots.map((r) => memo.get(r.id)!), hostOnly: hostOnly && work <= SMALL };
 }
+// A cell placeholder holds no numbers: any read of one, on either device, throws, and f
+// runs cell by cell (overFrame)
+const readCells = (nodes: readonly UOp[]): void => {
+  if (traces.length && ir.toposort(nodes, toLeaves).some((u) => placeholders.has(u))) { cellReads++; throw new Error("⍤: f reads its cell's numbers"); }
+};
 function compute(nodes: readonly UOp[]): void {
+  readCells(nodes);
   const need = [...new Set(nodes.filter((n) => !leafOf.has(n) && !isLeaf(n)))];
   if (!need.length) return;
   const { roots, hostOnly } = cut(need);
@@ -101,6 +108,7 @@ const hostWork = (root: UOp): number => {
 export function hostValue(a: Tensor): Float32Array | undefined {
   const known = dataOf(a.node);
   if (known || leafOf.has(a.node)) return known;
+  readCells([a.node]);
   if (gpu && hostWork(a.node) > SMALL) return undefined;
   compute([a.node]);
   return dataOf(a.node);
@@ -597,7 +605,26 @@ export function conv(field: Like, kernel: Like): Tensor {
 }
 // a draw is a RANDOM leaf, so it fuses into what reads it; a seed is a number
 const mix = (seed: number, salt: number) => (Math.imul((seed ^ Math.imul(salt, 0x27d4eb2f)) >>> 0, 0x165667b1) ^ salt) >>> 0;
-export const uniform = (seed: number, shape: readonly number[]): Tensor => wrap(ir.random(shape, mix(seed, 1)));
+// drawn while ⍤ runs f on a cell, a draw is one more cell: every cell draws its own numbers
+export const uniform = (seed: number, shape: readonly number[]): Tensor =>
+  wrap(traces.reduce((u, t) => cellOf(t, u), ir.random([...traces.flatMap((t) => t.F), ...shape], mix(seed, 1))));
+// ── rank: a function of one cell, over a frame ──────────────────────────────────
+// f runs once, on placeholders shaped like one cell, and batch gives the graph it built
+// the frame F: xs are [...F, ...cell]. A placeholder holds no numbers, so a read of one – f
+// branching on its cell's values – throws, and the call gives undefined: the caller runs f
+// cell by cell. Traces nest, the outermost first.
+type Trace = { F: readonly number[]; cells: Map<UOp, UOp> };
+const traces: Trace[] = [];
+const placeholders = new WeakSet<UOp>();
+let cellReads = 0;
+const cellOf = (t: Trace, u: UOp): UOp => { const p = ir.buffer("%cell", u.shape.slice(t.F.length)); placeholders.add(p); t.cells.set(p, u); return p; };
+export function overFrame(F: readonly number[], xs: readonly Tensor[], f: (cells: Tensor[]) => unknown): Tensor | undefined {
+  const t: Trace = { F, cells: new Map() }, reads = cellReads;
+  traces.push(t);
+  let out: unknown;
+  try { out = f(xs.map((x) => new Tensor(cellOf(t, x.node)))); } finally { traces.pop(); }
+  return out instanceof Tensor && cellReads === reads ? new Tensor(batch(out.node, t.cells, F)) : undefined;
+}
 // ── ∇: the engine's transpose ∘ linearize on the graph a function builds ─────────
 // The derivative is with respect to a traced argument – this use of the value, never a
 // copy of it the function closed over – and an outer ∇ still differentiates through it.

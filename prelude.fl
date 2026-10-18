@@ -183,38 +183,7 @@ reverse: TensorReverse: doc({ x, k |
     f(a ⍴ concat((slice(sa, [0], [split]), fill([extra], 1), cellA)), b)
   }
 }, "a (⊗ f) b", "Table: apply f between every cell of a and every cell of b.", "0..<3 (⊗ ×) 0..<3 = [[0, 0, 0], [0, 1, 2], [0, 2, 4]]"),
-(⍤): rank: TensorRank: doc({ f, rank |
-  k: cond(guard(identical(rank, ◌), { 0 }), { rank }),
-  ; the frame of an array of shape s: all but its last k axes, or its first -k
-  frameOf: { s | r: #s, slice(s, [0], [cond(guard(k ≥ 0, { r - k ⌈ 0 }), { (-k) ⌊ r })]) },
-  ; x's cells over the frame F, x broadcast to it, and the shape of one cell
-  cellsOf: { x, F |
-    s: shape(x), c: slice(s, [#(frameOf(s))]),
-    (unstack(broadcast(x ⍴ concat((fill([#(F) - (#(s) - #(c))], 1), s)), concat((F, c))) ⍴ concat(([Π(F)], c))), c)
-  },
-  { a, b |
-    one: identical(b, ◌),
-    ; two frames agree as they do under +
-    S: cond(guard(one, { fill(frameOf(shape(a)), 0) }), { fill(frameOf(shape(a)), 0) + fill(frameOf(shape(b)), 0) }),
-    cond(guard(isError(S), { Error("`(f ⍤ k)`: dyadic rank needs frames that match or broadcast", S) }), {
-      F: shape(S), A: cellsOf(a, F), B: cond(guard(one, { A }), { cellsOf(b, F) }),
-      cond(
-        ; no cells: f on a cell of zeros tells the shape of the result's cells, as in J
-        guard(Π(F) = 0, {
-          z: cond(guard(one, { f(fill(A_1, 0)) }), { f(fill(A_1, 0), fill(B_1, 0)) }),
-          cond(guard(isError(z), { z }), { fill(concat((F, shape(z))), 0) })
-        }),
-        {
-          cs: A_0, ds: B_0,
-          rs: cond(guard(one, { ListMap(cs, { c | f(c) }) }), { ListMap(cs, { c, i | f(c, ListGet(ds, i)) }) }),
-          ; the first cell that failed is the answer
-          bad: ListReduce(rs, { e, v | cond(guard(isError(e), { e }), guard(isError(v), { v }), 0) }, 0),
-          cond(guard(isError(bad), { bad }), { st: stack(rs), st ⍴ concat((F, slice(shape(st), [1]))) })
-        }
-      )
-    })
-  }
-}, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Two frames agree as they do under +. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1, 2, 3], [4, 5, 6]]) = [6, 15]"),
+(⍤): rank: doc(TensorRank, "(f ⍤ k)", "Rank: apply f to each rank-k cell, mapping over the leading frame – one function, every rank. Negative k fixes the frame rank instead. Two frames agree as they do under +. f runs once, and the frame comes free; an f that branches on its cell's numbers runs cell by cell. Iverson's rank conjunction.", "(Σ ⍤ 1)([[1, 2, 3], [4, 5, 6]]) = [6, 15]"),
 (∙): inner: TensorInner: doc({ g, f | { a, b |
   sa: shape(a), sb: shape(b), ra: #sa, rb: #sb,
   cond(

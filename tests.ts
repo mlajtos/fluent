@@ -420,6 +420,42 @@ describe("tensors", () => {
     expect(value("shape((Σ ⍤ 1)(fill([0, 3], 1)))")).toEqual([0])
     expect((run("stack(())") as Error).message).toBe("stack: needs at least one array")
   })
+  // f, counting its calls: a native the scope binds as `spy`
+  const counted = (source: string) => {
+    let calls = 0
+    const scope = createScope()
+    scope.spy = (x: Value) => { calls++; return x }
+    return { value: unwrap(evaluateIn(source, scope)), calls }
+  }
+  test("rank ⍤ runs f once, on a cell, and the frame comes free", () => {
+    expect(counted("({ v | Σ(spy(v)) } ⍤ 1)(fill([5, 3], 1))")).toEqual({ value: [3, 3, 3, 3, 3], calls: 1 })
+    expect(counted("({ m | spy(m) matmul transpose(m) } ⍤ 2)([[[1, 2], [3, 4]], [[1, 0], [0, 1]]])"))
+      .toEqual({ value: [[[5, 11], [11, 25]], [[1, 0], [0, 1]]], calls: 1 })
+    // every view and gather takes the frame: a row's own picks, its own scatter, its own scan
+    expect(value("({ v | v_[2, 0] } ⍤ 1)([[1, 2, 3], [4, 5, 6]])")).toEqual([[3, 1], [6, 4]])
+    expect(value("({ v | v_argmax(v) } ⍤ 1)([[1, 9, 3], [7, 2, 1]])")).toEqual([9, 7])
+    expect(value("({ v | scatterAdd([0, 0, 1], v, 2) } ⍤ 1)([[1, 2, 3], [4, 5, 6]])")).toEqual([[3, 3], [9, 6]])
+    expect(value("({ v | scatterAdd(v, [1, 1], 3) } ⍤ 1)([[0, 2], [1, 1]])")).toEqual([[1, 0, 1], [0, 2, 0]])
+    expect(value("({ v | v scan + } ⍤ 1)([[1, 2, 3], [4, 5, 6]])")).toEqual([[1, 3, 6], [4, 9, 15]])
+    expect(value("((Σ ⍤ 1) ⍤ 2)(fill([2, 3, 4], 1))")).toEqual([[4, 4, 4], [4, 4, 4]])
+  })
+  test("rank ⍤ runs f cell by cell when f reads its cell's numbers or writes state", () => {
+    // the trace, then each of the two cells
+    expect(counted("({ x | cond(guard(Σ(spy(x)) > 0, { x }), { -x }) } ⍤ 1)([[1, 2], [-3, -4]])"))
+      .toEqual({ value: [[1, 2], [3, 4]], calls: 3 })
+    // a bounds check reads the index: one out of range is the loop's Error
+    expect((run("({ v | v_(v_0) } ⍤ 1)([[1, 2, 3], [7, 5, 6]])") as Error).message).toBe("index 7 is out of bounds for an axis of length 3")
+    expect(value("c: $0, ({ v | c(c() + 1), Σ(v) } ⍤ 1)([[1, 2], [3, 4], [5, 6]]), c()")).toBe(3)
+  })
+  test("rank ⍤ draws ⚄ for every cell, and ∇ goes through it", () => {
+    const r = value("({ v | ⚄(shape(v)) } ⍤ 1)(fill([3, 2], 0))") as number[][]
+    expect(new Set(r.map(String)).size).toBe(3)
+    // nested: each outer cell draws its own, shared by its inner cells
+    const s = value("({ r | ({ x | x + ⚄([]) } ⍤ 0)(r) } ⍤ 1)(fill([2, 2], 0))") as number[][]
+    expect(s[0]![0]).not.toBe(s[1]![0])
+    expect(value("(∇{ x | Σ((softmax ⍤ 1)(x) × [1, 2, 3]) })([[1, 2, 3], [3, 2, 1]])"))
+      .toEqual(value("(∇{ x | Σ(softmax(x) × [1, 2, 3]) })([[1, 2, 3], [3, 2, 1]])"))
+  })
   test("inner product ∙ is matmul, and swaps its ring", () => {
     expect(value("[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]]")).toEqual([[19, 22], [43, 50]])   // ×∙+ = matmul
     expect(value("[1,2,3] (× ∙ +) [4,5,6]")).toBe(32)                                     // vectors → dot
