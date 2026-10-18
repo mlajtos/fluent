@@ -261,6 +261,10 @@ interface FunctionMeta {
   example?: string
   noAutoLift?: boolean
   quotedArgs?: number[]
+  // a binary op's fold: what folding nothing gives, and a native reduction – `reduce +`
+  // runs Σ rather than folding slice by slice
+  identity?: Value
+  reducer?: (x: Value, axis?: Value) => Value
 }
 const NO_META: FunctionMeta = Object.freeze({})
 const getMeta = (fn: Function): FunctionMeta => (fn as any).__meta__ ?? NO_META
@@ -651,20 +655,34 @@ const call = (fn: Value, args: Value[], env: CurrentScope): Value => {
 // choice and surfaces, so a matched branch that breaks is never reread as "not me"
 // while a later branch quietly wins. When every candidate declines, the choice declines
 // too – so choices nest, and an overload set is a candidate in a bigger one.
+//
+// A choice makes a decline each time it tries a candidate, so NoMatch.of makes one without
+// the JavaScript stack an Error records: a decline is an answer, and its stack would cost
+// more than the choice.
 class NoMatch extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options)
-    this.name = "NoMatch"
+  // a decline by kind says what the candidate takes, and what it was given
+  declare readonly expected?: string[]
+  declare readonly got?: string
+  static of(message: string, options?: { cause?: unknown, expected?: string[], got?: string }): NoMatch {
+    return Object.assign(Object.create(NoMatch.prototype) as NoMatch, { message, ...options })
   }
+}
+NoMatch.prototype.name = "NoMatch"
+// a candidate's decline of a value that isn't its kind, in the reader's words. An unknown
+// name is no kind's value but a mistake, and it fails here as it does in arithmetic.
+const decline = (expected: string, v: Value): Error =>
+  typeof v === "symbol" ? new Error(unknownName(v)) : declining([expected], describeArg(v))
+const declining = (expected: string[], got: string): NoMatch => {
+  const kinds = expected.length < 2 ? expected.join("") : `${expected.slice(0, -1).join(", ")} or ${expected.at(-1)}`
+  return NoMatch.of(`expected ${kinds}, got ${got}`, { expected, got })
 }
 
 // The first answer of the candidates, in order. A candidate that isn't a function is its
 // own result, so an Error among them (a guard whose condition broke) surfaces and a
 // NoMatch declines. A throw is a failure like any other; a native candidate declines by
-// RETURNING a NoMatch. When none answers, the last decline is the cause – it says why
-// the closest candidate said no.
-const chooseFirst = (candidates: Value[], args: Value[], scope: CurrentScope, declined: () => string): Value => {
-  let lastDecline: NoMatch | null = null
+// RETURNING a NoMatch. When none answers, the choice declines with what the declines say.
+const chooseFirst = (candidates: Value[], args: Value[], scope: CurrentScope, declined: (declines: NoMatch[]) => NoMatch): Value => {
+  const declines: NoMatch[] = []
   for (const candidate of candidates) {
     let result: Value
     try {
@@ -674,30 +692,32 @@ const chooseFirst = (candidates: Value[], args: Value[], scope: CurrentScope, de
       return asError(e)
     }
     if (!(result instanceof NoMatch)) { return result }
-    lastDecline = result
+    declines.push(result)
   }
-  return new NoMatch(declined(), lastDecline ? { cause: lastDecline } : undefined)
+  return declined(declines)
 }
 
+// Candidates that each decline a value of another kind say together what they take:
+// "expected numbers, a list or a string, got ◌". Otherwise the last decline is the
+// cause – it says why the closest candidate said no.
 const FunctionCascade = (candidates: Value) => {
   if (!Array.isArray(candidates)) {
     return new Error(`\`cascade\`: expected a list of candidates, got ${describeArg(candidates)} – write cascade((f, g, …))`)
   }
   return made(function (this: CurrentScope, ...args: Value[]) {
-    return chooseFirst(candidates, args, this,
-      () => `no overload matched (${args.length === 0 ? "no arguments" : args.map(describeArg).join(", ")})`)
+    return chooseFirst(candidates, args, this, (declines) => {
+      const got = declines[0]?.got
+      if (got && declines.every((d) => d.expected && d.got === got)) { return declining(declines.flatMap((d) => d.expected!), got) }
+      return NoMatch.of(`no overload matched (${args.length === 0 ? "no arguments" : args.map(describeArg).join(", ")})`, { cause: declines.at(-1) })
+    })
   })
 }
 
 // cond(a, b, …): cascade((a, b, …))() without the wrapper – its own entry point, so a
 // recursion through it pays no setup per call
 const FunctionCond = function (this: CurrentScope, ...candidates: Value[]): Value {
-  return chooseFirst(candidates, [], this, () => "cond: no branch matched")
+  return chooseFirst(candidates, [], this, (declines) => NoMatch.of("cond: no branch matched", { cause: declines.at(-1) }))
 }
-
-// reduce's fast path: a binary op with a native reduction, so `reduce +` runs engine.sum
-// rather than folding slice by slice. FunctionArity passes it on to its dispatchers.
-const nativeReducer = new WeakMap<Function, (x: Value, axis?: Value) => Value>()
 
 // Overloaded by arity: two operands run the binary op, one runs the unary op – how + is
 // add and abs. Unlike a cascade, a binary op that fails (1 + a, with a unknown) is not
@@ -706,8 +726,9 @@ const FunctionArity = (candidates: Function[]) => {
   const [binary, unary] = candidates
   const dispatch = made((a: Value, b: Value) => (b == null ? unary?.(a) : binary?.(a, b)))
   // its card is its candidates': `+` shows add and abs in one hover; a doc() on the
-  // dispatcher afterwards still wins
+  // dispatcher afterwards still wins. A fold of it is its binary's.
   const [b, u] = [binary, unary].map((f): FunctionMeta => typeof f === "function" ? getMeta(f) : {}) as [FunctionMeta, FunctionMeta]
+  setMeta(dispatch, { identity: b.identity, reducer: b.reducer })
   if (b.signature || u.signature) {
     setMeta(dispatch, {
       signature: [b.signature, u.signature].filter(Boolean).join("  ·  "),
@@ -715,9 +736,14 @@ const FunctionArity = (candidates: Function[]) => {
       example: [b.example, u.example].filter(Boolean).join("\n") || undefined,
     })
   }
-  const fast = typeof binary === "function" && nativeReducer.get(binary)
-  if (fast) { nativeReducer.set(dispatch, fast) }
   return dispatch
+}
+
+// identity(f, v): f, knowing v as its identity element – what folding nothing with f
+// gives. Written beside the card, as doc is, and given back the same way.
+const FunctionIdentity = (f: Value, v: Value): Value => {
+  if (isFn(f)) { setMeta(f, { identity: v }) }
+  return f
 }
 
 // A tensor's data as nested JS arrays (a number for a scalar), for control flow and
@@ -1025,9 +1051,9 @@ const FunctionGuard = function (this: CurrentScope, cond: Value, body: Value) {
   const candidate = made(function () {
     if (holds) { return isFn(body) ? body.apply(scope) : body }
     // the guard's own call site, so hovering the decline finds it
-    const decline = new NoMatch("guard: the condition doesn't hold")
-    setOrigin(decline, getOrigin(candidate))
-    return decline
+    const no = NoMatch.of("guard: the condition doesn't hold")
+    setOrigin(no, getOrigin(candidate))
+    return no
   })
   return candidate
 }
@@ -1045,7 +1071,7 @@ const FunctionTry = function (this: CurrentScope, body: Value) {
       if (e instanceof StateWrite) { throw e }
       result = asError(e)
     }
-    return isFailure(result) ? new NoMatch("try: it failed", { cause: result }) : result
+    return isFailure(result) ? NoMatch.of("try: it failed", { cause: result }) : result
   })
 }
 
@@ -1073,56 +1099,20 @@ const doc = (target: Value, signature: Value, description: Value, example: Value
 // signal argument does not turn the call into a computed. ⟳ lifted would be a computed
 // that nothing reads, and would run no steps at all.
 for (const f of [FunctionCond, FunctionIterate, SignalRead, SignalUpdate, Reactive, SymbolAssign, Identical,
-  FunctionNoAutoLift, FunctionGuard, FunctionTry, FunctionWhen, doc]) { setMeta(f, { noAutoLift: true }) }
+  FunctionNoAutoLift, FunctionGuard, FunctionTry, FunctionWhen, doc, FunctionIdentity]) { setMeta(f, { noAutoLift: true }) }
 
 // MARK: Lists
 const List = (...args: Value[]) => args
-
-const ListConcat = (...args: Value[]) => {
-  const bad = args.findIndex((a) => !Array.isArray(a))
-  return bad < 0 ? ([] as Value[]).concat(...args) : new Error(`'ListConcat': expected lists, got ${describeArg(args[bad]!)}`)
-}
-
-// a string is StringLength's case, counted in characters
-const ListLength = (a: Value) => Array.isArray(a) ? engine.tensor(a.length) : new NoMatch(`expected a list, got ${describeArg(a)}`)
-
-const ListGet = (a: Value, b: Value) => {
-  if (!Array.isArray(a)) { return new Error("'ListGet': 'a' must be an array") }
-  const index = asNumber(b)
-  if (index < -a.length || index >= a.length) {
-    return new Error(`'ListGet': Index '${index}' out of bounds for list of length ${a.length}`)
-  }
-  return a.at(index)!
-}
 
 const ListMap = function (this: CurrentScope, a: Value, fn: Value) {
   if (!isFn(fn)) { return new Error("'ListMap': 'fn' must be a function") }
   if (!Array.isArray(a)) { return new Error("'ListMap': 'a' must be a list") }
   return a.map((v, i) => safeApply(fn, [v, engine.tensor(i)], this))
 }
-
-// Fold a list left to right with f(acc, element), from init – or from the first element
-// when there is no init
-const ListReduce = function (this: CurrentScope, a: Value, fn: Value, init?: Value) {
-  if (!Array.isArray(a)) { return new Error(`'ListReduce': expected a list, got ${describeArg(a)}`) }
-  if (!isFn(fn)) { return new Error("'ListReduce': `fn` must be a function") }
-  if (init == null && a.length === 0) { return new Error("'ListReduce': an empty list with no init has nothing to fold") }
-  let acc: Value = init == null ? a[0]! : init
-  for (const v of init == null ? a.slice(1) : a) { acc = fn.call(this, acc, v) }
-  return acc
-}
-
-// ListReduce that keeps every step: (init, f(init, a₀), f(f(init, a₀), a₁), …)
-const ListScan = function (this: CurrentScope, a: Value, fn: Value, init: Value) {
-  if (!Array.isArray(a)) { return new Error("'ListScan': `list` must be a list") }
-  if (!isFn(fn)) { return new Error("'ListScan': `fn` must be a function") }
-  const out = [init]
-  for (const v of a) { out.push(fn.call(this, out[out.length - 1]!, v)) }
-  return out
-}
-// a list is a structure: these read the list they are given, not the cells inside it,
-// and List makes one of what it is given
-for (const f of [ListLength, ListConcat, ListGet, ListMap, ListReduce, ListScan]) { shallow.add(f) }
+// a list is a structure: a function on lists reads the list it is given, not the cells
+// inside it – ListMap, and the list members of the verbs on items – and List makes one
+// of what it is given
+shallow.add(ListMap)
 setMeta(List, { noAutoLift: true })
 
 // MARK: Tensors
@@ -1224,7 +1214,7 @@ const REDUCTIONS = natives({ TensorSum: engine.sum, TensorProduct: engine.prod, 
     return op(operand(a), axis, keep == null ? undefined : { keepdims: asNumber(keep) !== 0 })
   })
 for (const [op, reduction] of [["TensorAdd", "TensorSum"], ["TensorMultiply", "TensorProduct"], ["TensorMaximum", "TensorMax"], ["TensorMinimum", "TensorMin"]] as const) {
-  nativeReducer.set(BINARY[op]!, REDUCTIONS[reduction] as (x: Value, axis?: Value) => Value)
+  setMeta(BINARY[op]!, { reducer: REDUCTIONS[reduction] as (x: Value, axis?: Value) => Value })
 }
 
 // stack broadcasts its inputs to a common shape, as arithmetic does: stack(x - a, y - b)
@@ -1245,29 +1235,6 @@ const TensorUnstack = (a: Value, b?: Value): Value[] => {
   const axis = b == null ? 0 : asNumber(b), x = operand(a) as engine.Tensor
   return [...(axis === 0 ? x : engine.moveaxis(x, axis, 0))]
 }
-const TensorConcat = (...args: Value[]) => {
-  const listed = Array.isArray(args[0])
-  const xs = ((listed ? args[0] : args) as Value[]).map(tensorArg)
-  return engine.concatenate(xs, listed && args[1] != null ? asNumber(args[1]) : 0)
-}
-
-// axis 0 as a reusable value – the default a fold collapses
-const LEADING_AXIS: Value = engine.tensor(0)
-
-// Fold a tensor left to right with a binary fn, along an axis (0 by default): `1 ..< 10
-// reduce +` = 45, `x reduce { a, b | a - b }` = ((x_0-x_1)-x_2)-… A known op takes its
-// native reduction, pinned to the leading axis as a fold is – the native reductions
-// default to every axis.
-const TensorReduce = function (this: CurrentScope, tensor: Value, fn: Value, axis?: Value) {
-  if (!isFn(fn)) { return new Error("`reduce(x, fn, axis?)`: the second argument must be a function") }
-  const fast = nativeReducer.get(fn)
-  if (fast) { return fast(tensor, axis == null ? LEADING_AXIS : axis) }
-  const parts = TensorUnstack(tensor, axis)
-  // a known op has an identity (Σ[] = 0); a custom fn's is unknown
-  if (parts.length === 0) { return new Error("`reduce`: an empty list of numbers has nothing to fold with a custom function") }
-  return ListReduce.call(this, parts, fn)
-}
-
 // (f ⍤ k): f on each rank-k cell, mapped over the frame of leading axes – a negative k
 // fixes the frame's rank instead. Two frames agree as they do under +. f runs once, on a
 // cell, and the engine gives the graph it built the frame; an f that reads its cell's
@@ -1435,52 +1402,8 @@ const TensorTopK = (a: Value, k: Value) => engine.topK(operand(a), asWhole(k))
 // x ⍴ shape reshapes; ⍴x alone is x's shape
 const TensorReshape = (a: Value, b?: Value) => b != null ? engine.reshape(operand(a), asWholeList(b)) : engine.tensor(shapeOf(a))
 
-// A missing axis has size 1, never NaN: a scalar is one item along its phantom leading
-// axis, so #(5) is 1 (APL's tally ≢), as broadcasting treats an absent axis. An empty
-// tensor stays 0. A negative axis counts from the end. A list or a string is another
-// candidate's case.
-const TensorLength = (a: Value, b?: Value) => {
-  if (!isTensorish(a)) { return new NoMatch(`expected numbers, got ${describeArg(a)}`) }
-  const shape = shapeOf(a), axis = b == null ? 0 : asWhole(b)
-  return engine.tensor(shape[axis < 0 ? axis + shape.length : axis] ?? 1)
-}
 const TensorShape = (a: Value) => isTensorish(a) ? engine.tensor(shapeOf(a)) : new Error(`shape: expected numbers, got ${describeArg(a)}`)
 
-// `_` on a string or a list keeps the container's type: x_i picks one item, x_[i, j]
-// several; a negative index counts from the end. A string's items are its characters.
-const pick = (items: Value[], b: Value, kind: string, join: (picked: Value[]) => Value): Value => {
-  let indices: number[], multi = true
-  if (Array.isArray(b)) { indices = b.map(asNumber) } else {
-    let d: unknown
-    try { d = getAsSyncList(b) } catch { d = undefined }
-    if (Array.isArray(d)) { indices = d.flat(Infinity) as number[] } else { indices = [asNumber(b)]; multi = false }
-  }
-  const picked: Value[] = []
-  for (const raw of indices) {
-    const i = Math.trunc(raw) < 0 ? Math.trunc(raw) + items.length : Math.trunc(raw)
-    if (!(i >= 0 && i < items.length)) { return new Error(`index ${raw} is out of bounds for a ${kind} of length ${items.length}`) }
-    picked.push(items[i]!)
-  }
-  return multi ? join(picked) : picked[0]!
-}
-// `_` is polymorphic over the container: a string, a list or a tensor
-const TensorGather = (a: Value, b: Value): Value =>
-  isText(a) ? pick([...String(a)], b, "string", (cs) => cs.join(""))
-    : Array.isArray(a) ? pick(a, b, "list", (xs) => xs)
-    // a scalar is a rank-0 tensor with a single phantom item (#(5) = 1): 5_0 = 5
-    : TensorTake(isScalarTensor(a) ? engine.reshape(operand(a), [1]) : a, b)
-// take(x, indices): the rows of x at indices, any shape of them; a negative index counts
-// from the end. Every index on the host or cheap to compute there is bounds-checked – a
-// gather has no bounds mode, so an index out of range would read garbage; one still on
-// the GPU (an embedding lookup into a minibatch) is trusted data and flows through.
-const TensorTake = (a: Value, b: Value): Value => {
-  const x = tensorArg(a), size = x.shape[0] ?? 0
-  // `!(0 <= w < size)` also rejects a NaN index, which slips past `<` and `>=`
-  const bad = cheapValues(b)?.find((i) => { const w = i < 0 ? i + size : i; return !(w >= 0 && w < size) })
-  if (bad !== undefined) { return new Error(`index ${bad} is out of bounds for an axis of length ${size}`) }
-  const raw = engine.trunc(operand(b))
-  return engine.take(x, engine.where(engine.less(raw, 0), engine.add(raw, size), raw), 0)
-}
 // scatterAdd(indices, values, size): [size, …] zeros with each row of values added at its
 // index – take's transpose
 const TensorScatterAdd = (indices: Value, values: Value, size: Value) =>
@@ -1565,19 +1488,6 @@ const StringLiteral = (v: Value): string => {
   return String(v)
 }
 
-// text joined end to end, any other value as the source that reproduces it; ◌, an Error
-// or an unknown name is not text
-const StringConcat = (...args: Value[]) => {
-  const bad = args.findIndex((a) => a == null || a instanceof Error || typeof a === "symbol")
-  if (bad >= 0) { throw new Error(`StringConcat: expected text, got ${describeArg(args[bad]!)}`) }
-  return args.map((a) => isText(a) ? String(a) : StringLiteral(a)).join("")
-}
-// characters, not UTF-16 units – as StringToCodes and `_` count them
-const StringLength = (a: Value) => isText(a) ? engine.tensor([...String(a)].length) : new NoMatch(`expected a string, got ${describeArg(a)}`)
-
-// length works on whatever it's handed – a tensor's leading axis, a list's element
-// count, or a string's characters – by trying each in turn
-
 // Text ↔ tensor: the door between strings and token land. Codes are float32 – small
 // integers are exact in float, and float spares downstream math from int-promotion
 // surprises. Decode rounds, so model outputs convert directly.
@@ -1622,6 +1532,162 @@ const awaiting = <T,>(run: () => T): [T, Promise<unknown>[]] => {
   const outer = arrivals, started: Promise<unknown>[] = arrivals = []
   try { return [run(), started] } finally { arrivals = outer }
 }
+
+// MARK: Items
+// A container is a row of items: a tensor's rows – a number is a row of one – a list's
+// elements, a string's characters. A verb on items has a member for each kind, named for
+// it – TensorTake, ListTake, StringTake – that declines a value of another kind, and the
+// prelude's verb is the cascade of the three. A member that takes the value and then
+// fails gives an Error, which stops the cascade.
+const chars = (s: Value): string[] => [...String(s)]
+const rowsOf = (a: Value): engine.Tensor => { const x = tensorArg(a); return x.ndim ? x : engine.reshape(x, [1]) }
+// where take(n) keeps the items – the first n, or the last -n – or drop(n) leaves them;
+// an n past the end takes them all
+const span = (length: number, n: Value, take: boolean): [number, number] => {
+  const k = Math.max(-length, Math.min(length, asWhole(n))), at = k < 0 ? length + k : k
+  return take === k >= 0 ? [0, at] : [at, length]
+}
+const cut = <T,>(items: T[], n: Value, take: boolean): T[] => items.slice(...span(items.length, n, take))
+
+// A tensor's length along an axis, too: a missing axis has size 1, never NaN, so #(5) is 1
+// (APL's tally ≢), as broadcasting treats an absent axis; a negative axis counts from the
+// end. A string counts characters, not UTF-16 units, as StringToCodes does.
+const TensorLength = (a: Value, b?: Value) => {
+  if (!isTensorish(a)) { return decline("numbers", a) }
+  const shape = shapeOf(a), axis = b == null ? 0 : asWhole(b)
+  return engine.tensor(shape[axis < 0 ? axis + shape.length : axis] ?? 1)
+}
+const ListLength = (a: Value) => Array.isArray(a) ? engine.tensor(a.length) : decline("a list", a)
+const StringLength = (a: Value) => isText(a) ? engine.tensor(chars(a).length) : decline("a string", a)
+
+// x_i picks the item at i, x_[i, j] the items at i and j, in x's own kind – a tensor's
+// indices may have any shape. A negative index counts from the end. Every tensor index on
+// the host or cheap to compute there is bounds-checked – a gather has no bounds mode, so
+// an index out of range would read garbage; one still on the GPU (an embedding lookup into
+// a minibatch) is trusted data and flows through.
+const TensorGather = (a: Value, b: Value): Value => {
+  if (!isTensorish(a)) { return decline("numbers", a) }
+  const x = rowsOf(a), size = x.shape[0]!
+  // `!(0 <= w < size)` also rejects a NaN index, which slips past `<` and `>=`
+  const bad = cheapValues(b)?.find((i) => { const w = i < 0 ? i + size : i; return !(w >= 0 && w < size) })
+  if (bad !== undefined) { return new Error(`index ${bad} is out of bounds for an axis of length ${size}`) }
+  const raw = engine.trunc(operand(b))
+  return engine.take(x, engine.where(engine.less(raw, 0), engine.add(raw, size), raw), 0)
+}
+const pick = (items: Value[], b: Value, kind: string, join: (picked: Value[]) => Value): Value => {
+  let indices: number[], multi = true
+  if (Array.isArray(b)) { indices = b.map(asNumber) } else {
+    let d: unknown
+    try { d = getAsSyncList(b) } catch { d = undefined }
+    if (Array.isArray(d)) { indices = d.flat(Infinity) as number[] } else { indices = [asNumber(b)]; multi = false }
+  }
+  const picked: Value[] = []
+  for (const raw of indices) {
+    const i = Math.trunc(raw) < 0 ? Math.trunc(raw) + items.length : Math.trunc(raw)
+    if (!(i >= 0 && i < items.length)) { return new Error(`index ${raw} is out of bounds for a ${kind} of length ${items.length}`) }
+    picked.push(items[i]!)
+  }
+  return multi ? join(picked) : picked[0]!
+}
+const ListGather = (a: Value, b: Value) => Array.isArray(a) ? pick(a, b, "list", (xs) => xs) : decline("a list", a)
+const StringGather = (a: Value, b: Value) => isText(a) ? pick(chars(a), b, "string", (cs) => cs.join("")) : decline("a string", a)
+// one item, at one index
+const oneIndex = (i: Value): Value => {
+  const t = Array.isArray(i) ? null : operand(i)
+  if (!(isTensor(t) && t.size === 1)) { throw new Error(`expected one index, got ${describeArg(i)}`) }
+  return engine.reshape(t, [])
+}
+const TensorGet = (a: Value, i: Value) => isTensorish(a) ? TensorGather(a, oneIndex(i)) : decline("numbers", a)
+const ListGet = (a: Value, i: Value) => Array.isArray(a) ? ListGather(a, oneIndex(i)) : decline("a list", a)
+const StringGet = (a: Value, i: Value) => isText(a) ? StringGather(a, oneIndex(i)) : decline("a string", a)
+
+// A tensor's first rows, or the rest, are a view of it: nothing is copied
+const TensorTake = (a: Value, n: Value) => isTensorish(a) ? rowsFrom(a, n, true) : decline("numbers", a)
+const TensorDrop = (a: Value, n: Value) => isTensorish(a) ? rowsFrom(a, n, false) : decline("numbers", a)
+const rowsFrom = (a: Value, n: Value, take: boolean) => { const x = rowsOf(a); return x.slice(span(x.shape[0]!, n, take)) }
+const ListTake = (a: Value, n: Value) => Array.isArray(a) ? cut(a, n, true) : decline("a list", a)
+const ListDrop = (a: Value, n: Value) => Array.isArray(a) ? cut(a, n, false) : decline("a list", a)
+const StringTake = (a: Value, n: Value) => isText(a) ? cut(chars(a), n, true).join("") : decline("a string", a)
+const StringDrop = (a: Value, n: Value) => isText(a) ? cut(chars(a), n, false).join("") : decline("a string", a)
+
+// TensorReverse is the prelude's, along any axes
+const ListReverse = (a: Value) => Array.isArray(a) ? [...a].reverse() : decline("a list", a)
+const StringReverse = (a: Value) => isText(a) ? chars(a).reverse().join("") : decline("a string", a)
+
+// a concat b joins a's items and b's, concat(a, b, …) any number of them; concat(xs),
+// one list, joins the containers in it – tensors along the axis given after it. The first
+// says which kind they are; in a step, a live value among them is read now.
+const TensorConcat = (...args: Value[]) => {
+  const listed = Array.isArray(args[0]) && !Array.isArray(args[1])
+  const xs = (listed ? args[0] : args) as Value[]
+  if (!isTensorish(sampled(xs[0] ?? null))) { return decline("numbers", xs[0] ?? null) }
+  return engine.concatenate(xs.map(tensorArg), listed && args[1] != null ? asNumber(args[1]) : 0)
+}
+const joined = (args: Value[]): Value[] => args.length === 1 && Array.isArray(args[0]) ? args[0] : args
+const ListConcat = (...args: Value[]) => {
+  const xs = joined(args), bad = xs.findIndex((a) => !Array.isArray(a))
+  if (bad === 0) { return decline("a list", xs[0]!) }
+  return bad < 0 ? ([] as Value[]).concat(...xs) : new Error(`'ListConcat': expected lists, got ${describeArg(xs[bad]!)}`)
+}
+// text joined end to end, a value after the first that isn't text as the source that
+// reproduces it; ◌, an Error or an unknown name is not text
+const StringConcat = (...args: Value[]) => {
+  const xs = joined(args).map(sampled)
+  if (!isText(xs[0] ?? null)) { return decline("a string", xs[0] ?? null) }
+  const bad = xs.findIndex((a) => a == null || a instanceof Error || typeof a === "symbol")
+  if (bad >= 0) { throw new Error(`StringConcat: expected text, got ${describeArg(xs[bad]!)}`) }
+  return xs.map((a) => isText(a) ? String(a) : StringLiteral(a)).join("")
+}
+
+// The items folded left to right with f(acc, item), from init – or from the first item
+// when there is none. Folding nothing gives f's identity: + folds nothing to 0.
+const emptyFold = (fn: Function): Value => getMeta(fn).identity ?? new Error("an empty fold needs f's identity – give one with identity(f, v)")
+const ListReduce = function (this: CurrentScope, a: Value, fn: Value, init?: Value) {
+  if (!Array.isArray(a)) { return decline("a list", a) }
+  if (!isFn(fn)) { return new Error("'ListReduce': `fn` must be a function") }
+  if (init == null && a.length === 0) { return emptyFold(fn) }
+  let acc: Value = init == null ? a[0]! : init
+  for (const v of init == null ? a.slice(1) : a) { acc = fn.call(this, acc, v) }
+  return acc
+}
+const StringReduce = function (this: CurrentScope, a: Value, fn: Value, init?: Value) { return isText(a) ? ListReduce.call(this, chars(a), fn, init) : decline("a string", a) }
+// axis 0 as a reusable value – the default a fold collapses
+const LEADING_AXIS: Value = engine.tensor(0)
+// A tensor's rows, or its slices along the axis given: `1 ..< 10 reduce +` = 45, `x reduce
+// { a, b | a - b }` = ((x_0-x_1)-x_2)-… A known op takes its native reduction, pinned to
+// the leading axis as a fold is – the native reductions default to every axis. Folding
+// no slices gives f's identity in the shape of one.
+const TensorReduce = function (this: CurrentScope, a: Value, fn: Value, axis?: Value) {
+  if (!isTensorish(a)) { return decline("numbers", a) }
+  if (!isFn(fn)) { return new Error("`reduce(x, fn, axis?)`: the second argument must be a function") }
+  const { reducer } = getMeta(fn)
+  if (reducer) { return reducer(a, axis == null ? LEADING_AXIS : axis) }
+  const parts = TensorUnstack(a, axis)
+  if (parts.length) { return ListReduce.call(this, parts, fn) }
+  const none = emptyFold(fn), shape = shapeOf(a), k = axis == null ? 0 : asWhole(axis)
+  return none instanceof Error ? none : engine.broadcastTo(tensorArg(none), shape.filter((_, i) => i !== (k + shape.length) % shape.length))
+}
+// fold(x, f, start): f walks the items from start. A tensor's reduce takes an axis
+// third, so its fold is a member of its own.
+const TensorFold = function (this: CurrentScope, a: Value, fn: Value, start?: Value) { return isTensorish(a) ? ListReduce.call(this, [...rowsOf(a)], fn, start) : decline("numbers", a) }
+
+// ListReduce keeping every step: (init, f(init, a₀), …) – from a₀ when there is no init.
+// TensorScan is the prelude's.
+const ListScan = function (this: CurrentScope, a: Value, fn: Value, init?: Value) {
+  if (!Array.isArray(a)) { return decline("a list", a) }
+  if (!isFn(fn)) { return new Error("'ListScan': `fn` must be a function") }
+  const out = init == null ? a.slice(0, 1) : [init]
+  for (const v of init == null ? a.slice(1) : a) { out.push(fn.call(this, out.at(-1)!, v)) }
+  return out
+}
+const StringScan = function (this: CurrentScope, a: Value, fn: Value, init?: Value) { return isText(a) ? ListScan.call(this, chars(a), fn, init) : decline("a string", a) }
+
+// A member the prelude writes in Fluent, for numbers: f, declining any other value
+const TensorOnly = (f: Value) => isFn(f)
+  ? made(function (this: CurrentScope, a: Value, ...rest: Value[]) { return isTensorish(a) ? f.call(this, a, ...rest) : decline("numbers", a) })
+  : new Error("`TensorOnly(f)`: f must be a function")
+
+for (const f of [ListLength, ListGather, ListGet, ListTake, ListDrop, ListReverse, ListConcat, ListReduce, ListScan]) { shallow.add(f) }
 
 // MARK: Storage
 // Storage(key) is a signal whose value is kept under key and survives a reload: ◌ until
@@ -1705,21 +1771,23 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   SymbolAssign, CodeParse, CodeEvaluate,
   FunctionIterate, FunctionRepeat, FunctionMemo, FunctionThen, FunctionIs, TensorIs, ListIs, StringIs, ErrorIs, Identical,
   FunctionCascade, FunctionCond, FunctionArity, FunctionApply, FunctionNoAutoLift,
-  FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc,
+  FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc, FunctionIdentity,
   Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate,
   ...UNARY, ...BINARY, ...REDUCTIONS,
-  TensorStack, TensorUnstack, TensorConcat, TensorReduce, TensorRank, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
-  TensorPermute, TensorBroadcast, TensorPadAxis, TensorWindow, TensorTake, TensorScatterAdd, TensorRange,
-  TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorLength, TensorShape, TensorGather,
-  TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorRandomUniform,
-  List, ListLength, ListConcat, ListGet, ListMap, ListReduce, ListScan, TensorMemoryOf,
-  StringConcat, StringLiteral, StringLength, StringToCodes, CodesToString,
+  TensorStack, TensorUnstack, TensorRank, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
+  TensorPermute, TensorBroadcast, TensorPadAxis, TensorWindow, TensorScatterAdd, TensorRange,
+  TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorShape,
+  TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorRandomUniform, TensorMemoryOf,
+  List, ListMap, StringLiteral, StringToCodes, CodesToString,
+  TensorLength, ListLength, StringLength, TensorGet, ListGet, StringGet, TensorGather, ListGather, StringGather,
+  TensorTake, ListTake, StringTake, TensorDrop, ListDrop, StringDrop, ListReverse, StringReverse, TensorConcat, ListConcat,
+  StringConcat, TensorReduce, ListReduce, StringReduce, TensorFold, ListScan, StringScan, TensorOnly,
   Storage,
 })
 
 // NoMatch, the decline a hand-written candidate returns: a fresh one per read, so each
 // decline carries the origin of its own call
-Object.defineProperty(DefaultEnvironment, "NoMatch", { get: () => new NoMatch("no match"), enumerable: true, configurable: true })
+Object.defineProperty(DefaultEnvironment, "NoMatch", { get: () => NoMatch.of("no match"), enumerable: true, configurable: true })
 
 // The host (or a test) extends the environment with widgets, live sources and printers
 // before it creates scopes. Bun's HMR re-runs only this module when it is the one that
