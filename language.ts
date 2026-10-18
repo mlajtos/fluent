@@ -289,8 +289,9 @@ const asError = (e: unknown): Error => {
 // that call's origin, whoever wrote the builder, so it prints as the call. An Error made
 // in another document – a prelude body, an evaluated string – takes the origin of the
 // call that brought it back; inside the prelude, which no reader opens, it keeps its own.
-// A NoMatch is a decline, not a failure: it keeps its own origin. A value with no origin
-// takes the call's; any other keeps the origin it has, as it passes through.
+// A NoMatch is a decline, not a failure: it keeps its own origin. Any other value keeps
+// the origin it has as it passes through a call, or takes the call's when it has none –
+// but a function the call didn't make, a built-in, takes none: it prints by its name.
 let born = 0
 const birth = new WeakMap<Function, number>()
 const made = <F extends Function>(f: F): F => { birth.set(f, ++born); return f }
@@ -1512,7 +1513,7 @@ export {
   CodeParse, getParseErrors,
   evaluateSyntaxTreeNode, CodeEvaluate, getAsSyncList, getMeta, setMeta, getOrigin,
   evaluateGeneration, flushRetirements, registerDisposable,
-  NoMatch, StringLiteral,
+  NoMatch, StringLiteral, asError,
   DefaultEnvironment, extendEnvironment, setCodeNodePrinter, PRELUDE, createScope,
   SignalCreate, SignalUpdate,
 }
