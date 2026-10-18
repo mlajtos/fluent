@@ -930,6 +930,13 @@ const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Va
 // folded into a kernel – the clock ticking or a slider moving reuses the compiled plan
 const TensorScalarLive = (value: number): engine.Tensor => engine.scalar(value)
 
+// The display's density: how many of its pixels make a unit, a CSS pixel – the page's
+// devicePixelRatio, 1 where there is no page. The page writes it (host.ts); Density() is
+// the cell, read-only, so a picture drawn in units follows it.
+const density = signal<Value>(TensorScalarLive(1))
+const densityShown = computed(() => density.value)
+const Density = () => densityShown
+
 // A signal holds data: a tensor stored in it – or in a list in it – is settled into a
 // leaf, so a value written back every tick (⟳ with ←) never drags the previous ticks along
 const heldValue = (v: Value): Value => Array.isArray(v) ? v.map(heldValue) : isTensor(v) ? engine.settle(v) : v
@@ -1714,7 +1721,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorRandomUniform,
   List, ListLength, ListConcat, ListGet, ListMap, ListReduce, ListScan, TensorMemoryOf,
   StringConcat, StringLiteral, StringLength, StringToCodes, CodesToString,
-  Storage,
+  Storage, Density,
 })
 
 // NoMatch, the decline a hand-written candidate returns: a fresh one per read, so each
@@ -1762,6 +1769,6 @@ export {
   evaluateGeneration, flushRetirements, registerDisposable, nextFrame, asError,
   NoMatch, StringLiteral,
   DefaultEnvironment, extendEnvironment, setCodeNodePrinter, PRELUDE, createScope,
-  SignalCreate, SignalUpdate, Signal, signal, computed, onWrite, awaiting, occurrence, keepingFrom,
+  SignalCreate, SignalUpdate, Signal, signal, computed, onWrite, awaiting, occurrence, keepingFrom, density,
 }
 export type { Value, CurrentScope, SyntaxTreeNode, Origin, ParseError, FunctionMeta }

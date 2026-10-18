@@ -126,6 +126,27 @@ test("a picture wider than the GPU's textures still paints", async ({ page }) =>
   await expect.poll(() => spreadOf(panel(page).locator("canvas").first())).toBeGreaterThan(10)
 })
 
+test("a drawing has the display's pixels, and follows a change of density", async ({ page, context }) => {
+  await open(page, "canvas(200, 100) . draw(dots([[50, 50]]), [1, 0.8, 0.2], 20)")
+  const canvas = panel(page).locator("canvas").first()
+  const pixels = () => canvas.evaluate((c: HTMLCanvasElement) => [c.width, c.height])
+  await expect.poll(pixels).toEqual([200, 100])
+  // Chrome looks at its media queries again when the viewport changes: a new density with it
+  const cdp = await context.newCDPSession(page)
+  await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1281, height: 720, deviceScaleFactor: 2, mobile: false })
+  await expect.poll(pixels).toEqual([400, 200])
+  expect((await canvas.boundingBox())!.width).toBeCloseTo(200, 0)
+})
+
+test("a small image is magnified as a heatmap is, sharp", async ({ page }) => {
+  // a 14 × 14 raster of data shows at the size of a 14 × 14 heatmap, each pixel a block
+  await open(page, "x: (0 ..< 196 ⍴ [14, 14]) % 2, (broadcast(x ⍴ [14, 14, 1], [14, 14, 3]), x)")
+  await expect(panel(page).locator("canvas")).toHaveCount(2)
+  const [image, heat] = await panel(page).locator("canvas").all()
+  expect((await image!.boundingBox())!.width).toBeCloseTo((await heat!.boundingBox())!.width, 0)
+  await expect(image!).toHaveCSS("image-rendering", "pixelated")
+})
+
 test("a NaN is a hole in a painted heatmap, not the smallest value's color", async ({ page }) => {
   // regression: the painter gave NaN the minimum's color; every other cell here is the
   // minimum, so without a hole the picture is one flat color

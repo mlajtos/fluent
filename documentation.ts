@@ -106,7 +106,7 @@ Button("Reset", { x(0) }),
   - inner product \`∙\`: \`a (g ∙ f) b\` combines with g, then reduces with f – \`A (× ∙ +) B\` is matrix multiply, \`W (+ ∙ ⌊) W\` is shortest paths
   - lists: \`ListConcat\`, \`ListLength\`, \`ListGet\`, \`ListMap\`, \`ListReduce\`
   - UI: \`Slider\`, \`Scrubber\`, \`Checkbox\`, \`Button\`, \`Text\`, \`TextEditor\`, \`Code\`, \`CodeEditor\`, \`CodePrint\`, \`Print\`, \`PrettyPrint\`, \`Grid\`, \`Layers\`, \`Center\`, \`Point2D\`, \`Trail\`, \`PointPlot\`, \`ImageUpload\`
-  - live inputs: \`Camera\`, \`Microphone\`, \`MicrophoneSpectrum\`, \`Time\`, \`MousePosition\`
+  - live inputs: \`Camera\`, \`Microphone\`, \`MicrophoneSpectrum\`, \`Time\`, \`MousePosition\`, \`Density\`
   - optimizers: \`sgd\` (optional momentum), \`adam\`, \`adamw\`, \`adagrad\`, \`rmsprop\`, \`lion\`, \`muon\` and more – each built on \`optimizer(init, rule)\`
   - metadata: \`doc(fn, signature, description, example)\` attaches the card hover shows
 - Ad-hoc operators

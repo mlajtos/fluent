@@ -76,7 +76,7 @@
 
 import { signal, computed, effect } from "@preact/signals-core"
 import {
-  tensorView, labelled, numberText, documentHash, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
+  tensorView, labelled, heatScale, numberText, documentHash, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
   connect, mirrors, payloads, root, update, write, call,
   type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where,
 } from "./protocol"
@@ -128,6 +128,16 @@ loader.config({ monaco })
 
 const environmentNames = signal(new Map<string, { detail: string, doc: Doc | null }>())
 
+// The display's pixels a CSS pixel: the worker draws pictures at it, and hears of each change
+// – a move to another screen, a zoom
+const density = signal(devicePixelRatio)
+const watchDensity = () => matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener("change", () => {
+  density.value = devicePixelRatio
+  toWorker({ t: "density", value: devicePixelRatio })
+  watchDensity()
+}, { once: true })
+watchDensity()
+
 // A hot update starts a fresh evaluator and stops the old one's sources; so does a lost GPU
 const hot = globalThis as { __fluentWorker?: Worker, __fluentSources?: Map<number, () => void> }
 const pageSources = hot.__fluentSources ??= new Map()
@@ -137,6 +147,7 @@ const spawn = () => {
   for (const stop of pageSources.values()) { stop() }
   pageSources.clear()
   worker = hot.__fluentWorker = startWorker(typeof FLUENT_WORKER === "string" ? FLUENT_WORKER : "fluent.worker.js")
+  toWorker({ t: "density", value: density.peek() })
   worker.onmessage = receive
   worker.onerror = (e) => { showError(`The evaluator stopped: ${e.message || "it failed to start"}`) }
   // a batch is drawn by the next frame
@@ -1128,12 +1139,17 @@ function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
     case "heat":
       if (few) { return <Cells id={d.id} values={values} shape={d.shape} /> }
   }
-  // a heatmap comes laid out and magnified, its size given; an image shows at its own size.
-  // Small multiples say the shape they lay out.
-  const [width, height] = d.size ?? [d.shape[1] ?? 1, d.shape[0] ?? 1]
+  // A picture shows at its size in units, a CSS pixel each: a heatmap's comes laid out and
+  // magnified, and an image has the display's pixels, density of them a unit. An image under
+  // 128 units – a raster of data, not a drawing – is magnified as a heatmap is, each pixel a
+  // whole number of the display's, sampled nearest-neighbour. A picture wider than its panel
+  // scales down, smoothed, so no row or column drops out. Small multiples say the shape they
+  // lay out.
+  const w = (d.shape[1] ?? 1) / density.value, h = (d.shape[0] ?? 1) / density.value
+  const m = d.size || Math.max(w, h) >= 128 ? 1 : heatScale(h, w), [width, height] = d.size ?? [w * m, h * m]
   return (
     <div className="grid gap-1">
-      <PaintedCanvas id={d.id} style={canvasStyle(width, height, view === "heat")} />
+      <PaintedCanvas id={d.id} style={{ width: "100%", maxWidth: `${width}px`, minHeight: "4px", aspectRatio: `${width / height}`, imageRendering: m > 1 ? "pixelated" : "auto" }} />
       <div className="flex items-center gap-2 text-xs text-neutral-500 font-mono">
         {values && <Legend range={values} ramp={view === "heat"} />}
         {view === "heat" && d.shape.length > 2 && <span className="ml-2">[{d.shape.join(", ")}]</span>}
@@ -1142,22 +1158,13 @@ function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
   )
 }
 
-// A picture fills its panel's width up to its own size, scaled down – smoothed, so no row or
-// column of pixels drops out – when the panel is narrower; a heatmap's cells stay square
-// and sharp. A picture a few pixels high still shows.
-const canvasStyle = (width: number, height: number, sharp: boolean): CSSProperties => ({
-  width: "100%",
-  maxWidth: `${width}px`,
-  minHeight: "4px",
-  aspectRatio: `${width / height}`,
-  imageRendering: sharp ? "pixelated" : "auto",
-})
-
 // A canvas the worker paints: handed over once, then told which picture to paint as each
-// new one arrives. Its pixels are the worker's to size: a picture's own, or – filling its
-// box, as bars do – the box's device pixels, sent again whenever they change.
+// new one arrives, and again at a new density. Its pixels are the worker's to size: a
+// picture's own, or – filling its box, as bars do – the box's, sent in units whenever it
+// changes.
 let nextSlot = 0
 const PaintedCanvas = ({ id, style, fill = false }: { id: number, style?: CSSProperties, fill?: boolean }) => {
+  useSignals()
   const ref = useRef<HTMLCanvasElement>(null)
   const slot = useRef(0), shown = useRef(id), size = useRef<[number, number]>([0, 0])
   shown.current = id
@@ -1165,7 +1172,7 @@ const PaintedCanvas = ({ id, style, fill = false }: { id: number, style?: CSSPro
     const element = ref.current!, canvas = element.transferControlToOffscreen(), mine = slot.current = ++nextSlot
     toWorker({ t: "canvas", slot: mine, canvas }, [canvas])
     const observer = new ResizeObserver(([entry]) => {
-      size.current = [entry!.contentRect.width * devicePixelRatio, entry!.contentRect.height * devicePixelRatio]
+      size.current = [entry!.contentRect.width, entry!.contentRect.height]
       toWorker({ t: "paint", slot: mine, id: shown.current, size: size.current })
     })
     if (fill) { observer.observe(element) }
@@ -1174,7 +1181,7 @@ const PaintedCanvas = ({ id, style, fill = false }: { id: number, style?: CSSPro
       toWorker({ t: "canvasGone", slot: mine })
     }
   }, [])
-  useEffect(() => { if (!fill || size.current[0]) { toWorker({ t: "paint", slot: slot.current, id, size: size.current }) } }, [id])
+  useEffect(() => { if (!fill || size.current[0]) { toWorker({ t: "paint", slot: slot.current, id, size: size.current }) } }, [id, density.value])
   return <canvas ref={ref} style={fill ? { width: "100%", height: "100%" } : style} />
 }
 

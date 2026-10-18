@@ -1967,6 +1967,14 @@ describe("the Tour's checks", () => {
       expect(cheats.map((src) => [src, lights(seed, src)])).toEqual(cheats.map((src) => [src, false]))
     })
   }
+  test("the drawing room lights at any density", () => {
+    toHost({ t: "density", value: 2 })
+    try {
+      expect(lights("a ring: 40 away", ring("abs(dot(p) - 40)"))).toBe(true)
+    } finally {
+      toHost({ t: "density", value: 1 })
+    }
+  })
 })
 
 describe("lifts created inside owned computeds (reactive cells)", () => {
@@ -2089,7 +2097,7 @@ describe("pictures", () => {
   test("a shape that measures the whole picture at once is an Error, not an empty canvas", () => {
     // regression: norm(p - c) without its axis is one number for every pixel together, and
     // draw silently drew nothing
-    const v = run("canvas(20, 20) . draw({ p | abs(norm(p - [10, 10]) - 6) }, [1, 1, 1], 2)")
+    const v = value("canvas(20, 20) . draw({ p | abs(norm(p - [10, 10]) - 6) }, [1, 1, 1], 2)")
     expect(v).toBeInstanceOf(Error)
     expect((v as Error).message).toContain("norm(p - c, -1)")
     expect(value("Σ(canvas(20, 20) . draw({ p | abs(norm(p - [10, 10], -1) - 6) }, [1, 1, 1], 2) ≠ canvas(20, 20))")).toBeGreaterThan(100)
@@ -2301,6 +2309,40 @@ describe("the evaluation host", () => {
     expect(at(54, 1)).toEqual([23, 23, 23, 255])
     expect(at(54, 6)).toEqual([253, 231, 37, 255])
   })
+
+  // The page tells the worker its density (devicePixelRatio): pictures are drawn in units, a
+  // CSS pixel each, with the display's own pixels
+  const atDensity = async <T,>(d: number, run: () => Promise<T> | T): Promise<T> => {
+    toHost({ t: "density", value: d })
+    try { return await run() } finally { toHost({ t: "density", value: 1 }); await pause(20) }
+  }
+  test("a picture is drawn in units, with the display's pixels", () => atDensity(2, () => {
+    expect(value("Density()()")).toBe(2)
+    expect(value("shape(canvas(520, 160))")).toEqual([320, 1040, 3])
+    expect(value("pixels(canvas(1, 1))")).toEqual([[[0.25, 0.25], [0.75, 0.25]], [[0.25, 0.75], [0.75, 0.75]]])
+    // a line 1 unit wide covers two whole pixels, its edges one pixel of the display
+    expect(value("transpose((canvas(4, 1, 0) . draw(line([[2, -9], [2, 9]]), 1, 1))_0)_0")).toEqual([0, 0, 0, 1, 1, 0, 0, 0])
+    expect(value("shape(bars([3, -1, 2], 30, 20))")).toEqual([40, 60, 3])
+    expect(value("shape(plot(0..<3, [1, 2, 3]))")).toEqual([320, 1040, 3])
+  }))
+  test("text is sized in units: about as much ink a unit at any density", async () => {
+    const ink = () => value(`Σ((canvas(120, 30, 0) . draw(letters("Ag 2.31", [2, 2], 18), 1, 1))^2.2) ÷ 3 ÷ Density()^2`) as number
+    const one = ink(), two = await atDensity(2, ink)
+    expect(Math.abs(two - one) / one).toBeLessThan(0.06)
+  })
+  test("a drawing follows the display's density, and the IDE paints heatmaps and bars at it", () => atDensity(1, async () => {
+    const d = await evaluate("canvas(4, 2) . draw(dots([[1, 1]]), 1, 1)")
+    expect([d.k, d.now.shape]).toEqual(["live", [2, 4, 3]])
+    const start = inbox.length
+    toHost({ t: "density", value: 2 })
+    expect(descOf(await after(start, "lives", d.id), d.id).shape).toEqual([4, 8, 3])
+    // a heatmap's size is in units, and its picture has the display's pixels
+    const heat = await evaluate("[[0, 1], [2, 3]] tile [4, 4]")
+    expect(heat.size).toEqual([256, 256])
+    expect((await paintOf(heat)).width).toBe(512)
+    // bars fill a box the page gives in units
+    expect(await paintOf(await evaluate("sin(0 ..< 300)"), [123, 45]).then(({ width, height }) => [width, height])).toEqual([246, 90])
+  }))
 
   test("Fetch of a missing file is an Error, not the server's 404 page", async () => {
     const served = Bun.serve({ port: 0, fetch: () => new Response("Not Found", { status: 404 }) })

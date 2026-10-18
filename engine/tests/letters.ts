@@ -1,11 +1,16 @@
 // Text and plots drawn on the GPU match the CPU. The CPU keeps a fused kernel's
 // intermediates in doubles, the GPU in f32, so a Prelude function that leans on a value
 // only a double can hold – 2 to the power -200 – draws differently: this gate catches it.
+// Each case draws at the display densities 1 and 2.
 //   bun engine/tests/run.ts engine/tests/letters.ts
-import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope } from "../../language.ts";
-import { init } from "../tensor.ts";
+import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, Signal, density } from "../../language.ts";
+import { init, scalar, type Tensor } from "../tensor.ts";
 
-const value = (source: string) => evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope())) as { read(): Promise<Float32Array> };
+// a picture drawn in units follows the density: its value is a cell's
+const value = (source: string): Tensor => {
+  const v = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), createScope()));
+  return (v instanceof Signal ? v.value : v) as Tensor;
+};
 const CASES = [
   'Σ(canvas(520, 160, 0) . draw(letters("12", [10, 4], 12), 1, 1) > 0.3)',
   'Σ(canvas(520, 160, 0) . draw(letters(("−0.0520 ∞ … ·", "NaN g|"), [[10.5, 4.25], [200, 40]], 10), 1, 1))',
@@ -15,16 +20,23 @@ const CASES = [
   'Σ(plot(0..<10 × 1e8, (0..<10 - 5, 9 - 0..<10), ("up", "down")) > 0.3)',
 ];
 
+const RUNS = [1, 2].flatMap((d) => CASES.map((source) => [d, source] as const));
+const at = async (d: number, source: string): Promise<number> => {
+  density.value = scalar(d);
+  return (await value(source).read())[0]!;
+};
+
 export default async function (): Promise<{ fails: number }> {
   const cpu: number[] = [];
-  for (const source of CASES) cpu.push((await value(source).read())[0]!);
+  for (const [d, source] of RUNS) cpu.push(await at(d, source));
   await init();
   let fails = 0;
-  for (const [i, source] of CASES.entries()) {
-    const gpu = (await value(source).read())[0]!;
+  for (const [i, [d, source]] of RUNS.entries()) {
+    const gpu = await at(d, source);
     const ok = Math.abs(gpu - cpu[i]!) <= 1;
     if (!ok) fails++;
-    console.log(`${ok ? "ok  " : "FAIL"} cpu ${cpu[i]} gpu ${gpu}  ${source}`);
+    console.log(`${ok ? "ok  " : "FAIL"} density ${d} cpu ${cpu[i]} gpu ${gpu}  ${source}`);
   }
+  density.value = scalar(1);
   return { fails };
 }

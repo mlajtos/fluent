@@ -553,6 +553,9 @@ concat: doc(TensorConcat, "concat((a, b, …), axis?)", "Tensors joined end to e
 ; distance from a point to it, a function. draw(shape, color, width) takes a
 ; picture to a picture, so a drawing reads as a pipe:
 ;   canvas(640, 400) . draw(axis, gray, 1) . draw(curve, blue, 2)
+; Sizes, places and widths are in units, a CSS pixel each. A picture has the display's own
+; pixels, Density() of them a unit, so its edges are as sharp as the screen can show –
+; and its shape depends on the display: canvas(520, 160) is [320, 1040, 3] at Density 2.
 ;
 ; A tensor seen as a picture – how the IDE shows one (protocol.ts, tensorView): [n] as bars,
 ; anything else but an image as a heatmap, each value colored by viridis at its place
@@ -599,10 +602,10 @@ DrawHeatOf: { x, r, k |
   on: (abs(m) = 1÷0) ⍴ [h, 1, w, 1] × (ring ⍴ [1, k, 1, k]),
   where(on ⍴ [h × k, w × k, 1], big(where(m > 0, 0.09, 0.95) ⍴ [h, w, 1]), big(heat(m, r)))
 },
-; bars of v's first n values on the span r, drawn width × height in the top left of a W × H
-; picture: the IDE pads a vector to a longer window and rounds its canvas up, so a vector
-; that grows and a canvas that is resized keep their plan
-DrawBarsOf: { v, n, r, width, height, W, H |
+; bars of v's first n values on the span r, drawn width × height pixels in the top left of a
+; W × H picture, D pixels a unit: the IDE pads a vector to a longer window and rounds its
+; canvas up, so a vector that grows and a canvas that is resized keep their plan
+DrawBarsOf: { v, n, r, width, height, W, H, D |
   top: r_1 ⌈ 0, extent: top - (r_0 ⌊ 0) ⌈ 1e-30,
   ; column x covers the values from i0 up to i1, at least one, and shows their extremes
   x: 0 ..< W, i0: floor(x × n ÷ width), i1: floor((x + 1) × n ÷ width) ⌈ (i0 + 1),
@@ -612,22 +615,29 @@ DrawBarsOf: { v, n, r, width, height, W, H |
   ; the value at each row's center; the zero line is the row within half a row of 0
   vy: top - ((0 ..< H + 0.5) ÷ height × extent),
   zero: abs(vy) ≤ (0.5 × extent ÷ height),
-  ; bars 4 pixels wide or more keep a gap between them
-  slot: (x + 0.5) × n ÷ width % 1, gap: (n × 4 ≤ width) × ((slot < 0.1) ⌈ (slot > 0.9)),
+  ; bars 4 units wide or more keep a gap between them
+  slot: (x + 0.5) × n ÷ width % 1, gap: (n × 4 × D ≤ width) × ((slot < 0.1) ⌈ (slot > 0.9)),
   inbar: (vy ⊗(≤) (b ⌈ 0)) × (vy ⊗(≥) (a ⌊ 0)) × (1 - gap),
   ; a column takes the color of its value farther from zero
   c: viridis(where(b ≥ (-a), b, a) - r_0 ÷ (r_1 - r_0 ⌈ 1e-30)),
   ; a bar past the scale, ∞ or -∞, ends in a caret pointing on – dark on the top's yellow,
   ; light on the bottom's purple
-  dx: abs(x - ((i0 + 0.5) × width ÷ n - 0.5)), s: width ÷ n × 0.4 ⌊ 10,
-  caret: { dy, past | (abs(dy ⊗(-) dx) < 1.25) × ((dy < s) ⊗(×) past) × inbar },
+  dx: abs(x - ((i0 + 0.5) × width ÷ n - 0.5)), s: width ÷ n × 0.4 ⌊ 10×D,
+  caret: { dy, past | (abs(dy ⊗(-) dx) < 1.25×D) × ((dy < s) ⊗(×) past) × inbar },
   up: caret((0 ..< H) - 1, b = 1÷0), down: caret(height - 2 - (0 ..< H), a = -1÷0),
   bar: where(zero ⍴ [H, 1, 1], 68 ÷ 255, where(inbar ⍴ [H, W, 1], c, 0 ÷ 0)),
   where(up ⍴ [H, W, 1], 0.09, where(down ⍴ [H, W, 1], 0.95, bar))
 },
-bars: DrawBars: doc({ v, width, height | DrawBarsOf(v, #v, DrawExtent(v), width, height, width, height) }, "bars(v, width, height)", "A [n] tensor as bars from zero, on a picture of width × height pixels, [height, width, 3], with the zero line in gray. A bar is colored by viridis at its value's place between the smallest and the largest finite value; a column narrower than its values shows their extremes.", "shape(bars([3, -1, 2], 30, 20)) = [20, 30, 3]"),
-canvas: DrawCanvas: doc({ width, height, color | fill([height, width, 3], 1) × cond(guard(identical(color, ◌), { 0.09 }), { color }) }, "canvas(width, height, color?)", "A picture of width × height pixels, all one color – the playground's background unless given.", "canvas(2, 1, [1, 0, 0]) = [[[1, 0, 0], [1, 0, 0]]]"),
-pixels: DrawPixels: doc({ picture | h: shape(picture)_0, w: shape(picture)_1, stack(meshgrid(0..<w + 0.5, 0..<h + 0.5), -1) }, "pixels(picture)", "Where each pixel's center is, as [x, y] from the top left – a picture's shape with 2 in place of its colors.", "pixels(canvas(2, 1)) = [[[0.5, 0.5], [1.5, 0.5]]]"),
+bars: DrawBars: doc({ v, width, height |
+  D: Density(), w: round(width×D), h: round(height×D),
+  DrawBarsOf(v, #v, DrawExtent(v), w, h, w, h, D)
+}, "bars(v, width, height)", "A [n] tensor as bars from zero, on a picture width × height units, with the zero line in gray. A bar is colored by viridis at its value's place between the smallest and the largest finite value; a column narrower than its values shows their extremes.", "shape(bars([3, -1, 2], 30, 20)) = [20, 30, 3]"),
+Density: doc(Density, "Density()", "How many of the display's pixels make a unit, a CSS pixel – 2 on most laptop screens, and 1 with no display. A live value: on another screen, or zoomed, a picture drawn in units draws again at the new density.", "Density()()"),
+canvas: DrawCanvas: doc({ width, height, color |
+  D: Density(),
+  fill([round(height×D), round(width×D), 3], 1) × cond(guard(identical(color, ◌), { 0.09 }), { color })
+}, "canvas(width, height, color?)", "A picture width × height units, all one color – the playground's background unless given. It has the display's pixels, Density() of them a unit: round(width × Density()) across.", "canvas(2, 1, [1, 0, 0]) = [[[1, 0, 0], [1, 0, 0]]]"),
+pixels: DrawPixels: doc({ picture | h: shape(picture)_0, w: shape(picture)_1, stack(meshgrid(0..<w + 0.5, 0..<h + 0.5), -1) ÷ Density() }, "pixels(picture)", "Where each pixel's center is, as [x, y] in units from the top left – a picture's shape with 2 in place of its colors.", "pixels(canvas(2, 1)) = [[[0.5, 0.5], [1.5, 0.5]]]"),
 dots: DrawDots: doc({ points | { p | min(norm(p - points, -1)) } ⍤ 1 }, "dots(points)", "The shape of n points, [n, 2]: from p, the distance to the nearest one. Drawn wide, a dot is a disk.", "dots([[0, 0], [9, 9]])([3, 4]) = 5"),
 line: DrawLine: doc({ points |
   n: length(points) - 1,
@@ -638,12 +648,12 @@ line: DrawLine: doc({ points |
   { p | ap: p - a, min(norm(ap - along(ap)×ab, -1)) } ⍤ 1
 }, "line(points)", "The shape of the line through n points, [n, 2], one segment after another: from p, the distance to the nearest segment.", "line([[0, 0], [10, 0]])([5, 3]) = 3"),
 draw: DrawShape: doc({ shape, color, width |
-  r: width ÷ 2,
   γ: 2.2,
   { picture |
-    d: shape(pixels(picture)),
-    ; across the stroke a pixel spans d-0.5 to d+0.5 and the stroke -r to r: the overlap
-    ; is how much of the pixel it covers
+    ; in the display's pixels, across the stroke a pixel spans d-0.5 to d+0.5 and the
+    ; stroke -r to r: the overlap is how much of the pixel it covers
+    D: Density(),
+    d: shape(pixels(picture)) × D, r: width × D ÷ 2,
     cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ (-r)) ⌈ 0, -1),
     ; one distance for the whole picture is a shape that measured all its pixels together
     cond(guard((#TensorShape(d)) < 2, { Error("draw: the shape gave one distance for the whole picture, not one for each pixel – p is every pixel at once, [height, width, 2]; measure along its last axis: norm(p - c, -1)") }), {
@@ -651,7 +661,7 @@ draw: DrawShape: doc({ shape, color, width |
       picture^γ × 1-cover + color^γ×cover ^ 1÷γ
     })
   }
-}, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width pixels wide in color, its edges antialiased. The shape is given every pixel at once, p as [height, width, 2], and gives each its distance, so it measures along the last axis: norm(p - c, -1).", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
+}, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width units wide in color, its edges antialiased over one pixel of the display. The shape is given every pixel at once, p as [height, width, 2], and gives each its distance, so it measures along the last axis: norm(p - c, -1).", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
 
 ; Plotting – lines on one pair of axes, drawn with the words above, and text drawn as a
 ; shape: letters, in BQN386, the font the IDE shows code in. font.ts writes its glyphs
@@ -688,12 +698,12 @@ letters: DrawLetters: doc({ s, at, size |
     ; the distance at p, from the four samples around it
     q: moveaxis(take(cells, 0..<m × n + clamp(k, 0, n-1) × 200 + floor(y)×10 + floor(x)), -1, 0),
     d: q_0 × 1-tx + q_1×tx × 1-ty + (q_2 × 1-tx + q_3×tx × ty) - 80 ÷ 200 × size,
-    ; within the text, the distance to the glyph less half a pixel, so a stroke 1 pixel
-    ; wide draws the glyph itself
+    ; within the text, the distance to the glyph less half a unit, so a stroke 1 unit wide
+    ; draws the glyph itself
     inside: 0≤k ∧ k<n ∧ 0≤u_1 ∧ u_1<20,
     min(where(inside, d + 0.5 ⌈ 0, 1e9), -1)
   }
-}, "letters(text, at, size)", "The shape of a line of text in the IDE's font at a font size of size pixels, from its top-left corner at: a character is 0.6 × size wide and the line 1.2 × size tall. Drawn 1 pixel wide it is the font itself; wider, bolder. A character the font lacks is left blank. text may be character codes, or a list of texts with a row of at for each.", "canvas(100, 16) . draw(letters(\"letters 2.5\", [4, 1], 12), [1, 1, 1], 1)"),
+}, "letters(text, at, size)", "The shape of a line of text in the IDE's font at a font size of size units, from its top-left corner at: a character is 0.6 × size wide and the line 1.2 × size tall. Drawn 1 unit wide it is the font itself; wider, bolder. A character the font lacks is left blank. text may be character codes, or a list of texts with a row of at for each.", "canvas(100, 16) . draw(letters(\"letters 2.5\", [4, 1], 12), [1, 1, 1], 1)"),
 ; x as the codes of 3 significant digits – "2.31", "−0.0520", "1200" – with an exponent
 ; from 10 million up and below 0.001 – "1.50e9", "4.20e−5" – and NaN, ∞ and −∞ as such,
 ; spaces filling 9 cells, a row of them for each number in x. Arithmetic only, so it
@@ -754,7 +764,7 @@ plot: DrawPlot: doc({ x, ys, names |
     ListReduce(unstack(0..<k), { pic, i | pic . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 2) }, frame)
       . draw(letters(words, stack((fill([k], R + 8), clamp(at - 7, 0, H - 14)), -1), 12), ink, 1)
   })
-}, "plot(x, ys, names?)", "Lines on one pair of axes: ys is a list of vectors, or a matrix of rows, each over the points x. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
+}, "plot(x, ys, names?)", "Lines on one pair of axes, a picture 520 × 160 units: ys is a list of vectors, or a matrix of rows, each over the points x. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
 
 ; Optimization
 ; Optimizers. A step differentiates the loss with respect to the variables it reads –
