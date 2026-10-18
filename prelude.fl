@@ -533,7 +533,7 @@ einsum: TensorEinsum: doc({
 }(), "einsum(spec, a, b?)", "Einstein summation: name the axes, and the names that appear in more than one input but not the output are summed – \"ij,jk->ik\" is matrix multiplication. One or two operands.", "einsum(\"ij,jk->ik\", [[1, 2]], [[3], [4]]) = [[11]]"),
 
 ; Creation
-(⚄): rand: doc(TensorRandomUniform, "⚄(shape)  ·  rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "⚄([2, 2])"),
+(⚄): rand: doc(TensorRandomUniform, "⚄(shape)  ·  rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call; each run of the same program draws the same numbers at the same call.", "⚄([2, 2])"),
 randn: TensorRandomNormal: doc({ shape | √(-2 × log(1 - ⚄(shape))) × cos(2×π × ⚄(shape)) }, "randn(shape)", "A tensor of the given shape, each element drawn from the standard normal distribution – mean 0, spread 1. A fresh draw every call.", "randn([2, 2])"),
 linspace: TensorLinearSpace: doc({ r, n |
   k: round(n) ⌈ 0, a: r_0, b: r_1, i: 0..<k,

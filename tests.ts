@@ -735,6 +735,15 @@ describe("one model of time: cells, computeds, occurrences", () => {
     expect(value("θ: ~[1], θ← [7], θ")).toEqual([7])
     expect(run("θ: ~[1], θ(\"text\")")).toBeInstanceOf(Error)
   })
+  test("a draw is keyed by its call: looking at another draw moves it not", () => {
+    const stepped = (look: boolean) => {
+      const scope = scopeOf("noise: ${ ⚄([1]) }, θ: ~[0], step: { θ:= θ + ⚄([1]) }")
+      if (look) { unwrap(scope.noise) }
+      occurrence(() => (scope.step as Function)())
+      return unwrap(scope["θ"])
+    }
+    expect(stepped(true)).toEqual(stepped(false))
+  })
   test("the same occurrences give the same states", () => {
     const program = "x: 0 ..< 8, θ: ~[0, 0], 𝓛: { μ((x × θ_0 + θ_1 - x × 3)^2) }, opt: adam(0.1), step: { opt(𝓛) }"
     const train = () => steps(program, "step", 40, "θ")
@@ -1669,7 +1678,8 @@ describe("gallery examples smoke suite", () => {
   test("deep-delta-learning learns a function: one number in, one out, right where it never trained", () => {
     steps.length = 0
     const scope = scopeOf(EXAMPLES["deep-delta-learning"])
-    for (let i = 0; i < 300; i++) { steps[0]!(engine.scalar(i)) }
+    // the demo's own 600 steps
+    for (let i = 0; i < 600; i++) { steps[0]!(engine.scalar(i)) }
     const read = (expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope))
     // the mean squared error on 200 points between the 24 it trained on; 0.5 is guessing 0
     expect(read("unseen()")).toBeLessThan(0.01)

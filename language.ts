@@ -542,7 +542,7 @@ function evaluateGeneration<T>(evaluate: () => T): T {
   const previous = currentGeneration
   currentGeneration = { disposables: new Set() }
   // every run draws the same random numbers, so the same program trains the same weights
-  rngCounter = 0
+  draws.clear()
   try {
     return evaluate()
   } finally {
@@ -1488,9 +1488,18 @@ const TensorAssign = (a: Value, live: Value): Value => {
 }
 setMeta(TensorAssign, { noAutoLift: true })
 
-// A fresh key per call, counted from 0 in each evaluation
-let rngCounter = 0
-const TensorRandomUniform = (a: Value) => engine.uniform(rngCounter++, asWholeList(a))
+// A draw is keyed by where it is made – the reader's call that reached it – and by how
+// many draws that call has made in this run: the same program draws the same numbers,
+// and a value drawn elsewhere, looked at or not, moves no other draw
+const draws = new Map<string, number>()
+const TensorRandomUniform = (a: Value) => {
+  const site = engine.at.site, here = site ? `${site.start.line}:${site.start.column}:${site.source}` : ""
+  const n = draws.get(here) ?? 0
+  draws.set(here, n + 1)
+  let key = 2166136261
+  for (let i = 0; i < here.length; i++) { key = Math.imul(key ^ here.charCodeAt(i), 16777619) }
+  return engine.uniform(Math.imul(key ^ n, 0x9e3779b1) >>> 0, asWholeList(a))
+}
 
 // MARK: Strings
 // A value as the Fluent SOURCE that reproduces it, so CodeEvaluate(String(x)) gives x
