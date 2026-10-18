@@ -9,7 +9,7 @@ import { signal, Signal, computed, effect, untracked } from "@preact/signals-cor
 import dedent from "ts-dedent"
 import * as engine from "./engine/tensor.ts"
 import PRELUDE from "./prelude.fl" with { type: "text" }
-import { OPERATOR_RANGES, IDENTIFIER_RANGES } from "./protocol"
+import { OPERATOR_RANGES, IDENTIFIER_RANGES, numberText } from "./protocol"
 
 const isTensor = (v: unknown): v is engine.Tensor => v instanceof engine.Tensor
 
@@ -1317,7 +1317,7 @@ const TensorRandomUniform = (a: Value) => engine.uniform(rngCounter++, asWholeLi
 // round-trips to a NEW one, equal but not the same – nor for a closure over names the
 // target scope does not have. Those are best effort.
 const numberLiteral = (n: number): string =>
-  Number.isFinite(n) ? String(n)
+  Number.isFinite(n) ? numberText(n)
     // no literal for these, but these expressions evaluate to them
     : Number.isNaN(n) ? "(0 ÷ 0)"
     : n > 0 ? "(1 ÷ 0)" : "(0 - 1 ÷ 0)"

@@ -76,7 +76,7 @@
 
 import { Signal, signal, computed, effect } from "@preact/signals-core"
 import {
-  tensorView, documentHash, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
+  tensorView, numberText, documentHash, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
   type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
@@ -571,7 +571,7 @@ const ScrubberView = ({ d }: { d: UIDesc }) => {
       style={{ color: `#${tokenColors.number}`, cursor: "ew-resize", userSelect: "none" }}
       onPointerDown={onPointerDown} onKeyDown={onKeyDown}
     >
-      {formatNumber(value, decimals)}
+      {numberText(value)}
     </span>
   )
 }
@@ -1101,10 +1101,8 @@ function ErrorView({ d }: { d: Extract<Desc, { k: "error" }> }): JSX.Element {
 // paints the pictures; a number, or a few bars, shows its values, which arrive with its
 // description or right after it. Until new values arrive, the view keeps the last.
 
-const formatNumber = (value: number, digits: number) =>
-  value.toLocaleString("en-US", { maximumFractionDigits: digits }).replace(/,/g, "_")
 // three significant digits, for labels
-const short = (value: number) => formatNumber(Number(value.toPrecision(3)), 20)
+const short = (value: number) => numberText(value, 3)
 
 // the smallest and the largest, NaN aside
 const extent = (values: ArrayLike<number>): [number, number] => {
@@ -1182,7 +1180,7 @@ function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
         <span className="text-neutral-500">rank {d.shape.length} – reshape or slice it to plot</span>
       </div>
     )
-    case "number": return <span style={{ color: `#${tokenColors.number}`, opacity: values ? 1 : 0.5 }}>{values ? formatNumber(values[0]!, 6) : "…"}</span>
+    case "number": return <span style={{ color: `#${tokenColors.number}`, opacity: values ? 1 : 0.5 }}>{values ? numberText(values[0]!) : "…"}</span>
     case "bars":
       if (!d.paint) { return values ? <Bars values={values} /> : <Axes><span /></Axes> }
       return <Axes y={values && [Math.min(values[0]!, 0), Math.max(values[1]!, 0)]}><PaintedCanvas id={d.id} fill /></Axes>

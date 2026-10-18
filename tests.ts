@@ -6,7 +6,7 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test"
 import { Signal, effect } from "@preact/signals-core"
 import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, type Value } from "./language"
 import { startHost } from "./host"
-import type { ToPage, ToWorker } from "./protocol"
+import { numberText, type ToPage, type ToWorker } from "./protocol"
 import { EXAMPLES } from "./examples"
 import { TOUR_SOURCE } from "./tour"
 
@@ -1470,6 +1470,18 @@ describe("String is the inverse of CodeEvaluate", () => {
     expect(value("String([[1, 2], [3, 4]])")).toBe("[[1, 2], [3, 4]]")
     expect(value("String((1, 2, 3))")).toBe("(1, 2, 3)")
   })
+
+  test("a number is the shortest decimal that reads back as the same float32", () => {
+    // regression: 65.4 printed as 65.4000015258789, its float32 widened to a double
+    expect(value("String(65.4)")).toBe("65.4")
+    expect(value("String([1 ÷ 3, 1e-7, -3e-8, 1e20, 16777217, 0 - 0])")).toBe("[0.33333334, 1e-7, -3e-8, 1e20, 1.6777216e7, 0]")
+  })
+
+  test("every float32 round-trips, from the smallest to the largest", () => {
+    const xs = [...Array.from({ length: 2000 }, (_, i) => Math.fround((i % 2 ? -1 : 1) * Math.exp((i - 1000) / 25) * (1 + ((i * 7919) % 1000) / 1000))), 3.4028234663852886e38, 1.401298464324817e-45, 1.1754943508222875e-38]
+    const literal = `[${xs.join(", ")}]`
+    expect(value(`min(CodeEvaluate(String(${literal})) = ${literal})`)).toBe(1)
+  })
 })
 
 // A name that resolves to nothing is the shape almost every language change leaves
@@ -1827,6 +1839,23 @@ describe("numbers come out right", () => {
     expect(value("(1, 2) pipe add")).toBe(3)
     expect(value("add apply (1, 2)")).toBe(3)
     expect(value("zerosLike([1, 2])")).toEqual([0, 0])
+  })
+  test("the page writes numbers as Fluent reads them, and a label never misleads", () => {
+    // regression: the page grouped digits with _, which is Fluent's subscript (1_000 is 1),
+    // printed a float32 65.4 as 65.400002, and 1e-7 as 0
+    const f = Math.fround
+    expect(numberText(1234567)).toBe("1234567")
+    expect(numberText(f(65.4))).toBe("65.4")
+    expect(numberText(f(1e-7))).toBe("1e-7")
+    expect(numberText(f(-3e-8), 3)).toBe("-3e-8")
+    expect(numberText(f(Math.sin(f(Math.PI))), 3)).toBe("-8.74e-8")
+    expect(numberText(-0)).toBe("0")
+    expect(numberText(f(1 / 3), 3)).toBe("0.333")
+    // a label keeps every digit of the whole part: 1234568, not a made-up 1230000
+    expect(numberText(1234567.8, 3)).toBe("1234568")
+    expect(numberText(f(1e20), 3)).toBe("1e20")
+    expect(numberText(0.1 + 0.2)).toBe("0.30000000000000004")
+    expect([Infinity, -Infinity, NaN].map((n) => numberText(n))).toEqual(["∞", "-∞", "NaN"])
   })
   test("a literal is exactly its numbers", () => {
     const n = 8192

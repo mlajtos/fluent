@@ -47,8 +47,25 @@ export type Desc = { o?: Where } & (
 export type TensorView = "number" | "bars" | "heat" | "image" | "shape"
 export const tensorView = (shape: readonly number[]): TensorView =>
   (["number", "bars", "heat", "image"] as const)[shape.length] ?? "shape"
-// bars or heatmap cells this few show their values, so they cross as numbers
+// bars or heatmap cells this few are labelled with their values, so they cross as numbers
 export const FEW = 20
+
+// A number as Fluent writes it, on the page and in String alike. A float32 is the shortest
+// decimal that reads back as the same float32 – 65.4, not 65.400002 – and any other number
+// is JavaScript's shortest; from 1e7 up it takes an exponent, 1e20. `digits` shortens a
+// label to that many significant digits, but never drops a digit of the whole part, so a
+// label never ends in a 0 the number doesn't have, and a number that isn't 0 never shows as
+// 0. The non-numbers show as ∞, -∞ and NaN.
+export const numberText = (n: number, digits = Infinity): string => {
+  if (!Number.isFinite(n)) { return n > 0 ? "∞" : n < 0 ? "-∞" : "NaN" }
+  if (n === 0) { return "0" }
+  const same = Math.fround(n) === n ? Math.fround : (x: number) => x
+  let p = 1
+  while (p < 17 && same(+n.toPrecision(p)) !== n) { p++ }
+  const whole = Math.floor(Math.log10(Math.abs(n))) + 1
+  const m = +n.toPrecision(Math.min(p, Math.max(digits, Math.abs(n) < 1e7 ? whole : 0)))
+  return Math.abs(m) >= 1e7 ? m.toExponential().replace("e+", "e") : String(m)
+}
 
 // page → worker
 export type ToWorker =
