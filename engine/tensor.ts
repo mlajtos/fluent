@@ -140,6 +140,14 @@ function gpuBufferOf(a: Tensor): GPUBuffer {
   }
   return deviceBuffer(a.node);
 }
+// A value nothing reads again – a picture once it is on the screen – gives its device
+// buffer back now, not when it is collected
+export function free(a: Tensor): void {
+  const l = leafOf.get(a.node), name = l && stored(l).op === "BUFFER" ? ir.bufName(stored(l)) : undefined, b = name && onDevice.get(name);
+  if (!b) return;
+  onDevice.delete(name);
+  gpu!.release(b);
+}
 
 const nest = (d: ArrayLike<number>, shape: readonly number[]): unknown => {
   if (!shape.length) return d[0]!;
