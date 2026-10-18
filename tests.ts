@@ -2009,6 +2009,12 @@ describe("the engine", () => {
     const inputs = new Map([["i", { data: Float32Array.of(0, 1, 1), shape: [3] }], ["v", { data: Float32Array.of(Infinity, 1, 2), shape: [3] }]])
     expect(Array.from(new CPU().realizeSync([ir.scatterAdd(ir.buffer("i", [3]), ir.buffer("v", [3]), 2)], inputs)[0]!.data)).toEqual([Infinity, 3])
   })
+  test("a scatter-add puts a fractional index in the row a gather reads, folded or not", () => {
+    // 256 values fold as they are built; 257 run as a kernel
+    expect([value("scatterAdd([1.5], [10], 256)_1"), value("scatterAdd([1.5], [10], 257)_1")]).toEqual([10, 10])
+    expect(value("scatterAdd([-0.5, 2.9, 0 ÷ 0], [1, 2, 4], 300)_(0 ..< 4)")).toEqual(value("scatterAdd([-0.5, 2.9, 0 ÷ 0], [1, 2, 4], 4)"))
+    expect(value("[10, 20, 30]_([1.5] ⍴ [1])")).toEqual([20])
+  })
   test("roots that compute one value still get a buffer each", async () => {
     const ir = await import("./engine/ir.ts")
     const { gpu, buffer } = await fakeGpu(), W = ir.buffer("W", [64]), w = buffer(256)

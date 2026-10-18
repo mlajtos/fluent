@@ -265,11 +265,10 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
     } else if (u.op === "SCATTER_ADD") {                                       // out[v,c] = Σ_i (idx[i]==v ? values[i,c] : 0) — GATHER's transpose, as one nest
       const rest = u.shape.slice(1), R = Math.max(numel(rest), 1), N = u.src[0]!.shape[0]!;
       const gid = range(Math.max(numel(u.shape), 1));
-      const i = range(N), v = ival(idiv(gid, iconst(R))), e = load(0, i);
-      const nlt = (x: UOp, y: UOp) => node("ADD", [konst(1), node("MULTIPLY", [node("LESS_THAN", [x, y], null, []), konst(-1)], null, [])], null, []);
-      const eq = node("MULTIPLY", [nlt(e, v), nlt(v, e)], null, []);           // (¬a<b)·(¬b<a) = [a==b]
+      // an index names the row of its whole part, the row GATHER reads; NaN names none
+      const i = range(N), v = ival(idiv(gid, iconst(R))), hit = node("MATH", [node("MATH", [load(0, i)], { fn: "trunc" }, []), v], { fn: "eq" }, []);
       // selected, not multiplied: an ∞ in another row's values is not 0·∞ here
-      const body = node("WHERE", [eq, load(1, iadd(imul(i, iconst(R)), imod(gid, iconst(R)))), konst(0)], null, []);
+      const body = node("WHERE", [hit, load(1, iadd(imul(i, iconst(R)), imod(gid, iconst(R)))), konst(0)], null, []);
       out = fused(gid, acc("ADD", i, body), [build(u.src[0]!), build(u.src[1]!)], u.shape);
     } else throw new Error(`fuse: no kernel form for ${u.op}`);
     built.set(u.id, out); source.set(out, u.id);

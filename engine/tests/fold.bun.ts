@@ -9,6 +9,8 @@ let seed = 11
 const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296)
 const data = (shape: number[], lo = -3, hi = 3) => ir.data(Float32Array.from({ length: ir.numel(shape) }, () => lo + (hi - lo) * rnd()), shape)
 const index = (n: number, size: number) => ir.data(Float32Array.from({ length: n }, () => Math.floor(rnd() * size)), [n])
+// an index that is not a whole number, or names no row
+const ragged = (n: number, values: number[]) => ir.data(Float32Array.from({ length: n }, () => values[Math.floor(rnd() * values.length)]!), [n])
 const cpu = new CPU()
 
 const cases: [string, () => ir.UOp][] = [
@@ -35,6 +37,8 @@ const cases: [string, () => ir.UOp][] = [
   ["pad", () => ir.pad(data([3, 4]), 1, 2, 1)],
   ["gather", () => ir.gather(data([5, 3]), index(7, 5))],
   ["scatter add", () => ir.scatterAdd(index(8, 4), data([8, 2]), 4)],
+  ["gather, fractional index", () => ir.gather(data([5, 2]), ragged(6, [0, 1.5, 3.7, -0.5, 4.99]))],
+  ["scatter add, fractional, negative and NaN index", () => ir.scatterAdd(ragged(8, [0, 1.5, 2.9, 3, -0.5, -1, 4, NaN]), data([8, 2]), 4)],
   ["view chain", () => ir.add(ir.slice(ir.permute(data([4, 3]), [1, 0]), 1, 1, 2), ir.iota(2))],
 ]
 

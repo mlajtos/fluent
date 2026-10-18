@@ -62,6 +62,11 @@ export default async function (): Promise<{ fails: number }> {
       const a = await realize(cpu, g, i2), b = gpu ? await realize(gpu, g, i2) : a;
       check(`parity: ${nm}`, rel(b.data, a.data) < 1e-5);
     }
+    { // an index names the row of its whole part; NaN names none
+      const at = new Map<string, HostData>([["ids", T(new Float32Array([2.5, -0.5, 4.9, NaN, 5]), [5])], ["V", T(rv(20), [5, 4])]]);
+      const s2 = scatterAdd(ids, buffer("V", [5, 4]), 6), a = await realize(cpu, s2, at), b = gpu ? await realize(gpu, s2, at) : a;
+      check("parity: scatterAdd at fractional and NaN indices", rel(b.data, a.data) < 1e-5);
+    }
     const tbl = (await realize(cpu, g1, i2)).data;
     const Wd = i2.get("W")!.data;
     check("gather values", [0, 1, 2, 3].every((c) => tbl[c] === Wd[2 * 4 + c]));
