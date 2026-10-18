@@ -2862,47 +2862,6 @@ describe("plot: lines on one pair of axes", () => {
     expect(count(`plot(0..<1, [3])`)).toEqual([0, 0])
     expect(value(`shape(plot(linspace([-1, 1], 9), [[1, 2, 3, 4, 5, 6, 7, 8, 9]]))`)).toEqual([160, 520, 3])
   })
-  test("a series denser than the picture's columns draws at the columns' cost, and keeps its extremes", () => {
-    // 20,000 points at density 2: drawn through every point, the picture needs 53 GB at once.
-    // The one point at 1 is a spike from the bottom of the box to its top, in blue, at the
-    // picture's pixel column 551 – the saw, in orange, stays in the lower half
-    toHost({ t: "density", value: 2 })
-    try {
-      const [h, w, spike] = value(`p: plot(0..<20000, (where(0..<20000 = 12345, 1, 0), 0..<20000 % 7 ÷ 12), ("spike", "saw")),
-        blue: Σ(abs(p - [0.224, 0.529, 0.898]), -1) < 0.05,
-        concat((take(shape(p), 2), [Σ(slice(blue, [20, 540], [120, 20]))]))`)
-      expect([h, w]).toEqual([320, 1040])
-      expect(spike).toBeGreaterThan(200)
-    } finally {
-      toHost({ t: "density", value: 1 })
-    }
-  }, 30_000)
-  test("the line through a column's first, top, bottom and last points looks the same as the line through all of them", () => {
-    // the largest difference, the mean, and the share past 0.1, of a white line on black
-    const apart = (x: string, y: string) => value(`x: ${x}, y: ${y}, u: x ÷ x_(-1) × 50 + 5, v: y × 20 + 5,
-      full: canvas(60, 30, 0) . draw(line(stack((u, v), -1)), 1, 1.25),
-      columns: canvas(60, 30, 0) . draw(DrawTrace(u, v, 5, 55, 1.25), 1, 1.25),
-      d: abs(full - columns), [max(d), Σ(d) ÷ (#flat(d)), Σ(d > 0.1) ÷ (#flat(d))]`) as number[]
-    // at most a point a column: the same line, cut where it crosses from one column to the next
-    expect(apart("0..<40", "sin(x)")[0]).toBeLessThan(1e-4)
-    // every point in one column, and no point in the columns after it
-    expect(value(`canvas(60, 30, 0) . draw(DrawTrace([30, 30, 30], [5, 25, 15], 5, 55, 1.25), 1, 1.25)
-      - (canvas(60, 30, 0) . draw(line([[30, 5], [30, 25], [30, 15]]), 1, 1.25)) . abs . max`)).toBeLessThan(1e-4)
-    // noise, 6 points a column: a few pixels at the edges differ
-    const [most, mean, past] = apart("0..<600", "sin(x × 12.9898 + 1) × 43758.5453 % 1")
-    expect(most).toBeLessThan(0.4)
-    expect(mean).toBeLessThan(0.006)
-    expect(past).toBeLessThan(0.01)
-  }, 30_000)
-  test("a dense series keeps its range frame and its last value exactly", () => {
-    // left of the box, the range's ends; right of it, the names and last values: the same as
-    // for four points with the same first, smallest, largest and last values
-    expect(value(`y: sin(0..<3000 × 12.9898 + 1) × 43758.5453 % 1 - (0..<3000 ÷ 3000),
-      dense: plot(0..<3000, (y, 0..<3000 % 5), ("noise", "saw")),
-      four: plot([0, 1, 2, 2999], ([y_0, min(y), max(y), y_(-1)], [0, 0, 4, 4]), ("noise", "saw")),
-      apart: { p, q | max(abs(p - q)) },
-      [apart(slice(dense, [0, 0], [-1, 61]), slice(four, [0, 0], [-1, 61])), apart(slice(dense, [0, 412]), slice(four, [0, 412]))]`)).toEqual([0, 0])
-  }, 30_000)
 })
 
 describe("the engine", () => {

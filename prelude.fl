@@ -747,52 +747,6 @@ DrawDigits: { x |
   shown: where(j < 0, 8722, where(d>0 × j=point, 46, where(t < n, at(m, n-1 - t), where(sci × (k < w+1), power, 32)))),
   where(isNaN(v), StringToCodes("NaN      "), where(a = 1÷0, where(j < 0, 8722, where(j = 0, 8734, 32)), shown)) ⍴ concat((shape(x), [9]))
 },
-; the shape of the line through the points (u, v), u ascending from u = from to u = to, for
-; a stroke width units wide. Each column half a unit wide keeps five points – where the
-; line enters it, then its first, top, bottom and last points, in the order the line passes
-; them – so drawing it costs what the columns do, however many points it has, and its
-; stroke looks the same as one through every point. p is measured only to the columns a
-; stroke at p reaches
-DrawTrace: { u, v, from, to, width |
-  n: #u,
-  ; each point's column; how many points fall before each column, and in it
-  c0: floor(from × 2), C: floor(to × 2) - c0 + 1,
-  c: clamp(floor(u × 2) - c0, 0, C - 1),
-  count: scatterAdd(c, fill([n], 1), C), start: (count scan +) - count, last: start + count - 1 ⌈ 0,
-  ; at each point, the smallest and the largest v of its column so far, each as its column,
-  ; v and index: a point carries on only within its own column
-  extreme: broadcast(stack((c, v, 0..<n), -1) ⍴ [n, 1, 3], [n, 2, 3]) scan { a, b |
-    A: unstack(a, -1), B: unstack(b, -1),
-    where(unsqueeze(A_0 = B_0 × (A_1 × [1, -1] < (B_1 × [1, -1])), -1), a, b)
-  },
-  ; where the line enters each column, on its way from the point before the column
-  at: { i | stack((u_i, v_i), -1) },
-  edge: c0 + 0..<C ÷ 2, before: start - 1 ⌈ 0, first: start ⌊ n-1,
-  f: clamp(edge - u_before ÷ (u_first - u_before ⌈ 1e-9), 0, 1),
-  enter: at(before) + (f ⍴ [C, 1] × (at(first) - at(before))) ⍴ [C, 1, 2],
-  ; five points a column, in order; a column no point falls in is where the line crosses it
-  i: unstack(extreme_last, -1)_2,
-  own: at(stack((first, min(i, -1), max(i, -1), last), -1)),
-  points: concat((enter, where(count ⍴ [C, 1, 1] > 0, own, enter)), 1) ⍴ [-1, 2],
-  ; draw reads a shape out to half the stroke's width and half a pixel, K columns each side:
-  ; near_(5×k) is column k's window, the points of the K columns before it, its own, the K
-  ; after it and the next one's first, as x and y – past the ends, the end points again
-  K: ceil(width + (1 ÷ Density())), S: 5×(2×K + 1),
-  ends: concat((fill([5×K, 2], 1) × points_0, points, fill([5×K + 5, 2], 1) × points_(-1))),
-  near: moveaxis(window(transpose(ends), [S + 1]), 1, 0),
-  { p |
-    q: unstack(moveaxis(p, -1, 0)),
-    ; the window of p's column: the x and the y of its points, […, S+1] each
-    w: unstack(moveaxis(near_(5 × clamp(floor(q_0 × 2) - c0, 0, C - 1)), -2, 0)),
-    ; each segment's start and end – the points s and s + 1 – and from its start to p; t
-    ; is how far along the segment the point nearest p lies
-    x: unstack(window(w_0, [S]), -2), y: unstack(window(w_1, [S]), -2),
-    dx: x_1 - x_0, dy: y_1 - y_0,
-    px: unsqueeze(q_0, -1) - x_0, py: unsqueeze(q_1, -1) - y_0,
-    t: clamp(px×dx + py×dy ÷ (dx^2 + dy^2 ⌈ 1e-12), 0, 1),
-    √(min((px - t×dx)^2 + (py - t×dy)^2, -1))
-  }
-},
 plot: DrawPlot: doc({ x, ys, names |
   rows: cond(guard(isList(ys), { stack(ys) }), guard((#shape(ys)) = 1, { ys ⍴ [1, -1] }), { ys }),
   k: #rows, n: shape(rows)_1,
@@ -822,10 +776,10 @@ plot: DrawPlot: doc({ x, ys, names |
       . draw(line([[L - 6, T], [L - 6, B]]), faint, 1)
       . draw(line([[L, B + 6], [R, B + 6]]), faint, 1)
       . draw(letters(unstack(ends), corners, 12), faint, 1),
-    fold(0..<k, { pic, i | pic . draw(DrawTrace(sx(x), sy(rows_i), L, R, 1.25), colors_(i % 8), 1.25) }, frame)
+    fold(0..<k, { pic, i | pic . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 1.25) }, frame)
       . draw(letters(words, stack((fill([k], R + 8), clamp(at - 7, 0, H - 14)), -1), 12), ink, 1)
   })
-}, "plot(x, ys, names?)", "Lines on one pair of axes, a picture 520 × 160 units: ys is a list of vectors, or a matrix of rows, each over the points x, in ascending order. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value. However many points a line has, it costs what the picture's width does: in each column half a unit wide, it keeps its first, top, bottom and last points.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
+}, "plot(x, ys, names?)", "Lines on one pair of axes, a picture 520 × 160 units: ys is a list of vectors, or a matrix of rows, each over the points x. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
 
 ; Optimization
 ; Optimizers. A step differentiates the loss with respect to the variables it reads –
