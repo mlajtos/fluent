@@ -1450,6 +1450,19 @@ describe("gallery examples smoke suite", () => {
     }, 60_000)
   }
 
+  test("mnist logs no loss before its data has loaded", async () => {
+    const loaded = DefaultEnvironment.LoadSafeTensorFromURL!
+    extendEnvironment({ FunctionIterate: real.FunctionIterate, LoadSafeTensorFromURL: loading.LoadSafeTensorFromURL } as Record<string, Value>)
+    try {
+      // the real ⟳ runs its frames; the data never arrives
+      const scope = scopeOf(EXAMPLES.mnist)
+      await new Promise((r) => setTimeout(r, 50))
+      expect(unwrap(scope.losses)).toEqual([])
+    } finally {
+      extendEnvironment({ FunctionIterate: stepLater, LoadSafeTensorFromURL: loaded } as Record<string, Value>)
+      evaluateIn("0")
+    }
+  })
   test("pitch-detector names a tone's note, and silence as none", () => {
     const microphone = DefaultEnvironment.Microphone
     const hear = (wave: (i: number) => number) => {

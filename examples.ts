@@ -1209,10 +1209,11 @@ model: { X |
 ; cross-entropy over the 10 classes (numerically-stable log-softmax on axis 0)
 loss: { -mean(Σ(Ytr() × logSoftmax(model(Xtr()), 0), 0)) },
 
-; train – each tick is gated on the data being loaded (a no-op 0 until then)
+; train 1500 steps once the data has loaded – the budget is 0 until then
 opt: adam(0.05),
 losses: $[],
-{ losses(losses() ++ [cond(guard(loaded(), { opt(loss) }), 0)]) } ⟳ 1500,
+budget: \${ loaded() × 1500 },
+{ losses(losses() ++ [opt(loss)]) } ⟳ budget,
 
 ; live accuracy on the held-out test set, recomputed every training step
 accuracy: \${
