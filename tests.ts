@@ -1450,6 +1450,16 @@ describe("gallery examples smoke suite", () => {
     }, 60_000)
   }
 
+  test("deep-delta-learning learns a function: one number in, one out, right where it never trained", () => {
+    steps.length = 0
+    const scope = scopeOf(EXAMPLES["deep-delta-learning"])
+    for (let i = 0; i < 300; i++) { steps[0]!(engine.scalar(i)) }
+    const read = (expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope))
+    // the mean squared error on 200 points between the 24 it trained on; 0.5 is guessing 0
+    expect(read("unseen()")).toBeLessThan(0.01)
+    expect(read("shape(f([1.5]))")).toEqual([1])
+    flushRetirements()
+  }, 60_000)
   test("mnist logs no loss before its data has loaded", async () => {
     const loaded = DefaultEnvironment.LoadSafeTensorFromURL!
     extendEnvironment({ FunctionIterate: real.FunctionIterate, LoadSafeTensorFromURL: loading.LoadSafeTensorFromURL } as Record<string, Value>)
@@ -1883,7 +1893,7 @@ describe("numbers come out right", () => {
 describe("plot: lines on one pair of axes", () => {
   test("a number as the codes of its digits, worked out without reading it back", () => {
     const shown = (x: number) => value(`CodesToString(DrawDigits(${x}))`).trimEnd()
-    expect([2.31, 0.052, 1200, -0.5, 9.996, 0, 3, 38.44].map(shown)).toEqual(["2.31", "0.052", "1200", "-0.500", "10.00", "0", "3", "38.4"])
+    expect([2.31, 0.052, 1200, -0.5, 9.996, 0.99999, 0.00014, 0, 3, 38.44].map(shown)).toEqual(["2.31", "0.0520", "1200", "-0.500", "10.0", "1.00", "0.00014", "0", "3", "38.4"])
   })
   test("a label is its glyphs' lit cells", () => {
     // "1" lights 8 of its 15 cells, in three channels
@@ -1897,7 +1907,7 @@ describe("plot: lines on one pair of axes", () => {
     expect(blue).toBeGreaterThan(300)
     expect(orange).toBeGreaterThan(300)
     expect(count(`plot(0..<1, [3])`)).toEqual([0, 0])
-    expect(value(`shape(plot(linspace([-1, 1], 9), [[1, 2, 3, 4, 5, 6, 7, 8, 9]]))`)).toEqual([160, 480, 3])
+    expect(value(`shape(plot(linspace([-1, 1], 9), [[1, 2, 3, 4, 5, 6, 7, 8, 9]]))`)).toEqual([160, 520, 3])
   })
 })
 

@@ -471,45 +471,53 @@ whole: $(φ(φ(X)) ⍴ [96]), ; φ(φ(x)) – snaps onto eˣ
 )
 `,
   "deep-delta-learning": `
-; Deep Delta Learning – learns sin(x)
-; Uses delta rule: x' = x + β·k·(v - k·x)
+; Deep Delta Learning – a stack of delta blocks learns sin(x) from 24 points.
+; A delta block edits its state x along one direction k, by the delta rule:
+;   x' = x + β·k·(v − k·x)
+; It reads from x where to write (k, a unit vector), what to write (v), and how
+; hard (β, from 0 to 2): β = 0 keeps x, 1 replaces its k-part with v, 2 reflects it.
 
-d: 160,
+d: 16, depth: 3,
 
-; Learnable parameters
-w: ~(randn([d]) × 0.1),
-κ: ~(randn([d]) × 0.1),
-ν: ~[0],
-β: ~[0],
+; Learnable parameters: an embedding, Wk, wv and wβ for each block, a readout
+E: ~(randn([d]) × 1.5),
+e: ~randn([d]),
+Wk: ~(randn([depth, d, d]) ÷ √(d)),
+wv: ~(randn([depth, d]) ÷ √(d)),
+wβ: ~(randn([depth, d]) ÷ √(d)),
+u: ~(randn([d]) ÷ √(d)),
 
-; Delta block
-Δ: { x |
-  k: κ ÷ √(Σ(κ^2) + 1e-7),
-  x + (2 × sigmoid(β) × (ν - Σ(k × x)) × k)
+; Delta block i, on a batch of states x [n, d]
+Δ: { x, i |
+  q: matmul(x, Wk_i), k: q ÷ (norm(q, -1, 1) + 1e-6),
+  v: Σ(x × wv_i, -1, 1),
+  β: 2 × sigmoid(Σ(x × wβ_i, -1, 1)),
+  x + (β × (v - Σ(k × x, -1, 1)) × k)
 },
 
-; Model & data
-f: { t | Δ(t × w) },
-τ: linspace([0, 2×π], d),
-ŷ: sin(τ),
+; The model: one number in, d features, the blocks in turn, one number out
+f: { t | h: tanh(unsqueeze(t, -1) × E + e), Σ(ListReduce(unstack(0..<depth), Δ, h) × u, -1) },
+
+; Data: 24 points to learn from, and 200 in between that it never sees
+xs: ⚄([24]) × 2×π,
+grid: linspace([0, 2×π], 200),
 
 ; Training
 (++): TensorConcat,
-(++=): FunctionNoAutoLift({ a, b | a(a() ++ b) }),
-
-𝓛: { mean((f(τ) - ŷ)^2) },
-opt: adam(0.001),
+𝓛: { mean((f(xs) - sin(xs))^2) },
+unseen: { mean((f(grid) - sin(grid))^2) },
+opt: adam(0.01),
 losses: $[],
-pred: $f(τ),
-
-{ losses ++= [opt(𝓛)], pred(f(τ)) } ⟳ 500,
+tests: $[],
+pred: $f(grid),
+{ losses(losses() ++ [opt(𝓛)]), tests(tests() ++ [unseen()]), pred(f(grid)) } ⟳ 600,
 
 ; Results
 (
-  Text("**Loss:**"),
-  losses,
-  Text("**Prediction vs Target:**"),
-  (ŷ, pred),
+  Text("**sin(x) and the model**, on the 200 points it never trained on:"),
+  plot(grid, (sin(grid), pred), ("sin(x)", "model")),
+  Text("**How far off it is** (root-mean-square), on the 24 training points and on the 200 unseen ones:"),
+  \${ plot(0..<(#losses()), (√(losses()), √(tests())), ("train", "unseen")) },
 )
 `,
 "loss-landscape": `
