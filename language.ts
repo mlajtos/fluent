@@ -417,17 +417,12 @@ const operand = (v: any): any => {
   if (typeof v === "symbol") { throw new Error(unknownName(v)) }
   // a list is a structure, not a bag of numbers – never coerced into a tensor
   if (Array.isArray(v)) { throw new Error("( … ) holds values side by side but does no math – write the numbers in [ … ]") }
-  if (v instanceof NoMatch) { throw failed(v) }
+  // a decline that reaches an op is a failure, said in the decline's words
+  if (v instanceof NoMatch) { const e = new Error(v.message, { cause: v.cause }); setOrigin(e, getOrigin(v)); throw e }
   if (v instanceof Error) { throw v }
   return v
 }
 const unknownName = (s: symbol): string => `unknown name: ${Symbol.keyFor(s) ?? s.description}`
-// a decline that reaches an op is a failure, said in the decline's words
-const failed = (decline: NoMatch): Error => {
-  const e = new Error(decline.message, decline.cause === undefined ? undefined : { cause: decline.cause })
-  setOrigin(e, getOrigin(decline))
-  return e
-}
 
 const shapeOf = (v: Value): number[] => (v instanceof FluentVariable ? v.current : (v as engine.Tensor)).shape
 

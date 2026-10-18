@@ -1656,6 +1656,8 @@ describe("error messages carry context", () => {
   })
   test("a cascade gives back the Error it was handed: the first failure is the cause", () => {
     expect(chain("length(radious + 1)")).toEqual([{ message: "unknown name: radious", user: true, line: 1 }])
+    // a decline that reaches arithmetic is a failure, said in the decline's words
+    expect(chain("cascade((guard(0, { 1 }),))(5) + 1").map((l) => l.message)).toEqual(["guard: the condition doesn't hold", "no overload matched (a number)"])
   })
   test("calling what isn't a function says what it is, in the tour's words", () => {
     expect(chain("sine(1)")).toEqual([{ message: "unknown name: sine", user: true, line: 1 }])
