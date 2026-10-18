@@ -1469,7 +1469,7 @@ opt: adamw(0.03, 0.001), ; a little weight decay – memorize less, invent more
 step: $0,
 ; a row each time it measures: (step, training score, held-out score)
 history: $fill([0, 3], 0),
-stride: $4,
+stride: $20, ; steps between measurements
 {
   when(once(training), {
     opt(loss),
@@ -1625,7 +1625,7 @@ opt: adamw(0.01, 0),
 step: $0,
 ; a row each time it measures: (step, training score, held-out score)
 history: $fill([0, 3], 0),
-stride: $4,
+stride: $20, ; steps between measurements
 {
   when(once(training), {
     opt(loss),

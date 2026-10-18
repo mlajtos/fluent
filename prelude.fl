@@ -593,19 +593,24 @@ draw: DrawShape: doc({ shape, color, width |
 ; 15-bit number, top row first
 DrawGlyphs: [0, 0, 0, 0, 0, 21157, 0, 0, 10530, 8778, 0, 1488, 20, 448, 2, 4772, 31599, 11415, 29671, 29391, 23497, 31183, 31215, 29330, 31727, 31695, 1040, 0, 0, 3640, 0, 0, 0, 11245, 27566, 14627, 27502, 31143, 31140, 14699, 23533, 29847, 4714, 23469, 18727, 24557, 27501, 11114, 27556, 11123, 27565, 14478, 29842, 23407, 23402, 23549, 23213, 23186, 29351],
 label: DrawLabel: doc({ s, at, size |
-  codes: cond(guard(isString(s), { StringToCodes(s) }), { s }),
+  codesOf: { t | cond(guard(isString(t), { StringToCodes(t) }), { t }) },
+  texts: cond(guard(isList(s), { ListMap(s, codesOf) }), { (codesOf(s),) }),
+  ; a row of codes for each text, filled out with spaces to one length
+  n: max(stack(ListMap(texts, { t | #t }))) ⌈ 1,
+  codes: stack(ListMap(texts, { t | concat((t, fill([n - (#t)], 32))) })),
   ; a to z draw as A to Z; a code with no glyph draws as a space
   i: where(codes ≥ 97, codes - 64, codes - 32),
-  g: take(DrawGlyphs, where(0≤i ∧ i<59, i, 0)),
-  n: #codes,
+  g: flat(take(DrawGlyphs, where(0≤i ∧ i<59, i, 0))),
+  corners: at ⍴ [-1, 2], m: #corners,
   { p |
-    ; the glyph cell p falls in: a character is 3 cells and a gap wide, 5 tall
-    c: floor(moveaxis(p - at ÷ size, -1, 0)),
+    ; for each text, the glyph cell p falls in: a character is 3 cells and a gap wide, 5 tall
+    c: floor(moveaxis(unsqueeze(p, -2) - corners ÷ size, -1, 0)),
     k: floor(c_0 ÷ 4), q: c_0 - 4×k, r: c_1,
-    lit: floor(take(g, clamp(k, 0, n-1)) ÷ 2^(14 - (3×r + q))) % 2,
-    where(0≤k ∧ k<n ∧ q<3 ∧ 0≤r ∧ r<5 ∧ lit, 0, 1e9)
+    lit: floor(take(g, 0..<m × n + clamp(k, 0, n-1)) ÷ 2^(14 - (3×r + q))) % 2,
+    ; inside the text and lit – each factor is 0 or 1
+    min(where((-1 < k) × (k < n) × (q < 3) × (-1 < r) × (r < 5) × lit, 0, 1e9), -1)
   }
-}, "label(text, at, size)", "The shape of a line of text, from its top-left corner at, in a 3×5 pixel font scaled by size: distance 0 on the letters, far elsewhere. Letters draw as capitals; text may also be character codes.", "Σ(canvas(4, 5, 0) . draw(label(\"1\", [0, 0], 1), 1, 1)) = 24"),
+}, "label(text, at, size)", "The shape of a line of text, from its top-left corner at, in a 3×5 pixel font scaled by size: distance 0 on the letters, far elsewhere. Letters draw as capitals. text may be character codes, or a list of texts with a row of at for each.", "Σ(canvas(4, 5, 0) . draw(label(\"1\", [0, 0], 1), 1, 1)) = 24"),
 ; x as the codes of 3 significant digits, at most 5 decimals – "2.31", "-0.0520", "1200" –
 ; spaces filling 8 cells; arithmetic only, so it never waits for x to be read back
 DrawDigits: { x |
@@ -633,28 +638,25 @@ plot: DrawPlot: doc({ x, ys, names |
     lo: min(rows), hi: max(rows),
     sx: { v | v - x_0 ÷ (x_(-1) - x_0 ⌈ 1e-9) × (R - L) + L },
     sy: { v | hi - v ÷ (hi - lo ⌈ 1e-9) × (B - T) + T },
-    text: { s, at, color | draw(label(s, at, 2), color, 1) },
     width: { c | Σ(c ≠ 32) × 8 - 2 },
-    top: DrawDigits(hi), bottom: DrawDigits(lo), first: DrawDigits(x_0), end: DrawDigits(x_(-1)),
     ; a range frame: each axis spans the data, labeled at its ends
-    frame: canvas(W, H)
-      . draw(line([[L - 6, T], [L - 6, B]]), faint, 1)
-      . draw(line([[L, B + 6], [R, B + 6]]), faint, 1)
-      . text(top, [L - 10 - width(top), T - 4], faint)
-      . text(bottom, [L - 10 - width(bottom), B - 5], faint)
-      . text(first, [L, B + 12], faint)
-      . text(end, [R - width(end), B + 12], faint),
-    ; each line labeled at its end, the labels pushed apart so they never overlap
+    top: DrawDigits(hi), bottom: DrawDigits(lo), first: DrawDigits(x_0), end: DrawDigits(x_(-1)),
+    ends: [[L - 10 - width(top), T - 4], [L - 10 - width(bottom), B - 5], [L, B + 12], [R - width(end), B + 12]],
+    ; each line labeled at its end with its name and last value, the labels pushed apart
+    ; so they never overlap
     last: slice(rows, [0, n-1]) ⍴ [k],
     order: argsort(sy(last)),
     steps: 0..<k × 12,
     at: take(scan(take(sy(last), order) - steps, ⌈) + steps, argsort(order)),
-    ListReduce(unstack(0..<k), { pic, i |
-      words: cond(guard(isList(names), { concat((StringToCodes(ListGet(names, i)), [32], DrawDigits(last_i))) }), { DrawDigits(last_i) }),
-      pic
-        . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 2)
-        . text(words, [R + 8, clamp(at_i - 5, 0, H - 10)], ink)
-    }, frame)
+    words: ListMap(unstack(0..<k), { i |
+      cond(guard(isList(names), { concat((StringToCodes(ListGet(names, i)), [32], DrawDigits(last_i))) }), { DrawDigits(last_i) })
+    }),
+    frame: canvas(W, H)
+      . draw(line([[L - 6, T], [L - 6, B]]), faint, 1)
+      . draw(line([[L, B + 6], [R, B + 6]]), faint, 1)
+      . draw(label((top, bottom, first, end), ends, 2), faint, 1),
+    ListReduce(unstack(0..<k), { pic, i | pic . draw(line(stack((sx(x), sy(rows_i)), -1)), colors_(i % 8), 2) }, frame)
+      . draw(label(words, stack((fill([k], R + 8), clamp(at - 5, 0, H - 10)), -1), 2), ink, 1)
   })
 }, "plot(x, ys, names?)", "Lines on one pair of axes: ys is a list of vectors, or a matrix of rows, each over the points x. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
 

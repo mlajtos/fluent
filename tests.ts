@@ -1510,9 +1510,9 @@ describe("gallery examples smoke suite", () => {
       const corpus = scope.corpus as Signal<string>
       // ~200k windows: a step over all of them would need gigabytes
       corpus.value = Array(300).fill(corpus.peek()).join(" ")
-      for (let i = 0; i < 4; i++) { expect([name, unwrap(steps[0]!(engine.scalar(i)))]).toEqual([name, null]) }
+      for (let i = 0; i < 20; i++) { expect([name, unwrap(steps[0]!(engine.scalar(i)))]).toEqual([name, null]) }
       const [step, train, heldOut] = unwrap(evaluateSyntaxTreeNode(CodeParse("history()_0"), scope)) as number[]
-      expect([name, step, train! > 0, heldOut! > 0]).toEqual([name, 4, true, true])
+      expect([name, step, train! > 0, heldOut! > 0]).toEqual([name, 20, true, true])
       flushRetirements()
     }
   }, 60_000)
@@ -1995,6 +1995,8 @@ describe("plot: lines on one pair of axes", () => {
     // "1" lights 8 of its 15 cells, in three channels
     expect(value(`Σ(canvas(4, 5, 0) . draw(label("1", [0, 0], 1), 1, 1))`)).toBe(24)
     expect(value(`Σ(canvas(8, 5, 0) . draw(label("i ", [0, 0], 1), 1, 1)) = Σ(canvas(8, 5, 0) . draw(label("I", [0, 0], 1), 1, 1))`)).toBe(1)
+    // several texts in one shape, each at its own corner
+    expect(value(`Σ(canvas(8, 5, 0) . draw(label(("1", [49]), [[0, 0], [4, 0]], 1), 1, 1))`)).toBe(48)
   })
   test("each series draws in its own color, and a series of fewer than 2 points draws nothing", () => {
     // how many pixels of the first two series colors the picture has
