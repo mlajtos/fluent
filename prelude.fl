@@ -677,8 +677,9 @@ TensorOptimizerStep: { loss, only |
             Error("a listed variable isn't a ~ the loss reads – a ~~ slot holds data, and nothing trains it")
           }),
           {
-            keep: mask(0..<n, stack(ListMap(vs, { v | among(v, only) }))),
-            (ListGet(r, 0), ListGather(vs, unstack(keep)), ListGather(gs, unstack(keep)))
+            ; in the list's order, which is the order of the memory made for them
+            at: ListMap(only, { o | ListReduce(ListMap(vs, { v, i | identical(o, v) × i }), { p, q | p + q }, 0) }),
+            (ListGet(r, 0), only, ListGather(gs, at))
           }
         )
       }),
@@ -697,24 +698,29 @@ TensorOptimizerSlots: FunctionNoAutoLift({ held, vs, make |
   cond(guard(same, { ListGet(h, 1) }), { fresh: ListMap(vs, { v | make(v) }), held((vs, fresh)), fresh })
 }),
 optimizer: Optimizer: doc({ init, rule, lr, only |
-  held: $◌,
-  { loss |
+  ; a variable's memory: its step count, then its slots
+  memory: { v | ListConcat((~~0,), ListMap(init(v), { x | ~~x })) },
+  ; given its variables, it makes their memory at once, so := can restore it before a step
+  held: $cond(guard(isList(only), { (only, ListMap(only, memory)) }), ◌),
+  joined: { ls | ListReduce(ls, { p, q | ListConcat(p, q) }, List()) },
+  step: { loss |
     s: TensorOptimizerStep(loss, only),
     cond(guard(isError(s), { s }), {
       vs: ListGet(s, 1), gs: ListGet(s, 2),
-      slots: TensorOptimizerSlots(held, vs, { v | ListConcat((~~0,), ListMap(init(v), { x | ~~x })) }),
+      slots: TensorOptimizerSlots(held, vs, memory),
       t: ListGet(ListGet(slots, 0), 0) + 1,
       rate: cond(guard(isFunction(lr), { lr(t) }), { lr }),
       norm: √ListReduce(ListMap(gs, { g | Σ(g × g) }), { p, q | p + q }),
       next: ListMap(vs, { v, i | rule(ListGet(gs, i), v, ListDrop(ListGet(slots, i), 1), t, rate, norm) }),
       ; each variable, its step count and its slots, assigned together
-      joined: { ls | ListReduce(ls, { p, q | ListConcat(p, q) }) },
       joined(ListMap(vs, { v, i | ListConcat((v,), ListGet(slots, i)) }))
         := joined(ListMap(next, { n | ListConcat((ListGet(n, 0), t), ListGet(n, 1)) })),
       ListGet(s, 0)
     })
-  }
-}, "optimizer(init, rule, lr, vars?)", "Make an optimizer from its rule. init(v) gives a variable's slots (a list of tensors); rule(g, v, slots, t, lr, norm) gives (v′, slots′) – the variable's next value and its slots'. t counts steps from 1, norm is the gradient's norm over every variable, and lr is a number or a schedule – a function of t.", "opt: optimizer({ v | List() }, { g, v, s, t, lr | (v - lr×g, List()) }, 0.1)"),
+  },
+  ; with no loss, what it remembers: every variable's memory, one list of ~~ slots
+  { loss | cond(guard(identical(loss, ◌), { cond(guard(identical(held(), ◌), { List() }), { joined(ListGet(held(), 1)) }) }), { step(loss) }) }
+}, "optimizer(init, rule, lr, vars?)", "Make an optimizer from its rule. init(v) gives a variable's slots (a list of tensors); rule(g, v, slots, t, lr, norm) gives (v′, slots′) – the variable's next value and its slots'. t counts steps from 1, norm is the gradient's norm over every variable, and lr is a number or a schedule – a function of t. opt(loss) takes a step; opt() is what it remembers – each variable's step count and slots, as one list of ~~ data slots to save with the weights and restore with :=. Given its variables, it has that memory from the start.", "opt: optimizer({ v | List() }, { g, v, s, t, lr | (v - lr×g, List()) }, 0.1)"),
 zerosLike: TensorZerosLike: doc({ v | fill(shape(v), 0) }, "zerosLike(x)", "Zeros in x's shape.", "zerosLike([1, 2, 3]) = [0, 0, 0]"),
 ; the hyperparameters a constructor takes: a number in place of the default, and a
 ; trailing list picks the variables to train

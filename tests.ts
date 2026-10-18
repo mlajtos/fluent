@@ -750,6 +750,17 @@ describe("training: ∇ follows what the loss reads", () => {
       got.forEach((x, i) => expect(x).toBeCloseTo(θ[i]!, 4))
     }
   })
+  test("opt() is the optimizer's memory: saved with the weights, := resumes training exactly", () => {
+    // 5 steps, a snapshot, 5 more; then back to the snapshot and the same 5 again
+    const [first, again] = value(`θ: ~[3, -2], 𝓛: { Σ((θ - [1, 2])^2) }, opt: adam(warmup(0.1, 4), (θ,)),
+      state: ListConcat((θ,), opt()), steps: { ({ s | opt(𝓛) } ⍣ 5)(0) },
+      steps(), saved: ListMap(state, detach), steps(), first: θ + 0,
+      state := saved, steps(), stack((first, θ + 0))`) as number[][]
+    expect(again).toEqual(first!)
+    // given its variables, the memory is there before the first step: a step count and two moments
+    expect(value("θ: ~[1, 2], opt: adam(0.1, (θ,)), ListLength(opt())")).toBe(3)
+    expect(value("θ: ~[1, 2], opt: adam(0.1), ListLength(opt())")).toBe(0)
+  })
   test("an optimizer is a value: optimizer(init, rule, lr)", () => {
     // plain gradient descent, written out
     expect(value("θ: ~([0]), 𝓛: { (θ_0 - 2) ^ 2 }, opt: optimizer({ v | List() }, { g, v, s, t, lr | (v - (lr × g), List()) }, 0.25), opt(𝓛), θ")).toEqual([1])
