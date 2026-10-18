@@ -1387,7 +1387,7 @@ const CodesToString = (a: Value) => {
 type Stored = null | string | { shape: number[], data: Float32Array } | Stored[]
 const storedInMemory = new Map<string, Stored>()
 let storageDatabase: Promise<IDBDatabase | null> | undefined
-const storageRequest = <T,>(mode: IDBTransactionMode, request: (values: IDBObjectStore) => IDBRequest<T>, fallback: () => T): Promise<T> => {
+const storageRequest = <T,>(mode: IDBTransactionMode, request: (values: IDBObjectStore) => IDBRequest, fallback: () => T): Promise<T> => {
   storageDatabase ??= typeof indexedDB === "undefined" ? Promise.resolve(null) : new Promise((resolve) => {
     const open = indexedDB.open("fluent-storage", 1)
     open.onupgradeneeded = () => { open.result.createObjectStore("values") }
@@ -1396,7 +1396,7 @@ const storageRequest = <T,>(mode: IDBTransactionMode, request: (values: IDBObjec
   })
   return storageDatabase.then((db) => db === null ? fallback() : new Promise<T>((resolve, reject) => {
     const r = request(db.transaction("values", mode).objectStore("values"))
-    r.onsuccess = () => resolve(r.result)
+    r.onsuccess = () => resolve(r.result as T)
     r.onerror = () => reject(r.error)
   }))
 }
@@ -1437,7 +1437,7 @@ const Storage = (key: Value): Value => {
       const now = storedNow(v), stored = toStored(now)
       stored.catch(() => undefined)
       show(now)
-      inStorageOrder(() => stored.then((s) => storageRequest<unknown>("readwrite",
+      inStorageOrder(() => stored.then((s) => storageRequest("readwrite",
         (values) => s === null ? values.delete(name) : values.put(s, name),
         () => s === null ? storedInMemory.delete(name) : storedInMemory.set(name, s))))
         .catch((e) => { if (!gone) { show(asError(e)) } })
