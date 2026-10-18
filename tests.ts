@@ -324,6 +324,21 @@ describe("tensors", () => {
     expect(value("reverse([[1, 2], [3, 4]], 1)")).toEqual([[2, 1], [4, 3]])
     expect(value("sinc(0)")).toBe(1)   // sinc(0) = 1 by definition
   })
+  test("memo keeps an answer by the value of its arguments", () => {
+    let calls = 0
+    const kept = createScope().memo as Function, echo = kept((x: Value) => { calls++; return x })
+    for (const x of ["ab", "ab", engine.tensor([1, 2]), engine.tensor([1, 2]), engine.tensor([[1, 2]]), [engine.tensor(1), "ab"], [engine.tensor(1), "ab"]]) echo(x)
+    expect(calls).toBe(4)
+  })
+  test("einsum reads a spec once for the shapes it meets", async () => {
+    // a training step calls it every tick: the second call only multiplies and sums
+    const { konst } = await import("./engine/ir.ts")
+    const f = run(`q: randn([4, 3, 2]), k: randn([4, 3, 2]), { einsum("btc,bsc->bts", q, k) }`) as () => unknown
+    f()
+    const before = konst(0).id
+    f()
+    expect(konst(0).id - before).toBeLessThan(40)
+  })
   test("stack with axis and broadcasting", () => {
     expect(value("stack(([1, 2], [3, 4]), 1)")).toEqual([[1, 3], [2, 4]])
     expect(value("stack(0 ..< 3, 9)")).toEqual([[0, 1, 2], [9, 9, 9]])

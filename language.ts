@@ -646,6 +646,41 @@ const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert
   }
 }
 
+// MARK: Memo
+// memo(f) is f keeping its answers, found again by the value of the arguments: a string
+// by its text, a tensor the host holds by its shape and numbers, a list by its items. An
+// argument with no such value – a tensor on the GPU, a function, a signal – is never a
+// key, and f runs. For an f whose answer depends on its arguments alone; the 256 answers
+// used last are kept.
+const MEMO_KEPT = 256, MEMO_NUMBERS = 1024
+const memoKey = (v: Value): string | null => {
+  if (v === null) { return "◌" }
+  if (isText(v)) { return JSON.stringify(String(v)) }
+  if (isTensor(v)) {
+    const d = v.size <= MEMO_NUMBERS ? engine.hostValue(v) : undefined
+    return d ? `[${v.shape}]${d.join(",")}` : null
+  }
+  if (Array.isArray(v)) {
+    const keys = v.map(memoKey)
+    return keys.every((k) => k !== null) ? `(${keys.join(";")})` : null
+  }
+  return null
+}
+const FunctionMemo = (f: Value) => {
+  if (!isFn(f)) { return new Error("`memo(f)`: `f` must be a function") }
+  const kept = new Map<string, Value>()
+  return tacitToString(function (this: CurrentScope, ...args: Value[]) {
+    const keys = args.map(memoKey)
+    if (keys.some((k) => k === null)) { return safeApply(f, args, this) }
+    const key = keys.join("|")
+    const value = kept.has(key) ? kept.get(key)! : safeApply(f, args, this)
+    kept.delete(key)
+    kept.set(key, value)
+    if (kept.size > MEMO_KEPT) { kept.delete(kept.keys().next().value!) }
+    return value
+  })
+}
+
 // MARK: Combinators
 // The tacit aviary, after Conor Hoekstra's taxonomy (combinatorylogic.com). Each
 // combinator is a plain higher-order value, so a composed function drops into operator
@@ -1383,7 +1418,7 @@ const CodesToString = (a: Value) => {
 const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(null), {
   Null: null, null: null,
   SymbolAssign, CodeParse, CodeEvaluate,
-  FunctionIterate, FunctionRepeat, FunctionThen, FunctionCommute, FunctionInto, FunctionFork, FunctionBefore, FunctionAfter,
+  FunctionIterate, FunctionRepeat, FunctionMemo, FunctionThen, FunctionCommute, FunctionInto, FunctionFork, FunctionBefore, FunctionAfter,
   FunctionRight, FunctionLeft, FunctionIs, TensorIs, ListIs, StringIs, ErrorIs, Identical,
   FunctionCascade, FunctionCond, FunctionArity, FunctionApply, FunctionNoAutoLift,
   FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, NoMatch: NoMatchValue, doc,

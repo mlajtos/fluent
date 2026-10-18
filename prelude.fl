@@ -478,66 +478,74 @@ pad: TensorPad: doc({ x, w | ListReduce(unstack(0..<(#shape(x))), { y, k | padAx
 repeat: TensorRepeat: doc({ x, n | f: flat(x), broadcast(f ⍴ [-1, 1], [#f, n]) ⍴ [-1] }, "repeat(x, n)", "Each element of x, n times in a row.", "repeat([1, 2], 2) = [1, 1, 2, 2]"),
 sinc: TensorSinc: doc({ x | px: π × x, where(x = 0, 1, sin(px) ÷ px) }, "sinc(x)", "sin(πx) ÷ πx, and 1 at 0 – the normalized sinc.", "sinc(0) = 1"),
 topk: doc(TensorTopK, "topk(x, k)", "The k largest elements, largest first, and where they were: (values, indices).", "topk([3, 9, 2], 2)_0 = [9, 3]"),
+memo: doc(FunctionMemo, "memo(f)", "f, keeping its answers: called again with the same arguments, it gives back the answer it worked out the first time. Arguments are the same when their values are – the same text, the same numbers, lists of them. For an f whose answer depends on its arguments alone.", "twice: memo({ x | x × 2 }), twice(21) = 42"),
 ; Einstein summation, in Fluent: read the spec, line each operand up label by label (a
-; label written twice in one operand reads its diagonal), multiply, sum what the output lacks
-einsum: TensorEinsum: doc({ spec, a, b |
-  ; where each label first appears in v
-  firstOf: { v | k: 0 ..< #(v), min(where(v ⊗(=) v, k ⊗(⊢) k, #(v)), 1) },
-  ; for each label in l, its position in set
-  posIn: { l, set | Σ((l ⊗(=) set) × (0 ..< #(set)), 1) },
-  ; move the axes to the end in the order perm lists them; an axis still
-  ; waiting sits at its original index, minus those already moved
-  permute: { x, perm | k: 0 ..< #(perm),
-    ListReduce(unstack(k), { y, i | p: perm_i, moveaxis(y, p - Σ((k < i) × (perm < p)), -1) }, x) },
-  ; "..." stands for the axes nobody labelled, numbered from the right
-  ; so they line up the way broadcasting does
-  expand: { l, e | dots: min(where(l = 46, 0 ..< #(l), #(l))),
-    cond(guard(dots < #(l), { concat((slice(l, [0], [dots]), 256 + reverse(0 ..< e), slice(l, [dots + 3], [-1]))) }), { l }) },
-  codes: StringToCodes(spec),
-  n: #(codes),
-  arrow: min(where(codes = 45, 0 ..< n, n)),
-  ins: slice(codes, [0], [arrow]),
-  commas: mask(0 ..< arrow, ins = 44),
-  starts: concat(([0], commas + 1)),
-  ends: concat((commas, [arrow])),
-  xs: cond(guard(#(commas) = 0, { List(a) }), { (a, b) }),
-  ls: ListMap(unstack(0 ..< #(xs)), { g | l: slice(ins, [starts_g], [ends_g - starts_g]), expand(l, #(shape(ListGet(xs, g))) - (#(l) - 3)) }),
-  all: concat(ls),
-  u: mask(all, firstOf(all) = (0 ..< #(all))),
-  e: Σ(u ≥ 256),
-  ; without an arrow: the broadcast axes, then every label used once, alphabetically
-  lo: cond(guard(arrow < n, { expand(slice(codes, [arrow + 2], [-1]), e) }),
-    { concat((256 + reverse(0 ..< e), sort(mask(u, (Σ(all ⊗(=) u, 0) = 1) ∧ (u < 256))))) }),
-  ; a label written twice in one operand ("ii") reads its diagonal
-  diag: { x, l |
-    k: 0 ..< #(l),
-    first: firstOf(l),
-    again: mask(k, first ≠ k),
-    cond(guard(#(again) = 0, { (x, l) }), {
-      along: { j | (0 ..< (shape(x)_j)) ⍴ where(k = j, shape(x)_j, 1) },
+; label written twice in one operand reads its diagonal), multiply, sum what the output
+; lacks. How the operands line up depends on the spec and their shapes alone, so `plan`
+; works it out once and gives back the function that does it.
+einsum: TensorEinsum: doc({
+  plan: memo({ spec, shapes |
+    ; where each label first appears in v
+    firstOf: { v | k: 0 ..< #(v), min(where(v ⊗(=) v, k ⊗(⊢) k, #(v)), 1) },
+    ; for each label in l, its position in set
+    posIn: { l, set | Σ((l ⊗(=) set) × (0 ..< #(set)), 1) },
+    ; "..." stands for the axes nobody labelled, numbered from the right
+    ; so they line up the way broadcasting does
+    expand: { l, e | dots: min(where(l = 46, 0 ..< #(l), #(l))),
+      cond(guard(dots < #(l), { concat((slice(l, [0], [dots]), 256 + reverse(0 ..< e), slice(l, [dots + 3], [-1]))) }), { l }) },
+    codes: StringToCodes(spec),
+    n: #(codes),
+    arrow: min(where(codes = 45, 0 ..< n, n)),
+    ins: slice(codes, [0], [arrow]),
+    commas: mask(0 ..< arrow, ins = 44),
+    starts: concat(([0], commas + 1)),
+    ends: concat((commas, [arrow])),
+    count: #(commas) + 1,
+    given: count ⌊ ListLength(shapes),
+    ls: ListMap(unstack(0 ..< given), { g | l: slice(ins, [starts_g], [ends_g - starts_g]), expand(l, #(shapes_g) - (#(l) - 3)) }),
+    all: concat(ls),
+    u: mask(all, firstOf(all) = (0 ..< #(all))),
+    e: Σ(u ≥ 256),
+    ; without an arrow: the broadcast axes, then every label used once, alphabetically
+    lo: cond(guard(arrow < n, { expand(slice(codes, [arrow + 2], [-1]), e) }),
+      { concat((256 + reverse(0 ..< e), sort(mask(u, (Σ(all ⊗(=) u, 0) = 1) ∧ (u < 256))))) }),
+    ; a label written twice in one operand ("ii") reads its diagonal: the axes that go,
+    ; the mask that keeps the diagonal, and the shape and labels left
+    diag: { s, l |
+      k: 0 ..< #(l),
+      first: firstOf(l),
+      again: mask(k, first ≠ k),
+      along: { j | (0 ..< s_j) ⍴ where(k = j, s_j, 1) },
       δ: ListReduce(unstack(again), { d, j | d × (along(j) = along(first_j)) }, 1),
-      (Σ(x × δ, again), mask(l, first = k))
-    })
-  },
-  ; each operand, a repeated label already read off its diagonal, and
-  ; its size along every label – 0 where it lacks one
-  ops: ListMap(unstack(0 ..< #(xs)), { g | diag(ListGet(xs, g), ListGet(ls, g)) }),
-  sizes: stack(ListMap(ops, { p | Σ((u ⊗(=) ListGet(p, 1)) × shape(ListGet(p, 0)), 1) })),
-  cond(
-    guard(#(commas) > 1, { Error("einsum: one or two operands – contract more in steps", spec) }),
-    guard(¬(min((sizes ≤ 1) ∨ (sizes = max(sizes, 0)))), { Error("einsum: a label's axes differ in size", spec) }),
-    {
-      ; each operand with its axes in u's order, a size-1 axis for each label it lacks
-      z: ListReduce(ListMap(unstack(0 ..< #(xs)), { g |
-        p: ListGet(ops, g),
-        permute(ListGet(p, 0), ⍋(posIn(ListGet(p, 1), u))) ⍴ where(sizes_g > 0, sizes_g, 1)
-      }), { p, q | p × q }),
-      ; the output's labels first, in its order, then the ones summed away
-      keep: Σ(u ⊗(=) lo, 1) > 0,
-      Σ(permute(z, ⍋(where(keep, posIn(u, lo), #(lo) + (0 ..< #(u))))), #(lo) ..< #(u))
-    }
-  )
-}, "einsum(spec, a, b?)", "Einstein summation: name the axes, and the names that appear in more than one input but not the output are summed – \"ij,jk->ik\" is matrix multiplication. One or two operands.", "einsum(\"ij,jk->ik\", [[1, 2]], [[3], [4]]) = [[11]]"),
+      (again, δ, mask(s, first = k), mask(l, first = k))
+    },
+    ; each operand's diagonal, and its size along every label – 0 where it lacks one
+    ds: ListMap(unstack(0 ..< #(ls)), { g | diag(shapes_g, ls_g) }),
+    sizes: stack(ListMap(ds, { p | Σ((u ⊗(=) p_3) × p_2, 1) })),
+    cond(
+      guard(count > 2, { Error("einsum: one or two operands – contract more in steps", spec) }),
+      guard(count > given, { Error("einsum: the spec names two operands, and one is given", spec) }),
+      guard(¬(min((sizes ≤ 1) ∨ (sizes = max(sizes, 0)))), { Error("einsum: a label's axes differ in size", spec) }),
+      {
+        ; each operand off its diagonal, its axes in u's order, a size-1 axis for each label it lacks
+        lines: ListMap(unstack(0 ..< #(ds)), { g |
+          p: ds_g, again: p_0, δ: p_1, perm: ⍋(posIn(p_3, u)), to: where(sizes_g > 0, sizes_g, 1),
+          cond(guard(#(again) = 0, { { x | permute(x, perm) ⍴ to } }), { { x | permute(Σ(x × δ, again), perm) ⍴ to } })
+        }),
+        ; the output's labels first, in its order, then the ones summed away
+        keep: Σ(u ⊗(=) lo, 1) > 0,
+        out: ⍋(where(keep, posIn(u, lo), #(lo) + (0 ..< #(u)))),
+        summed: #(lo) ..< #(u),
+        { xs | Σ(permute(ListReduce(ListMap(lines, { line, g | line(xs_g) }), { p, q | p × q }), out), summed) }
+      }
+    )
+  }),
+  { spec, a, b |
+    xs: cond(guard(identical(b, ◌), { List(a) }), { (a, b) }),
+    contract: plan(spec, ListMap(xs, shape)),
+    cond(guard(isError(contract), { contract }), { contract(xs) })
+  }
+}(), "einsum(spec, a, b?)", "Einstein summation: name the axes, and the names that appear in more than one input but not the output are summed – \"ij,jk->ik\" is matrix multiplication. One or two operands.", "einsum(\"ij,jk->ik\", [[1, 2]], [[3], [4]]) = [[11]]"),
 
 ; Creation
 (⚄): rand: doc(TensorRandomUniform, "⚄(shape)  ·  rand(shape)", "A tensor of the given shape, each element drawn uniformly from [0, 1). A fresh draw every call.", "⚄([2, 2])"),

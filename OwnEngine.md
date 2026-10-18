@@ -147,8 +147,10 @@ constants. `=` is exact; `≡` matches within a relative 2⁻²⁰ (APL's tolera
 `stack`, `meshgrid`; when it is evaluation, reflection, signals, strings or I/O; or when
 a Fluent version costs too much host time. A Fluent application costs ~1–3 µs of host
 time, so code that runs dozens of them per call stays native: `matmul`, `dot`, the
-bitonic network (30–110 ms to build in Fluent), `conv`, `oneHot`. einsum is Fluent: it
-costs about 2.8 ms a call to build, which a compiled training step pays once.
+bitonic network (30–110 ms to build in Fluent), `conv`, `oneHot`. einsum is Fluent:
+reading a spec takes about 3 ms, and a training step builds its graph afresh every tick
+(the plan cache skips lowering, not building), so einsum keeps what it read with `memo`,
+per spec and operand shapes. After the first call, a call costs about 0.05 ms.
 
 **Prelude**, in `prelude.fl`: `-`, `neg`, `>`, `≤`, `≥`, `≠`, `∨ ∧ ¬ ⊻ ⍲ ⍱`, `ceil`,
 `trunc`, `%`, `hypot`, `sinc`, `erf`, `mean`, `variance`, `std`, `norm`, `softmax`,
@@ -166,7 +168,7 @@ Prelude definitions against the jax-js natives they replaced:
 | erf | Abramowitz–Stegun 7.1.26, the polynomial jax-js uses | 0; ∇ 1.3e-6 |
 | softmax | `e: exp(x - max(x, ax, 1)), e ÷ Σ(e, ax, 1)` | 0; ∇ 7e-9 |
 | fft | DFT matrix; radix-2 butterflies for a power of two from 64 | 1.5e-6; ∇ matches |
-| einsum | labels from the spec's codes, `moveaxis` and `⍴`, broadcast `×`, `Σ` | 0 on 17 patterns; ∇ 0 |
+| einsum | labels from the spec's codes, `permute` and `⍴`, broadcast `×`, `Σ` | 0 on 17 patterns; ∇ 0 |
 | randn | Box–Muller from uniform | 20k samples: μ −0.005, σ 1.0008, kurtosis 3.02 |
 | sgd, adagrad, adam | `~`, `~~`, `:=`, `∇` | 0, 0, 3.6e-6 after 10, 10, 20 steps |
 

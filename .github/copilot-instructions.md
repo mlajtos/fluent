@@ -6,7 +6,7 @@ Fluent is a small array language with autodiff and an IDE that runs in the brows
 
 - `language.ts`: grammar (Ohm, `CodeGrammar`), evaluator, the native built-ins (`DefaultEnvironment`), and loading of the prelude. No DOM, no React.
 - `prelude.fl`: the standard library, written in Fluent. `createScope` in `language.ts` evaluates it into every program's scope.
-- `engine/`: the tensor engine. `ir.ts` (one immutable graph from tensors to loop nests, every value f32), `rewrite.ts` (the rewrite engine), `opt.ts` (exact simplification laws, fusion, plan keys), `grad.ts` (∇ = transpose ∘ linearize), `gpu.ts` (WGSL printers and the WebGPU executor), `cpu.ts` (the CPU backend: each kernel printed as a JS function), `tensor.ts` (the Tensor type the language calls, and the choice of backend). `einsum.fl` is a Fluent einsum that is not loaded.
+- `engine/`: the tensor engine. `ir.ts` (one immutable graph from tensors to loop nests, every value f32), `rewrite.ts` (the rewrite engine), `opt.ts` (exact simplification laws, fusion, plan keys), `grad.ts` (∇ = transpose ∘ linearize), `gpu.ts` (WGSL printers and the WebGPU executor), `cpu.ts` (the CPU backend: each kernel printed as a JS function), `tensor.ts` (the Tensor type the language calls, and the choice of backend). einsum is Fluent, in `prelude.fl`.
 - `worker.ts`: the evaluation worker. It starts the engine (WebGPU where the platform has it, the CPU everywhere else) and runs the host.
 - `host.ts`: the evaluation host, on the worker side. It evaluates the program, binds the widgets and live sources into the environment, and describes values to the page.
 - `protocol.ts`: the plain-data messages between the page and the worker.
