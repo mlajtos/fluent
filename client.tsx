@@ -1626,7 +1626,7 @@ const programInUrl = (): string | null => {
   const code = StringDeserialize(params.get("code") ?? ""), example = params.get("example")
   return code !== "" ? code : example !== null ? exampleSource(example) : null
 }
-const program = signal(programInUrl() ?? "1 + 1")
+const program = signal(programInUrl() ?? "Tour")
 effect(() => toWorker({ t: "code", source: program.value }))
 
 // the main editor follows the program: an edit re-renders it, and nothing else

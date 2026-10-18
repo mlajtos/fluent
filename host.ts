@@ -732,14 +732,14 @@ export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
   } as Record<string, Value>)
   // The Tour is Fluent source: each read builds a fresh one in a fresh scope, so every
   // evaluation gets its own live tour. Non-enumerable, so listing the environment never
-  // builds one.
+  // builds one: it is named with its card instead.
   Object.defineProperty(DefaultEnvironment, "Tour", {
     get: () => CodeEvaluate.call(createScope(), TOUR_SOURCE),
     enumerable: false,
     configurable: true,
   })
   // every name in the environment, with its doc card – for hover and completion on the page
-  const scope = createScope(), names: [string, string, Doc | null][] = []
+  const scope = createScope(), names: [string, string, Doc | null][] = [["Tour", "Tour", { doc: "The Fluent tour: fifteen rooms, from 1 + 2 to a value that learns." }]]
   for (const key in scope) {
     const value = scope[key], meta = typeof value === "function" ? getMeta(value) : {}
     names.push([key, meta.signature ?? (typeof value === "function" ? "function" : String(value).slice(0, 50)), docOf(value) ?? null])

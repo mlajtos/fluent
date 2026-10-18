@@ -237,6 +237,12 @@ test("an Error of a statement before the last is a warning where it is", async (
   await expect(page.locator(".monaco-editor .squiggly-warning").first()).toBeAttached()
 })
 
+test("the playground opens on the Tour", async ({ page }) => {
+  await page.goto("/")
+  await hideDevOverlay(page)
+  await expect(page.getByText("Reading order is meaning")).toBeVisible()
+})
+
 test("slider drives a reactive recompute", async ({ page }) => {
   await open(page, "x: $(0.5), (Slider(x), x ^ 2)")
   await expect(panel(page)).toContainText("0.25")

@@ -1687,6 +1687,8 @@ describe("the evaluation host", () => {
     const ready = inbox.find((m) => m.t === "ready") as Extract<ToPage, { t: "ready" }>
     const sum = ready.names.find(([name]) => name === "sum")
     expect(sum?.[2]?.doc).toContain("Sum of the elements")
+    // the Tour is built only when read, and listed all the same
+    expect(ready.names.find(([name]) => name === "Tour")?.[2]?.doc).toContain("tour")
   })
 
   test("a program's value arrives described, with its values", async () => {
