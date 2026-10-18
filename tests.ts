@@ -1781,6 +1781,47 @@ describe("gallery examples smoke suite", () => {
     }, 60_000)
   }
 
+  test("a demo you drag descends on the clock: so many steps a second, on any machine", () => {
+    const clock = SignalCreate(engine.scalar(0)), budgets: Value[] = []
+    const record = (_: Value, n: Value) => { budgets.push(n); return null }
+    setMeta(record, { noAutoLift: true })
+    const time = DefaultEnvironment.Time
+    extendEnvironment({ FunctionIterate: record, Time: () => clock } as Record<string, Value>)
+    try {
+      const rates = ["differentiable-reach", "differentiable-aim", "gradient-paint", "geometric-median", "differentiable-cloth"].map((name) => {
+        budgets.length = 0
+        scopeOf(EXAMPLES[name as keyof typeof EXAMPLES])
+        clock.value = engine.scalar(0.5)
+        const rate = unwrap(budgets[0]) * 2
+        clock.value = engine.scalar(0)
+        return [name, rate]
+      })
+      expect(rates).toEqual([["differentiable-reach", 60], ["differentiable-aim", 60], ["gradient-paint", 120], ["geometric-median", 60], ["differentiable-cloth", 240]])
+    } finally {
+      extendEnvironment({ FunctionIterate: stepLater, Time: time } as Record<string, Value>)
+      flushRetirements()
+    }
+  })
+
+  test("the cloth swings like a mass on springs: its far corner lags, overshoots, then comes to rest within a second", () => {
+    steps.length = 0
+    const scope = scopeOf(EXAMPLES["differentiable-cloth"])
+    const step = steps[0]!, rate = 240
+    const corner = () => ((scope.θ as FluentVariable).value.js() as number[][][]).at(-1)![0]!
+    for (let i = 0; i < 4 * rate; i++) { step(engine.scalar(i)) }
+    const from = corner()[0]!
+    ;(scope.pinL as Signal).value = engine.tensor([-0.85, -0.25])
+    const xs: number[] = []
+    for (let i = 0; i < 2 * rate; i++) { step(engine.scalar(i)); xs.push(corner()[0]!) }
+    const to = xs.at(-1)!, travel = to - from
+    // a tenth of a second on, it has gone less than half the way; it swings past where it
+    // comes to rest, and is within 5% of the way there after a second
+    expect((xs[rate / 10]! - from) / travel).toBeLessThan(0.5)
+    expect(Math.max(...xs.map((x) => (x - to) / travel))).toBeGreaterThan(0.1)
+    expect(Math.max(...xs.slice(rate * 1.2).map((x) => Math.abs(x - to) / Math.abs(travel)))).toBeLessThan(0.05)
+    flushRetirements()
+  }, 60_000)
+
   test("deep-delta-learning learns a function: one number in, one out, right where it never trained", () => {
     steps.length = 0
     const scope = scopeOf(EXAMPLES["deep-delta-learning"])
