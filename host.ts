@@ -4,13 +4,13 @@
 // stay here – tensors, signals, variables; the page draws their descriptions and writes
 // back through ids.
 
-import { Signal, computed, effect, untracked } from "@preact/signals-core"
+import { Signal, computed, effect, signal, untracked } from "@preact/signals-core"
 import {
   CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate, createScope, DefaultEnvironment,
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, getOrigin, SignalCreate, SignalUpdate, StringLiteral,
-  engine, FluentVariable, isTensor, TensorScalarLive,
-  type Value, type SyntaxTreeNode, type Origin,
+  engine, FluentVariable, isTensor, TensorScalarLive, asError, nextFrame,
+  type Value, type SyntaxTreeNode, type Origin, type CurrentScope,
 } from "./language"
 import {
   tensorView, documentHash, FEW,
@@ -22,9 +22,6 @@ import { CpuPainter, GpuPainter, type Picture } from "./painter"
 
 type Post = (message: ToPage, transfer?: Transferable[]) => void
 let post: Post = () => { }
-
-const nextFrame = (cb: () => void) => { typeof requestAnimationFrame === "function" ? requestAnimationFrame(cb) : setTimeout(cb, 16) }
-const asError = (e: unknown): Error => e instanceof Error ? e : new Error(String(e))
 
 let nextId = 0
 
@@ -87,8 +84,7 @@ const where = (origin: Origin | undefined): Where | undefined => {
 // A live value the page shows: a signal or a variable. Its effect marks it dirty when it
 // changes, and the next frame sends its new description – one per frame however often it
 // changes, none while the tensors of the last one are still being read, and none while
-// the page is still drawing the last batch. The pictures it showed last are let go when
-// it shows new ones.
+// the page is still drawing the last batch.
 type Live = {
   id: number,
   target: Signal<Value> | FluentVariable,
@@ -96,7 +92,6 @@ type Live = {
   stop: () => void,
   reading: number,
   ack: number,
-  pictures: number[],
 }
 const ids = new WeakMap<object, number>()
 const idOf = (o: object): number => {
@@ -109,7 +104,7 @@ const dirty = new Set<Live>()
 // the live whose value is being described: reads of its tensors pace its updates
 let owner: Live | null = null
 // The worker paints pictures into canvases the page hands it: a picture waits here, by
-// id, until the page asks for it
+// id, for the page to ask for it, until the page lets go of it
 let painter: GpuPainter | CpuPainter = new CpuPainter()
 const pictures = new Map<number, Picture>()
 const describing = new Set<number>()
@@ -144,7 +139,6 @@ const flush = () => {
   if (pageDrawing || painter.pending > 1) { return }
   const batch: { id: number, desc: Desc, ack: number }[] = []
   for (const live of dirty) {
-    if (lives.get(live.id) !== live) { dirty.delete(live); continue }
     if (live.reading > 0) { continue }
     dirty.delete(live)
     batch.push({ id: live.id, desc: untracked(() => describeNow(live)), ack: live.ack })
@@ -155,8 +149,6 @@ const flush = () => {
 }
 
 const describeNow = (live: Live): Desc => {
-  for (const id of live.pictures) { pictures.delete(id) }
-  live.pictures = []
   const outer = owner
   owner = live
   describing.add(live.id)
@@ -172,7 +164,7 @@ const describeLive = (target: Signal<Value> | FluentVariable): Desc => {
   const id = idOf(target)
   let live = lives.get(id)
   if (!live) {
-    const fresh: Live = live = { id, target, refs: 0, stop: () => { }, reading: 0, ack: 0, pictures: [] }
+    const fresh: Live = live = { id, target, refs: 0, stop: () => { }, reading: 0, ack: 0 }
     let first = true
     fresh.stop = effect(() => {
       if (target instanceof FluentVariable) { target.version.value } else { valueOf(target) }
@@ -267,7 +259,6 @@ const describeTensor = (t: engine.Tensor): Desc => {
     if (view === "number") { return { k: "tensor", id, shape, ...numbersOf(id, t) } }
     const { picture, numbers } = prepare(view, t)
     pictures.set(id, picture)
-    owner?.pictures.push(id)
     return { k: "tensor", id, shape, paint: true, ...(numbers && numbersOf(id, numbers)) }
   } catch (e) {
     return describeError(asError(e))
@@ -286,6 +277,14 @@ const describeError = (error: Error): Desc => {
     ...(payload !== undefined && !(payload instanceof Error) && { carried: StringLiteral(payload as Value) }),
   }
 }
+
+// What the program computed that nothing shows, marked where it arose: one per place
+const warnings = new Map<string, { message: string, o: Where }>()
+const warn = (error: Error, origin: Origin | undefined) => {
+  const o = where(origin)
+  if (o) { warnings.set(JSON.stringify(o), { message: error.message, o }) }
+}
+const sendWarnings = () => post({ t: "warnings", warnings: [...warnings.values()] })
 
 // a built-in's doc card, from its metadata
 const docOf = (value: unknown): Doc | undefined => {
@@ -630,40 +629,50 @@ const scheduleRun = () => {
   setTimeout(run, 0)
 }
 
-// a live nothing shows any more stops, and lets go of the pictures it showed
-const forget = (live: Live) => {
-  live.stop()
-  lives.delete(live.id)
-  dirty.delete(live)
-  for (const id of live.pictures) { pictures.delete(id) }
+// The program's value is live 0, which the page holds from the start: each run sends it
+const program = signal<Value>(null)
+const root: Live = { id: 0, target: program, refs: 0, stop: () => { }, reading: 0, ack: 0 }
+lives.set(0, root)
+
+// A program's statements one after another, as the language runs them: an Error that a
+// statement before the last gives is shown nowhere, so it is marked where it is
+const evaluateStatements = (tree: SyntaxTreeNode, scope: CurrentScope): Value => {
+  const statements = tree.type === "Program" ? tree.content : [tree]
+  let value: Value = null
+  statements.forEach((statement, i) => {
+    value = evaluateSyntaxTreeNode(statement, scope)
+    if (value instanceof Error && i < statements.length - 1) { warn(value, statement.origin) }
+  })
+  return value ?? null
 }
 
 // The program runs inside an effect: a signal it reads at its top level – not inside a
-// $ or a lambda – runs it again when it changes. once() reads without that. Every value
-// of the last program is let go: its lives stop sending, and the page drops what it
-// shows of them when the new result arrives.
+// $ or a lambda – runs it again when it changes. once() reads without that. Each run's
+// value replaces the last one's; the page lets go of what it showed of the last one as
+// it shows the new one.
 const run = () => {
   runScheduled = false
   if (source === null) { return }
   stopProgram?.()
-  pageDrawing = false
-  lives.forEach(forget)
-  callbacks.clear()
   documentIds.clear()
-  pictures.clear()
   const code = source
   let first = true
   stopProgram = effect(() => {
     if (!first) { scheduleRun(); return }
     first = false
     sampleRateRead = false
+    warnings.clear()
     let value: Value
     try {
-      value = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(code), createScope()) ?? null)
+      value = evaluateGeneration(() => evaluateStatements(CodeParse(code), createScope()))
     } catch (e) {
       value = asError(e)
     }
-    untracked(() => send({ t: "result", desc: describe(value) }))
+    // the value goes at once if the page may take it, before any loop's first frame
+    program.value = value
+    dirty.add(root)
+    flush()
+    sendWarnings()
   })
 }
 
@@ -693,25 +702,35 @@ const receive = (m: ToWorker) => {
         if (typeof m.value === "object" && !Array.isArray(m.value)) { m.value.close() }
         return
       }
-      const value = fromPage(m.value)
-      if (!(live.target instanceof FluentVariable)) { SignalUpdate(live.target, value) } else if (isTensor(value)) { live.target.assign(value) }
-      // answered even when the write changed nothing (a read-only signal): the page
-      // stops showing its own value once it hears back
+      // answered whether or not the write can be made: the page stops showing its own
+      // value once it hears back
       live.ack = m.seq
       markDirty(live)
+      const value = fromPage(m.value)
+      let written: Value = null
+      try {
+        if (!(live.target instanceof FluentVariable)) { written = SignalUpdate(live.target, value) } else if (isTensor(value)) { live.target.assign(value) }
+      } catch (e) {
+        written = asError(e)
+      }
+      // a computed value can't be set: the editor says so where it is computed
+      if (written instanceof Error) { warn(written, getOrigin(live.target)); sendWarnings() }
       return
     }
-    case "call": {
-      try { callbacks.get(m.id)?.fn() } catch (e) { console.error(e) }
-      return
-    }
+    case "call": { callbacks.get(m.id)?.fn(); return }
     case "drop": {
+      // what the page shows no more stops, and is let go of
       const live = lives.get(m.id), callback = callbacks.get(m.id)
-      if (live && (live.refs -= m.count) <= 0) { forget(live) }
+      if (live && (live.refs -= m.count) <= 0) { live.stop(); lives.delete(m.id); dirty.delete(live) }
       if (callback && (callback.refs -= m.count) <= 0) { callbacks.delete(m.id) }
+      pictures.delete(m.id)
       return
     }
-    case "frame": { receiveFrame(m.id, { bitmap: m.bitmap, samples: m.samples }); return }
+    case "frame": {
+      receiveFrame(m.id, { bitmap: m.bitmap, samples: m.samples })
+      post({ t: "took", id: m.id })
+      return
+    }
     case "canvas": { painter.attach(m.slot, m.canvas); return }
     case "canvasGone": { painter.detach(m.slot); return }
     case "paint": {
@@ -754,14 +773,14 @@ export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
   } as Record<string, Value>)
   // The Tour is Fluent source: each read builds a fresh one in a fresh scope, so every
   // evaluation gets its own live tour. Non-enumerable, so listing the environment never
-  // builds one.
+  // builds one: it is named with its card instead.
   Object.defineProperty(DefaultEnvironment, "Tour", {
     get: () => CodeEvaluate.call(createScope(), TOUR_SOURCE),
     enumerable: false,
     configurable: true,
   })
   // every name in the environment, with its doc card – for hover and completion on the page
-  const scope = createScope(), names: [string, string, Doc | null][] = []
+  const scope = createScope(), names: [string, string, Doc | null][] = [["Tour", "Tour", { doc: "The Fluent tour: from 1 + 2 to a value that learns." }]]
   seeing = scope as unknown as typeof seeing
   // the color table, decoded once
   engine.materialize([scope["DrawViridisTable"] as engine.Tensor])

@@ -5,6 +5,8 @@ import { defineConfig } from "@playwright/test"
 
 export default defineConfig({
   testMatch: "tests.browser.ts",
+  // agent worktrees live under .claude/ and carry their own copy of the tests
+  testIgnore: ["**/.claude/**"],
   fullyParallel: true,
   timeout: 60_000,
   expect: { timeout: 15_000 }, // the first load waits for the dev server's bundle

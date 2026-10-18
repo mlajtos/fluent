@@ -148,7 +148,7 @@ test("a view that fails to draw says why", async ({ page }) => {
   await expect(panel(page)).toContainText("2")
   await page.evaluate(() => {
     const desc = { k: "tree", roots: [{ label: null, o: { s: [1, 1], e: [1, 2], d: 0 }, children: [] }] }
-    ;(globalThis as unknown as { __fluentWorker: Worker }).__fluentWorker.dispatchEvent(new MessageEvent("message", { data: { t: "result", desc } }))
+    ;(globalThis as unknown as { __fluentWorker: Worker }).__fluentWorker.dispatchEvent(new MessageEvent("message", { data: { t: "lives", lives: [{ id: 0, desc, ack: 0 }] } }))
   })
   await expect(panel(page)).toContainText("This view failed")
   await expect(page.getByText("Something went wrong")).toHaveCount(0)
@@ -223,6 +223,41 @@ test("hovering one AST graph doesn't tint the others", async ({ page }) => {
   await expect(svgs.nth(1).locator(lit)).toHaveCount(0)
 })
 
+test("a control bound to a computed value goes back to its value, and the editor says why", async ({ page }) => {
+  // regression: the write threw before it was answered – the slider kept its own value,
+  // and the uncaught error replaced the output with "The evaluator stopped"
+  await open(page, "x: $(0.25), (Slider(x × 2), x)")
+  await expect(panel(page)).toContainText("0.25")
+  const slider = page.locator("input[type=range]")
+  await slider.fill("0.9")
+  await expect(page.locator(".monaco-editor .squiggly-warning").first()).toBeAttached()
+  await expect(slider).toHaveValue("0.5")
+  await expect(panel(page)).not.toContainText("stopped")
+  await expect(panel(page)).toContainText("0.25")
+})
+
+test("an exception in the worker leaves the output as it is, and the worker running", async ({ page }) => {
+  await open(page, "x: $(0.5), (Slider(x), x ^ 2)")
+  await expect(panel(page)).toContainText("0.25")
+  // a message the worker fails on
+  await page.evaluate(() => { (globalThis as unknown as { __fluentWorker: Worker }).__fluentWorker.postMessage({ t: "parse" }) })
+  await page.locator("input[type=range]").fill("0.8")
+  await expect(panel(page)).toContainText("0.64")
+  await expect(panel(page)).not.toContainText("stopped")
+})
+
+test("an Error of a statement before the last is a warning where it is", async ({ page }) => {
+  await open(page, "f(x): x^2, 1 + 1")
+  await expect(panel(page)).toContainText("2")
+  await expect(page.locator(".monaco-editor .squiggly-warning").first()).toBeAttached()
+})
+
+test("the playground opens on the Tour", async ({ page }) => {
+  await page.goto("/")
+  await hideDevOverlay(page)
+  await expect(page.getByText("Reading order is meaning")).toBeVisible()
+})
+
 test("slider drives a reactive recompute", async ({ page }) => {
   await open(page, "x: $(0.5), (Slider(x), x ^ 2)")
   await expect(panel(page)).toContainText("0.25")
@@ -288,6 +323,40 @@ test("camera (fake device) streams into a canvas", async ({ page }) => {
   // --use-fake-device-for-media-stream feeds a synthetic video – no hardware
   await open(page, "Camera(64, 48)")
   await expect(panel(page).locator("canvas").first()).toBeVisible({ timeout: 20_000 })
+})
+
+test("a busy worker gets the newest pointer position, not a queue of them", async ({ page }) => {
+  // regression: the page sent a frame every display frame whatever the worker did – a
+  // worker busy for 3 s had 420 frames (21 MB of camera pictures) waiting for it
+  type Scope = { frames: number, busy: boolean }
+  await page.addInitScript(() => {
+    const scope = globalThis as unknown as Scope
+    scope.frames = 0
+    scope.busy = false
+    const post = Worker.prototype.postMessage
+    Worker.prototype.postMessage = function (this: Worker, message: { t?: string }, transfer: Transferable[]) {
+      if (message?.t === "frame") { scope.frames++ }
+      return post.call(this, message, { transfer })
+    } as typeof post
+    // a busy worker takes no frame: while busy, the page hears no "took"
+    const listen = Object.getOwnPropertyDescriptor(Worker.prototype, "onmessage")!.set!
+    Object.defineProperty(Worker.prototype, "onmessage", {
+      set(this: Worker, receive: (e: MessageEvent) => void) { listen.call(this, (e: MessageEvent) => { if (!(scope.busy && e.data?.t === "took")) { receive(e) } }) },
+    })
+  })
+  await open(page, "MousePosition()")
+  let x = 10
+  await expect.poll(async () => {
+    await page.mouse.move(x++, 10)
+    return page.evaluate(() => (globalThis as unknown as Scope).frames)
+  }).toBeGreaterThan(0)
+  const before = await page.evaluate(() => { (globalThis as unknown as Scope).busy = true; return (globalThis as unknown as Scope).frames })
+  for (let i = 0; i < 30; i++) {
+    await page.mouse.move(100 + i * 5, 100)
+    await page.waitForTimeout(16)
+  }
+  const sent = await page.evaluate(() => (globalThis as unknown as Scope).frames) - before
+  expect(sent).toBeLessThanOrEqual(1)
 })
 
 test("typing while a demo trains keeps the page at frame rate", async ({ page }) => {

@@ -499,9 +499,10 @@ const unwrapSignals = (a: any): any => a instanceof Signal ? unwrapSignals(a.val
 // only: inside the prelude the reader's call that reached it stays the site.
 // KNOWN WART: arity is not checked, so +(1, 2, 4) is 3 – see arity-plan.md.
 function safeApply(fn: Value, args: Value[], env: CurrentScope, node?: { origin: Origin }): Value {
-  return isFn(fn) && !getMeta(fn).noAutoLift && args.some(containsSignal)
-    ? computed(() => appliedAt(fn, args.map(unwrapSignals), env, node))
-    : appliedAt(fn, args, env, node)
+  if (!(isFn(fn) && !getMeta(fn).noAutoLift && args.some(containsSignal))) { return appliedAt(fn, args, env, node) }
+  // a lifted call is a live value, named by the call like any other
+  const live = computed(() => appliedAt(fn, args.map(unwrapSignals), env, node))
+  return node ? located(live, node) : live
 }
 const appliedAt = (fn: Value, args: Value[], env: CurrentScope, node?: { origin: Origin }): Value => {
   if (!node) { return outcome(fn, args, env) }
@@ -1520,8 +1521,8 @@ export {
   engine, FluentVariable, FluentData, isTensor, TensorScalarLive,
   CodeParse, getParseErrors,
   evaluateSyntaxTreeNode, CodeEvaluate, getAsSyncList, getMeta, setMeta, getOrigin,
-  evaluateGeneration, flushRetirements, registerDisposable,
-  NoMatch, StringLiteral, asError,
+  evaluateGeneration, flushRetirements, registerDisposable, nextFrame, asError,
+  NoMatch, StringLiteral,
   DefaultEnvironment, extendEnvironment, setCodeNodePrinter, PRELUDE, createScope,
   SignalCreate, SignalUpdate,
 }
