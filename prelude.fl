@@ -323,7 +323,11 @@ logSoftmax: TensorLogSoftmax: doc({ x, k |
   cond(guard((#shape(x)) = 0, { x × 0 }), { s: x - max(x, ax, 1), s - log(Σ(exp(s), ax, 1)) })
 }, "logSoftmax(x, axis?)", "log(softmax(x)), computed without overflow – for losses.", "logSoftmax([0, 0]) ≈ [-0.6931, -0.6931]"),
 oneHot: doc(TensorOneHot, "oneHot(indices, n)", "Each index as a length-n vector: 1 at the index, 0 elsewhere.", "oneHot([0, 2], 3) = [[1, 0, 0], [0, 0, 1]]"),
-crossEntropy: TensorCrossEntropy: doc({ labels, logits | μ(-Σ(labels × logSoftmax(logits), -1)) }, "crossEntropy(labels, logits)", "How surprised the model's scores are by the true labels (one-hot), averaged – the classification loss.", "crossEntropy([[1, 0]], [[0, 0]]) ≈ 0.6931"),
+crossEntropy: TensorCrossEntropy: doc({ labels, logits |
+  ; labels one rank short of the logits are class indices
+  p: cond(guard((#shape(labels)) < (#shape(logits)), { oneHot(labels, shape(logits)_(-1)) }), { labels }),
+  μ(-Σ(p × logSoftmax(logits), -1))
+}, "crossEntropy(labels, logits)", "How surprised the model's scores are by the true labels, averaged – the classification loss. A label is a class index, or a row of probabilities (one-hot) as long as the logits.", "crossEntropy([1], [[0, 0]]) ≈ 0.6931"),
 
 ; Trigonometry
 sin: doc(TensorSine, "sin(x)", "The sine of each element, in radians.", "sin(0) = 0"),

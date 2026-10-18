@@ -453,6 +453,16 @@ describe("math functions", () => {
   test("crossEntropy", () => {
     expect(value("crossEntropy([0, 1, 0], [1, 2, 0.5])")).toBeCloseTo(0.4644, 3)
   })
+  test("crossEntropy takes class indices as well as one-hot rows: the same value and the same ∇", () => {
+    const L = "[[2, 0, 0], [0, 2, 0], [0, 0, 2]]"
+    expect(value(`crossEntropy([0, 1, 2], ${L})`)).toBeCloseTo(0.2395, 4)
+    expect(value(`crossEntropy([0, 1, 2], ${L}) = crossEntropy(oneHot([0, 1, 2], 3), ${L})`)).toBe(1)
+    expect(value(`(∇{ x | crossEntropy([0, 2, 1], x) })(${L}) ≡ (∇{ x | crossEntropy(oneHot([0, 2, 1], 3), x) })(${L})`)).toBe(1)
+    // a [batch, time] label tensor against [batch, time, classes] logits
+    const B = "[[[1, 2, 0.5], [0, -1, 3]], [[2, 2, 2], [0.1, 0.2, 0.3]]]"
+    expect(value(`crossEntropy([[2, 0], [1, 1]], ${B}) = crossEntropy(oneHot([[2, 0], [1, 1]], 3), ${B})`)).toBe(1)
+    expect(run(`crossEntropy([3], [[1, 2, 0.5]])`)).toBeInstanceOf(Error)
+  })
   test("roots, powers, logs", () => {
     expect(value("sqrt(9)")).toBe(3)
     expect(value("square(4)")).toBe(16)
