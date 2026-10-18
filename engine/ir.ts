@@ -316,12 +316,18 @@ export const ival = (i: UOp): UOp => node("IVAL", [i], null, []);              /
 // FUSED src = [gid, value, ...inputs]; LOAD's slot is positional into `inputs`.
 export const fused = (gid: UOp, value: UOp, inputs: UOp[], shape: readonly number[]): UOp => node("FUSED", [gid, value, ...inputs], null, shape.slice());
 export const kInputs = (f: UOp): readonly UOp[] => f.src.slice(2);
-// the one flat-index → strided-read expression: off = Σ ((gid/outSt[d]) % outSh[d]) · st[d]
+// the one flat-index → strided-read expression: off = Σ ((gid/outSt[d]) % outSh[d]) · st[d].
+// The flat index lies in the region, so the outermost coordinate needs no wrap – and a
+// gather's row, read at an index computed at run time, is read where it points
 export const bcIndex = (st: readonly number[], outSh: readonly number[], gid: UOp): UOp => {
   const os = strides(outSh);
   if (os.every((s, d) => st[d] === s || outSh[d] === 1)) return gid;           // contiguous read: the index IS gid
   let off: UOp = iconst(0);
-  for (let d = 0; d < outSh.length; d++) { if (st[d] === 0 || outSh[d] === 1) continue; off = iadd(off, imul(imod(idiv(gid, iconst(os[d]!)), iconst(outSh[d]!)), iconst(st[d]!))); }
+  for (let d = 0; d < outSh.length; d++) {
+    if (st[d] === 0 || outSh[d] === 1) continue;
+    const q = idiv(gid, iconst(os[d]!));
+    off = iadd(off, imul(d === 0 ? q : imod(q, iconst(outSh[d]!)), iconst(st[d]!)));
+  }
   return off;
 };
 
