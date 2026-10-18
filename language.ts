@@ -341,11 +341,14 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     case "Operation": {
       const fn = evaluateSyntaxTreeNode(node.content.operator, env)
       // A binding among a call's arguments, f(a: 2, b), is local to the call; infix
-      // operands are not an explicit ( … ), so a: b: 23 binds both. The arguments run in
-      // reading order; a quoted one – the name `:` binds – stays the name it spells.
-      const argsEnv = (node.content.args.content.synthetic ? env : Object.create(env)) as CurrentScope
+      // operands are not an explicit ( … ), so a: b: 23 binds both. Only an operation can
+      // bind, so a call with none among its arguments shares the caller's scope. The
+      // arguments run in reading order; a quoted one – the name `:` binds – stays the name
+      // it spells.
+      const { synthetic, value: argNodes } = node.content.args.content
+      const argsEnv = (synthetic || !argNodes.some((a) => a.type === "Operation") ? env : Object.create(env)) as CurrentScope
       const quoted = typeof fn === "function" ? getMeta(fn).quotedArgs : undefined
-      const args = node.content.args.content.value.map((arg, i) =>
+      const args = argNodes.map((arg, i) =>
         quoted?.includes(i) && arg.type === "Symbol" ? Symbol.for(arg.content.value) : evaluateSyntaxTreeNode(arg, argsEnv))
       return safeApply(fn, args, env, node)
     }

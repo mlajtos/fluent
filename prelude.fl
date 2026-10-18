@@ -12,7 +12,7 @@ SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current sco
 (∘): then: doc(FunctionThen, "(f ∘ g)", "Then: apply f to the arguments, then g to the result – (f ∘ g)(x, y) = g(f(x, y)). Reading order is evaluation order. The Queer bird – APL's atop, swapped to read left-to-right.", "(+ ∘ √)(9, 16) = 5"),
 (⍨): swap: commute: FunctionCommute: doc({ f | FunctionArity(({ a, b | f(b, a) }, { a | f(a, a) })) }, "(⍨ f)", "Commute: flip a binary function's arguments – x (⍨ f) y = f(y, x). With one argument, duplicate it: (⍨ f)(x) = f(x, x). The Cardinal and the Warbler.", "3 (⍨ -) 10 = 7"),
 compose: FunctionCompose: doc(⍨ then, "(f compose g)", "Composition in mathematics' order: (f compose g)(x) = f(g(x)) – then, the other way round. f compose g is g ∘ f.", "(√ compose +)(9, 16) = 5"),
-(⍥): into: FunctionInto: doc({ g, f | FunctionArity(({ x, y | f(g(x), g(y)) }, { x | f(g(x)) })) }, "(g ⍥ f)", "Into: preprocess each argument with g, then feed them into f – x (g ⍥ f) y = f(g(x), g(y)). The preprocessor is read first because it runs first. The Psi bird.", "-3 (abs ⍥ =) 3 = 1"),
+(⍥): into: FunctionInto: doc({ g, f | List ∘ { xs | f @ ListMap(xs, { x | g(x) }) } }, "(g ⍥ f)", "Into: preprocess each argument with g, then feed them into f – x (g ⍥ f) y = f(g(x), g(y)). The preprocessor is read first because it runs first. The Psi bird.", "-3 (abs ⍥ =) 3 = 1"),
 over: FunctionOver: doc(⍨ into, "(f over g)", "APL's Over, in APL's order: x (f over g) y = f(g(x), g(y)) – the same as g ⍥ f.", "-3 (= over abs) 3 = 1"),
 ; a hook or a fork holds an operand that isn't a function as a constant: K, the Kestrel
 FunctionConstantly: { v | cond(guard(isFunction(v), { v }), { { v } }) },

@@ -153,6 +153,10 @@ describe("combinators", () => {
   })
   // the combinators are prelude Fluent; what they make prints as the call that made it,
   // and that text evaluates back to a function that answers the same
+  test("into preprocesses every argument it is given, however many", () => {
+    expect(value("(abs ⍥ { a, b, c | a + b + c })(-1, -2, -3)")).toBe(6)
+    expect(value("-3 (abs ⍥ =) 3")).toBe(1)
+  })
   test("a combinator's function prints as the call that made it, and reads back", () => {
     const cases: [string, string, number][] = [
       ["⍨ -", "3, 10", 7], ["abs ⍥ =", "-3, 3", 1], ["Φ(Σ, ÷, #)", "[1, 2, 3, 4]", 2.5],
