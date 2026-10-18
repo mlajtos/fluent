@@ -4,7 +4,7 @@
 // cotangents at forks, and neither has a normal form.
 
 import type { UOp, Op } from "./ir.ts";
-import { node } from "./ir.ts";
+import { node, at } from "./ir.ts";
 
 export type Rule = (u: UOp) => UOp | null;
 
@@ -36,13 +36,16 @@ export function graphRewriteMany(roots: UOp[], rules: Rule[]): UOp[] {
         f.stage = 1;
         for (let i = u.src.length - 1; i >= 0; i--) if (!done.has(u.src[i]!.id)) stack.push({ u: u.src[i]!, stage: 0 });
       } else if (f.stage === 1) {
-        const built = u.src.length ? node(u.op, u.src.map((s) => done.get(s.id)!), u.arg, u.shape) : u;
+        const built = u.src.length ? node(u.op, u.src.map((s) => done.get(s.id)!), u.arg, u.shape, u.site) : u;
         const key = structKey(built);
         const hit = cache.get(key);
         if (hit) { done.set(u.id, hit); stack.pop(); continue; }
         const cur = intern.get(key) ?? (intern.set(key, built), built);
         let fired: UOp | null = null;
+        const outer = at.site;
+        at.site = cur.site;                                                    // what a rule builds comes from the node it rewrites
         for (const r of rules) { const o = r(cur); if (o) { fired = o; break; } }
+        at.site = outer;
         if (!fired) { cache.set(key, cur); done.set(u.id, cur); stack.pop(); continue; }
         f.stage = 2; f.key = key; f.fired = fired;                             // the rule's output is itself rewritten in full
         stack.push({ u: fired, stage: 0 });

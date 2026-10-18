@@ -21,9 +21,16 @@ export type Op =
   | "LOAD" | "ACC" | "IIDX" | "IVAL"                         // read input[slot]; fold body over a range; idx↔val casts
   | "RAND";                                                  // uniform [0,1) from (index, seed)
 
-export interface UOp { readonly op: Op; readonly src: readonly UOp[]; readonly arg: unknown; readonly shape: readonly number[]; readonly id: number }
+export interface UOp { readonly op: Op; readonly src: readonly UOp[]; readonly arg: unknown; readonly shape: readonly number[]; readonly id: number; readonly site?: Site }
 let NEXT = 0;
-export const node = (op: Op, src: readonly UOp[], arg: unknown, shape: readonly number[]): UOp => ({ op, src, arg, shape, id: NEXT++ });
+// The source site of a node: the Fluent expression whose call built it, for messages and
+// profiles. A node takes the site that is current where it is made – the language sets it
+// around each call it makes, a pass that rebuilds or rewrites a node sets the node's own.
+// Never part of a plan's key: one plan serves every site that builds its structure.
+export type Site = { readonly source: string; readonly start: { readonly line: number; readonly column: number } };
+export const at: { site?: Site } = {};
+export const node = (op: Op, src: readonly UOp[], arg: unknown, shape: readonly number[], site = at.site): UOp => ({ op, src, arg, shape, id: NEXT++, site });
+export const siteLabel = (s: Site | undefined): string => (s ? `line ${s.start.line} «${s.source.length > 40 ? s.source.slice(0, 39) + "…" : s.source}»` : "");
 
 export const numel = (s: readonly number[]): number => s.reduce((a, b) => a * b, 1);
 export const sameShape = (a: readonly number[], b: readonly number[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);

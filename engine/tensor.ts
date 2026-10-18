@@ -60,7 +60,7 @@ function cut(roots: UOp[]): { roots: UOp[]; hostOnly: boolean } {
     const l = leaf(u);
     if (l) { memo.set(u.id, l); hostOnly &&= !remote(l); continue; }
     const srcs = u.src.map((x) => memo.get(x.id)!);
-    memo.set(u.id, srcs.every((x, i) => x === u.src[i]) ? u : ir.node(u.op, srcs, u.arg, u.shape));
+    memo.set(u.id, srcs.every((x, i) => x === u.src[i]) ? u : ir.node(u.op, srcs, u.arg, u.shape, u.site));
     if (u.src.length) work += ir.numel(u.shape);
   }
   return { roots: roots.map((r) => memo.get(r.id)!), hostOnly: hostOnly && work <= SMALL };
@@ -82,6 +82,8 @@ function compute(nodes: readonly UOp[]): void {
     leafOf.set(n, leaf); leafOf.set(leaf, leaf);
   });
 }
+// the site the ops built now come from – the Fluent call the language is making
+export const at = ir.at;
 // compute without reading: what a step commits stays where it was computed
 export const materialize = (arrays: readonly Tensor[]): void => compute(arrays.map((a) => a.node));
 // The work a node's graph would take on the host, or Infinity when it reads the GPU or a
