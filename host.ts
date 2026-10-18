@@ -10,7 +10,7 @@ import {
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, getOrigin, SignalCreate, SignalUpdate, StringLiteral,
   engine, FluentVariable, isTensor, TensorScalarLive,
-  type Value, type SyntaxTreeNode, type Origin,
+  type Value, type SyntaxTreeNode, type Origin, type CurrentScope,
 } from "./language"
 import {
   tensorView, documentHash, FEW,
@@ -593,6 +593,18 @@ const program = signal<Value>(null)
 const root: Live = { id: 0, target: program, refs: 0, stop: () => { }, reading: 0, ack: 0 }
 lives.set(0, root)
 
+// A program's statements one after another, as the language runs them: an Error that a
+// statement before the last gives is shown nowhere, so it is marked where it is
+const evaluateStatements = (tree: SyntaxTreeNode, scope: CurrentScope): Value => {
+  const statements = tree.type === "Program" ? tree.content : [tree]
+  let value: Value = null
+  statements.forEach((statement, i) => {
+    value = evaluateSyntaxTreeNode(statement, scope)
+    if (value instanceof Error && i < statements.length - 1) { warn(value, statement.origin) }
+  })
+  return value ?? null
+}
+
 // The program runs inside an effect: a signal it reads at its top level – not inside a
 // $ or a lambda – runs it again when it changes. once() reads without that. Each run's
 // value replaces the last one's; the page lets go of what it showed of the last one as
@@ -611,7 +623,7 @@ const run = () => {
     warnings.clear()
     let value: Value
     try {
-      value = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(code), createScope()) ?? null)
+      value = evaluateGeneration(() => evaluateStatements(CodeParse(code), createScope()))
     } catch (e) {
       value = asError(e)
     }

@@ -231,6 +231,12 @@ test("an exception in the worker leaves the output as it is, and the worker runn
   await expect(panel(page)).not.toContainText("stopped")
 })
 
+test("an Error of a statement before the last is a warning where it is", async ({ page }) => {
+  await open(page, "f(x): x^2, 1 + 1")
+  await expect(panel(page)).toContainText("2")
+  await expect(page.locator(".monaco-editor .squiggly-warning").first()).toBeAttached()
+})
+
 test("slider drives a reactive recompute", async ({ page }) => {
   await open(page, "x: $(0.5), (Slider(x), x ^ 2)")
   await expect(panel(page)).toContainText("0.25")

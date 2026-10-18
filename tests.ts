@@ -1760,6 +1760,18 @@ describe("the evaluation host", () => {
     expect(warnings).toMatchObject([{ o: target.o }])
   })
 
+  test("an Error of a statement before the last is marked where the statement is", async () => {
+    let start = inbox.length
+    expect(numberIn(await evaluate("f(x): x^2, 1 + 1"))).toBe(2)
+    const { warnings } = await after(start, "warnings")
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0].o).toMatchObject({ s: [1, 1], e: [1, 10] })
+    // the last statement's Error is the value; the next run starts over
+    start = inbox.length
+    await evaluate("f(x): x^2")
+    expect((await after(start, "warnings")).warnings).toEqual([])
+  })
+
   test("the next batch waits until the page has drawn the last", async () => {
     const d = await evaluate("x: $(0), (Slider(x), x)")
     const id = d.items[0].slots.target.id
