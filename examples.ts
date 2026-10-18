@@ -453,10 +453,10 @@ opt: adam(0.02),
 losses: $[],
 half: $(φ(X) ⍴ [96]), ; φ(x) – climbs to sit between x and eˣ
 whole: $(φ(φ(X)) ⍴ [96]), ; φ(φ(x)) – snaps onto eˣ
-{
+{ i |
   losses(losses() ++ [opt(𝓛)]),
-  half(φ(X) ⍴ [96]),
-  whole(φ(φ(X)) ⍴ [96])
+  ; redrawn every 10th step
+  when(i % 10 = 0, { half(φ(X) ⍴ [96]), whole(φ(φ(X)) ⍴ [96]) })
 } ⟳ 2000,
 
 (
@@ -510,14 +510,18 @@ opt: adam(0.01),
 losses: $[],
 tests: $[],
 pred: $f(grid),
-{ losses(losses() ++ [opt(𝓛)]), tests(tests() ++ [unseen()]), pred(f(grid)) } ⟳ 600,
+; a step at a time; every 10th, the errors are logged and the prediction redrawn
+{ i |
+  l: opt(𝓛),
+  when(i % 10 = 0, { losses(losses() ++ [l]), tests(tests() ++ [unseen()]), pred(f(grid)) })
+} ⟳ 600,
 
 ; Results
 (
   Text("**sin(x) and the model**, on the 200 points it never trained on:"),
   plot(grid, (sin(grid), pred), ("sin(x)", "model")),
   Text("**How far off it is** (root-mean-square), on the 24 training points and on the 200 unseen ones:"),
-  \${ plot(0..<(#losses()), (√(losses()), √(tests())), ("train", "unseen")) },
+  \${ plot(0..<(#losses()) × 10, (√(losses()), √(tests())), ("train", "unseen")) },
 )
 `,
 "loss-landscape": `
