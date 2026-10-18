@@ -322,6 +322,25 @@ test("text decoded on the GPU from a value that changes every frame still shows"
   }
 })
 
+test("the last change shows, also one made while the last value was read from the GPU", async ({ page }) => {
+  // x, the long way round: a value that takes the GPU a while is read back from it, and
+  // presses made while it is read are shown once it lands
+  await open(page, 'x: $(0), n: 2048, (Button("go", { x(x() + 1) }), ${ Σ(matmul(fill([n, n], x()), fill([n, n], 1))) ÷ n^3 })')
+  const go = page.getByRole("button", { name: "go" })
+  const press = (times: number) => go.evaluate(async (button, times) => {
+    for (let i = 0; i < times; i++) {
+      (button as HTMLButtonElement).click()
+      await new Promise((r) => setTimeout(r, 2))
+    }
+  }, times)
+  // once the page has settled, eleven presses come while the GPU reads
+  await press(1)
+  await expect(panel(page)).toContainText("1")
+  await page.waitForTimeout(2000)
+  await press(11)
+  await expect(panel(page)).toContainText("12")
+})
+
 test("button click updates a reactive value", async ({ page }) => {
   await open(page, 'x: $(0), (Button("increment", { x(x() + 41) }), x)')
   await expect(panel(page)).toContainText("0")

@@ -168,8 +168,8 @@ const flush = () => {
   if (pageDrawing || painter.pending > 1) { if (stale) { markDirty() } return }
   if (stale) {
     stale = false
-    // a sample waiting to be shown is shown before the next is taken
-    for (const live of lives.values()) { if (live.reading === 0 && !live.sample) { sampleOf(live) } }
+    // a sample waiting to be shown, or for its reads, is shown before the next is taken
+    for (const live of lives.values()) { if (live.reading === 0 && !live.sample) { sampleOf(live) } else { stale = true } }
     // a live still waiting its turn is looked at in a later frame
     if (stale) { markDirty() }
   }
