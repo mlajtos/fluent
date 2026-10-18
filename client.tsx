@@ -1070,9 +1070,20 @@ function ResultPanel(): JSX.Element {
   return <Framed d={result.value} />
 }
 
+// a function's source, whole – a long line wraps – colored as the editor colors it
+const SourceView = ({ source }: { source: string }) => {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    let current = true
+    colorize(source).then((html) => { if (current && ref.current) { ref.current.innerHTML = html } }, () => { })
+    return () => { current = false }
+  }, [source])
+  return <div ref={ref} className="text-sm font-mono whitespace-pre-wrap [overflow-wrap:anywhere]">{source}</div>
+}
+
 // a built-in shows its doc card; a Fluent lambda its source
 function FunctionView({ d }: { d: Extract<Desc, { k: "function" }> }): JSX.Element {
-  const source = d.source !== undefined ? <CodeView value={d.source} /> : null
+  const source = d.source !== undefined ? <SourceView source={d.source} /> : null
   if (d.doc) { return <><Markdown text={docCard(d.doc)} />{source}</> }
   return source ?? <Markdown text={`\`${d.name}\` — a built-in without a doc card yet`} />
 }
