@@ -160,7 +160,7 @@ function tileNest(u: UOp, nIn: number): Printed | null {
       if (ok !== undefined) return ok;
       if (v.op !== "LOAD") { ok = VALUE.has(v.op) && v.src.every(walk); walked.set(v.id, ok); return ok; }
       walked.set(v.id, true);
-      const at = load((v.arg as { slot: number }).slot, subst(v.src[0]!)), key = idxKey(at), seen = reads.get(key);
+      const slot = (v.arg as { slot: number }).slot, at = load(slot, subst(v.src[0]!)), key = `${slot}:${idxKey(at)}`, seen = reads.get(key);
       if (seen) seen.ids.push(v.id); else reads.set(key, { at, ids: [v.id] });
       return true;
     };

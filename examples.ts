@@ -760,6 +760,81 @@ mesh: \${ ; every spring across and down a lit thread, every node a bead
   Layers(mesh, Point2D(pinL, view, "orange"), Point2D(pinR, view, "cyan")),
 )
 `,
+"caustics": `
+; 🔆 Caustics – ∇ shapes a sheet of glass until the light through it writes your word
+; Light falls through the glass onto a wall. Where the glass tilts it bends the light, and
+; the bent rays crowd into bright lines – a caustic, like sunlight on the floor of a pool.
+; ∇ of how far the light is from the goal reshapes the glass, 60 times a second.
+W: 320, H: 240, gap: 5, ; the wall, in units, and a ray every gap units across it
+depth: 40, ; how far the light travels from the glass to the wall
+r: 1.2 × gap, ; how wide a ray lands
+
+word: $"Fluent",
+at: $[160, 120], ; the middle of the word – drag it
+face: $0, ; 1: the camera's picture is the goal
+cam: Camera(160, 120),
+
+; the rays leave the glass on a grid; its height there is all that trains
+xs: 0 ..< W÷gap + 0.5 × gap, ys: 0 ..< H÷gap + 0.5 × gap,
+glass: ~(noise(stack(meshgrid(xs, ys), -1) ÷ 40) × 8),
+
+; the light at the points (x, y) of the wall. Each ray lands moved by the glass's slope and
+; glows there – a halo, exp(-d²/r²) – and a glow is its glow across times its glow down,
+; so the light of every ray at every point is one matrix product
+light: { x, y, r |
+  dx: roll(glass, -1, 1) - glass, dy: roll(glass, -1, 0) - glass,
+  X: flat(xs ⍴ [1, -1] + (depth × dx ÷ gap)), Y: flat(ys ⍴ [-1, 1] + (depth × dy ÷ gap)),
+  glow: { p, P | exp(-((p ⊗(-) P)^2 ÷ r^2)) },
+  matmul(glow(y, Y), transpose(glow(x, X))) × gap^2 ÷ π ÷ r^2
+},
+
+; the goal at the rays' points – your word in light, or your face – with as much light
+; as the glass lets through
+goal: \${
+  p: stack(meshgrid(xs, ys), -1),
+  cond(
+    guard(face(), {
+      f: cam(), fh: shape(f)_0, fw: shape(f)_1, s: fh ÷ H ⌊ (fw ÷ W),
+      row: clamp(floor(ys - at()_1 × s + (fh ÷ 2)), 0, fh - 1),
+      col: clamp(floor(at()_0 - xs × s + (fw ÷ 2)), 0, fw - 1),
+      seen: mean((f ⍴ [-1, 3])_(row ⍴ [-1, 1] × fw + col), -1)^2.2 + 0.01,
+      seen ÷ mean(seen)
+    }),
+    {
+      n: length(word()), size: H×0.4 ⌊ (W×0.9 ÷ 0.6 ÷ n),
+      ink: clamp(size×0.06 - letters(word(), at() - [0.3×size×n, 0.6×size], size)(p), 0, 1) + 0.05,
+      ink ÷ mean(ink)
+    }
+  )
+},
+
+𝓛: { mean((light(xs, ys, r) - goal())^2) },
+opt: adam(0.1),
+{ opt(𝓛) } ⟳ Time()×60,
+
+; the wall at the display's pixels: the light at twice the rays' density, a little sharper
+; than ∇ sees it so each ray shows, stretched to the pixels between – a stretch is a
+; matrix product too – and colored as sunlight
+x2: 0 ..< 2×W÷gap + 0.5 × gap÷2, y2: 0 ..< 2×H÷gap + 0.5 × gap÷2,
+tent: { p, P | 1 - abs(p ⊗(-) P ÷ gap÷2) ⌈ 0 },
+sun: [[0.09, 0.09, 0.09], [0.55, 0.22, 0.05], [1, 0.7, 0.3], [1, 1, 0.9]],
+wall: \${
+  canvas(W, H) . paint({ p |
+    q: unstack(p, -1), x: q_0_0, y: transpose(q_1)_0,
+    matmul(matmul(tent(y, y2), light(x2, y2, r×0.7)), transpose(tent(x, x2))) ÷ 5
+  }, ramp(sun))
+},
+
+(
+  Text("# 🔆 Caustics"),
+  Text("Light falls through a sheet of glass onto a wall. ∇ reshapes the glass, 60 times a second, until the light it bends writes your word. Type a word, drag the **orange** dot, or tick the box to let the light draw your face from the camera."),
+  Grid([1, 3])(Text("**word**"), TextEditor(word)),
+  Grid([1, 3])(Text("**📷 your face**"), Checkbox(face)),
+  Layers(wall, Point2D(at, [[0, W], [0, H]], "orange")),
+  Text("**the glass** – its height where each ray leaves it"),
+  glass,
+)
+`,
 "growing-automata": `
 ; 🌱 Morphogenesis – a learned local rule grows a global shape from one lit cell
 

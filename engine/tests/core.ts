@@ -257,6 +257,12 @@ export default async function (): Promise<{ fails: number }> {
       check(`parity: tiled ${nm}`, rel(b.data, a.data) < 1e-5, `relΔ ${rel(b.data, a.data).toExponential(1)}`);
     }
   }
+  if (gpu) { // two inputs read at the same place are two reads: Σₖ A·C·B reads A and C at (row, k)
+    const g = matmul(mul(buffer("A", [128, 64]), buffer("C", [128, 64])), buffer("B", [64, 128]));
+    const at = new Map<string, HostData>([["A", T(rv(128 * 64), [128, 64])], ["C", T(rv(128 * 64), [128, 64])], ["B", T(rv(64 * 128), [64, 128])]]);
+    const a = await realize(cpu, g, at), b = await realize(gpu, g, at);
+    check("parity: a contraction reading two inputs at one place", rel(b.data, a.data) < 1e-5, `relΔ ${rel(b.data, a.data).toExponential(1)}`);
+  }
   if (gpu) { // the synchronous read, through canvases: a whole canvas, whole rows and a partial row
     const n = 256 * 256 + 17 * 256 + 112, d = Float32Array.from({ length: n }, (_, i) => Math.sin(i) * 1e3);
     d[5] = NaN; d[6] = -Infinity; d[7] = -0;

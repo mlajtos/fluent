@@ -1788,7 +1788,7 @@ describe("gallery examples smoke suite", () => {
     const time = DefaultEnvironment.Time
     extendEnvironment({ FunctionIterate: record, Time: () => clock } as Record<string, Value>)
     try {
-      const rates = ["differentiable-reach", "differentiable-aim", "gradient-paint", "geometric-median", "differentiable-cloth"].map((name) => {
+      const rates = ["differentiable-reach", "differentiable-aim", "gradient-paint", "geometric-median", "differentiable-cloth", "caustics"].map((name) => {
         budgets.length = 0
         scopeOf(EXAMPLES[name as keyof typeof EXAMPLES])
         clock.value = engine.scalar(0.5)
@@ -1796,7 +1796,7 @@ describe("gallery examples smoke suite", () => {
         clock.value = engine.scalar(0)
         return [name, rate]
       })
-      expect(rates).toEqual([["differentiable-reach", 60], ["differentiable-aim", 60], ["gradient-paint", 120], ["geometric-median", 60], ["differentiable-cloth", 240]])
+      expect(rates).toEqual([["differentiable-reach", 60], ["differentiable-aim", 60], ["gradient-paint", 120], ["geometric-median", 60], ["differentiable-cloth", 240], ["caustics", 60]])
     } finally {
       extendEnvironment({ FunctionIterate: stepLater, Time: time } as Record<string, Value>)
       flushRetirements()
@@ -1822,6 +1822,22 @@ describe("gallery examples smoke suite", () => {
     flushRetirements()
   }, 60_000)
 
+  test("the caustics' glass learns its word: in a second of steps the light is half as far from it, and three times as much of it falls on the letters", () => {
+    steps.length = 0
+    const scope = scopeOf(EXAMPLES.caustics)
+    const read = (expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope)) as number
+    // the share of the light on the wall that falls where the goal is bright – the letters
+    const onLetters = "l: light(xs, ys, r), Σ(l × (goal() > 1)) ÷ Σ(l)"
+    const loss = read("𝓛()"), share = read(onLetters)
+    for (let i = 0; i < 60; i++) { steps[0]!(engine.scalar(i)) }
+    expect(read("𝓛()")).toBeLessThan(loss / 2)
+    expect(read(onLetters)).toBeGreaterThan(share * 3)
+    // an edit of how far away the wall stands keeps the glass it carved
+    const edited = createScope()
+    evaluateGeneration(() => keepingFrom(scope, edited, () => evaluateSyntaxTreeNode(CodeParse(EXAMPLES.caustics.replace("depth: 40,", "depth: 60,")), edited)))
+    expect(edited.glass).toBe(scope.glass)
+    flushRetirements()
+  }, 60_000)
   test("deep-delta-learning learns a function: one number in, one out, right where it never trained", () => {
     steps.length = 0
     const scope = scopeOf(EXAMPLES["deep-delta-learning"])
