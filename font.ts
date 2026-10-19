@@ -1,70 +1,104 @@
-// Write the font letters draws with – BQN386, the IDE's font – into prelude.fl, as distances.
+// Write the font letters draws with – BQN386, the IDE's font – into prelude.fl, as outlines.
 //   bun font.ts
-// Headless Chrome renders each glyph 250 pixels to the font's size; a sample is kept every
-// 15 of them, every 0.06 of the size, and holds the distance from its center to the glyph's
-// edge on that render. A glyph is a cell of 10 × 20 samples, the line's top first; a sample
-// is one character of DrawFontField, its code less 80 the distance in 200ths of the size,
-// negative inside. DrawFontCodes holds the characters the glyphs are for, in order.
-import { chromium } from "playwright"
-
+// A glyph is its contours, read from the font file: lines as they are, and each quadratic
+// curve cut into lines that stray from it at most TOL of the font's size. Its points are in
+// thousandths of the size from the top left of its cell, y down, the baseline at the
+// font's ascent. A point is four characters of DrawFontPoints, x then y, each two digits
+// in base 92 from the character # on; a point that starts a contour has 4232 added to its
+// x. DrawFontStarts holds where each glyph's points start, and where the last one's end;
+// DrawFontCodes the characters the glyphs are for, in order.
 const CODES = String.fromCodePoint(...Array.from({ length: 94 }, (_, i) => 33 + i)) + "·…−∞"
-const SIZE = 250, STEP = 15
+const TOL = 0.002
 
-const browser = await chromium.launch({ channel: "chrome", headless: true })
-const page = await browser.newPage()
-await page.setContent("<!doctype html><meta charset=utf-8>")
-const font = Buffer.from(await Bun.file(`${import.meta.dir}/BQN386.ttf`).arrayBuffer()).toString("base64")
-// each glyph's coverage, 0–255, in a cell a character wide and whole samples tall
-const { w, h, glyphs } = await page.evaluate(async ({ font, codes, SIZE, STEP }) => {
-  const face = new FontFace("BQN386", Uint8Array.from(atob(font), (c) => c.charCodeAt(0)).buffer)
-  document.fonts.add(await face.load())
-  const c = new OffscreenCanvas(1, 1).getContext("2d", { willReadFrequently: true })!
-  c.font = `${SIZE}px BQN386`
-  const m = c.measureText("0"), w = Math.round(m.width)
-  const h = Math.ceil((m.fontBoundingBoxAscent + m.fontBoundingBoxDescent) / STEP) * STEP
-  c.canvas.width = w; c.canvas.height = h
-  const glyphs = [...codes].map((ch) => {
-    c.clearRect(0, 0, w, h); c.font = `${SIZE}px BQN386`; c.fillStyle = "#fff"
-    c.fillText(ch, 0, m.fontBoundingBoxAscent)
-    return Array.from(c.getImageData(0, 0, w, h).data.filter((_, i) => i % 4 === 3))
-  })
-  return { w, h, glyphs }
-}, { font, codes: CODES, SIZE, STEP })
-await browser.close()
-if (w % STEP) throw new Error(`a character ${w} pixels wide is not whole samples`)
-
-// squared distance from each pixel to the nearest one that is on (Felzenszwalb–Huttenlocher)
-const line = (f: Float64Array) => {
-  const n = f.length, d = new Float64Array(n), v = new Int32Array(n), z = new Float64Array(n + 1)
-  const cross = (q: number, p: number) => (f[q]! + q * q - f[p]! - p * p) / (2 * q - 2 * p)
-  let k = 0; z[0] = -Infinity; z[1] = Infinity
-  for (let q = 1; q < n; q++) {
-    let s = cross(q, v[k]!)
-    while (s <= z[k]!) s = cross(q, v[--k]!)
-    v[++k] = q; z[k] = s; z[k + 1] = Infinity
+const font = new DataView(await Bun.file(`${import.meta.dir}/BQN386.ttf`).arrayBuffer())
+const u16 = (o: number) => font.getUint16(o), i16 = (o: number) => font.getInt16(o)
+const table: Record<string, number> = {}
+for (let i = 0; i < u16(4); i++) table[String.fromCharCode(...[0, 1, 2, 3].map((k) => font.getUint8(12 + 16 * i + k)))] = font.getUint32(20 + 16 * i)
+const { head, hhea, cmap, loca, glyf } = table as Record<"head" | "hhea" | "cmap" | "loca" | "glyf", number>
+const em = u16(head + 18), ascent = i16(hhea + 4)
+const at = (g: number) => i16(head + 50) ? font.getUint32(loca + 4 * g) : 2 * u16(loca + 2 * g)
+// the glyph for a character, from the Windows Unicode map (format 4)
+const map = Array.from({ length: u16(cmap + 2) }, (_, i) => cmap + font.getUint32(cmap + 8 + 8 * i))
+  .find((o, i) => u16(cmap + 4 + 8 * i) === 3 && u16(o) === 4)!
+const glyphOf = (c: number) => {
+  const n = u16(map + 6) / 2
+  for (let i = 0; i < n; i++) {
+    if (c > u16(map + 14 + 2 * i)) continue
+    const start = u16(map + 16 + 2 * n + 2 * i), delta = i16(map + 16 + 4 * n + 2 * i), range = map + 16 + 6 * n + 2 * i
+    if (c < start) return 0
+    const g = u16(range) ? u16(range + u16(range) + 2 * (c - start)) : c
+    return g ? (g + delta) & 0xffff : 0
   }
-  for (let q = 0, j = 0; q < n; q++) { while (z[j + 1]! < q) j++; d[q] = (q - v[j]!) ** 2 + f[v[j]!]! }
-  return d
+  return 0
 }
-const distance = (on: boolean[]) => {
-  const g = Float64Array.from(on, (o) => o ? 0 : 1e20)
-  for (let x = 0; x < w; x++) line(Float64Array.from({ length: h }, (_, y) => g[y * w + x]!)).forEach((d, y) => { g[y * w + x] = d })
-  for (let y = 0; y < h; y++) g.set(line(g.slice(y * w, y * w + w)), y * w)
-  return g.map(Math.sqrt)
-}
-// each sample: the signed distance at its center pixel, its edge half a pixel from it, as a code
-let field = ""
-for (const alpha of glyphs) {
-  const inside = alpha.map((a) => a >= 128), out = distance(inside), into = distance(inside.map((i) => !i))
-  for (let y = (STEP - 1) / 2; y < h; y += STEP) for (let x = (STEP - 1) / 2; x < w; x += STEP) {
-    const i = y * w + x, d = (inside[i] ? 0.5 - into[i]! : out[i]! - 0.5) / SIZE
-    field += String.fromCharCode(Math.max(35, Math.min(126, 80 + Math.round(d * 200))))
+type Point = { x: number; y: number; on: boolean }
+// a simple glyph's contours, in ems from the top left, y down
+const contours = (g: number): Point[][] => {
+  let o = glyf + at(g)
+  if (at(g + 1) === at(g)) return []
+  const n = i16(o)
+  if (n < 0) throw new Error(`glyph ${g} is made of other glyphs`)
+  const ends = Array.from({ length: n }, (_, i) => u16(o + 10 + 2 * i)), count = ends[n - 1]! + 1
+  o += 12 + 2 * n + u16(o + 10 + 2 * n)
+  const flags: number[] = []
+  while (flags.length < count) {
+    const f = font.getUint8(o++)
+    flags.push(f)
+    if (f & 8) for (let r = font.getUint8(o++); r > 0; r--) flags.push(f)
   }
+  const coordinates = (short: number, same: number) => {
+    let v = 0
+    return flags.map((f) => {
+      if (f & short) v += (f & same ? 1 : -1) * font.getUint8(o++)
+      else if (!(f & same)) { v += i16(o); o += 2 }
+      return v
+    })
+  }
+  const xs = coordinates(2, 16), ys = coordinates(4, 32)
+  const points = flags.map((f, i) => ({ x: xs[i]! / em, y: (ascent - ys[i]!) / em, on: (f & 1) === 1 }))
+  return ends.map((e, i) => points.slice(i ? ends[i - 1]! + 1 : 0, e + 1))
 }
+// a contour as the points of its lines, closed: an off-curve point between two others makes
+// a quadratic curve, and two off-curve points in a row have an on-curve point between them
+const polygon = (c: Point[]): [number, number][] => {
+  const mid = (a: Point, b: Point) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, on: true })
+  const s = c.findIndex((q) => q.on)
+  const ring = s < 0 ? [mid(c[0]!, c[1]!), ...c.slice(1), c[0]!] : [...c.slice(s), ...c.slice(0, s)]
+  ring.push(ring[0]!)
+  let from = ring[0]!
+  const out: [number, number][] = [[from.x, from.y]]
+  for (let i = 1; i < ring.length; i++) {
+    const q = ring[i]!
+    if (q.on) { out.push([q.x, q.y]); from = q; continue }
+    const to = ring[i + 1]!.on ? ring[++i]! : mid(q, ring[i + 1]!)
+    // a quadratic cut into k equal steps of t strays at most |from - 2q + to| ÷ 4k² from it
+    const k = Math.ceil(Math.sqrt(Math.hypot(from.x - 2 * q.x + to.x, from.y - 2 * q.y + to.y) / (4 * TOL))) || 1
+    for (let j = 1; j <= k; j++) {
+      const t = j / k, a = (1 - t) ** 2, b = 2 * t * (1 - t), d = t * t
+      out.push([a * from.x + b * q.x + d * to.x, a * from.y + b * q.y + d * to.y])
+    }
+    from = to
+  }
+  return out
+}
+const digits = (v: number) => String.fromCharCode(35 + Math.floor(v / 92), 35 + (v % 92))
+let points = ""
+const starts = [...CODES].map((ch) => {
+  const start = points.length / 4
+  for (const line of contours(glyphOf(ch.codePointAt(0)!)).map(polygon)) for (const [i, [x, y]] of line.entries()) {
+    const fx = Math.round(x * 1000), fy = Math.round(y * 1000)
+    if (fx < 0 || fx > 600 || fy < 0 || fy > 1200) throw new Error(`${ch} leaves its cell`)
+    points += digits(fx + (i ? 0 : 4232)) + digits(fy)
+  }
+  return start
+})
+starts.push(points.length / 4)
 const text = (s: string) => `"${s.replace(/[\\"]/g, "\\$&")}"`
 const path = `${import.meta.dir}/prelude.fl`, prelude = await Bun.file(path).text()
 const written = prelude
   .replace(/^DrawFontCodes: .*$/m, () => `DrawFontCodes: ${text(CODES)},`)
-  .replace(/^DrawFontField: .*$/m, () => `DrawFontField: ${text(field)},`)
+  .replace(/^DrawFontStarts: .*$/m, () => `DrawFontStarts: [${starts.join(", ")}],`)
+  .replace(/^DrawFontPoints: .*$/m, () => `DrawFontPoints: ${text(points)},`)
 await Bun.write(path, written)
-console.log(`${[...CODES].length} glyphs of ${w / STEP} × ${h / STEP} samples, ${field.length} bytes`)
+const most = Math.max(...starts.slice(1).map((s, i) => s - starts[i]!))
+console.log(`${CODES.length} glyphs, ${points.length / 4} points, at most ${most} a glyph; ${points.length} bytes`)
