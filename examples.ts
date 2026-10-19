@@ -1013,7 +1013,7 @@ reach: { g |
   span: max(x()) - min(x()), u: linspace([min(x()) - 20×span, max(x()) + 20×span], 2048),
   a: F(u, θ()) - g, s: a ≥ 0, turn: slice(s, [0, 1]) ≠ slice(s, [0, 0], [-1, 2047]),
   i: argmax(turn, -1), lo: u_i ⍴ [-1, 1], hi: u_(i + 1) ⍴ [-1, 1],
-  at: { k | Σ(a × oneHot(k, 2048), -1, 1) },
+  at: { k | flat(a)_(k + 2048×(0..<(#k))) ⍴ [-1, 1] },
   slope: ∇{ t | Σ(F(t, θ())) },
   near: { t | clamp(t - (F(t, θ()) - g ÷ slope(t)), lo, hi) },
   t: near(near(lo + (hi - lo × at(i) ÷ (at(i) - at(i + 1))))),

@@ -2035,9 +2035,14 @@ describe("gallery examples smoke suite", () => {
       for (const g of [3000, 10000, 1e6]) {
         expect(Math.abs((read(scope, `reach(${g})_0`) as number) - Math.log(g / a!) / b!)).toBeLessThan(1e-3 * Math.log(g / a!) / b!)
       }
+      expect(String(read(scope, "told()"))).toMatch(/^\*\*It reaches\*\* 10000 +between week 1[89]\.\d +and (19|20)\.\d +in 9 threads of 10 *$/)
       // a level the curve never meets – it is always above 0 – is ∞ for every refit
       expect(read(scope, "reach(-5)")).toEqual(Array(65).fill(Infinity))
-      expect(String(read(scope, "told()"))).toMatch(/^\*\*It reaches\*\* 10000 +between week 1[89]\.\d +and (19|20)\.\d +in 9 threads of 10 *$/)
+      // and a curve so steep that, far from the numbers, it is more than a number can hold
+      const { normal } = random(3)
+      show(scope, table([["x", "y"], ...Array.from({ length: 40 }, (_, i) => [i + 1, +(120 * Math.exp(0.14 * (i + 1)) + 60 * normal()).toFixed(1)])]), "exponential", 1298)
+      const [[[a2]], [[b2]]] = read(scope, "slice(θ(), [0, 0], [-1, 1])") as number[][][]
+      expect(Math.abs((read(scope, "whens()_0") as number) - Math.log(1298 / a2!) / b2!)).toBeLessThan(1e-3 * 17)
       flushRetirements()
     }, 60_000)
 
