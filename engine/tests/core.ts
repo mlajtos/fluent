@@ -2,8 +2,8 @@
 // finite differences on random graphs, and a training smoke. Runs in headless Chrome:
 //   bun engine/tests/run.ts
 
-import { buffer, konst, data, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, type UOp } from "../ir.ts";
-import { optimize, optimizeMany, simplifyMany } from "../opt.ts";
+import { buffer, konst, data, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, numel, type UOp } from "../ir.ts";
+import { optimize, optimizeMany, simplifyMany, rangesIn } from "../opt.ts";
 import { grad, gradAll } from "../grad.ts";
 import { CPU, type HostData } from "../cpu.ts";
 import { realize, realizeMany } from "./realize.ts";
@@ -296,6 +296,30 @@ export default async function (): Promise<{ fails: number }> {
       check(`∇ ${nm} == finite-diff`, w < 3e-2, `worst ${w.toExponential(1)}`);
       if (gpu) { const gg = (await realize(gpu, grad(loss, W), at(Wd.slice()))).data; check(`∇ ${nm} cpu == gpu`, rel(gg, g) < 1e-3); }
     }
+  }
+  { // ∇ of a minimum flows through its winner: P pixels, each nearest to one of K points. The
+    // derivative is taken at each pixel's winner alone – never at every (pixel, point) pair –
+    // and it is the exact one, on the CPU and on the GPU, where recomputed distances differ in
+    // their last bits from the minimum's
+    const P = 6000, K = 37, px = buffer("px", [P, 2]), th = buffer("th", [K, 2]), w = buffer("w", [P]);
+    const pair = add(broadcastTo(reshape(px, [P, 1, 2]), [P, K, 2]), mul(broadcastTo(reshape(th, [1, K, 2]), [P, K, 2]), konst(-1)));
+    const d = reshape(sqrt(add(reduceAxis(mul(pair, pair), 2, true), konst(0.25))), [P, K]);
+    const loss = sum(mul(mul(reduceMax(mul(d, konst(-1)), 1, false), konst(-1)), w));
+    const g = grad(loss, th);
+    const Pd = rv(P * 2, 50), Td = rv(K * 2, 50), Wd = rv(P);
+    const at = new Map<string, HostData>([["px", T(Pd, [P, 2])], ["th", T(Td, [K, 2])], ["w", T(Wd, [P])]]);
+    const want = new Float64Array(K * 2);
+    for (let p = 0; p < P; p++) {
+      let best = Infinity, k = 0;
+      for (let j = 0; j < K; j++) { const dx = Pd[2 * p]! - Td[2 * j]!, dy = Pd[2 * p + 1]! - Td[2 * j + 1]!, e = Math.sqrt(dx * dx + dy * dy + 0.25); if (e < best) { best = e; k = j; } }
+      for (let c = 0; c < 2; c++) want[2 * k + c]! += Wd[p]! * (Td[2 * k + c]! - Pd[2 * p + c]!) / best;
+    }
+    const a = (await realize(cpu, g, at)).data, b = gpu ? (await realize(gpu, g, at)).data : a;
+    check("∇ of a minimum, through its winner: CPU and GPU = exact", rel(a, want) < 1e-4 && rel(b, want) < 1e-4, `relΔ ${rel(a, want).toExponential(1)} / ${rel(b, want).toExponential(1)}`);
+    let worst = 0;
+    for (const k of toposort(optimize(g)).filter((u) => u.op === "FUSED"))
+      for (const u of toposort(k.src[1]!)) if (u.op === "RECIPROCAL") worst = Math.max(worst, [...rangesIn(u)].filter((r) => r !== k.src[0]).reduce((n, r) => n * (r.arg as { extent: number }).extent, numel(k.shape)));
+    check("∇ of a minimum: the derivative is taken at each pixel's coordinates, not at every pair", worst <= 2 * P, `${worst} evaluations of the distance's slope`);
   }
   { // higher order: f = x³ → ∇²=6x, ∇³=6
     const s = buffer("s", []);

@@ -5,8 +5,8 @@
 // copy⟷add, scale(self), broadcast⟷reduce, permute⟷inverse, reshape⟷reshape, slice⟷pad,
 // gather⟷scatter, where-routes. One seeded multi-target driver serves vjp, grad, gradAll.
 
-import type { UOp } from "./ir.ts";
-import { node, konst, buffer, add, mul, recip, sqrt, log, where, cmplt, broadcastTo, reduceAxis, reshape, permute, slice, pad, math, strides, toposort } from "./ir.ts";
+import type { UOp, Fold } from "./ir.ts";
+import { node, konst, buffer, iota, add, mul, recip, sqrt, log, where, broadcastTo, reduceAxis, reshape, permute, slice, pad, math, strides, sameShape, toposort } from "./ir.ts";
 
 const zeros = (s: readonly number[]): UOp => (s.length ? broadcastTo(konst(0), s) : konst(0));
 const scale = (coef: UOp, d: UOp | null): UOp | null => d && mul(coef, d);
@@ -35,6 +35,54 @@ const MATH_JVP: Record<string, (u: UOp, x: UOp, y: UOp) => UOp[]> = {
   mul0: (_u, x, y) => [y, x],                                                // a product's: y·dx + x·dy
 };
 
+// v at idx along axis ax, counted from the end: out[o] = v[o with o_ax = idx[o]], 1 at ax;
+// idx may lead with axes v lacks. It moves into what v is made of – maps, broadcasts, views,
+// gathers and sums over a point's coordinates – so the derivative a maximum reads is taken at
+// its winner alone, and its transpose meets only the winners' terms. What it cannot move
+// into, it sums against a one-hot of idx.
+const MAP = new Set<UOp["op"]>(["ADD", "MULTIPLY", "RECIPROCAL", "EXP", "LOG", "SQRT", "LESS_THAN", "WHERE", "DETACH", "MATH"]);
+const along = (v: UOp, ax: number, idx: UOp, memo: Map<string, UOp>): UOp => {
+  const key = `${v.id} ${ax} ${idx.id}`, hit = memo.get(key);
+  if (hit) return hit;
+  const r = v.shape.length, n = Math.max(r, idx.shape.length), lead = n - r, at = (s: readonly number[], i: number) => s[s.length - n + i] ?? 1;
+  const R = Array.from({ length: n }, (_, i) => (i === n + ax ? 1 : Math.max(at(v.shape, i), at(idx.shape, i))));
+  const fit = (w: UOp) => (sameShape(w.shape, R) ? w : broadcastTo(w, R));
+  const free = (d: number) => at(idx.shape, lead + d) === 1;                    // idx is the same along v's axis d
+  const g = v.arg as { axis: number; keepdims: boolean; op: Fold; start: number; len: number; before: number; after: number };
+  let out: UOp | undefined;
+  if (v.shape.at(ax) === 1) out = fit(v);
+  else if (MAP.has(v.op)) out = node(v.op, v.src.map((s) => along(s, ax, idx, memo)), v.arg, R);
+  else if (v.op === "BROADCAST") { const s = v.src[0]!; out = fit(-ax > s.shape.length ? s : along(s, ax, idx, memo)); }
+  else if (v.op === "IOTA") out = fit(idx);
+  else if (v.op === "REDUCE" && g.keepdims && free(g.axis) && v.src[0]!.shape[g.axis]! <= 4) out = reduceAxis(along(v.src[0]!, ax, idx, memo), lead + g.axis, true, g.op);
+  else if (v.op === "SLICE" && g.axis === r + ax) out = along(v.src[0]!, ax, add(idx, konst(g.start)), memo);
+  else if ((v.op === "SLICE" || v.op === "PAD") && free(g.axis)) { const t = along(v.src[0]!, ax, idx, memo); out = v.op === "SLICE" ? slice(t, lead + g.axis, g.start, g.len) : pad(t, lead + g.axis, g.before, g.after); }
+  else if (v.op === "PERMUTE") {
+    const p = v.arg as number[], front = Array.from({ length: lead }, (_, i) => i);
+    const ix = permute(idx, [...front, ...p.map((_, j) => p.indexOf(j) + lead)]);   // idx in the source's axis order
+    out = permute(along(v.src[0]!, p[r + ax]! - r, ix, memo), [...front, ...p.map((j) => j + lead)]);
+  } else if (v.op === "RESHAPE") {
+    // a reshape that only adds or drops unit axes: idx follows it
+    const s = v.src[0]!, nu = (sh: readonly number[]) => sh.flatMap((d, i) => (d === 1 ? [] : [i]));
+    const a = nu(v.shape), b = nu(s.shape);
+    if (a.length === b.length && a.every((i, k) => v.shape[i] === s.shape[b[k]!]) && v.shape.every((d, i) => d !== 1 || free(i))) {
+      const is = [...idx.shape.slice(0, Math.max(0, idx.shape.length - r)), ...s.shape.map(() => 1)];
+      a.forEach((i, k) => { is[is.length - s.shape.length + b[k]!] = at(idx.shape, lead + i); });
+      out = reshape(along(s, b[a.indexOf(r + ax)]! - s.shape.length, reshape(idx, is), memo), R);
+    }
+  } else if (v.op === "GATHER" && r + ax === 0 && v.shape.every((_, d) => !d || free(d))) {
+    // the row each winner names – an index names the row of its whole part – then the table at it
+    const [t, i] = v.src as [UOp, UOp], rows = math("trunc", along(i, -1, reshape(idx, idx.shape.slice(0, idx.shape.length - r + 1)), memo));
+    out = along(t, -t.shape.length, reshape(rows, [...rows.shape, ...t.shape.slice(1).map(() => 1)]), memo);
+  }
+  if (!out) {                                                                  // a one-hot of idx, summed
+    const K = v.shape.at(ax)!, k = reshape(iota(K), [K, ...Array(-ax - 1).fill(1)]);
+    out = reduceAxis(where(math("eq", k, idx), v, konst(0)), n + ax, true);
+  }
+  memo.set(key, out);
+  return out;
+};
+
 type Jvp = (u: UOp, d: (UOp | null)[]) => UOp | null;
 const linear: Jvp = (u, [a = null]) => a && node(u.op, [a], u.arg, u.shape);  // a view of the tangent, the same view
 export const JVP: Partial<Record<UOp["op"], Jvp>> = {
@@ -54,10 +102,12 @@ export const JVP: Partial<Record<UOp["op"], Jvp>> = {
     if (g.op === "MUL") {                                                      // d Πx = Π·Σ(dx ÷ x)
       return mul(u, reduceAxis(mul(a, recip(u.src[0]!)), g.axis, g.keepdims));
     }
-    const x = u.src[0]!, km = g.keepdims ? u : reshape(u, x.shape.map((d, i) => (i === g.axis ? 1 : d)));
-    const isMax = where(cmplt(x, broadcastTo(km, x.shape)), zeros(x.shape), broadcastTo(konst(1), x.shape));
-    const ties = reduceAxis(isMax, g.axis, g.keepdims);                       // tied maxima share the tangent evenly
-    return mul(reduceAxis(mul(a, isMax), g.axis, g.keepdims), recip(ties));
+    if (g.op === "ARGMAX") return null;                                       // an index: flat almost everywhere
+    // a maximum's tangent is its winner's: ARGMAX finds the winner the way a maximum is found,
+    // comparing the values with each other – never a recomputed value with the maximum, which
+    // on a GPU may differ in its last bits – and a tie goes to the first
+    const t = along(a, g.axis - a.shape.length, reduceAxis(u.src[0]!, g.axis, true, "ARGMAX"), new Map());
+    return g.keepdims ? t : reshape(t, u.shape);
   },
   BROADCAST: linear, PERMUTE: linear, RESHAPE: linear, SLICE: linear, PAD: linear, WINDOW: linear,
   GATHER: (u, [t = null]) => t && node("GATHER", [t, u.src[1]!], u.arg, u.shape),          // linear in the table; idx is primal

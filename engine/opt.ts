@@ -7,7 +7,7 @@
 // one kernel) and matmul epilogues (bias/activation/residual into the ACC's consumer) all
 // fall out of "a single-use kernel folds into its reader, guarded by recompute cost".
 
-import type { UOp, Op } from "./ir.ts";
+import type { UOp, Op, Fold } from "./ir.ts";
 import {
   node, konst, buffer, numel, strides, sameShape, permute, broadcastTo, slice, toposort, viewMap, bcIndex,
   range, iconst, iadd, imul, idiv, imod, load, acc, iidx, ival, fused, kInputs, rebuild, at, siteLabel,
@@ -269,7 +269,7 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
       out = mk(MAX_INPUTS);
       if (bindings(kInputs(out)) > HARD_INPUTS) out = mk(0);                       // mandatory reads overflowed the device's binding slots: materialize everything
     } else if (u.op === "REDUCE") {                                            // an ACC over the reduced axis; the producer chain fuses into its body
-      const a = u.arg as { axis: number; keepdims: boolean; op: "ADD" | "MAX" | "MUL" };
+      const a = u.arg as { axis: number; keepdims: boolean; op: Fold };
       const inSh = u.src[0]!.shape, inSt = strides(inSh), outSh = u.shape, outSt = strides(outSh);
       const mapped = outSh.map((_, d) => inSt[a.keepdims ? d : (d < a.axis ? d : d + 1)]!);
       const mk = (cap: number) => {
@@ -322,8 +322,8 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
 // A sum or product over 2–4 elements – a point's coordinates, a color's channels – becomes
 // its terms, in the loop's order, each with the loop variable a constant. The law table
 // folds what that makes constant, so a select that picks a coordinate folds away and what a
-// point reads leaves the loops around it. Every fold is exact. A maximum keeps its loop: no
-// elementwise op is maxf.
+// point reads leaves the loops around it. Every fold is exact. A maximum and its winner keep
+// their loops: no elementwise op is maxf.
 const UNROLL = 4, UNROLLED = 1024;                                             // the most terms, and the most ops an unrolled loop prints
 const fold = (op: Op, src: UOp[], arg: unknown, shape: readonly number[]): UOp => {
   const u = rebuild(op, src, arg, shape);
@@ -338,7 +338,7 @@ const unroll = (value: UOp): UOp => {
     const src = v.src.map(walk);
     o = src.every((x, i) => x === v.src[i]) ? v : fold(v.op, src, v.arg, v.shape);
     const op = v.op === "ACC" ? (v.arg as { op: string }).op : "", n = op ? (v.src[0]!.arg as { extent: number }).extent : 0;
-    if (n && n <= UNROLL && op !== "MAX" && n * toposort(o.src[1]!).length <= UNROLLED) {
+    if (n && n <= UNROLL && (op === "ADD" || op === "MUL") && n * toposort(o.src[1]!).length <= UNROLLED) {
       const [r, body] = o.src as [UOp, UOp];
       let terms = konst(op === "ADD" ? 0 : 1);
       for (let k = 0; k < n; k++) {

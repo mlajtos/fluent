@@ -11,7 +11,7 @@ export type Op =
   | "MATH"                                                   // arg {fn}: one row of MATHS — sin, floor, pow, …
   | "RANDOM"                                                 // src [seed]: uniform [0,1), a pure function of (seed, index)
   | "IOTA"                                                   // leaf [n]: element i is i — an index ramp no buffer holds
-  | "REDUCE"                                                 // arg {axis, keepdims, op: "ADD"|"MAX"|"MUL"}
+  | "REDUCE"                                                 // arg {axis, keepdims, op: Fold}
   | "BROADCAST" | "PERMUTE" | "RESHAPE" | "SLICE" | "WINDOW" // the view algebra — pure stride maps, never compute
   | "PAD"                                                    // arg {axis, before, after}: zeros around — SLICE's transpose, an index predicate
   | "GATHER" | "SCATTER_ADD"                                 // runtime-indexed rows; each other's transpose
@@ -170,7 +170,10 @@ export const iota = (n: number): UOp => node("IOTA", [], null, [n]);
 export const where = (c: UOp, a: UOp, b: UOp): UOp => { const s = bc(c, a, b); return node("WHERE", s, null, s[0]!.shape); };
 
 // ---- reduce ------------------------------------------------------------------
-export const reduceAxis = (a: UOp, axis: number, keepdims = true, op: "ADD" | "MAX" | "MUL" = "ADD"): UOp => {
+// ARGMAX is where the maximum is: the index of the first largest, of the first NaN if there
+// is one – a maximum's winner, found as the maximum is
+export type Fold = "ADD" | "MAX" | "MUL" | "ARGMAX";
+export const reduceAxis = (a: UOp, axis: number, keepdims = true, op: Fold = "ADD"): UOp => {
   if (axis < 0 || axis >= a.shape.length) err(`reduce: axis ${axis} out of ${sh(a.shape)}`);
   const s = a.shape.slice(); if (keepdims) s[axis] = 1; else s.splice(axis, 1);
   return node("REDUCE", [a], { axis, keepdims, op }, s);
@@ -309,7 +312,7 @@ export const imod = (a: UOp, b: UOp): UOp => {
 export const rebuild = (op: Op, src: UOp[], arg: unknown, shape: readonly number[]): UOp =>
   op === "IADD" ? iadd(src[0]!, src[1]!) : op === "IMUL" ? imul(src[0]!, src[1]!) : op === "IDIV" ? idiv(src[0]!, src[1]!) : op === "IMOD" ? imod(src[0]!, src[1]!) : node(op, src, arg, shape);
 export const load = (slot: number, idx: UOp): UOp => node("LOAD", [idx], { slot }, []);
-export const acc = (op: "ADD" | "MAX" | "MUL", r: UOp, body: UOp): UOp => node("ACC", [r, body], { op }, []);
+export const acc = (op: Fold, r: UOp, body: UOp): UOp => node("ACC", [r, body], { op }, []);
 export const iidx = (v: UOp): UOp => node("IIDX", [v], null, []);              // value → index (u32 cast)
 export const ival = (i: UOp): UOp => node("IVAL", [i], null, []);              // index → value (f32 cast)
 

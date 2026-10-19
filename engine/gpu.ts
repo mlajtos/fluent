@@ -53,7 +53,9 @@ const WGSL: Syntax = {
     MATH: (r, u, c) => MATHS[(u.arg as { fn: string }).fn]!.wgsl(...u.src.map((s, i) => { const a = r(i); return /^-?[\w.]+$/.test(a) ? a : bind(s, a, c); })),
     RAND: (r) => `hashUniform(u32(${r(1)}), ${r(0)})`,
   },
-  acc: (a, op, r, n, body, v) => `  var ${a}: f32 = ${REDUCE[op]!.start};\n  for (var ${r}: u32 = 0u; ${r} < ${n}u; ${r} = ${r} + 1u) {\n${body.join("\n")}\n    ${a} = ${REDUCE[op]!.step(a, v)};\n  }`,
+  acc: (a, op, r, n, body, v) => op === "ARGMAX"
+    ? `  var ${a}: f32 = 0.0; var ${a}m: f32 = -inff();\n  for (var ${r}: u32 = 0u; ${r} < ${n}u; ${r} = ${r} + 1u) {\n${body.join("\n")}\n    let ${a}v = ${v};\n    if (${a}v > ${a}m || ((bitcast<u32>(${a}v) & 0x7fffffffu) > 0x7f800000u && (bitcast<u32>(${a}m) & 0x7fffffffu) <= 0x7f800000u)) { ${a}m = ${a}v; ${a} = f32(${r}); }\n  }`
+    : `  var ${a}: f32 = ${REDUCE[op]!.start};\n  for (var ${r}: u32 = 0u; ${r} < ${n}u; ${r} = ${r} + 1u) {\n${body.join("\n")}\n    ${a} = ${REDUCE[op]!.step(a, v)};\n  }`,
   let: (name, e) => `  let ${name} = ${e};`,
   named: (uses, size) => uses > 1 && size > 12,
 };
@@ -233,7 +235,7 @@ const COOP_WG = 128;
 function coopReduce(u: UOp, nIn: number): Printed | null {
   const { chain, inner, op } = accChain(u.src[1]!);                           // one reduce IS the whole value (no epilogue)
   const K = chain.reduce((p, r) => p * extent(r), 1), N = Math.max(numel(u.shape), 1), WG = COOP_WG;
-  if (!chain.length || K < WG * COST.groupSteps) return null;                  // too little K to split — the plain nest is fine
+  if (!chain.length || K < WG * COST.groupSteps || op === "ARGMAX") return null;   // too little K to split — the plain nest is fine; a winner runs in one thread
   const hasAcc = (v: UOp): boolean => v.op === "ACC" || v.src.some(hasAcc);
   if (hasAcc(inner)) return null;                                              // reduces below non-ACC ops: the plain printer's job
   // A loop variable's distance: how far one step of it moves the reads of the largest input,

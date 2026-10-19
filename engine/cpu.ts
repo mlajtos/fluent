@@ -26,7 +26,9 @@ const JS: Syntax = {
     MATH: (r, u) => `f(M.${(u.arg as { fn: string }).fn}(${u.src.map((_, i) => r(i)).join(", ")}))`,
     RAND: (r) => `H(${r(1)}, ${r(0)})`,
   },
-  acc: (a, op, r, n, body, v) => `let ${a} = ${op === "MAX" ? "-Infinity" : op === "MUL" ? "1" : "0"};\nfor (let ${r} = 0; ${r} < ${n}; ${r}++) {\n${body.join("\n")}\n${a} = ${op === "MAX" ? `Math.max(${a}, ${v})` : `f(${a} ${op === "MUL" ? "*" : "+"} ${v})`};\n}`,
+  acc: (a, op, r, n, body, v) => op === "ARGMAX"
+    ? `let ${a} = 0, ${a}m = -Infinity;\nfor (let ${r} = 0; ${r} < ${n}; ${r}++) {\n${body.join("\n")}\nconst ${a}v = ${v};\nif (${a}v > ${a}m || (${a}v !== ${a}v && ${a}m === ${a}m)) { ${a}m = ${a}v; ${a} = ${r}; }\n}`
+    : `let ${a} = ${op === "MAX" ? "-Infinity" : op === "MUL" ? "1" : "0"};\nfor (let ${r} = 0; ${r} < ${n}; ${r}++) {\n${body.join("\n")}\n${a} = ${op === "MAX" ? `Math.max(${a}, ${v})` : `f(${a} ${op === "MUL" ? "*" : "+"} ${v})`};\n}`,
   let: (name, e) => `const ${name} = ${e};`,
   named: (uses) => uses > 1,
 };

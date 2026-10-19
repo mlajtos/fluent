@@ -233,11 +233,15 @@ function evaluate(u: UOp, ins: Float32Array[]): Float32Array {
       });
     }
     case "REDUCE": {
-      const { axis, op } = u.arg as { axis: number; op: "ADD" | "MAX" | "MUL" }, s = u.src[0]!.shape, st = ir.strides(s), len = s[axis]!;
+      const { axis, op } = u.arg as { axis: number; op: ir.Fold }, s = u.src[0]!.shape, st = ir.strides(s), len = s[axis]!;
       const outer = ir.numel(s.slice(0, axis)), inner = ir.numel(s.slice(axis + 1));
       for (let o = 0; o < outer; o++) for (let j = 0; j < inner; j++) {
-        let acc = op === "MAX" ? -Infinity : op === "MUL" ? 1 : 0;
-        for (let k = 0; k < len; k++) { const v = a![o * len * inner + k * st[axis]! + j]!; acc = op === "MAX" ? Math.max(acc, v) : Math.fround(op === "MUL" ? acc * v : acc + v); }
+        let acc = op === "MAX" ? -Infinity : op === "MUL" ? 1 : 0, m = -Infinity;
+        for (let k = 0; k < len; k++) {
+          const v = a![o * len * inner + k * st[axis]! + j]!;
+          if (op === "ARGMAX") { if (v > m || (v !== v && m === m)) { m = v; acc = k; } }
+          else acc = op === "MAX" ? Math.max(acc, v) : Math.fround(op === "MUL" ? acc * v : acc + v);
+        }
         out[o * inner + j] = acc;
       }
       return out;
