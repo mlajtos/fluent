@@ -2,8 +2,8 @@
 // finite differences on random graphs, and a training smoke. Runs in headless Chrome:
 //   bun engine/tests/run.ts
 
-import { buffer, konst, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, type UOp } from "../ir.ts";
-import { optimize, optimizeMany, simplifyMany } from "../opt.ts";
+import { buffer, konst, data, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, pad, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, numel, type UOp } from "../ir.ts";
+import { optimize, optimizeMany, simplifyMany, rangesIn, accCost, COST } from "../opt.ts";
 import { grad, gradAll } from "../grad.ts";
 import { CPU, type HostData } from "../cpu.ts";
 import { realize, realizeMany } from "./realize.ts";
@@ -163,6 +163,74 @@ export default async function (): Promise<{ fails: number }> {
   check("softmax row is ONE kernel", kernels(softmaxRow(x)).length === 1);
   check("matmul is ONE kernel", kernels(matmul(x, transpose(y))).length === 1);
   check("matvec + bias + silu epilogue is ONE kernel", kernels(silu(add(matmul(buffer("h", [1, 32]), buffer("Wg", [32, 16])), buffer("b", [16])))).length === 1);
+  { // small inputs share a binding: twelve small tables over a picture are one kernel, read
+    // from two blocks of them, not the device's limit of bindings split into many kernels
+    const P = buffer("P", [64, 96]), tables = Array.from({ length: 12 }, (_, i) => data(rv(96, i + 1), [96]));
+    const g = tables.reduce<UOp>((s, t, i) => add(s, mul(i % 2 ? exp(mul(P, konst(0.01 * i))) : P, broadcastTo(t, [64, 96]))), konst(0));
+    const ks = kernels(g), top = ks.at(-1)!;
+    check("twelve small inputs: ONE kernel reading P and two blocks", ks.length === 3 && top.src.length - 2 === 3, `${ks.length} kernels`);
+    const at = new Map<string, HostData>([["P", T(rv(64 * 96), [64, 96])]]);
+    const a = await realize(cpu, g, at), b = gpu ? await realize(gpu, g, at) : a;
+    check("parity: twelve small inputs", rel(b.data, a.data) < 1e-5, `relΔ ${rel(b.data, a.data).toExponential(1)}`);
+  }
+  { // one value per (node, index): a fork of pixels × pieces read three times at one index is
+    // computed once, in the kernel that sums it – never stored
+    const P = 4096, E = 64, px = buffer("px", [P, 1]), ed = buffer("ed", [1, E]);
+    const a = add(mul(exp(add(broadcastTo(px, [P, E]), mul(broadcastTo(ed, [P, E]), konst(-1)))), konst(0.5)), konst(1));
+    const g = reduceAxis(add(mul(a, a), sqrt(a)), 1, false), ks = kernels(g);
+    check("a fork of pixels × pieces read at one index is computed in the kernel that sums it: ONE kernel", ks.length === 1, `${ks.length} kernels, the largest [${ks.map((k) => k.shape).sort((x, y) => numel(y) - numel(x))[0]}]`);
+    const at = new Map<string, HostData>([["px", T(rv(P, 2), [P, 1])], ["ed", T(rv(E, 2), [1, E])]]);
+    const c = await realize(cpu, g, at), d = gpu ? await realize(gpu, g, at) : c;
+    check("parity: a fork of pixels × pieces", rel(d.data, c.data) < 1e-5);
+    // read two ways that take each element once – the two coordinates of a cell's corners –
+    // it is computed where each way reads it
+    const pts = buffer("pts", [P, 1, 2]), corners = data(Float32Array.of(0, 0, 1, 0, 0, 1, 1, 1), [4, 2]);
+    const cell = add(exp(mul(broadcastTo(pts, [P, 4, 2]), konst(0.3))), broadcastTo(corners, [P, 4, 2]));
+    const mix = (u: UOp) => mul(add(mul(u, konst(34)), konst(1)), u);
+    const coords = (j: number) => reshape(slice(cell, 2, j, 1), [P, 4]);
+    const n2 = reduceAxis(add(mix(coords(0)), mix(coords(1))), 1, false), kn = kernels(n2);
+    check("a fork read as two coordinates is computed where each is read: ONE kernel", kn.length === 1, `${kn.length} kernels`);
+  }
+  { // a chain of sums over a body with a loop of its own folds into its reader only within
+    // COST.perThread steps a thread: 3 outputs, each a sum over four axes of 8 of a product
+    // with a sum over a fifth, is not one 32,768-step loop on each of 3 threads
+    const Y = buffer("Y", [3, 8, 8, 8, 8, 8]), X = buffer("X", [3, 8, 8, 8, 8]);
+    let r: UOp = mul(reduceAxis(Y, 5, false), X);
+    for (let ax = 4; ax >= 1; ax--) r = reduceAxis(r, ax, false);
+    const per = kernels(r).map((k) => accCost(k.src[1]!));
+    check("chained sums: no thread runs past the per-element budget", Math.max(...per) <= COST.perElem, `steps a thread: ${per.join(", ")}`);
+    const at = new Map<string, HostData>([["Y", T(rv(3 * 8 ** 5), [3, 8, 8, 8, 8, 8])], ["X", T(rv(3 * 8 ** 4), [3, 8, 8, 8, 8])]]);
+    const c = await realize(cpu, r, at), d = gpu ? await realize(gpu, r, at) : c;
+    check("parity: chained sums", rel(d.data, c.data) < 1e-4, `relΔ ${rel(d.data, c.data).toExponential(1)}`);
+  }
+  { // butterflies: each stage reads the one before at two indices, so computed in place the
+    // copies double at each stage down. The plan stores a stage once its copies cost more than
+    // storing it, so no stage recomputes more than storing costs: 12 stages of 4096 points
+    const Nf = 4096, H = Nf / 2, S = 12;
+    let f: UOp = buffer("f", [Nf]);
+    for (let s = 0; s < S; s++) {
+      const a = slice(f, 0, 0, H), b = mul(slice(f, 0, H, H), data(Float32Array.from({ length: H }, (_, i) => Math.cos(i + s)), [H]));
+      f = add(pad(add(a, b), 0, 0, H), pad(sub(a, b), 0, H, 0));
+    }
+    const body = kernels(f).reduce((n, k) => n + toposort(k.src[1]!).length, 0);
+    check("butterflies: no stage recomputes more than storing it costs", body <= S * COST.recompute, `${body} ops in the plan's kernels`);
+    const at = new Map<string, HostData>([["f", T(Float32Array.from({ length: Nf }, (_, i) => Math.sin(i)), [Nf])]]);
+    const c = await realize(cpu, f, at), d = gpu ? await realize(gpu, f, at) : c;
+    check("parity: butterflies", rel(d.data, c.data) < 1e-4, `relΔ ${rel(d.data, c.data).toExponential(1)}`);
+  }
+  { // a kernel's body is a graph: a value it reads twice is one value, and printing walks it
+    // once – a term squared 30 times is 30 nodes, not 2³⁰ paths. Both shapes a reduction can
+    // print as: a contraction's tile, and a long sum's cooperative workgroup
+    const square = (t: UOp, n: number): UOp => { for (let i = 0; i < n; i++) t = mul(t, t); return t; };
+    const A = buffer("A", [32, 128, 1]), B = buffer("B", [1, 128, 32]), Xr = buffer("Xr", [4, 4096]);
+    const tile = reduceAxis(square(mul(broadcastTo(A, [32, 128, 32]), broadcastTo(B, [32, 128, 32])), 22), 1, false), coop = reduceAxis(square(Xr, 30), 1, false);
+    for (const [name, g] of [["a contraction's tile", tile], ["a long sum", coop]] as const) {
+      const t0 = performance.now();
+      lowerMany([g]);
+      const ms = performance.now() - t0;
+      check(`${name} over a term squared again and again is printed in time linear in its nodes`, ms < 500, `${ms.toFixed(0)} ms`);
+    }
+  }
   { // a gather is a read: never stored only to be read back
     const W = buffer("W", [6, 4]), ids = buffer("ids", [5]), g = gather(W, ids);
     check("a gather read twice is ONE kernel", kernels(add(mul(g, g), exp(g))).length === 1);
@@ -286,6 +354,30 @@ export default async function (): Promise<{ fails: number }> {
       check(`∇ ${nm} == finite-diff`, w < 3e-2, `worst ${w.toExponential(1)}`);
       if (gpu) { const gg = (await realize(gpu, grad(loss, W), at(Wd.slice()))).data; check(`∇ ${nm} cpu == gpu`, rel(gg, g) < 1e-3); }
     }
+  }
+  { // ∇ of a minimum flows through its winner: P pixels, each nearest to one of K points. The
+    // derivative is taken at each pixel's winner alone – never at every (pixel, point) pair –
+    // and it is the exact one, on the CPU and on the GPU, where recomputed distances differ in
+    // their last bits from the minimum's
+    const P = 6000, K = 37, px = buffer("px", [P, 2]), th = buffer("th", [K, 2]), w = buffer("w", [P]);
+    const pair = add(broadcastTo(reshape(px, [P, 1, 2]), [P, K, 2]), mul(broadcastTo(reshape(th, [1, K, 2]), [P, K, 2]), konst(-1)));
+    const d = reshape(sqrt(add(reduceAxis(mul(pair, pair), 2, true), konst(0.25))), [P, K]);
+    const loss = sum(mul(mul(reduceMax(mul(d, konst(-1)), 1, false), konst(-1)), w));
+    const g = grad(loss, th);
+    const Pd = rv(P * 2, 50), Td = rv(K * 2, 50), Wd = rv(P);
+    const at = new Map<string, HostData>([["px", T(Pd, [P, 2])], ["th", T(Td, [K, 2])], ["w", T(Wd, [P])]]);
+    const want = new Float64Array(K * 2);
+    for (let p = 0; p < P; p++) {
+      let best = Infinity, k = 0;
+      for (let j = 0; j < K; j++) { const dx = Pd[2 * p]! - Td[2 * j]!, dy = Pd[2 * p + 1]! - Td[2 * j + 1]!, e = Math.sqrt(dx * dx + dy * dy + 0.25); if (e < best) { best = e; k = j; } }
+      for (let c = 0; c < 2; c++) want[2 * k + c]! += Wd[p]! * (Td[2 * k + c]! - Pd[2 * p + c]!) / best;
+    }
+    const a = (await realize(cpu, g, at)).data, b = gpu ? (await realize(gpu, g, at)).data : a;
+    check("∇ of a minimum, through its winner: CPU and GPU = exact", rel(a, want) < 1e-4 && rel(b, want) < 1e-4, `relΔ ${rel(a, want).toExponential(1)} / ${rel(b, want).toExponential(1)}`);
+    let worst = 0;
+    for (const k of toposort(optimize(g)).filter((u) => u.op === "FUSED"))
+      for (const u of toposort(k.src[1]!)) if (u.op === "RECIPROCAL") worst = Math.max(worst, [...rangesIn(u)].filter((r) => r !== k.src[0]).reduce((n, r) => n * (r.arg as { extent: number }).extent, numel(k.shape)));
+    check("∇ of a minimum: the derivative is taken at each pixel's coordinates, not at every pair", worst <= 2 * P, `${worst} evaluations of the distance's slope`);
   }
   { // higher order: f = x³ → ∇²=6x, ∇³=6
     const s = buffer("s", []);

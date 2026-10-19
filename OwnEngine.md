@@ -60,12 +60,12 @@ grammar is written in Ohm, Alessandro Warth's successor to OMeta.
 
 **Primitives** (`ir.ts`): leaves CONSTANT, BUFFER, IOTA; ADD, MULTIPLY, RECIPROCAL, EXP,
 LOG, SQRT, LESS_THAN, WHERE, DETACH; RANDOM (uniform, a pure function of seed and index,
-so it fuses anywhere); REDUCE (add, max, product); the views BROADCAST, PERMUTE,
-RESHAPE, SLICE, WINDOW, PAD; GATHER and SCATTER_ADD, each other's transpose. MATH is one
-table row per function, each with one JS function, one WGSL expression and one
-derivative: sin, cos, tanh, asin, acos, atan, asinh, acosh, atanh, floor, ceil, trunc,
-round, sign, abs, isnan, expm1, log1p, cbrt, atan2, div, eq, pow. A FUSED node is a loop
-nest of the same node type, so every pass reaches inside kernels.
+so it fuses anywhere); REDUCE (add, max, product, and argmax: where the max is); the
+views BROADCAST, PERMUTE, RESHAPE, SLICE, WINDOW, PAD; GATHER and SCATTER_ADD, each other's
+transpose. MATH is one table row per function, each with one JS function, one WGSL
+expression and one derivative: sin, cos, tanh, asin, acos, atan, asinh, acosh, atanh,
+floor, ceil, trunc, round, sign, abs, isnan, expm1, log1p, cbrt, atan2, div, eq, pow. A
+FUSED node is a loop nest of the same node type, so every pass reaches inside kernels.
 
 ### 3.1 Backends
 
@@ -99,6 +99,16 @@ GPU. `worker.ts` calls `init()` before it evaluates anything.
   took the dreamer's step from 29 to 17.5 ms and made the weight-gradient tiles 9×
   faster. SLICE's transpose is PAD, an index predicate. As a scatter, one ∇ of a 4k
   slice ran 3.4·10⁷ loop iterations.
+- **Fusion.** A kernel is built from the graph, one value per (node, index): a node read
+  twice at one index is computed once, and a node read where it is needed is never
+  stored. A plan stores a node only where that costs less than recomputing it: read more
+  than one way – at other indices – it starts stored and is freed where its reads take few
+  elements more than once; one computed more often than it has elements is stored once its
+  recompute costs more than a store and its reads (`COST.recompute`). An intermediate of
+  pixels × pieces is read where it is reduced, never written: outline text went from
+  410 MB and 220 ms of GPU to 2.8 MB and 8 ms, Perlin noise at 1280 × 800 from 11 kernels,
+  184 MB and 9–13 ms to one kernel, 12 MB and 2.2 ms. `engine/tests/bench-fuse.ts`
+  re-derives the constants.
 - **Contractions.** A contraction is spliced into a reduction's body only when it becomes
   the whole, tileable body: 17.5 → 9.2 ms a dreamer step. From K = 8 a contraction runs
   as a tile (`engine/tests/bench-tile.ts` re-derives the gate), and a loop nest the plan
@@ -132,7 +142,10 @@ variables, gradients) in one pass. A state write while differentiating is an Err
   times an infinite factor stays zero, so NaN from the branch not taken never leaks. The
   product is `mul0`, in which 0 is strong; its derivative is the product's, so a higher
   derivative still holds where a cotangent is 0.
-- `∇max` splits ties evenly, as JAX does.
+- `∇max` is its winner's derivative: the backward reads where the max is (argmax, found as the
+  max is), takes the derivative there alone, and gives a tie to the first winner, as PyTorch
+  does. Nothing is found by comparing a recomputed value with the max, which on a GPU need
+  not match in its last bits.
 - The engine has no law x × 0 = 0 (0 × ∞ is NaN).
 
 ### 3.4 Numerics
@@ -408,8 +421,8 @@ lookahead; Shampoo and SOAP wait for S9.
 8. **Sort runs on the GPU** for data on the GPU, as a bitonic network in
    `engine/tensor.ts`.
 9. **The branch of a `where` not taken gets an exact zero cotangent**, so its NaN never
-   leaks. This is the one semantic change to ∇ on this list.
-10. **`∇max` ties split evenly**, a true subgradient.
+   leaks.
+10. **`∇max` goes to the first winner** of a tie, a true subgradient.
 11. **Limits:** request the adapter's maxima.
 12. **◌ means an argument not given**, for natives and lambdas alike.
 13. **Optimizers train the variables their loss reads**; an explicit list stays possible.

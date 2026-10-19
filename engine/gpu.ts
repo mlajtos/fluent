@@ -53,7 +53,9 @@ const WGSL: Syntax = {
     MATH: (r, u, c) => MATHS[(u.arg as { fn: string }).fn]!.wgsl(...u.src.map((s, i) => { const a = r(i); return /^-?[\w.]+$/.test(a) ? a : bind(s, a, c); })),
     RAND: (r) => `hashUniform(u32(${r(1)}), ${r(0)})`,
   },
-  acc: (a, op, r, n, body, v) => `  var ${a}: f32 = ${REDUCE[op]!.start};\n  for (var ${r}: u32 = 0u; ${r} < ${n}u; ${r} = ${r} + 1u) {\n${body.join("\n")}\n    ${a} = ${REDUCE[op]!.step(a, v)};\n  }`,
+  acc: (a, op, r, n, body, v) => op === "ARGMAX"
+    ? `  var ${a}: f32 = 0.0; var ${a}m: f32 = -inff();\n  for (var ${r}: u32 = 0u; ${r} < ${n}u; ${r} = ${r} + 1u) {\n${body.join("\n")}\n    let ${a}v = ${v};\n    if (${a}v > ${a}m || ((bitcast<u32>(${a}v) & 0x7fffffffu) > 0x7f800000u && (bitcast<u32>(${a}m) & 0x7fffffffu) <= 0x7f800000u)) { ${a}m = ${a}v; ${a} = f32(${r}); }\n  }`
+    : `  var ${a}: f32 = ${REDUCE[op]!.start};\n  for (var ${r}: u32 = 0u; ${r} < ${n}u; ${r} = ${r} + 1u) {\n${body.join("\n")}\n    ${a} = ${REDUCE[op]!.step(a, v)};\n  }`,
   let: (name, e) => `  let ${name} = ${e};`,
   named: (uses, size) => uses > 1 && size > 12,
 };
@@ -127,7 +129,7 @@ function tileNest(u: UOp, nIn: number): Printed | null {
   // the body may be a SUM of terms (Σ-linearity merges ∇'s fork terms), each staged
   // through its own slab pair
   const terms: UOp[] = [];
-  const flat = (v: UOp): void => { if (v.op === "ADD") { flat(v.src[0]!); flat(v.src[1]!); } else terms.push(v); };
+  const flat = (v: UOp): void => { if (terms.length > 4) return; if (v.op === "ADD") { flat(v.src[0]!); flat(v.src[1]!); } else terms.push(v); };
   flat(inner);
   if (terms.length > 4) return null;
   // unit axes don't count: a keepdims matmul ends in [...,1], and its N is the last
@@ -151,9 +153,13 @@ function tileNest(u: UOp, nIn: number): Printed | null {
   type Read = { at: UOp; ids: number[] };
   const pairs: { term: UOp; a: Read; b: Read }[] = [];
   for (const term of terms) {
-    const reads = new Map<string, Read>();
+    // a term is a graph: a value it reads twice is walked once
+    const reads = new Map<string, Read>(), walked = new Map<number, boolean>();
     const walk = (v: UOp): boolean => {
-      if (v.op !== "LOAD") return VALUE.has(v.op) && v.src.every(walk);
+      let ok = walked.get(v.id);
+      if (ok !== undefined) return ok;
+      if (v.op !== "LOAD") { ok = VALUE.has(v.op) && v.src.every(walk); walked.set(v.id, ok); return ok; }
+      walked.set(v.id, true);
       const at = load((v.arg as { slot: number }).slot, subst(v.src[0]!)), key = idxKey(at), seen = reads.get(key);
       if (seen) seen.ids.push(v.id); else reads.set(key, { at, ids: [v.id] });
       return true;
@@ -233,13 +239,13 @@ const COOP_WG = 128;
 function coopReduce(u: UOp, nIn: number): Printed | null {
   const { chain, inner, op } = accChain(u.src[1]!);                           // one reduce IS the whole value (no epilogue)
   const K = chain.reduce((p, r) => p * extent(r), 1), N = Math.max(numel(u.shape), 1), WG = COOP_WG;
-  if (!chain.length || K < WG * COST.groupSteps) return null;                  // too little K to split — the plain nest is fine
-  const hasAcc = (v: UOp): boolean => v.op === "ACC" || v.src.some(hasAcc);
-  if (hasAcc(inner)) return null;                                              // reduces below non-ACC ops: the plain printer's job
+  if (!chain.length || K < WG * COST.groupSteps || op === "ARGMAX") return null;   // too little K to split — the plain nest is fine; a winner runs in one thread
+  const body = toposort(inner);
+  if (body.some((v) => v.op === "ACC")) return null; // reduces below non-ACC ops: the plain printer's job
   // A loop variable's distance: how far one step of it moves the reads of the largest input,
   // the reads that move the most memory – the index with it at 1 less the index with it at
   // 0, every other variable at 0; the least over those reads.
-  const loads = toposort(inner).filter((v) => v.op === "LOAD"), size = (v: UOp) => numel(kInputs(u)[(v.arg as { slot: number }).slot]!.shape);
+  const loads = body.filter((v) => v.op === "LOAD"), size = (v: UOp) => numel(kInputs(u)[(v.arg as { slot: number }).slot]!.shape);
   const vars = [u.src[0]!, ...chain], most = Math.max(0, ...loads.map(size)), reads = loads.filter((v) => size(v) === most).map((v) => v.src[0]!);
   const at = (one: UOp | null, ix: UOp): number | null => {
     const memo = new Map(vars.map((r): [number, UOp] => [r.id, iconst(r === one ? 1 : 0)]));

@@ -11,7 +11,7 @@ export type Op =
   | "MATH"                                                   // arg {fn}: one row of MATHS — sin, floor, pow, …
   | "RANDOM"                                                 // src [seed]: uniform [0,1), a pure function of (seed, index)
   | "IOTA"                                                   // leaf [n]: element i is i — an index ramp no buffer holds
-  | "REDUCE"                                                 // arg {axis, keepdims, op: "ADD"|"MAX"|"MUL"}
+  | "REDUCE"                                                 // arg {axis, keepdims, op: Fold}
   | "BROADCAST" | "PERMUTE" | "RESHAPE" | "SLICE" | "WINDOW" // the view algebra — pure stride maps, never compute
   | "PAD"                                                    // arg {axis, before, after}: zeros around — SLICE's transpose, an index predicate
   | "GATHER" | "SCATTER_ADD"                                 // runtime-indexed rows; each other's transpose
@@ -170,7 +170,10 @@ export const iota = (n: number): UOp => node("IOTA", [], null, [n]);
 export const where = (c: UOp, a: UOp, b: UOp): UOp => { const s = bc(c, a, b); return node("WHERE", s, null, s[0]!.shape); };
 
 // ---- reduce ------------------------------------------------------------------
-export const reduceAxis = (a: UOp, axis: number, keepdims = true, op: "ADD" | "MAX" | "MUL" = "ADD"): UOp => {
+// ARGMAX is where the maximum is: the index of the first largest, of the first NaN if there
+// is one – a maximum's winner, found as the maximum is
+export type Fold = "ADD" | "MAX" | "MUL" | "ARGMAX";
+export const reduceAxis = (a: UOp, axis: number, keepdims = true, op: Fold = "ADD"): UOp => {
   if (axis < 0 || axis >= a.shape.length) err(`reduce: axis ${axis} out of ${sh(a.shape)}`);
   const s = a.shape.slice(); if (keepdims) s[axis] = 1; else s.splice(axis, 1);
   return node("REDUCE", [a], { axis, keepdims, op }, s);
@@ -309,7 +312,7 @@ export const imod = (a: UOp, b: UOp): UOp => {
 export const rebuild = (op: Op, src: UOp[], arg: unknown, shape: readonly number[]): UOp =>
   op === "IADD" ? iadd(src[0]!, src[1]!) : op === "IMUL" ? imul(src[0]!, src[1]!) : op === "IDIV" ? idiv(src[0]!, src[1]!) : op === "IMOD" ? imod(src[0]!, src[1]!) : node(op, src, arg, shape);
 export const load = (slot: number, idx: UOp): UOp => node("LOAD", [idx], { slot }, []);
-export const acc = (op: "ADD" | "MAX" | "MUL", r: UOp, body: UOp): UOp => node("ACC", [r, body], { op }, []);
+export const acc = (op: Fold, r: UOp, body: UOp): UOp => node("ACC", [r, body], { op }, []);
 export const iidx = (v: UOp): UOp => node("IIDX", [v], null, []);              // value → index (u32 cast)
 export const ival = (i: UOp): UOp => node("IVAL", [i], null, []);              // index → value (f32 cast)
 
@@ -334,16 +337,18 @@ export const bcIndex = (st: readonly number[], outSh: readonly number[], gid: UO
 // ---- printing a loop nest: one printer, a syntax per backend ----------------------
 // Each op prints from its operands' text (`r(i)` prints operand i, where the syntax reads
 // it). A shared subexpression the syntax names becomes a `let` at the OUTERMOST scope its
-// loop variables allow: a loop-invariant value hoists out of the loops below it.
+// loop variables allow: a loop-invariant value hoists out of the loops below it. So does an
+// expression nested DEEP levels: a shader parser stops at a depth.
 export interface Syntax {
   op: Partial<Record<Op, (r: (i: number) => string, u: UOp, c: Nest) => string>>;
   acc: (name: string, op: string, r: string, n: number, body: string[], v: string) => string;
   let: (name: string, e: string) => string;
   named: (uses: number, size: number) => boolean;
 }
-export interface Nest { syn: Syntax; names: Map<number, string>; ctr: { n: number }; uses: Map<number, number>; deps: Map<number, Set<number>>; size: Map<number, number>; scopeOf: Map<number, number>; scopes: string[][]; bound: Map<number, string> }
+const DEEP = 32;
+export interface Nest { syn: Syntax; names: Map<number, string>; ctr: { n: number }; uses: Map<number, number>; deps: Map<number, Set<number>>; size: Map<number, number>; scopeOf: Map<number, number>; scopes: string[][]; bound: Map<number, string>; nested: Map<number, number> }
 export const nest = (syn: Syntax, names: Map<number, string>, ctr = { n: 0 }): Nest =>
-  ({ syn, names, ctr, uses: new Map(), deps: new Map(), size: new Map(), scopeOf: new Map(), scopes: [[]], bound: new Map() });
+  ({ syn, names, ctr, uses: new Map(), deps: new Map(), size: new Map(), scopeOf: new Map(), scopes: [[]], bound: new Map(), nested: new Map() });
 export const infix = (o: string) => (r: (i: number) => string) => `(${r(0)} ${o} ${r(1)})`;
 export const INDEX_SYNTAX: Syntax["op"] = { IADD: infix("+"), IMUL: infix("*"), IMOD: infix("%"), LOAD: (r, u) => `a${(u.arg as { slot: number }).slot}[${r(0)}]` };
 // one pre-pass over a value: use counts, the RANGEs each node needs, subtree sizes
@@ -382,7 +387,10 @@ export function render(u: UOp, c: Nest): string {
     return `acc${k}`;
   }
   const e = (c.syn.op[u.op] ?? err(`print: cannot print ${u.op}`))((i) => render(u.src[i]!, c), u, c);
-  return u.op !== "ICONST" && u.op !== "CONSTANT" && c.syn.named(c.uses.get(u.id) ?? 1, c.size.get(u.id) ?? 1) ? bind(u, e, c) : e;
+  const depth = 1 + Math.max(0, ...u.src.map((s) => (c.bound.has(s.id) ? 0 : c.nested.get(s.id) ?? 0)));
+  if (u.op !== "ICONST" && u.op !== "CONSTANT" && (depth > DEEP || c.syn.named(c.uses.get(u.id) ?? 1, c.size.get(u.id) ?? 1))) return bind(u, e, c);
+  c.nested.set(u.id, depth);
+  return e;
 }
 
 // every node the roots reach, each once, sources first; `srcOf` picks the edges to follow.
