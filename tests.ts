@@ -1827,7 +1827,7 @@ describe("gallery examples smoke suite", () => {
     const scope = scopeOf(EXAMPLES.caustics)
     const read = (expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope)) as number
     // the share of the light on the wall that falls where the goal is bright – the letters
-    const onLetters = "l: light(xs, ys, r), Σ(l × (goal() > 1)) ÷ Σ(l)"
+    const onLetters = "l: caustic(xs, ys, r), Σ(l × (goal() > 1)) ÷ Σ(l)"
     const loss = read("𝓛()"), share = read(onLetters)
     for (let i = 0; i < 60; i++) { steps[0]!(engine.scalar(i)) }
     expect(read("𝓛()")).toBeLessThan(loss / 2)

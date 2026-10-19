@@ -778,10 +778,10 @@ cam: Camera(160, 120),
 xs: 0 ..< W÷gap + 0.5 × gap, ys: 0 ..< H÷gap + 0.5 × gap,
 glass: ~(noise(stack(meshgrid(xs, ys), -1) ÷ 40) × 8),
 
-; the light at the points (x, y) of the wall. Each ray lands moved by the glass's slope and
-; glows there – a halo, exp(-d²/r²) – and a glow is its glow across times its glow down,
-; so the light of every ray at every point is one matrix product
-light: { x, y, r |
+; the caustic: the light at the points (x, y) of the wall. Each ray lands moved by the
+; glass's slope and glows there – a halo, exp(-d²/r²) – and a glow is its glow across
+; times its glow down, so the light of every ray at every point is one matrix product
+caustic: { x, y, r |
   dx: roll(glass, -1, 1) - glass, dy: roll(glass, -1, 0) - glass,
   X: flat(xs ⍴ [1, -1] + (depth × dx ÷ gap)), Y: flat(ys ⍴ [-1, 1] + (depth × dy ÷ gap)),
   glow: { p, P | exp(-((p ⊗(-) P)^2 ÷ r^2)) },
@@ -797,7 +797,7 @@ goal: \${
       f: cam(), fh: shape(f)_0, fw: shape(f)_1, s: fh ÷ H ⌊ (fw ÷ W),
       row: clamp(floor(ys - at()_1 × s + (fh ÷ 2)), 0, fh - 1),
       col: clamp(floor(at()_0 - xs × s + (fw ÷ 2)), 0, fw - 1),
-      seen: mean((f ⍴ [-1, 3])_(row ⍴ [-1, 1] × fw + col), -1)^2.2 + 0.01,
+      seen: mean((f ⍴ [-1, 3])_(row ⍴ [-1, 1] × fw + col), -1) + 0.01,
       seen ÷ mean(seen)
     }),
     {
@@ -808,7 +808,7 @@ goal: \${
   )
 },
 
-𝓛: { mean((light(xs, ys, r) - goal())^2) },
+𝓛: { mean((caustic(xs, ys, r) - goal())^2) },
 opt: adam(0.1),
 { opt(𝓛) } ⟳ Time()×60,
 
@@ -821,7 +821,7 @@ sun: [[0.09, 0.09, 0.09], [0.55, 0.22, 0.05], [1, 0.7, 0.3], [1, 1, 0.9]],
 wall: \${
   canvas(W, H) . paint({ p |
     q: unstack(p, -1), x: q_0_0, y: transpose(q_1)_0,
-    matmul(matmul(tent(y, y2), light(x2, y2, r×0.7)), transpose(tent(x, x2))) ÷ 5
+    matmul(matmul(tent(y, y2), caustic(x2, y2, r×0.7)), transpose(tent(x, x2))) ÷ 5
   }, ramp(sun))
 },
 
