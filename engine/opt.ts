@@ -81,6 +81,12 @@ const ELEM = new Set<Op>(["ADD", "MULTIPLY", "RECIPROCAL", "EXP", "LOG", "SQRT",
 const VIEW = new Set<Op>(["BROADCAST", "PERMUTE", "RESHAPE", "SLICE", "WINDOW"]);
 const MAX_INPUTS = 6;                                                          // soft cap on kernel growth (inline/splice stop here; mandatory reads may still add)
 const HARD_INPUTS = 8;                                                         // past this a kernel is rebuilt materialize-everything. THE TARGET IS THE BROWSER: Chrome/Dawn caps storage buffers at 10/stage (Deno's Metal wgpu falsely reports 31), so inputs+output ≤ 9+1 = 10
+// An input this small – a point, a color, a table of corners – shares a binding: a kernel
+// with more inputs than the device binds reads its small ones from blocks of HARD_INPUTS
+// (packMany), so they cost one binding a block
+const SMALL_INPUT = 256;
+const small = (x: UOp): boolean => (x.op === "BUFFER" || x.op === "CONSTANT") && numel(x.shape) <= SMALL_INPUT;
+const bindings = (xs: readonly UOp[]): number => { const s = xs.filter(small).length; return xs.length - s + Math.ceil(s / HARD_INPUTS); };
 
 function useCounts(roots: UOp[]): Map<number, number> {
   const uc = new Map<number, number>();
@@ -185,13 +191,13 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
       if (vm.base.op === "IOTA") return ival(e);
       if (vm.base.op === "PAD") return readPad(vm.base, e);
       const b = build(vm.base);
-      // the inputs a splice adds: a second read of a spliced kernel adds none
-      const fresh = () => kInputs(b).filter((x) => !slot.has(x.id)).length;
+      // the bindings with the inputs a splice adds: a second read of a spliced kernel adds none
+      const fresh = () => bindings([...inputs, ...kInputs(b).filter((x) => !slot.has(x.id))]);
       const c = b.op === "FUSED" ? accCost(b.src[1]!) : 0;                     // c = 1: a pure map folds free; a loop folds while recompute stays cheap
       // a loop nest the plan materializes is loaded, never also recomputed. A gather is a
       // read of its table: each of its readers reads the table itself, as each recomputes an
       // elementwise fork, so a gather is never stored only to be read back
-      if (b.op === "FUSED" && (chainUse(v) === 1 || vm.base.op === "GATHER") && slot.get(b.id) === undefined && inputs.length + fresh() <= cap && !(c > 1 && loaded.has(vm.base.id))) {
+      if (b.op === "FUSED" && (chainUse(v) === 1 || vm.base.op === "GATHER") && slot.get(b.id) === undefined && fresh() <= cap && !(c > 1 && loaded.has(vm.base.id))) {
         // a spliced value runs once a thread, and again each step of the reduction's loop
         // only where its index reads the loop variable – the printers hoist it otherwise
         const evals = outN * (loop && rangesIn(e).has(loop) ? (loop.arg as { extent: number }).extent : 1);
@@ -261,7 +267,7 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
       const top = VIEW.has(u.op) && viewMap(u).base === u ? u.src[0]! : u;
       const mk = (cap: number) => { const gid = range(Math.max(numel(u.shape), 1)); const { inputs, value } = kernel(top, top.shape, gid, cap); return fused(gid, value, inputs, u.shape); };
       out = mk(MAX_INPUTS);
-      if (out.src.length - 2 > HARD_INPUTS) out = mk(0);                       // mandatory reads overflowed the device's binding slots: materialize everything
+      if (bindings(kInputs(out)) > HARD_INPUTS) out = mk(0);                       // mandatory reads overflowed the device's binding slots: materialize everything
     } else if (u.op === "REDUCE") {                                            // an ACC over the reduced axis; the producer chain fuses into its body
       const a = u.arg as { axis: number; keepdims: boolean; op: "ADD" | "MAX" | "MUL" };
       const inSh = u.src[0]!.shape, inSt = strides(inSh), outSh = u.shape, outSt = strides(outSh);
@@ -274,7 +280,7 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
         return fused(gid, acc(a.op, k, value), inputs, u.shape);
       };
       out = mk(MAX_INPUTS);
-      if (out.src.length - 2 > HARD_INPUTS) out = mk(0);
+      if (bindings(kInputs(out)) > HARD_INPUTS) out = mk(0);
     } else if (u.op === "GATHER") {                                            // out[i] = table[idx[i]] — the table read as any kernel reads its input
       // the index is loaded (slot 0); the table is read at the row it names, through its
       // views. A gather that takes each element of the table's base about once reads it as
@@ -289,7 +295,7 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
         return fused(gid, value, inputs, u.shape);
       };
       out = mk(MAX_INPUTS);
-      if (out.src.length - 2 > HARD_INPUTS) out = mk(0);
+      if (bindings(kInputs(out)) > HARD_INPUTS) out = mk(0);
     } else if (u.op === "SCATTER_ADD") {                                       // out[v,c] = Σ_i (idx[i]==v ? values[i,c] : 0) — GATHER's transpose, as one nest
       const rest = u.shape.slice(1), R = Math.max(numel(rest), 1), N = u.src[0]!.shape[0]!;
       const gid = range(Math.max(numel(u.shape), 1));
@@ -366,6 +372,55 @@ const unrollMany = (plan: UOp[]): UOp[] => {
   return plan.map((r) => memo.get(r.id) ?? r);
 };
 
+// ---- small inputs share a binding -----------------------------------------------------
+// A kernel with more inputs than the device binds reads its small ones from blocks: a block
+// is a kernel laying up to HARD_INPUTS of them one after another, and a read of one becomes
+// a read of its block at its offset.
+const block = (xs: readonly UOp[]): { k: UOp; at: number[] } => {
+  const at: number[] = [];
+  let total = 0;
+  for (const x of xs) { at.push(total); total += numel(x.shape); }
+  const g = range(Math.max(total, 1)), c = ival(g);
+  let v: UOp = konst(0);
+  xs.forEach((x, j) => {
+    const below = (n: number) => node("LESS_THAN", [c, konst(n)], null, []);
+    const inside = node("MULTIPLY", [below(at[j]! + numel(x.shape)), node("ADD", [konst(1), node("MULTIPLY", [below(at[j]!), konst(-1)], null, [])], null, [])], null, []);
+    v = node("WHERE", [inside, load(j, iadd(g, iconst(-at[j]!))), v], null, []);   // wraps below the offset only where `inside` is 0
+  });
+  return { k: fused(g, v, [...xs], [total]), at };
+};
+const packMany = (plan: UOp[]): UOp[] => {
+  const memo = new Map<number, UOp>();
+  for (const k of toposort(plan, (u) => (u.op === "FUSED" ? kInputs(u) : []))) {
+    if (k.op !== "FUSED") continue;
+    const ins = kInputs(k).map((x) => memo.get(x.id) ?? x);
+    let out = ins.every((x, i) => x === kInputs(k)[i]) ? k : node("FUSED", [k.src[0]!, k.src[1]!, ...ins], null, k.shape, k.site);
+    const smalls = ins.map((x, i) => (small(x) ? i : -1)).filter((i) => i >= 0);
+    if (ins.length > HARD_INPUTS && smalls.length > 1) {
+      const rest = ins.map((_, i) => i).filter((i) => !small(ins[i]!)), slot = new Map<number, [number, number]>(rest.map((i, j) => [i, [j, 0]]));
+      const blocks: UOp[] = [];
+      for (let b = 0; b < smalls.length; b += HARD_INPUTS) {
+        const part = smalls.slice(b, b + HARD_INPUTS), { k: bk, at } = block(part.map((i) => ins[i]!));
+        part.forEach((i, j) => slot.set(i, [rest.length + blocks.length, at[j]!]));
+        blocks.push(bk);
+      }
+      const seen = new Map<number, UOp>();
+      const move = (v: UOp): UOp => {
+        let w = seen.get(v.id);
+        if (w) return w;
+        const src = v.src.map(move);
+        if (v.op === "LOAD") { const [s, off] = slot.get((v.arg as { slot: number }).slot)!; w = load(s, off ? iadd(src[0]!, iconst(off)) : src[0]!); }
+        else w = src.every((x, i) => x === v.src[i]) ? v : rebuild(v.op, src, v.arg, v.shape);
+        seen.set(v.id, w);
+        return w;
+      };
+      out = node("FUSED", [k.src[0]!, move(k.src[1]!), ...rest.map((i) => ins[i]!), ...blocks], null, k.shape, k.site);
+    }
+    memo.set(k.id, out);
+  }
+  return plan.map((r) => memo.get(r.id) ?? r);
+};
+
 // ---- optimize: simplify → schedule → fuse → unroll; result = leaves + FUSED only -------
 export function optimizeMany(roots: UOp[]): UOp[] {
   const s = graphRewriteMany(simplifyMany(roots), SCHED_REWRITES);
@@ -375,7 +430,7 @@ export function optimizeMany(roots: UOp[]): UOp[] {
   // the nests the last plan loads, until a plan loads no new nest
   let g: UOp[], n: number;
   do { n = loaded.size; g = fuseWith(s, uc, mat, loaded); } while (loaded.size > n);
-  g = unrollMany(g);
+  g = packMany(unrollMany(g));
   for (const u of toposort(g))                                                 // legality: only leaves and kernels may reach the executor
     if (u.op !== "FUSED" && u.op !== "CONSTANT" && u.op !== "BUFFER" && u.shape.length) throw new Error(`optimize: ${u.op} survived to the kernel boundary`);
   return g;

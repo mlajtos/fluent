@@ -2,7 +2,7 @@
 // finite differences on random graphs, and a training smoke. Runs in headless Chrome:
 //   bun engine/tests/run.ts
 
-import { buffer, konst, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, type UOp } from "../ir.ts";
+import { buffer, konst, data, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, type UOp } from "../ir.ts";
 import { optimize, optimizeMany, simplifyMany } from "../opt.ts";
 import { grad, gradAll } from "../grad.ts";
 import { CPU, type HostData } from "../cpu.ts";
@@ -163,6 +163,16 @@ export default async function (): Promise<{ fails: number }> {
   check("softmax row is ONE kernel", kernels(softmaxRow(x)).length === 1);
   check("matmul is ONE kernel", kernels(matmul(x, transpose(y))).length === 1);
   check("matvec + bias + silu epilogue is ONE kernel", kernels(silu(add(matmul(buffer("h", [1, 32]), buffer("Wg", [32, 16])), buffer("b", [16])))).length === 1);
+  { // small inputs share a binding: twelve small tables over a picture are one kernel, read
+    // from two blocks of them, not the device's limit of bindings split into many kernels
+    const P = buffer("P", [64, 96]), tables = Array.from({ length: 12 }, (_, i) => data(rv(96, i + 1), [96]));
+    const g = tables.reduce<UOp>((s, t, i) => add(s, mul(i % 2 ? exp(mul(P, konst(0.01 * i))) : P, broadcastTo(t, [64, 96]))), konst(0));
+    const ks = kernels(g), top = ks.at(-1)!;
+    check("twelve small inputs: ONE kernel reading P and two blocks", ks.length === 3 && top.src.length - 2 === 3, `${ks.length} kernels`);
+    const at = new Map<string, HostData>([["P", T(rv(64 * 96), [64, 96])]]);
+    const a = await realize(cpu, g, at), b = gpu ? await realize(gpu, g, at) : a;
+    check("parity: twelve small inputs", rel(b.data, a.data) < 1e-5, `relΔ ${rel(b.data, a.data).toExponential(1)}`);
+  }
   { // a gather is a read: never stored only to be read back
     const W = buffer("W", [6, 4]), ids = buffer("ids", [5]), g = gather(W, ids);
     check("a gather read twice is ONE kernel", kernels(add(mul(g, g), exp(g))).length === 1);
