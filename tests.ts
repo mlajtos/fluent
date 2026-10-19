@@ -2598,7 +2598,7 @@ describe("the evaluation host", () => {
     expect(value("shape(plot(0..<3, [1, 2, 3]))")).toEqual([320, 1040, 3])
   }))
   test("text is sized in units: about as much ink a unit at any density", async () => {
-    const ink = () => value(`Σ(canvas(120, 30, 0) . draw(letters("Ag 2.31", [2, 2], 18), 1, 1)) ÷ 3 ÷ Density()^2`) as number
+    const ink = () => value(`Σ(canvas(120, 30, 0) . paint(letters("Ag 2.31", [2, 2], 18), solid(1))) ÷ 3 ÷ Density()^2`) as number
     const one = ink(), two = await atDensity(2, ink)
     expect(Math.abs(two - one) / one).toBeLessThan(0.06)
   })
@@ -2957,24 +2957,40 @@ describe("plot: lines on one pair of axes", () => {
     expect(value(`ListMap(unstack(DrawDigits([1, -2])), CodesToString)`)).toEqual(["1        ", "−2       "])
     expect(value(`shape(DrawDigits([[1, -2]]))`)).toEqual([1, 2, 9])
   })
-  test("letters draw the IDE's font, as much of it as each glyph covers", () => {
-    // a glyph's coverage, summed in the light a picture holds, and the glyph's area: BQN386's
-    // W covers 0.177 of a square of the font's size, measured on Chrome's render of it at 240
-    // pixels
-    const ink = (text: string, size: number, at = "[0, 0]") => value(`Σ(canvas(${size * text.length}, ${size * 2}, 0) . draw(letters("${text}", ${at}, ${size}), 1, 1)) ÷ 3`) as number
-    expect(ink("W", 24) / (0.177 * 24 * 24)).toBeCloseTo(1, 1)
+  test("letters is the distance to the font's outline, negative inside it, exact at the display's pixels", () => {
+    // BQN386's | is a bar from 0.256 to 0.343 of the size across: at a size of 20, from
+    // 5.12 to 6.86 – the pixel centered at 2.5 lies 2.62 left of it, those at 5.5 and 6.5
+    // inside, 0.38 and 0.36 from its sides
+    const bar = value(`letters("|", [0, 0], 20)(pixels(canvas(12, 24)))_12_[2, 5, 6]`) as number[]
+    expect(bar.map((d) => Math.round(d * 100) / 100)).toEqual([2.62, -0.38, -0.36])
+    // the outlines hold a run of points for each of the font's codes, four characters a point
+    expect((value(`(length(DrawFontStarts) - length(DrawFontCodes), DrawFontStarts_(-1) × 4 - length(DrawFontPoints))`) as any[]).map(unwrap)).toEqual([1, 0])
+  })
+  test("letters filled draw the IDE's font, as much of it as each glyph covers", () => {
+    // a glyph's coverage, summed in the light a picture holds, and the glyph's area:
+    // BQN386's W outlines 0.1703 of a square of the font's size
+    const ink = (text: string, size: number, at = "[0, 0]") => value(`Σ(canvas(${size * text.length}, ${size * 2}, 0) . paint(letters("${text}", ${at}, ${size}), solid(1))) ÷ 3`) as number
+    expect(Math.abs(ink("W", 24) / (0.1703 * 24 * 24) - 1)).toBeLessThan(0.02)
     // as much ink wherever a text falls among the pixels
     expect(ink("held out 2.31", 12, "[0.3, 0.7]") / ink("held out 2.31", 12)).toBeCloseTo(1, 1)
     // a space, and a character the font lacks, draw nothing
     expect(ink(" é", 12)).toBe(0)
-    // the field holds a 10 × 20 cell for each of the font's codes
-    expect(value(`length(DrawFontField) ÷ length(DrawFontCodes) = 200`)).toBe(1)
   })
   test("several texts make one shape, each from its own corner, a character 0.6 of the size across", () => {
-    const apart = (a: string, b: string) => value(`max(abs(letters(${a})(pixels(canvas(30, 12))) ⌊ 9 - (letters(${b})(pixels(canvas(30, 12))) ⌊ 9)))`) as number
+    const apart = (a: string, b: string) => value(`max(abs(canvas(30, 12, 0) . paint(letters(${a}), solid(1)) - (canvas(30, 12, 0) . paint(letters(${b}), solid(1)))))`) as number
     expect(apart(`"1−∞", [0, 0], 10`, `("1", [8722], "∞"), [[0, 0], [6, 0], [12, 0]], 10`)).toBeLessThan(1e-4)
     // lowercase is a glyph of its own
-    expect(apart(`"a", [0, 0], 10`, `"A", [0, 0], 10`)).toBeGreaterThan(1)
+    expect(apart(`"a", [0, 0], 10`, `"A", [0, 0], 10`)).toBeGreaterThan(0.5)
+  })
+  test("letters' outline takes every ink: a stroke draws it, a stroke under the fill makes it bold, a halo glows around it", () => {
+    const lit = (step: string) => `canvas(60, 24, 0) . paint(letters("Ag", [4, 2], 18), ${step})`
+    const ink = (step: string) => value(`Σ(${lit(step)})`) as number
+    const fill = ink("solid(1)"), bold = ink("solid(1) above stroke(1, 2)"), glow = ink("solid(1) above halo(1, 3)")
+    expect([bold > fill * 1.5, glow > bold]).toEqual([true, true])
+    // the stroke lights the edges and leaves the inside dark: at a size of 48, where the fill
+    // is whole, the outline 1 unit wide lights little
+    const big = (step: string) => `canvas(70, 64, 0) . paint(letters("Ag", [4, 2], 48), ${step})`
+    expect(value(`Σ((${big("stroke(1, 1)")}) × (${big("solid(1)")} = 1)) ÷ Σ(${big("solid(1)")} = 1)`)).toBeLessThan(0.25)
   })
   test("each series draws in its own color, and a series of fewer than 2 points draws nothing", () => {
     // how many pixels of the first two series colors the picture has – at density 1, a line

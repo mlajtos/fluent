@@ -13,11 +13,15 @@ const value = (source: string): Tensor => {
   return (v instanceof Signal ? v.value : v) as Tensor;
 };
 const CASES = [
-  'Σ(canvas(520, 160, 0) . draw(letters("12", [10, 4], 12), 1, 1) > 0.3)',
-  'Σ(canvas(520, 160, 0) . draw(letters(("−0.0520 ∞ … ·", "NaN g|"), [[10.5, 4.25], [200, 40]], 10), 1, 1))',
+  'Σ(canvas(520, 160, 0) . paint(letters("12", [10, 4], 12), solid(1)) > 0.3)',
+  'Σ(canvas(520, 160, 0) . paint(letters(("−0.0520 ∞ … ·", "NaN g|"), [[10.5, 4.25], [200, 40]], 10), solid(1)))',
+  // glyphs that come near their cells' sides, side by side; an outline, bold, and a glow
+  'Σ(canvas(520, 160, 0) . paint(letters("Ag{}_~ ∞∞WW@@mm__", [3, 100], 24), solid(1)))',
   'Σ(canvas(520, 160, 0) . draw(letters("Ag{}_~", [3, 100], 24), 1, 2))',
+  'Σ(canvas(520, 160, 0) . paint(letters("bold", [7.3, 20.6], 18), solid(1) above stroke(1, 2)))',
+  'Σ(canvas(520, 160, 0) . paint(letters(("glow", "far"), [[40, 40], [300, 90]], 16), solid(1) above halo([1, 0.5, 0], 6)))',
   'Σ(plot(0..<10, (0..<10, 9 - 0..<10), ("up", "down")) > 0.3)',
-  'z: Σ(⚄([4]) × 0), Σ(canvas(520, 160, 0) . draw(letters(unstack(DrawDigits([z ÷ z, -1 ÷ z, z - 1.5e9, z - 0.052, z - 4.2e-11, z + 2e-37])), [[0, 0], [0, 20], [0, 40], [0, 60], [0, 80], [0, 100]], 12), 1, 1))',
+  'z: Σ(⚄([4]) × 0), Σ(canvas(520, 160, 0) . paint(letters(unstack(DrawDigits([z ÷ z, -1 ÷ z, z - 1.5e9, z - 0.052, z - 4.2e-11, z + 2e-37])), [[0, 0], [0, 20], [0, 40], [0, 60], [0, 80], [0, 100]], 12), solid(1)))',
   'Σ(plot(0..<10 × 1e8, (0..<10 - 5, 9 - 0..<10), ("up", "down")) > 0.3)',
   // more points than the picture has columns: each column keeps its first, top, bottom and last
   'Σ(plot(0..<3000, (0..<3000 % 7, 0..<3000 % 600), ("seven", "saw")) > 0.3)',
