@@ -744,19 +744,14 @@ opt: sgd(0.02, 0.975), ; momentum is the sheet's inertia, 1 - 0.975 its friction
 { opt(𝓛) } ⟳ Time()×240, ; 240 steps a second
 
 view: [[-1, 1], [-1, 1]],
-gres: 240,
-gg: linspace([-1, 1], gres),
-gx: gg ⍴ [1, gres, 1], gy: gg ⍴ [gres, 1, 1], ; the grid, ready to broadcast
-wt: { m | [1, 1, 1] ⊗(×) m }, ; the same weight for 3 points along an edge
-w: concat((z ⍴ [1, ny, nx], wt(inCol × z), wt(inRow × z)), 0) ⍴ [1, 1, -1], ; wrap edges weighted 0
-mesh: \${ ; glow at every node + 3 samples along each edge → continuous strands
-  P: θ,
-  seg: { B | P + ([0.25, 0.5, 0.75] ⊗(×) (B - P)) }, ; 3 points along an edge → [3, ny, nx, 2]
-  pts: concat((P ⍴ [1, ny, nx, 2], seg(roll(P, -1, 1)), seg(roll(P, -1, 0))), 0) ⍴ [-1, 2],
-  q: transpose(pts),
-  dx: gx - (q_0 ⍴ [1, 1, -1]),
-  dy: gy - (q_1 ⍴ [1, 1, -1]),
-  Σ(w × exp(-(dx^2 + dy^2) ÷ 0.0007), 2)
+S: 480, ; the picture is S × S units, the view's -1 … 1 across it
+mesh: \${ ; every spring across and down a lit thread, every node a bead
+  P: θ + 1 × S÷2,
+  a: concat((slice(P, [0, 0], [ny, nx - 1]) ⍴ [-1, 2], slice(P, [0, 0], [ny - 1, nx]) ⍴ [-1, 2])),
+  b: concat((slice(P, [0, 1], [ny, nx - 1]) ⍴ [-1, 2], slice(P, [1, 0], [ny - 1, nx]) ⍴ [-1, 2])),
+  canvas(S, S)
+    . paint(segments(a, b), stroke([1, 0.72, 0.45], 2) above halo([0.85, 0.35, 0.1] × 0.45, 7))
+    . draw(dots(P ⍴ [-1, 2]), [1, 0.93, 0.8], 6)
 },
 
 (
