@@ -835,6 +835,363 @@ wall: \${
   glass,
 )
 `,
+"honest-fit": `
+; 📈 Honest fit – the curve through your numbers, how sure it is, and when it gets there
+; Paste your numbers between the quotes, from any spreadsheet: one column, or x and then y
+numbers: "
+week	sign-ups
+1	2033
+2	2312
+3	2404
+4	2598
+5	2717
+6	3086
+7	3623
+8	3785
+9	4260
+10	4422
+11	4847
+12	5201
+13	5031
+14	6385
+",
+; the shapes to start from: a formula of x and its numbers, and a rough first guess at the
+; numbers from x and y – the fit needs only a start in the right neighborhood
+rise: { u, v | Σ((u - μ(u)) × (v - μ(v))) ÷ Σ((u - μ(u))^2) }, ; the slope of v against u
+straight: ({ x, a, b | a + b×x }, { x, y | [μ(y), rise(x, y)] }),
+exponential: ({ x, a, b | a × exp(b×x) }, { x, y | ly: log(abs(y) ⌈ 1e-9), b: rise(x, ly), [exp(μ(ly) - b×μ(x)), b] }),
+sCurve: ({ x, top, mid, rate | top ÷ (1 + exp(rate × (mid - x))) }, { x, y |
+  [1.2 × max(y), x_(argmin(abs(y - max(y)÷2))), 4 ÷ (max(x) - min(x)) × sign(rise(x, y))]
+}),
+doseResponse: ({ x, bottom, top, mid, slope | top - bottom ÷ (1 + 10^(slope × (x - mid))) + bottom }, { x, y |
+  [min(y), max(y), x_(argmin(abs(y - (min(y) + max(y) ÷ 2)))), -(sign(rise(x, y)))]
+}),
+powerLaw: ({ x, a, b | a × x^b }, { x, y |
+  k: x>0 ∧ y>0, lx: log(mask(x, k)), ly: log(mask(y, k)), b: rise(lx, ly), [exp(μ(ly) - b×μ(lx)), b]
+}),
+; ⬇ the shape your numbers follow: one of the five above, or your own – a formula of x, and a
+; rough guess at its numbers, in order: ({ x, a, b, c | a × exp(b×x) + c }, [5, -0.1, 0])
+model: exponential,
+goal: 10000, ; a level to ask about: when does the curve reach it? Drag it on the picture
+
+; a text's numbers as a table – a row a line, a column each number in it – and the columns'
+; names, from the line above the first row. Columns part at a tab or a semicolon; without
+; either, at a space or a comma. Inside a number, a space groups thousands, and so does a comma,
+; when the number has a point or every such comma has three digits after it, as in 12,450;
+; otherwise a comma is the decimal point, as in 0,875. A line with another count of numbers
+; than most lines have – a header, a note – is not a row
+readTable: { s |
+  c: StringToCodes(s), m: #c,
+  ahead: { v, k | concat((drop(v, k), fill([k], 0))) }, behind: { v | concat(([0], drop(v, -1))) },
+  digit: c≥48 ∧ c≤57, point: c=46 ∧ ahead(digit, 1), minus: c=45 ∨ (c=8722),
+  ; between two digits, where a tab or a semicolon parts the columns: a comma, or a space that
+  ; groups thousands, as in 1 204,5
+  between: behind(digit) ∧ ahead(digit, 1) ∧ (Σ(c=9 ∨ (c=59)) > 0),
+  within: c=44 ∧ between, joins: (c=32 ∨ (c=160) ∨ (c=8239)) ∧ between,
+  ; three digits after the comma and the number ends – but 0,875 is never a thousand
+  grouped: within ∧ ahead(digit, 2) ∧ ahead(digit, 3) ∧ (¬ahead(digit, 4)) ∧ (¬(behind(c=48) ∧ (¬behind(behind(digit))))),
+  comma: within × (Σ(point) = 0 ∧ (Σ(within ∧ (¬grouped)) > 0)),
+  mark: point ∨ comma, part: digit ∨ mark ∨ within ∨ joins ∨ minus,
+  start: part ∧ (¬behind(part)) ∨ minus, at: mask(0..<m, start), T: #at,
+  ; each number's characters, up to 24 from where it starts: [numbers, 24]
+  r: at ⊗(+) 0..<24, i: r ⌊ m-1, own: (start scan +)_i - 1 = (0..<T ⍴ [-1, 1]) ∧ part_i ∧ r<m,
+  d: own ∧ digit_i, D: TensorScan(d, +, 1), past: d ∧ (TensorScan(own ∧ mark_i, +, 1) > 0),
+  ; a number's digits make one whole number, and the digits after its mark divide it: 1,27 is
+  ; 127 ÷ 10², as near to 1.27 as the number can be held
+  ten: { k | [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000]_(clamp(k, 0, 7)) × 10^(k - 7 ⌈ 0) },
+  whole: Σ(where(d, ten(Σ(d, -1, 1) - D) × (c_i - 48), 0), -1),
+  v: whole ÷ ten(Σ(past, -1)) × (1 - 2×minus_at),
+  keep: Σ(d, -1) > 0, lineOf: (c = 10) scan +, lineAt: mask(lineOf_at, keep),
+  count: scatterAdd(lineAt, lineAt×0 + 1, max(lineOf) + 1)_lineAt,
+  most: argmax(Σ(count ⊗(=) 0..<25, 0)), row: count = most,
+  ; the names: the words on the line above the first row, parted at a tab, else a semicolon,
+  ; else a comma, else spaces; a name's spaces before its first word and after its last are not its own
+  h: mask(c, lineOf = min(mask(lineAt, row))-1 ∧ (c ≠ 10) ∧ (c ≠ 13)),
+  names: cond(guard((#h) = 0, { () }), {
+    sep: cond(guard(Σ(h = 9) > 0, { h = 9 }), guard(Σ(h = 59) > 0, { h = 59 }), guard(Σ(h = 44) > 0, { h = 44 }), { h = 32 }),
+    field: sep scan +, word: h≠32 ∧ (¬sep), F: max(field),
+    inside: (word × (field+1) scan ⌈) = field+1 ∧ (reverse(reverse(word × (F - field + 1)) scan ⌈) = (F - field + 1)),
+    ListMap(unstack(0 ..< F+1), { k | CodesToString(mask(h, inside ∧ field=k)) })
+  }),
+  (mask(mask(v, keep), row) ⍴ [-1, most], names)
+},
+
+; what the picture shows: numbers, a shape for them and a level – the program's own, until a
+; button below shows others
+shown: $((numbers, model, goal)),
+read: \${ readTable(shown()_0) }, table: \${ read()_0 }, columns: \${ shape(table())_1 },
+; x is the first column – the row's number when there is only one – and each other column is a y at that x
+x: \${ k: columns(), cond(guard(k = 1, { 1 ... (#table()) }), { transpose(table())_0 ⧉ (k-1) }) },
+y: \${ k: columns(), flat(transpose(table())_((k > 1) ..< k)) },
+named: { i, other | n: read()_1, cond(guard((#n) > i, { n_i }), { other }) },
+xName: \${ cond(guard(columns() = 1, { "row" }), { named(0, "x") }) },
+yName: \${ named(columns() > 1, "y") },
+
+; the fit, and K refits beside it: copies of the formula's numbers in one array, [p, K + 1, 1]
+K: 64,
+formula: \${ shown()_1_0 },
+guess: \${ g: shown()_1_1, cond(guard(isFunction(g), { g(x(), y()) }), { g }) },
+; the formula with the numbers θ at the points u: [K + 1, points]
+F: { u, θ | (u,) concat unstack(θ) . formula() },
+; how each point moves with each number, by one ∇: every point gets its own copy of them
+J: { θ | (∇{ T | Σ(F(x(), T)) })(θ + 0×x()) },
+; conjugate gradients: as many steps as there are numbers solve A(v) = b, for every copy at once
+cg: { A, b | ({ s | r: s_1, d: s_2, Ad: A(d), rr: Σ(r^2, 0, 1), α: rr ÷ (Σ(d × Ad, 0, 1) ⌈ 1e-30), r2: r - α×Ad,
+  (s_0 + α×d, r2, r2 + (Σ(r2^2, 0, 1) ÷ (rr ⌈ 1e-30) × d)) } ⍣ (#b))((0×b, b, b))_0 },
+; a spring for each point: it pulls in step with its miss up to the slack c, then gives way –
+; the further past the slack, the less it pulls – so a misread number can't drag the curve
+spring: { r, c | log(1 + (r ÷ c)^2) }, give: { r, c | 1 ÷ √(1 + (r ÷ c)^2) },
+springs: { t, θ, c | Σ(spring(t - F(x(), θ), c), -1, 1) },
+; Levenberg–Marquardt toward the numbers t: the step that would fix the misses were the formula
+; straight, each point weighed by how hard its spring pulls, held back by λ
+lm: { θ, λ, t, c, j |
+  r: t - F(x(), θ), w: give(r, c),
+  jw: j × w, d: √(Σ(jw^2, -1, 1)) ⌈ 1e-30, u: jw ÷ d,
+  next: θ + (cg({ v | Σ(u × Σ(u × v, 0, 1), -1, 1) + λ×v }, Σ(u × w×r, -1, 1)) ÷ d),
+  better: springs(t, next, c) < springs(t, θ, c),
+  (where(better, next, θ), where(better, λ ÷ 3, λ × 4))
+},
+; how much the fit leans on each point, 0 to 1: the hat matrix's diagonal
+lean: { j, w |
+  jw: j × w, u: jw ÷ (√(Σ(jw^2, -1, 1)) ⌈ 1e-30), p: #j,
+  G: cg({ v | Σ(u × Σ(u × v, 0, 1), -1, 1) }, (0..<p ⊗(=) 0..<p) ⍴ [p, p, 1]),
+  Σ(u × Σ(G × moveaxis(u, 0, 1), 1, 1), 0)
+},
+; how far off a reading typically is, as a bell curve's spread: 1.48 times the middle miss, where
+; misses grow with the curve's height h as h to the power γ – the slope of the misses against
+; the heights on a log scale, held between 0 and 1
+typical: { m, f |
+  middle: { v | sort(v)_(floor((#v) ÷ 2)) }, a: abs(m), h: abs(f) ⌈ 0.1×middle(abs(f)),
+  γ: clamp(rise(log(h), log(a ⌈ 1e-9×max(a))), 0, 1), s: h^γ,
+  1.48 × middle(a ÷ s) × s ⌈ 1e-9×max(abs(y()))
+},
+; what else your numbers could have been: each miss of the fit falls up or down at random – the
+; wild bootstrap. A refit's miss is between the point's own – grown where the fit leans on the
+; point – and a typical one, and all grow when there are few points, as a few points understate
+; how far off readings can be
+flip: \${ sign(⚄([K, #y()]) - 0.5) },
+fitStep: { s |
+  θ: s_0, f: F(x(), θ)_0, miss: y() - f, j: J(θ), scale: typical(miss, f),
+  ; the springs start with almost no slack, so the curve settles first where most points agree
+  c: scale × (4 ⌊ 2^(s_2 - 3)), w: give(miss, c),
+  own: miss ÷ (1 - (lean(slice(j, [0, 0], [-1, 1]), w) ⌊ 0.99)),
+  ν: (#miss) - (#θ), grow: √(ν ÷ (ν - 2 ⌈ 0.5)),
+  t: concat((y() ⍴ [1, -1], f + (flip() × grow × √((own^2 + (scale^2 × (#miss) ÷ ν)) ÷ 2)))),
+  next: lm(θ, s_1, t, c, j), (next_0, next_1, s_2 + 1)
+},
+; each copy starts from the guess; a new paste, shape or example starts them all again
+fresh: \${ (guess() ⍴ [-1, 1, 1] × fill([1, K + 1, 1], 1), fill([K + 1, 1], 0.01), 0) },
+state: $(fresh()),
+{ when(state()_2 < 48, { state← (fitStep ⍣ 2)(state()) }) } ⟳ Time()×60,
+θ: \${ state()_0 },
+
+; the fit's misses; a point that misses by five typical misses is one the others disagree with
+fit: \${ F(x(), θ())_0 },
+miss: \${ y() - fit() },
+typ: \${ typical(miss(), fit()) },
+doubt: \${ abs(miss()) ÷ typ() },
+; misses in long runs on one side of the curve, against the runs a fair coin would make: z below
+; -2 is a shape wrong for the numbers
+pattern: \${
+  s: miss()_(argsort(x())) > 0, n: #s, a: Σ(s), b: n - a,
+  runs: 1 + Σ(drop(s, 1) ≠ drop(s, -1)), e: 2×a×b ÷ n + 1,
+  (runs, e, runs - e ÷ √((e - 1) × (e - 2) ÷ (n - 1) ⌈ 1e-9))
+},
+
+; the view: from the first x to as far again as half their span past the last, and the
+; numbers and the level with room above and below; M points across it
+M: 128,
+xs: \${ lo: min(x()), hi: max(x()), [lo, hi + 0.5×(hi - lo)] },
+ys: \${ lo: min(y()) ⌊ shown()_2, hi: max(y()) ⌈ shown()_2, s: hi - lo ⌈ 1e-9, [lo - 0.3×s, hi + 0.3×s] },
+gx: \${ linspace(xs(), M) },
+copies: \${ slice(θ(), [0, 1]) }, ; the K refits' numbers, without the fit's
+refits: \${ F(gx(), copies()) }, ; [K, M]
+; when each copy reaches a level: the first step of a long grid, 20 spans of the numbers to
+; either side, where its curve crosses the level, then two steps of Newton's method inside that
+; step – the formula run backwards, its slope by ∇. ∞ where a curve doesn't cross it there
+reach: { g |
+  span: max(x()) - min(x()), u: linspace([min(x()) - 20×span, max(x()) + 20×span], 2048),
+  a: F(u, θ()) - g, s: a ≥ 0, turn: slice(s, [0, 1]) ≠ slice(s, [0, 0], [-1, 2047]),
+  i: argmax(turn, -1), lo: u_i ⍴ [-1, 1], hi: u_(i + 1) ⍴ [-1, 1],
+  at: { k | Σ(a × oneHot(k, 2048), -1, 1) },
+  slope: ∇{ t | Σ(F(t, θ())) },
+  near: { t | clamp(t - (F(t, θ()) - g ÷ slope(t)), lo, hi) },
+  t: near(near(lo + (hi - lo × at(i) ÷ (at(i) - at(i + 1))))),
+  where(max(turn, -1) > 0, t ⍴ [-1], 1÷0)
+},
+; where one more reading would narrow the light most: a reading at x j, as far off as readings
+; there typically are, tells the refits' disagreement at x i the share of it that goes along
+; with theirs at j – the light narrows there by 1 - √(1 - share), on average across the picture
+worth: \${
+  dF: refits() - μ(refits(), 0, 1), v: Σ(dF^2, 0) ÷ K + 1e-30,
+  C: matmul(transpose(dF), dF) ÷ K,
+  hum: typ()_(argmin(abs(gx() ⊗(-) x()), 1))^2,
+  μ(1 - √(1 - (C^2 ÷ (v ⍴ [-1, 1]) ÷ (v + hum)) ⌈ 0), 0)
+},
+best: \${ argmax(worth()) },
+
+; the picture, in units: the numbers' box is L to R across, T to B down
+W: 600, H: 330, L: 60, R: 588, T: 14, B: 300,
+sx: { v | v - xs()_0 ÷ (xs()_1 - xs()_0) × (R - L) + L },
+sy: { v | ys()_1 - v ÷ (ys()_1 - ys()_0) × (B - T) + T },
+; the level: drag the orange dot
+at: $[R - 14, sy(goal)],
+aim: \${ ys()_1 - (at()_1 - T ÷ (B - T) × (ys()_1 - ys()_0)) },
+whens: \${ reach(aim()) },
+; from each point of the picture, how far each refit passes: [h, K, w] units – straight up or
+; down, less where the curve is steep
+gaps: { p |
+  q: unstack(p, -1), u: q_0_0, v: transpose(q_1)_0,
+  Y: sy(F(u - L ÷ (R - L) × (xs()_1 - xs()_0) + xs()_0, copies())),
+  slope: roll(Y, -1, 1) - Y ÷ (u_1 - u_0),
+  (v ⍴ [-1, 1, 1]) - Y ÷ √(1 + slope^2)
+},
+; every refit is a thread of light; where they agree, their light adds up
+thread: stroke([1, 0.86, 0.62], 1) above halo([0.5, 0.35, 0.2], 2.5),
+threads: \${ lit: Σ(thread(unsqueeze(gaps(pixels(canvas(W, H))), -1))_0, 1) ÷ K, canvas(W, H) + 1 - exp(-3×lit) },
+; the light of many points at once, however many: a glow around each, exp(-d²/r²), is its glow
+; across times its glow down, so the glow of all of them at every pixel is one matrix product
+spots: { picture, pts, r |
+  D: Density(), h: shape(picture)_0, w: shape(picture)_1,
+  glow: { p, P | exp(-((p ⊗(-) P)^2 ÷ r^2)) },
+  matmul(glow(0..<h + 0.5 ÷ D, transpose(pts)_1), transpose(glow(0..<w + 0.5 ÷ D, transpose(pts)_0)))
+},
+; a step from picture to picture: a dot of color c at each point, about r units across, or a glow
+marks: { pts, r, c | { picture | k: unsqueeze(clamp(spots(picture, pts, r) - 0.35 × 3, 0, 1), -1), picture × (1 - k) + (light(c) × k) } },
+glows: { pts, r, c | { picture | picture + (light(c) × unsqueeze(spots(picture, pts, r), -1)) } },
+gray: [0.54, 0.53, 0.51], orange: [1, 0.6, 0.2], green: [0.45, 0.9, 0.55], red: [1, 0.3, 0.25], ink: [0.93, 0.92, 0.88],
+; on the light: the numbers, the axes and where to measure next – and over that, the level and
+; when each refit reaches it, which alone follow a drag
+still: \${
+  p: stack((sx(x()), sy(y())), -1), odd: unsqueeze(doubt() > 5, -1), bx: sx(gx()_best()),
+  ; the axes span the numbers and are labeled at their ends
+  ends: [min(y()), max(y()), min(x()), max(x())], e: [sy(ends_1), sy(ends_0), sx(ends_2), sx(ends_3)],
+  threads()
+    . draw(line([[L - 8, e_0], [L - 8, e_1]]), gray, 1)
+    . draw(line([[e_2, B + 8], [e_3, B + 8]]), gray, 1)
+    . draw(line([[bx, T], [bx, B + 8]]), green × 0.3, 1)
+    . draw(dots([[bx, B + 8]]), green, 8)
+    . glows(where(odd, p, -99), 10, red)
+    . marks(p, 3.5, ink)
+    . paint(letters(unstack(DrawDigits(ends)), [[2, e_1 - 7], [2, e_0 - 7], [e_2 - 4, B + 14], [e_3 - 20, B + 14]], 12), solid(gray))
+    . paint(letters((yName(), xName(), "measure here next"), [[L, T - 8], [0.5×(L + R) - 20, B + 14], [bx + 8 ⌊ (R - 126), B - 16]], 12), solid(ink))
+},
+wall: \${
+  gy: sy(aim()), t: whens()_(1 ..< K+1), on: (t ≥ xs()_0) ∧ (t ≤ xs()_1),
+  still()
+    . draw(line([[L, gy], [R, gy]]), orange × 0.7, 1)
+    . marks(stack((where(on, sx(t), -99), fill([K], gy)), -1), 2.5, orange)
+    . paint(letters(unstack(DrawDigits([aim()])), [[L + 4, gy - 19]], 12), solid(gray))
+},
+; the misses under the curve, each as far up or down as it misses in typical misses: above the
+; curve blue, below it orange, in doubt red. Long runs of one color are a shape that doesn't fit
+blue: [0.5, 0.72, 1],
+strip: \${
+  m: clamp(miss() ÷ typ(), -3.5, 3.5), p: stack((sx(x()), 30 - (8×m)), -1), up: unsqueeze(m > 0, -1),
+  canvas(W, 62)
+    . draw(line([[L, 30], [R, 30]]), gray, 1)
+    . marks(where(up, p, -99), 3.5, blue)
+    . marks(where(up, -99, p), 3.5, orange)
+    . glows(where(unsqueeze(doubt() > 5, -1), p, -99), 8, red)
+    . paint(letters("misses", [4, 23], 12), solid(gray))
+},
+
+; the words: character codes built on the GPU and read back once, so the page never waits for
+; them. A number shows the three digits that matter, padded with spaces that the text shows as
+; one; a choice between sentences is a choice between their codes, the shorter padded too
+codes: { parts | concat(ListMap(parts, { p | cond(guard(isString(p), { StringToCodes(p) }), { DrawDigits(p) ⍴ [-1] }) })) },
+either: { c, a, b | n: (#a) ⌈ (#b), padded: { s | concat((s, fill([n - (#s)], 32))) }, where(c, padded(a), padded(b)) },
+; the words wait for the fit to settle
+words: { said | cond(guard(state()_2 < 48, { "" }), { CodesToString(said()) }) },
+told: \${ words({
+  t: sort(whens()_(1 ..< K+1)), lo: t_2, hi: t_(K-3), never: Σ(t = 1÷0),
+  either(never > K-3, codes(("**It never reaches** ", aim(), " on a curve of this shape through these numbers.")),
+    either(hi = 1÷0, codes(("**It may never reach** ", aim(), " – ", never, " of the ", K, " threads never get there, the rest from ", xName(), " ", lo, " on")),
+      codes(("**It reaches** ", aim(), " between ", xName(), " ", lo, " and ", hi, " in 9 threads of 10"))))
+}) },
+doubtful: \${ words({
+  i: argmax(doubt()),
+  either(Σ(doubt() > 5) = 0, codes(("",)), codes(("**In doubt:** ", xName(), " ", x()_i, " – your numbers say ", y()_i, " but the others say about ", fit()_i, " so the curve leaves it out")))
+}) },
+fits: \${ words({
+  z: pattern(),
+  either(z_2 < -2,
+    codes(("**This shape may be wrong for your numbers:** the misses run in long stretches above and below the curve – ", z_0, " runs where about ", z_1, " would be likely. Try another shape.")),
+    codes(("The misses fall above and below the curve as if by chance: the shape fits.",)))
+}) },
+advice: \${ words({ codes(("**Measure here next:** ", xName(), " ", gx()_best(), " – one more reading there narrows the light by about ", round(100 × worth()_best()), " percent")) }) },
+ranges: \${ words({
+  p: #θ(), f: slice(θ(), [0, 0], [-1, 1]) ⍴ [p], q: transpose(sort(copies() ⍴ [p, K])),
+  each: ListMap(unstack(0..<p), { i | (cond(guard(i > 0, { " · " }), { " " }), f_i, " from ", q_2_i, " to ", q_(K-3)_i) }),
+  codes(("**The formula's numbers**, and where 9 threads in 10 put them:",) concat (each reduce concat))
+}) },
+
+; more numbers to try, each with its shape and a level to ask about
+slowing: "
+week	sign-ups
+1	526
+2	622
+3	1075
+4	1726
+5	2509
+6	3538
+7	4587
+8	6215
+9	7071
+10	8380
+11	9841
+12	10029
+13	10622
+14	10800
+15	11693
+16	11761
+",
+plate: "
+log dose	response	response	response
+-0.5	100	101	94
+0	100	93	96
+0.5	99	98	105
+1	90	99	94
+1.5	83	82	94
+2	63	62	65
+2.5	36	29	42
+3	19	14	20
+",
+decay: "
+time	volts
+0	4.94
+10	4.03
+20	3.26
+30	2.62
+40	2.15
+50	1.27
+60	1.35
+70	1.15
+80	0.93
+90	0.77
+100	0.64
+110	0.49
+120	0.39
+",
+; a button shows other numbers, or another shape, and starts the fit again
+begin: { text, form, g | shown← (text, form, g), state← fresh(), at← [R - 14, sy(g)] },
+numbersButton: { label, text, form, g | Button(label, { begin(text, form, g) }) },
+shapeButton: { label, form | Button(label, { begin(shown()_0, form, aim()) }) },
+
+(
+  Text("# 📈 Honest fit"),
+  Text("Paste your numbers into the program, between the quotes of **numbers**. Each thread of light is the curve fitted to them again, with every miss nudged up or down at random: where the threads agree, trust the curve; where they fan out, it is a guess. Drag the **orange** dot to ask when it gets there."),
+  Layers(wall, Point2D(at, [[0, W], [0, H]], "orange")),
+  strip,
+  Text(told),
+  Text(doubtful),
+  Text(fits),
+  Text(advice),
+  Text(ranges),
+  Grid([2, 3, 4, 3, 2])(Text("**numbers**"), numbersButton("yours", numbers, model, goal), numbersButton("growth that slows", slowing, exponential, 15000), numbersButton("a dose plate", plate, doseResponse, 50), numbersButton("a decay", decay, exponential, 2.5)),
+  Grid([2, 2, 2, 2, 3, 2, 2])(Text("**shape**"), shapeButton("straight", straight), shapeButton("exponential", exponential), shapeButton("S-curve", sCurve), shapeButton("dose-response", doseResponse), shapeButton("power", powerLaw), shapeButton("yours", model)),
+)
+`,
 "growing-automata": `
 ; 🌱 Morphogenesis – a learned local rule grows a global shape from one lit cell
 
