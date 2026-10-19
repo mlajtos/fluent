@@ -2243,6 +2243,11 @@ describe("error messages carry context", () => {
 })
 
 describe("pictures", () => {
+  // as the page sets the display's density; the host settles before the next test
+  const atDensity2 = async (run: () => void) => {
+    toHost({ t: "density", value: 2 })
+    try { run() } finally { toHost({ t: "density", value: 1 }); await new Promise((r) => setTimeout(r, 20)) }
+  }
   test("a shape that measures the whole picture at once is an Error, not an empty canvas", () => {
     // regression: norm(p - c) without its axis is one number for every pixel together, and
     // draw silently drew nothing
@@ -2251,7 +2256,7 @@ describe("pictures", () => {
     expect((v as Error).message).toContain("norm(p - c, -1)")
     expect(value("Σ(canvas(20, 20) . draw({ p | abs(norm(p - [10, 10], -1) - 6) }, [1, 1, 1], 2) ≠ canvas(20, 20))")).toBeGreaterThan(100)
   })
-  test("draw is paint in a stroke ink: pixel for pixel the box overlap mixed in linear light", () => {
+  test("draw is paint in a stroke ink: pixel for pixel the box overlap mixed in linear light", async () => {
     // the overlap of a pixel and the stroke, written out
     const boxed = `{ shape, color, width | { picture | D: Density(), d: shape(pixels(picture)) × D, r: width × D ÷ 2,
       cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ (-r)) ⌈ 0 ⌊ 1, -1), picture^2.2 × 1-cover + color^2.2×cover ^ 1÷2.2 } }`
@@ -2261,10 +2266,9 @@ describe("pictures", () => {
       return (value(`boxed: ${boxed}, a: ${at}draw(${shape}, ${color}, ${width}), (a ≡ (${at}paint(${shape}, stroke(${color}, ${width}))), a ≡ (${at}boxed(${shape}, ${color}, ${width})))`) as any[]).map(unwrap)
     })
     expect(same()).toEqual([[1, 1], [1, 1], [1, 1]])
-    toHost({ t: "density", value: 2 })
-    try { expect(same()).toEqual([[1, 1], [1, 1], [1, 1]]) } finally { toHost({ t: "density", value: 1 }) }
+    await atDensity2(() => expect(same()).toEqual([[1, 1], [1, 1], [1, 1]]))
   })
-  test("an ink gives its light, its cover and how far it reaches; one above another is Porter–Duff over", () => {
+  test("an ink gives its light, its cover and how far it reaches; one above another is Porter–Duff over", async () => {
     expect(value("stroke([1, 0.5, 0], 4)(0) ≡ ([1, 0.5^2.2, 0], 1, 3)")).toBe(1)
     // nothing past its reach: half the width and a pixel for a stroke, 3 radii for a halo
     expect((value("(stroke(1, 4)(2.4)_1 > 0, stroke(1, 4)(3)_1, halo(1, 5)(15)_0 < 2e-4, halo(1, 5)(0)_2, solid(1)(1)_1)") as any[]).map(unwrap)).toEqual([1, 0, 1, 15, 0])
@@ -2273,8 +2277,7 @@ describe("pictures", () => {
     expect(value("((stroke(1, 2) above halo(1, 1)) above solid(0))(0.5) ≡ (stroke(1, 2) above (halo(1, 1) above solid(0)))(0.5)")).toBe(1)
     // a halo adds light and hides nothing: far from it the picture is as it was
     expect((value("x: canvas(40, 10, 0.5) . paint(dots([[5, 5]]), halo(1, 2)), (x_5_5_0 > 1, abs(x_5_35_0 - 0.5) < 1e-6)") as any[]).map(unwrap)).toEqual([1, 1])
-    toHost({ t: "density", value: 2 })
-    try { expect(value("stroke(1, 4)(0)_2")).toBe(2.5) } finally { toHost({ t: "density", value: 1 }) }
+    await atDensity2(() => expect(value("stroke(1, 4)(0)_2")).toBe(2.5))
   })
   test("ramp colors a number from 0 to 1 along its stops, blended in the colors given", () => {
     const stops = "[[0, 0, 0], [1, 0, 0], [1, 1, 1]]"
