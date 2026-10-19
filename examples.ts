@@ -1129,22 +1129,22 @@ ranges: \${ words({
 ; more numbers to try, each with its shape and a level to ask about
 slowing: "
 week	sign-ups
-1	526
-2	622
-3	1075
-4	1726
-5	2509
-6	3538
-7	4587
-8	6215
-9	7071
-10	8380
-11	9841
-12	10029
-13	10622
-14	10800
-15	11693
-16	11761
+1	508
+2	795
+3	1110
+4	1644
+5	2508
+6	3709
+7	4752
+8	5731
+9	7113
+10	8523
+11	9897
+12	10306
+13	10714
+14	11157
+15	11598
+16	11354
 ",
 plate: "
 log dose	response	response	response
@@ -1189,7 +1189,7 @@ shapeButton: { label, form | Button(label, { begin(shown()_0, form, aim()) }) },
   Text(advice),
   Text(ranges),
   Grid([2, 3, 4, 3, 2])(Text("**numbers**"), numbersButton("yours", numbers, model, goal), numbersButton("growth that slows", slowing, exponential, 15000), numbersButton("a dose plate", plate, doseResponse, 50), numbersButton("a decay", decay, exponential, 2.5)),
-  Grid([2, 2, 2, 2, 3, 2, 2])(Text("**shape**"), shapeButton("straight", straight), shapeButton("exponential", exponential), shapeButton("S-curve", sCurve), shapeButton("dose-response", doseResponse), shapeButton("power", powerLaw), shapeButton("yours", model)),
+  Grid([2, 2, 3, 2, 3, 2, 2])(Text("**shape**"), shapeButton("straight", straight), shapeButton("exponential", exponential), shapeButton("S-curve", sCurve), shapeButton("dose-response", doseResponse), shapeButton("power", powerLaw), shapeButton("yours", model)),
 )
 `,
 "growing-automata": `
