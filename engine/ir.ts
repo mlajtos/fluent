@@ -15,6 +15,7 @@ export type Op =
   | "BROADCAST" | "PERMUTE" | "RESHAPE" | "SLICE" | "WINDOW" // the view algebra — pure stride maps, never compute
   | "PAD"                                                    // arg {axis, before, after}: zeros around — SLICE's transpose, an index predicate
   | "GATHER" | "SCATTER_ADD"                                 // runtime-indexed rows; each other's transpose
+  | "LOOP" // arg {body, n, out}: state `out` of a loop; src = [...inits, ...frontier]
   | "FUSED"                                                  // src = [gid, value, ...inputs] — ONE kernel
   | "KERNEL"                                                 // arg {wgsl, dispatch} — printed FUSED; src = inputs
   | "RANGE" | "ICONST" | "IADD" | "IMUL" | "IDIV" | "IMOD"   // index algebra; a RANGE's identity IS the node
@@ -187,6 +188,40 @@ export const gather = (table: UOp, idx: UOp): UOp =>
 export const scatterAdd = (idx: UOp, values: UOp, size: number): UOp =>
   idx.shape.length !== 1 || values.shape[0] !== idx.shape[0] ? err(`scatterAdd: idx ${sh(idx.shape)} vs values ${sh(values.shape)}`)
     : node("SCATTER_ADD", [idx, values], { size }, [size, ...values.shape.slice(1)]);
+
+// ---- the loop ------------------------------------------------------------------
+// A loop of k states. A step takes the states' placeholders (`carries`) to `outs`: the next
+// states and, for a loop until, a verdict after them, 1 where the loop is done. It runs n
+// steps, or until the verdict holds, at most n. The verdict's shape is the loop's lanes,
+// leading every state's (the frame of a ⍤ that batched it; one lane for []): a lane keeps
+// its state from the step its verdict holds, and the loop ends when every lane has stopped.
+// The body reads the carries, literals, and
+// what it closes over – its frontier, which follows the inits in src, so every walk over
+// the graph sees each input of the loop and the loop computes each once. A view of what
+// it closes over stays in the body, read through its strides. One node per state, `out`
+// its index; the k share the body.
+export type Body = { readonly carries: readonly UOp[]; readonly frontier: readonly UOp[]; readonly outs: readonly UOp[] };
+export type LoopArg = { readonly body: Body; readonly n: number; readonly out: number };
+const VIEWS = new Set<Op>(["BROADCAST", "PERMUTE", "RESHAPE", "SLICE", "WINDOW", "PAD"]);
+const literals = new WeakMap<UOp, boolean>();
+const literal = (u: UOp): boolean => {
+  let l = literals.get(u);
+  if (l === undefined) { l = u.op === "CONSTANT" ? !u.shape.length : u.op === "IOTA" || (u.src.length > 0 && u.src.every(literal)); literals.set(u, l); }
+  return l;
+};
+export const loop = (inits: readonly UOp[], carries: readonly UOp[], outs: readonly UOp[], n: number): UOp[] => {
+  const live = new Set(carries.map((c) => c.id)), frontier: UOp[] = [], taken = new Set<number>(), order = toposort(outs);
+  for (const u of order) if (u.src.some((s) => live.has(s.id))) live.add(u.id);
+  const take = (s: UOp): void => {
+    if (live.has(s.id) || taken.has(s.id) || literal(s)) return;
+    taken.add(s.id);
+    if (VIEWS.has(s.op)) take(s.src[0]!); else frontier.push(s);
+  };
+  for (const u of order) if (live.has(u.id)) u.src.forEach(take);
+  outs.forEach(take);
+  const body: Body = { carries, frontier, outs };
+  return inits.map((x, out) => node("LOOP", [...inits, ...frontier], { body, n, out }, x.shape));
+};
 
 // ---- the kernel language: a loop nest, as UOps --------------------------------
 // Index builders simplify as they build, so an index expression stays the closed form a

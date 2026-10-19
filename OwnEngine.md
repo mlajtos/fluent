@@ -148,7 +148,62 @@ variables, gradients) in one pass. A state write while differentiating is an Err
   not match in its last bits.
 - The engine has no law x × 0 = 0 (0 × ∞ is NaN).
 
-### 3.4 Numerics
+### 3.4 Loops
+
+`f ⍣ n` and `f ⍣ p` run as one engine step wherever no ∇ needs their history (Milan,
+2026-10-19, after a council on what ⍣ means on an array: ⍣ asks one question of the whole
+value; each element to its own stop is `(f ⍣ p) ⍤ 0`).
+
+- **The node.** `LOOP` in `ir.ts`: src holds the states' starts and the body's frontier,
+  what it closes over; arg holds the body (the states' placeholders, the frontier, the next
+  states and, for a loop until, the verdict), the count or the budget, and which state the
+  node is. One node per state; they share the body. A view of what the body closes over
+  stays in the body, read through its strides, so a matmul's broadcast weight is never
+  copied.
+- **Building it.** ⍣ runs f, and p, once on placeholders shaped like the state, a tensor
+  or a list of them, as ⍤ runs a cell. A step that reads the state's numbers, writes a
+  cell, draws random numbers or gives other shapes runs step by step, as before. Under ∇
+  ⍣ always runs step by step: ∇ needs the history, and a `LOOP` has no derivative.
+- **Running it.** A loop runs where it is built, so the budget's Error (10,000 steps) is
+  ⍣'s value, unless a trace holds its inputs; then it runs in each step of the trace's own
+  loop. Each step stands the states' leaves in for the placeholders and computes the next
+  states and the verdict as one graph. The plan is found again by structure, so every step
+  after the first runs one plan. The first step also computes the frontier. A state no
+  later step reads goes back to the device's pool at once, since FinalizationRegistry
+  cannot run inside a synchronous loop; an inner loop's leaves go back with the outer step.
+  The device holds two states: 200 steps of a 0.5 MB state peak at 1.0 MB, where keeping
+  every step peaked at 100 MB (`engine/tests/loops.ts`).
+- **Under ⍤, one loop for the frame.** `(f ⍣ p) ⍤ k` builds the loop on the cell's
+  placeholders, and `batch.ts` gives it the frame like any node: its states, its body and
+  its verdict take the frame, so the verdict has a lane per cell. A loop with lanes runs
+  as a loop of one more state, the lanes that are done: a done lane keeps its state
+  (`where(done, carry, body)`), and the loop ends when every lane is done – JAX's vmap of
+  `while_loop`. A cell's loop that never stops is the loop's Error, as it was the cell's.
+  ⍤ needs no rule of its own for a body that mixes a cell's elements: the frame's loop is
+  each cell's.
+- **A short count loop is straight-line code.** At most `UNROLLED` ops in all (1,024, the
+  bound a sum's unrolling has in `opt.ts`), it is n copies of its step in the graph that
+  reads it. Muon's 5 Newton–Schulz steps and the looped dreamer's 3 rounds stay one plan
+  with what reads them, as before; as engine loops they cost a compute a step, muon
+  0.64 → 0.93 ms at 64².
+
+Measured on the GPU, ordered A, B, A against own-engine 931e76d (ms):
+
+| | before | loop step |
+|---|---|---|
+| raymarch until loop, 256 rays, 40 steps | 151, 130 | 6.8 |
+| growing-automata, grow 20 steps | 29.5, 29.9 | 7.8–12.6 |
+| Mandelbrot, depth 80 | 18.7, 15.6 | 7.7–8.2 |
+| Mandelbrot, depth 40 | 5.4, 4.9 | 5.5 |
+| looped dreamer, a dream | 152, 138 | 104–130 |
+| per-pixel Mandelbrot `escape ⍤ 0`, 48 × 32 | 4204, 3987, 4149 | 34.6–36.2 (cell by cell: 840–894) |
+| per-pixel Mandelbrot `escape ⍤ 0`, 12 × 8 | 35.0, 29.5, 28.7 | 4.5 |
+
+The dreamer's dream, makemore's sampling and muon's step are unchanged. On the CPU every
+value is the same to the bit; on the GPU a loop's per-step kernels round differently from
+the unrolled ones (Mandelbrot depth 80: Σ 30568.62 → 30568.35).
+
+### 3.5 Numerics
 
 f32 only; there are no dtypes, and bool and int are printing tags. A literal integer
 exponent up to 64 is exponentiation by squaring, so `3^2` is exactly 9. `isnan` tests
@@ -359,6 +414,17 @@ compute device. Where it is heading, with the source of each idea:
   command buffer, and a dispatch estimated over ~20 ms split, against watchdogs.
 - **Indirect dispatch** for data-dependent loops (`⍣` until, `solve`): encode N
   iterations, let a convergence kernel zero the rest, read once.
+- **Per-lane exit in one kernel** (§3.4). A loop with lanes runs masked: every lane
+  computes every step, 983,040 lane-steps for a 256 × 128 Mandelbrot of 30 steps where
+  each lane stopping on its own needs 285,460 (`engine/tests/loops.ts`). A loop whose step
+  is elementwise along its lanes could be one kernel: a thread per lane, its states in
+  registers, a loop bounded by the step count that breaks once the lane's state stops
+  changing (exact: a step that changes nothing changes nothing again, and a lane that is
+  done keeps its state). It needs a kernel node for a loop with carried values in both
+  printers; plan keys over a loop's body; dispatches of a bounded number of steps each,
+  since a loop until that never stops is 10,000 steps a lane (87,500 pixels × 20 ops ×
+  10,000 is seconds of GPU, past macOS's watchdog); and multi-output kernels, or each of a
+  loop's states reruns the whole loop.
 - **Device-loss recovery**: a new adapter, re-evaluation, `~` variables restored from an
   OPFS checkpoint (WebLLM, Figma).
 - **Parsing in the worker.** The page re-parses on every keystroke for its markers.
@@ -367,8 +433,9 @@ compute device. Where it is heading, with the source of each idea:
 Not copied: tinygrad's WebGPU runtime (a pipeline, layout and bind group per call, with
 synchronous waits); general symbolic shapes; tuning in the edit path; any user-visible
 `jit`, `eval`, `donate` or `checkpoint` knob; Dynamo-style bytecode capture (the
-structural key is the guard); scan, while and cond as IR primitives (branches read
-realized values, so reverse mode through data-dependent loops comes free); Taichi-style
+structural key is the guard); scan and cond as IR primitives, and reverse mode through
+`LOOP` (under ∇ a branch reads the realized value it is at and ⍣ runs step by step, so
+reverse mode through data-dependent loops comes free); Taichi-style
 AD of fused kernels (it needs float atomics); subgroups (no gain measured, absent in
 Safari and Firefox).
 

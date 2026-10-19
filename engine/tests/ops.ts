@@ -161,7 +161,7 @@ export default async function (): Promise<{ fails: number }> {
       ["the bitonic network", (p) => bitonic(reshape(p, [1, n]), 1, n, false)],
     ];
     for (const [name, g] of cells) {
-      const p = buffer("%cell", [n]), batched = batch(g(p), new Map([[p, X]]), [R]);
+      const p = buffer("%cell", [n]), batched = batch(g(p), new Map([[p, X]]), [R]).root;
       const rows = await Promise.all(Array.from({ length: R }, async (_, r) => (await realize(cpu, g(reshape(slice(X, 0, r, 1), [n])), inp)).data));
       const ref = Float32Array.from(rows.flatMap((d) => [...d]));
       const { a, b } = await both(batched, inp);

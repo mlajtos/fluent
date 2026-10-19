@@ -410,8 +410,10 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
 // its terms, in the loop's order, each with the loop variable a constant. The law table
 // folds what that makes constant, so a select that picks a coordinate folds away and what a
 // point reads leaves the loops around it. Every fold is exact. A maximum and its winner keep
-// their loops: no elementwise op is maxf.
-const UNROLL = 4, UNROLLED = 1024;                                             // the most terms, and the most ops an unrolled loop prints
+// their loops: no elementwise op is maxf. UNROLL is the most terms, UNROLLED the most ops an
+// unrolled loop prints – a sum's here, a count loop's (⍣ n) in tensor.ts.
+const UNROLL = 4;
+export const UNROLLED = 1024;
 const fold = (op: Op, src: UOp[], arg: unknown, shape: readonly number[]): UOp => {
   const u = rebuild(op, src, arg, shape);
   for (const r of SIMPLIFY) { const o = r(u); if (o) return o; }
@@ -556,7 +558,10 @@ export const placeholders = (roots: UOp[], leaves: UOp[]): { roots: UOp[]; slots
   return { roots: roots.map((r) => memo.get(r.id)!), slots };
 };
 // A backend's plans, the 512 used last: for a graph, its plan and the run's leaves bound to
-// the plan's slots. A plan pushed out is handed to `drop`.
+// the plan's slots. A plan pushed out is handed to `drop`. `plansBuilt` counts the plans
+// built: a structure found again builds none.
+let built = 0;
+export const plansBuilt = (): number => built;
 export function planner<P>(build: (roots: UOp[]) => P, drop: (plan: P) => void = () => {}): (roots: UOp[]) => { plan: P; bind: Map<number, UOp> } {
   const plans = new Map<string, { plan: P; slots: UOp[] }>();
   return (roots) => {
@@ -566,6 +571,7 @@ export function planner<P>(build: (roots: UOp[]) => P, drop: (plan: P) => void =
     else {
       const p = placeholders(roots, leaves);
       hit = { plan: build(p.roots), slots: p.slots };
+      built++;
       if (plans.size >= 512) { const [k, old] = plans.entries().next().value!; plans.delete(k); drop(old.plan); }
     }
     plans.set(key, hit);

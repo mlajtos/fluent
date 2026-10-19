@@ -1361,6 +1361,49 @@ describe("⍣ power: counts, inverses, and fixed points", () => {
   test("a predicate that never holds is an Error, not a frozen tab", () => {
     expect((run("({ x | x + 1 } ⍣ { a, b | 0 })(0)") as Error).message).toContain("didn't hold")
   })
+  // 256 rays marched in step: a state of 513 numbers, more than the engine computes as they
+  // are built, so only a loop that runs one step's plan again keeps it from replanning
+  // the whole history every step
+  const march = (from: number, steps: string) => `N: 256, a: (0 ..< N) - (N ÷ 2) × (0.96 ÷ N), rays: stack((sin(a), a × 0, cos(a)), -1),
+    sdf: { p | norm(p - [0, 0, 3], -1) - 1 }, march: { t | t + sdf(unsqueeze(t, -1) × rays) },
+    step: { s | x: s_0, done: s_1, new: march(x), (where(done, x, new), done ∨ (sdf(unsqueeze(new, -1) × rays) < 1e-3), s_2 + 1) },
+    (step ⍣ ${steps})((a × 0, a × 0, ${from}))`
+  const plans = async (source: string) => {
+    const { plansBuilt } = await import("./engine/opt.ts"), before = plansBuilt(), v = run(source) as engine.Tensor[]
+    v.forEach(unwrap)
+    return { plans: plansBuilt() - before, v }
+  }
+  test("an until loop runs one step's plan every step, and its state carries no history", async () => {
+    const until = "{ new, old | min(new_1) ∨ (new_2 ≥ 40) }"
+    await plans(march(30, until))
+    const { plans: built, v } = await plans(march(0, until))
+    expect(built).toBe(0)
+    expect(unwrap(v[2])).toBe(40)
+    expect(v.map((x) => engine.graphSize(x))).toEqual([1, 1, 1])
+  })
+  test("a count loop runs one step's plan, whatever the count; a short one is straight-line code", async () => {
+    await plans(march(0, "40"))
+    const { plans: built, v } = await plans(march(0, "50"))
+    expect(built).toBe(0)
+    expect(unwrap(v[2])).toBe(50)
+    const short = run("({ x | x × 2 + 1 } ⍣ 3)(fill([300], 1))") as engine.Tensor
+    expect([short.node.op, unwrap(short)[299]]).toEqual(["ADD", 15])
+  })
+  // ⍣ asks one question of the whole value; ⍤ gives each cell its own: one loop over the
+  // frame, a lane per cell, each stopping where its own predicate holds
+  test("(f ⍣ p) ⍤ k runs as one loop over the frame, each cell to its own stop", () => {
+    const each = run("(({ x | x + 1 } ⍣ { new, old | new > 3 }) ⍤ 0)([0, 10, 2, -5])") as engine.Tensor
+    expect([each.node.op, unwrap(each)]).toEqual(["LOOP", [4, 11, 4, 4]])
+    // f mixes its cell's elements, so each cell runs whole – the frozen cells are its own
+    expect(value("(({ v | v + max(v) } ⍣ { new, old | new > 10 }) ⍤ 0)([1, 8])")).toEqual([16, 16])
+    expect(value("M: [[1, 1, 1], [3, 4, 0], [20, 0, 0]], (({ v | v × 2 } ⍣ { new, old | Σ(new) > 10 }) ⍤ 1)(M)")).toEqual([[4, 4, 4], [6, 8, 0], [40, 0, 0]])
+    expect(value("heron: { a, x | x - (x×x - a)÷(2×x) }, [2, 3, 5, 100] ((heron ⍣ ≡) ⍤ 0) [1, 1, 1, 1]")).toEqual([Math.fround(Math.SQRT2), Math.fround(Math.sqrt(3)), Math.fround(Math.sqrt(5)), 10])
+    // a cell that never stops is the loop's Error, as it is the cell's
+    expect((run("heron: { a, x | x - (x×x - a)÷(2×x) }, [2.001, 4] ((heron ⍣ { new, old | new = old }) ⍤ 0) [1, 1]") as Error).message).toContain("didn't hold within 10000 steps")
+    // a loop inside each step: the frame's loop is each cell's own
+    const g = "G: { x | ({ y | y ÷ 2 } ⍣ { a, b | a < 1 })(x + 5) + x } ⍣ { a, b | a ≥ 30 },"
+    expect(value(`${g} (G ⍤ 0)([1, 7, 100])`)).toEqual(value(`${g} [G(1), G(7), G(100)]`))
+  })
   test("the bottom of a valley is the inverse of its slope at zero", () => {
     expect(value("(∇({ x | (x - 3)^2 + 1 }) ⍣ -1)(0)")).toBeCloseTo(3, 5)
   })
