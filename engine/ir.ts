@@ -192,7 +192,10 @@ export const scatterAdd = (idx: UOp, values: UOp, size: number): UOp =>
 // ---- the loop ------------------------------------------------------------------
 // A loop of k states. A step takes the states' placeholders (`carries`) to `outs`: the next
 // states and, for a loop until, a verdict after them, 1 where the loop is done. It runs n
-// steps, or until the verdict holds, at most n. The body reads the carries, literals, and
+// steps, or until the verdict holds, at most n. The verdict's shape is the loop's lanes,
+// leading every state's (the frame of a ⍤ that batched it; one lane for []): a lane keeps
+// its state from the step its verdict holds, and the loop ends when every lane has stopped.
+// The body reads the carries, literals, and
 // what it closes over – its frontier, which follows the inits in src, so every walk over
 // the graph sees each input of the loop and the loop computes each once. A view of what
 // it closes over stays in the body, read through its strides. One node per state, `out`

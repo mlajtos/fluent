@@ -1389,6 +1389,21 @@ describe("⍣ power: counts, inverses, and fixed points", () => {
     const short = run("({ x | x × 2 + 1 } ⍣ 3)(fill([300], 1))") as engine.Tensor
     expect([short.node.op, unwrap(short)[299]]).toEqual(["ADD", 15])
   })
+  // ⍣ asks one question of the whole value; ⍤ gives each cell its own: one loop over the
+  // frame, a lane per cell, each stopping where its own predicate holds
+  test("(f ⍣ p) ⍤ k runs as one loop over the frame, each cell to its own stop", () => {
+    const each = run("(({ x | x + 1 } ⍣ { new, old | new > 3 }) ⍤ 0)([0, 10, 2, -5])") as engine.Tensor
+    expect([each.node.op, unwrap(each)]).toEqual(["LOOP", [4, 11, 4, 4]])
+    // f mixes its cell's elements, so each cell runs whole – the frozen cells are its own
+    expect(value("(({ v | v + max(v) } ⍣ { new, old | new > 10 }) ⍤ 0)([1, 8])")).toEqual([16, 16])
+    expect(value("M: [[1, 1, 1], [3, 4, 0], [20, 0, 0]], (({ v | v × 2 } ⍣ { new, old | Σ(new) > 10 }) ⍤ 1)(M)")).toEqual([[4, 4, 4], [6, 8, 0], [40, 0, 0]])
+    expect(value("heron: { a, x | x - (x×x - a)÷(2×x) }, [2, 3, 5, 100] ((heron ⍣ ≡) ⍤ 0) [1, 1, 1, 1]")).toEqual([Math.fround(Math.SQRT2), Math.fround(Math.sqrt(3)), Math.fround(Math.sqrt(5)), 10])
+    // a cell that never stops is the loop's Error, as it is the cell's
+    expect((run("heron: { a, x | x - (x×x - a)÷(2×x) }, [2.001, 4] ((heron ⍣ { new, old | new = old }) ⍤ 0) [1, 1]") as Error).message).toContain("didn't hold within 10000 steps")
+    // a loop inside each step: the frame's loop is each cell's own
+    const g = "G: { x | ({ y | y ÷ 2 } ⍣ { a, b | a < 1 })(x + 5) + x } ⍣ { a, b | a ≥ 30 },"
+    expect(value(`${g} (G ⍤ 0)([1, 7, 100])`)).toEqual(value(`${g} [G(1), G(7), G(100)]`))
+  })
   test("the bottom of a valley is the inverse of its slope at zero", () => {
     expect(value("(∇({ x | (x - 3)^2 + 1 }) ⍣ -1)(0)")).toBeCloseTo(3, 5)
   })

@@ -184,8 +184,6 @@ export const deviceBytes = (): { live: number; peak: number } => { const p = pea
 // undefined when f reads the state's numbers or gives other shapes: the caller runs it
 // step by step.
 export function loop(xs: readonly Tensor[], n: number, until: boolean, f: (xs: Tensor[]) => Tensor[] | undefined): Tensor[] | undefined {
-  // batch has no rule for a loop
-  if (traces.length) return undefined;
   const t: Trace = { read: false }, carries = xs.map((x) => placeholder(t, "%carry", x.node.shape)), k = xs.length;
   let out: Tensor[] | undefined;
   tracing++;
@@ -202,9 +200,23 @@ export function loop(xs: readonly Tensor[], n: number, until: boolean, f: (xs: T
     for (let i = 0; i < n; i++) { body.carries.forEach((c, j) => bound.set(c, state[j]!)); state = substitute(body.outs, bound); }
     return state.map((u) => new Tensor(u));
   }
-  if (!ir.toposort(nodes, toLeaves).some((u) => placeholderOf.has(u))) compute(nodes);
+  runWhereBuilt(nodes);
   return nodes.map((u) => new Tensor(u));
 }
+// the loops a value reads run now, unless a trace holds what they read: a loop's Error is
+// the value of the call that built it
+const runWhereBuilt = (roots: readonly UOp[]): void => {
+  const order = ir.toposort(roots, toLeaves);
+  if (!order.some((u) => placeholderOf.has(u))) compute(order.filter((u) => u.op === "LOOP"));
+};
+// A loop with lanes – a verdict for each, the frame of the ⍤ that batched it – runs as a loop
+// of one more state, which lanes are done: a lane that is done keeps its state, and the loop
+// ends when every lane is done
+const laned = (b: ir.Body): { carries: UOp[]; outs: UOp[] } => {
+  const k = b.carries.length, v = b.outs[k]!, done = ir.buffer("%done", v.shape), now = ir.where(done, done, v);
+  const keep = (o: UOp, c: UOp) => ir.where(ir.broadcastTo(ir.reshape(done, [...v.shape, ...o.shape.slice(v.shape.length).map(() => 1)]), o.shape), c, o);
+  return { carries: [...b.carries, done], outs: [...b.outs.slice(0, k).map((o, j) => keep(o, b.carries[j]!)), now, min(new Tensor(now)).node] };
+};
 // A loop runs on leaves it owns. Each step stands the states' leaves in for the body's
 // carries and computes the next states and the verdict as one graph, whose plan is found
 // again by its structure: every step runs the plan the first one built. A synchronous loop
@@ -228,19 +240,21 @@ function runLoop(u: UOp): void {
   const { body, n, out } = u.arg as ir.LoopArg, k = body.carries.length, until = body.outs.length > k;
   let last = ran.get(body);
   if (!last || last.src.some((s, i) => s !== u.src[i])) {
+    const lanes = until ? body.outs[k]!.shape : [], { carries, outs } = lanes.length ? laned(body) : body, K = carries.length;
     // the first step computes what the body closes over too, once, and any start not
     // computed yet; a literal start is held as data
     const frontier = u.src.slice(k), bound = new Map(body.frontier.map((p, m) => [p, frontier[m]!] as const)), owned = new Set<UOp>(), kept: UOp[] = [];
     let state = u.src.slice(0, k).map((x) => { const l = leaf(x) ?? x; return l.op === "CONSTANT" && !l.shape.length ? held(l.arg as Float32Array, []) : l; });
+    if (lanes.length) state.push(ir.broadcastTo(ir.konst(0), lanes));
     for (let i = 0; until || i < n; i++) {
       if (i >= n) throw new Error(`\`(f ⍣ p)\`: the predicate didn't hold within ${n} steps`);
-      body.carries.forEach((c, j) => bound.set(c, state[j]!));
-      const roots = substitute(body.outs, bound), made = new Set<UOp>();
+      carries.forEach((c, j) => bound.set(c, state[j]!));
+      const roots = substitute(outs, bound), made = new Set<UOp>();
       let done = false;
       steps.push(made);
-      try { compute(i ? roots : [...roots, ...frontier]); done = until && readNode(roots[k]!)[0] !== 0; } finally { steps.pop(); }
+      try { compute(i ? roots : [...roots, ...frontier]); done = until && readNode(roots[K]!)[0] !== 0; } finally { steps.pop(); }
       if (!i) body.frontier.forEach((p, m) => { const l = leaf(frontier[m]!)!; bound.set(p, l); if (made.delete(l)) kept.push(l); });
-      const next = roots.slice(0, k).map((r) => leaf(r)!);
+      const next = roots.slice(0, K).map((r) => leaf(r)!);
       for (const l of [...owned, ...made]) if (!next.includes(l)) { owned.delete(l); give(l); }
       for (const l of next) if (made.has(l)) owned.add(l);
       state = next;
@@ -248,7 +262,7 @@ function runLoop(u: UOp): void {
     }
     compute(state);
     for (const l of [...owned, ...kept]) steps.at(-1)?.add(l);
-    ran.set(body, last = { src: u.src, state: state.map((x) => leaf(x)!) });
+    ran.set(body, last = { src: u.src, state: state.slice(0, k).map((x) => leaf(x)!) });
   }
   leafOf.set(u, last.state[out]!);
 }
@@ -719,7 +733,10 @@ export function overFrame(F: readonly number[], xs: readonly Tensor[], f: (cells
   traces.push(t); tracing++;
   let out: unknown;
   try { out = f(xs.map((x) => new Tensor(cellOf(t, x.node)))); } finally { traces.pop(); tracing--; }
-  return out instanceof Tensor && !t.read ? new Tensor(batch(out.node, t.cells, F)) : undefined;
+  if (!(out instanceof Tensor) || t.read) return undefined;
+  const { root, loops } = batch(out.node, t.cells, F);
+  if (loops.length) runWhereBuilt(loops);
+  return new Tensor(root);
 }
 // ── ∇: the engine's transpose ∘ linearize on the graph a function builds ─────────
 // The derivative is with respect to a traced argument – this use of the value, never a

@@ -173,6 +173,14 @@ value; each element to its own stop is `(f ⍣ p) ⍤ 0`).
   cannot run inside a synchronous loop; an inner loop's leaves go back with the outer step.
   The device holds two states: 200 steps of a 0.5 MB state peak at 1.0 MB, where keeping
   every step peaked at 100 MB (`engine/tests/loops.ts`).
+- **Under ⍤, one loop for the frame.** `(f ⍣ p) ⍤ k` builds the loop on the cell's
+  placeholders, and `batch.ts` gives it the frame like any node: its states, its body and
+  its verdict take the frame, so the verdict has a lane per cell. A loop with lanes runs
+  as a loop of one more state, the lanes that are done: a done lane keeps its state
+  (`where(done, carry, body)`), and the loop ends when every lane is done – JAX's vmap of
+  `while_loop`. A cell's loop that never stops is the loop's Error, as it was the cell's.
+  ⍤ needs no rule of its own for a body that mixes a cell's elements: the frame's loop is
+  each cell's.
 - **A short count loop is straight-line code.** At most `UNROLLED` ops in all (1,024, the
   bound a sum's unrolling has in `opt.ts`), it is n copies of its step in the graph that
   reads it. Muon's 5 Newton–Schulz steps and the looped dreamer's 3 rounds stay one plan
@@ -188,7 +196,8 @@ Measured on the GPU, ordered A, B, A against own-engine 931e76d (ms):
 | Mandelbrot, depth 80 | 18.7, 15.6 | 7.7–8.2 |
 | Mandelbrot, depth 40 | 5.4, 4.9 | 5.5 |
 | looped dreamer, a dream | 152, 138 | 104–130 |
-| per-pixel Mandelbrot `escape ⍤ 0`, 48 × 32 (cell by cell) | 4204, 3987 | 840–894 |
+| per-pixel Mandelbrot `escape ⍤ 0`, 48 × 32 | 4204, 3987, 4149 | 34.6–36.2 (cell by cell: 840–894) |
+| per-pixel Mandelbrot `escape ⍤ 0`, 12 × 8 | 35.0, 29.5, 28.7 | 4.5 |
 
 The dreamer's dream, makemore's sampling and muon's step are unchanged. On the CPU every
 value is the same to the bit; on the GPU a loop's per-step kernels round differently from
