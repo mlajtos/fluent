@@ -615,10 +615,10 @@ last: oneHot(n - 1, n) ⍴ [n, 1], ; picks the tip
   tip: Σ(P × last, 0), ; the hand
   reach: Σ((tip - target())^2), ; hand → target
   avoid: Σ(1 ÷ (Σ((P - obstacle())^2, 1) + 0.02)), ; repel
-  reach + 0.0005×avoid
+  reach + 0.005×avoid
 },
 
-opt: adam(0.05), ; optimiser
+opt: OptimizerMuon(0.03), ; optimiser
 joints: \${ fk(θ) }, ; live pose for the picture
 { opt(𝓛) } ⟳ Time()×60, ; 60 steps a second
 
