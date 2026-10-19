@@ -687,7 +687,7 @@ ramp: DrawRamp: doc({ colors | { t |
   m: #colors, s: clamp(t, 0, 1) × (m - 1),
   w: 1 - abs(s - (0..<m)) ⌈ 0,
   (light(Σ(unsqueeze(w, -1) × colors, -2)), 1, 1÷0)
-} }, "ramp(colors)", "The ink of a color scale: a number from 0 to 1 at each place picks its color along colors, [n, 3], blended between neighbors, and hides everything under it. Paint a field with it – noise, or any number at each place – to see the field.", "ramp([[0, 0, 0], [1, 1, 1]])(0.5)_0 ≈ 0.5^2.2"),
+} }, "ramp(colors)", "The ink of a color scale: a number from 0 to 1 at each place picks its color along colors, [n, 3], blended between neighbors, and hides everything under it. Paint a field with it – noise, or any number at each place – to see the field.", "ramp([[0, 0, 0], [1, 1, 1]])(0.5)_0 = light([0.5, 0.5, 0.5])"),
 above: DrawAbove: doc({ a, b | { d |
   x: a(d), y: b(d),
   (y_0 × (1 - x_1) + x_0, y_1 × (1 - x_1) + x_1, x_2 ⌈ y_2)
