@@ -99,6 +99,16 @@ GPU. `worker.ts` calls `init()` before it evaluates anything.
   took the dreamer's step from 29 to 17.5 ms and made the weight-gradient tiles 9×
   faster. SLICE's transpose is PAD, an index predicate. As a scatter, one ∇ of a 4k
   slice ran 3.4·10⁷ loop iterations.
+- **Fusion.** A kernel is built from the graph, one value per (node, index): a node read
+  twice at one index is computed once, and a node read where it is needed is never
+  stored. A plan stores a node only where that costs less than recomputing it: read more
+  than one way – at other indices – it starts stored and is freed where its reads take few
+  elements more than once; one computed more often than it has elements is stored once its
+  recompute costs more than a store and its reads (`COST.recompute`). An intermediate of
+  pixels × pieces is read where it is reduced, never written: outline text went from
+  410 MB and 220 ms of GPU to 2.8 MB and 8 ms, Perlin noise at 1280 × 800 from 11 kernels,
+  184 MB and 9–13 ms to one kernel, 12 MB and 2.2 ms. `engine/tests/bench-fuse.ts`
+  re-derives the constants.
 - **Contractions.** A contraction is spliced into a reduction's body only when it becomes
   the whole, tileable body: 17.5 → 9.2 ms a dreamer step. From K = 8 a contraction runs
   as a tile (`engine/tests/bench-tile.ts` re-derives the gate), and a loop nest the plan

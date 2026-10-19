@@ -337,16 +337,18 @@ export const bcIndex = (st: readonly number[], outSh: readonly number[], gid: UO
 // ---- printing a loop nest: one printer, a syntax per backend ----------------------
 // Each op prints from its operands' text (`r(i)` prints operand i, where the syntax reads
 // it). A shared subexpression the syntax names becomes a `let` at the OUTERMOST scope its
-// loop variables allow: a loop-invariant value hoists out of the loops below it.
+// loop variables allow: a loop-invariant value hoists out of the loops below it. So does an
+// expression nested DEEP levels: a shader parser stops at a depth.
 export interface Syntax {
   op: Partial<Record<Op, (r: (i: number) => string, u: UOp, c: Nest) => string>>;
   acc: (name: string, op: string, r: string, n: number, body: string[], v: string) => string;
   let: (name: string, e: string) => string;
   named: (uses: number, size: number) => boolean;
 }
-export interface Nest { syn: Syntax; names: Map<number, string>; ctr: { n: number }; uses: Map<number, number>; deps: Map<number, Set<number>>; size: Map<number, number>; scopeOf: Map<number, number>; scopes: string[][]; bound: Map<number, string> }
+const DEEP = 32;
+export interface Nest { syn: Syntax; names: Map<number, string>; ctr: { n: number }; uses: Map<number, number>; deps: Map<number, Set<number>>; size: Map<number, number>; scopeOf: Map<number, number>; scopes: string[][]; bound: Map<number, string>; nested: Map<number, number> }
 export const nest = (syn: Syntax, names: Map<number, string>, ctr = { n: 0 }): Nest =>
-  ({ syn, names, ctr, uses: new Map(), deps: new Map(), size: new Map(), scopeOf: new Map(), scopes: [[]], bound: new Map() });
+  ({ syn, names, ctr, uses: new Map(), deps: new Map(), size: new Map(), scopeOf: new Map(), scopes: [[]], bound: new Map(), nested: new Map() });
 export const infix = (o: string) => (r: (i: number) => string) => `(${r(0)} ${o} ${r(1)})`;
 export const INDEX_SYNTAX: Syntax["op"] = { IADD: infix("+"), IMUL: infix("*"), IMOD: infix("%"), LOAD: (r, u) => `a${(u.arg as { slot: number }).slot}[${r(0)}]` };
 // one pre-pass over a value: use counts, the RANGEs each node needs, subtree sizes
@@ -385,7 +387,10 @@ export function render(u: UOp, c: Nest): string {
     return `acc${k}`;
   }
   const e = (c.syn.op[u.op] ?? err(`print: cannot print ${u.op}`))((i) => render(u.src[i]!, c), u, c);
-  return u.op !== "ICONST" && u.op !== "CONSTANT" && c.syn.named(c.uses.get(u.id) ?? 1, c.size.get(u.id) ?? 1) ? bind(u, e, c) : e;
+  const depth = 1 + Math.max(0, ...u.src.map((s) => (c.bound.has(s.id) ? 0 : c.nested.get(s.id) ?? 0)));
+  if (u.op !== "ICONST" && u.op !== "CONSTANT" && (depth > DEEP || c.syn.named(c.uses.get(u.id) ?? 1, c.size.get(u.id) ?? 1))) return bind(u, e, c);
+  c.nested.set(u.id, depth);
+  return e;
 }
 
 // every node the roots reach, each once, sources first; `srcOf` picks the edges to follow.

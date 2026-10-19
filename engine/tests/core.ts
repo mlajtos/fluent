@@ -3,7 +3,7 @@
 //   bun engine/tests/run.ts
 
 import { buffer, konst, data, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, numel, type UOp } from "../ir.ts";
-import { optimize, optimizeMany, simplifyMany, rangesIn } from "../opt.ts";
+import { optimize, optimizeMany, simplifyMany, rangesIn, accCost, COST } from "../opt.ts";
 import { grad, gradAll } from "../grad.ts";
 import { CPU, type HostData } from "../cpu.ts";
 import { realize, realizeMany } from "./realize.ts";
@@ -172,6 +172,36 @@ export default async function (): Promise<{ fails: number }> {
     const at = new Map<string, HostData>([["P", T(rv(64 * 96), [64, 96])]]);
     const a = await realize(cpu, g, at), b = gpu ? await realize(gpu, g, at) : a;
     check("parity: twelve small inputs", rel(b.data, a.data) < 1e-5, `relΔ ${rel(b.data, a.data).toExponential(1)}`);
+  }
+  { // one value per (node, index): a fork of pixels × pieces read three times at one index is
+    // computed once, in the kernel that sums it – never stored
+    const P = 4096, E = 64, px = buffer("px", [P, 1]), ed = buffer("ed", [1, E]);
+    const a = add(mul(exp(add(broadcastTo(px, [P, E]), mul(broadcastTo(ed, [P, E]), konst(-1)))), konst(0.5)), konst(1));
+    const g = reduceAxis(add(mul(a, a), sqrt(a)), 1, false), ks = kernels(g);
+    check("a fork of pixels × pieces read at one index is computed in the kernel that sums it: ONE kernel", ks.length === 1, `${ks.length} kernels, the largest [${ks.map((k) => k.shape).sort((x, y) => numel(y) - numel(x))[0]}]`);
+    const at = new Map<string, HostData>([["px", T(rv(P, 2), [P, 1])], ["ed", T(rv(E, 2), [1, E])]]);
+    const c = await realize(cpu, g, at), d = gpu ? await realize(gpu, g, at) : c;
+    check("parity: a fork of pixels × pieces", rel(d.data, c.data) < 1e-5);
+    // read two ways that take each element once – the two coordinates of a cell's corners –
+    // it is computed where each way reads it
+    const pts = buffer("pts", [P, 1, 2]), corners = data(Float32Array.of(0, 0, 1, 0, 0, 1, 1, 1), [4, 2]);
+    const cell = add(exp(mul(broadcastTo(pts, [P, 4, 2]), konst(0.3))), broadcastTo(corners, [P, 4, 2]));
+    const mix = (u: UOp) => mul(add(mul(u, konst(34)), konst(1)), u);
+    const coords = (j: number) => reshape(slice(cell, 2, j, 1), [P, 4]);
+    const n2 = reduceAxis(add(mix(coords(0)), mix(coords(1))), 1, false), kn = kernels(n2);
+    check("a fork read as two coordinates is computed where each is read: ONE kernel", kn.length === 1, `${kn.length} kernels`);
+  }
+  { // a chain of sums over a body with a loop of its own folds into its reader only within
+    // COST.perThread steps a thread: 3 outputs, each a sum over four axes of 8 of a product
+    // with a sum over a fifth, is not one 32,768-step loop on each of 3 threads
+    const Y = buffer("Y", [3, 8, 8, 8, 8, 8]), X = buffer("X", [3, 8, 8, 8, 8]);
+    let r: UOp = mul(reduceAxis(Y, 5, false), X);
+    for (let ax = 4; ax >= 1; ax--) r = reduceAxis(r, ax, false);
+    const per = kernels(r).map((k) => accCost(k.src[1]!));
+    check("chained sums: no thread runs past the per-element budget", Math.max(...per) <= COST.perElem, `steps a thread: ${per.join(", ")}`);
+    const at = new Map<string, HostData>([["Y", T(rv(3 * 8 ** 5), [3, 8, 8, 8, 8, 8])], ["X", T(rv(3 * 8 ** 4), [3, 8, 8, 8, 8])]]);
+    const c = await realize(cpu, r, at), d = gpu ? await realize(gpu, r, at) : c;
+    check("parity: chained sums", rel(d.data, c.data) < 1e-4, `relΔ ${rel(d.data, c.data).toExponential(1)}`);
   }
   { // a gather is a read: never stored only to be read back
     const W = buffer("W", [6, 4]), ids = buffer("ids", [5]), g = gather(W, ids);
