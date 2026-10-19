@@ -2532,9 +2532,11 @@ describe("the evaluation host", () => {
     expect([four.paint, [...four.payload], four.size]).toEqual([true, [0, 15], [5 * 52, 5 * 52]])
   })
 
-  test("[h, w, 3] and [h, w, 4] are images, with the range of their values", async () => {
+  test("[h, w, 3] and [h, w, 4] are images: their colors show, and no range crosses with them", async () => {
+    // a drawing is not data: its range cost two reductions over every pixel on each paint,
+    // to label it "0.09 … 1"
     const d = await evaluate("reshape(0 ..< 12, [2, 2, 3]) ÷ 22 - 0.25")
-    expect([...d.payload]).toEqual([-0.25, 0.25])
+    expect([d.paint, d.payload]).toEqual([true, undefined])
     const rgba = await evaluate("fill([2, 2, 4], 0.5)")
     const { px } = await paintOf(rgba)
     expect(px(0)).toEqual([128, 128, 128, 128])

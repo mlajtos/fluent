@@ -263,16 +263,15 @@ const windowOf = (t: engine.Tensor): engine.Tensor => {
 const densityNow = (): number => getAsSyncList(density.peek()) as number
 
 // A tensor's picture, and the numbers that cross with it for the page's labels: its values
-// when they are labelled, otherwise the finite range they span. A heatmap and bars are made
-// when they are painted, at the display's density – a heatmap with its maps laid out and
-// magnified, its size in units, bars for the canvas's size – and live only until they are
-// on the screen.
-const prepare = (view: TensorView, t: engine.Tensor): { picture: Picture, numbers: engine.Tensor, size?: [number, number] } => {
+// when they are labelled, otherwise the finite range they span. An image's colors are what
+// it shows, and no numbers cross with it. A heatmap and bars are made when they are
+// painted, at the display's density – a heatmap with its maps laid out and magnified, its
+// size in units, bars for the canvas's size – and live only until they are on the screen.
+const prepare = (view: TensorView, t: engine.Tensor): { picture: Picture, numbers?: engine.Tensor, size?: [number, number] } => {
   const numbers = (range: engine.Tensor) => (labelled(t.shape) ? t : range)
   if (view === "image") {
-    const range = tensorOf(seeing.DrawExtent(t))
-    engine.materialize([t, range])
-    return { picture: t, numbers: range }
+    engine.materialize([t])
+    return { picture: t }
   }
   if (!t.size) { return { picture: () => null, numbers: t } }
   if (view === "heat") {
@@ -298,7 +297,7 @@ const describeTensor = (t: engine.Tensor): Desc => {
     if (view === "number") { return { k: "tensor", id, shape, ...numbersOf(id, t) } }
     const { picture, numbers, size } = prepare(view, t)
     pictures.set(id, picture)
-    return { k: "tensor", id, shape, paint: true, ...numbersOf(id, numbers), ...(size && { size }) }
+    return { k: "tensor", id, shape, paint: true, ...(numbers && numbersOf(id, numbers)), ...(size && { size }) }
   } catch (e) {
     return describeError(asError(e))
   }
