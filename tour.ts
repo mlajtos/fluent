@@ -232,7 +232,11 @@ canvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)",
     },
     Text("✅ **A ring.** You didn’t draw a circle — you said what one *is*: every spot 40 from the middle. The computer found the spots. That is how every picture in the gallery is made."),
     Text("🎯 *Make \`ring\` a ring of radius **40** — one number to change.*")
-  )
+  ),
+  Text("**A shape is a number at every spot, so it mixes with other numbers.** \`noise(p)\` is a number that wanders smoothly as \`p\` moves. Add a little to the ring’s distance and the ring wobbles, like one drawn by hand. The noise stretches the distance too, so the line would thicken and thin; \`level\` measures the distance again, from how quickly the number changes, and the line stays even. Try 2 or 15 in place of the 6."),
+  demo("dot: dots([[80, 60]]),
+ring: level({ p | dot(p) - 40 + 6×noise(p ÷ 10) }),
+canvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)")
 ),
 
 ; 11 · the slope machine

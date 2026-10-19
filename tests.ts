@@ -2243,6 +2243,11 @@ describe("error messages carry context", () => {
 })
 
 describe("pictures", () => {
+  // as the page sets the display's density; the host settles before the next test
+  const atDensity2 = async (run: () => void) => {
+    toHost({ t: "density", value: 2 })
+    try { run() } finally { toHost({ t: "density", value: 1 }); await new Promise((r) => setTimeout(r, 20)) }
+  }
   test("a shape that measures the whole picture at once is an Error, not an empty canvas", () => {
     // regression: norm(p - c) without its axis is one number for every pixel together, and
     // draw silently drew nothing
@@ -2250,6 +2255,90 @@ describe("pictures", () => {
     expect(v).toBeInstanceOf(Error)
     expect((v as Error).message).toContain("norm(p - c, -1)")
     expect(value("Σ(canvas(20, 20) . draw({ p | abs(norm(p - [10, 10], -1) - 6) }, [1, 1, 1], 2) ≠ canvas(20, 20))")).toBeGreaterThan(100)
+  })
+  test("draw is paint in a stroke ink: pixel for pixel the box overlap mixed in linear light", async () => {
+    // the overlap of a pixel and the stroke, written out
+    const boxed = `{ shape, color, width | { picture | D: Density(), d: shape(pixels(picture)) × D, r: width × D ÷ 2,
+      cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ (-r)) ⌈ 0 ⌊ 1, -1), picture^2.2 × 1-cover + color^2.2×cover ^ 1÷2.2 } }`
+    const same = () => [["dots([[10.3, 20.7], [33.1, 40.9]])", "[1, 0, 1]", 7], ["line([[0, 3], [40, 47], [64, 9]])", "[10, 129, 239] ÷ 255", 2.5],
+      ['letters("Ag", [4, 4], 18)', "1", 1]].map(([shape, color, width]) => {
+      const at = `canvas(64, 48, 0.3) . `
+      return (value(`boxed: ${boxed}, a: ${at}draw(${shape}, ${color}, ${width}), (a ≡ (${at}paint(${shape}, stroke(${color}, ${width}))), a ≡ (${at}boxed(${shape}, ${color}, ${width})))`) as any[]).map(unwrap)
+    })
+    expect(same()).toEqual([[1, 1], [1, 1], [1, 1]])
+    await atDensity2(() => expect(same()).toEqual([[1, 1], [1, 1], [1, 1]]))
+  })
+  test("an ink gives its light, its cover and how far it reaches; one above another is Porter–Duff over", async () => {
+    expect(value("stroke([1, 0.5, 0], 4)(0) ≡ ([1, 0.5^2.2, 0], 1, 3)")).toBe(1)
+    // nothing past its reach: half the width and a pixel for a stroke, 3 radii for a halo
+    expect((value("(stroke(1, 4)(2.4)_1 > 0, stroke(1, 4)(3)_1, halo(1, 5)(15)_0 < 2e-4, halo(1, 5)(0)_2, solid(1)(1)_1)") as any[]).map(unwrap)).toEqual([1, 0, 1, 15, 0])
+    // light over light: b shows through as much as a leaves uncovered, and the reach is the farther
+    expect(value("(stroke(1, 2) above ramp([[0, 0, 1], [0, 0, 1]]))(1) ≡ ([0.5, 0.5, 1], 1, 1÷0)")).toBe(1)
+    expect(value("((stroke(1, 2) above halo(1, 1)) above solid(0))(0.5) ≡ (stroke(1, 2) above (halo(1, 1) above solid(0)))(0.5)")).toBe(1)
+    // a halo adds light and hides nothing: far from it the picture is as it was
+    expect((value("x: canvas(40, 10, 0.5) . paint(dots([[5, 5]]), halo(1, 2)), (x_5_5_0 > 1, abs(x_5_35_0 - 0.5) < 1e-6)") as any[]).map(unwrap)).toEqual([1, 1])
+    await atDensity2(() => expect(value("stroke(1, 4)(0)_2")).toBe(2.5))
+  })
+  test("ramp colors a number from 0 to 1 along its stops, blended in the colors given", () => {
+    const stops = "[[0, 0, 0], [1, 0, 0], [1, 1, 1]]"
+    // an ink is given each place's number on an axis of its own, [..., 1]
+    expect(value(`ramp(${stops})([[-1], [0], [0.25], [0.5], [1], [2]])_0 ≡ [[0, 0, 0], [0, 0, 0], [0.5^2.2, 0, 0], [1, 0, 0], [1, 1, 1], [1, 1, 1]]`)).toBe(1)
+    expect((value(`(ramp(${stops})(0.3)_1, ramp(${stops})(0.3)_2)`) as any[]).map(unwrap)).toEqual([1, Infinity])
+    expect(value(`shape(canvas(8, 4) . paint({ p | Σ(p, -1) ÷ 12 }, ramp(${stops})))`)).toEqual([4, 8, 3])
+  })
+  test("line is segments joining each point to the next", () => {
+    expect(value("pts: ⚄([9, 2]) × 40, p: pixels(canvas(50, 40)), max(abs(line(pts)(p) - segments(pts_(0..<8), pts_(1 ..< 9))(p)))")).toBe(0)
+  })
+  test("level makes any function a distance: |f| over its slope, first-order", () => {
+    // exact for a straight line, close beside a circle
+    expect(value("level({ p | Σ(p × [3, 4], -1) - 10 })([[2, 1], [0, 0]])")).toEqual([0, 2])
+    const ring = value("level({ p | Σ(p^2, -1) - 400 })([[20.5, 0], [0, -21]])") as number[]
+    expect(ring[0]).toBeCloseTo(0.5, 1)
+    expect(ring[1]).toBeCloseTo(1, 1)
+    // where f's slope falls to 0 with f – a double root – it is half the distance
+    expect(value("level({ p | Σ(p, -1)^2 })([[1, 1]])_0 × 2")).toBeCloseTo(Math.SQRT2, 5)
+    expect(value("shape(canvas(20, 10) . paint(level({ p | q: unstack(p, -1), q_1 - 5 - sin(q_0) }), stroke(1, 1)))")).toEqual([10, 20, 3])
+  })
+  test("noise: 0 on the grid, smooth, the same for the same place, in 2, 3 and 4 dimensions", () => {
+    expect(value("noise([[3, 4], [-7, 0], [289, 12]])")).toEqual([0, 0, 0])
+    expect(value("noise([[0, 0, 0], [5, -2, 9]])")).toEqual([0, 0])
+    const n = value("noise(⚄([400, 2]) × 50 - 25)") as number[]
+    expect(Math.max(...n.map(Math.abs))).toBeLessThan(1)
+    expect(Math.max(...n.map(Math.abs))).toBeGreaterThan(0.3)
+    expect(value("p: ⚄([50, 3]) × 20, max(abs(noise(p) - noise(p + 1e-3)))")).toBeLessThan(0.01)
+    expect(value("p: [[0.3, 1.7, 2.2, 5.1]], noise(p) = noise(p)")).toEqual([1])
+    // one octave of fbm is noise; two add a finer one at half strength
+    expect(value("p: [[0.3, 1.7], [4.2, -3.5]], fbm(p, 2) - (noise(p) + (noise(2×p + 7.31) ÷ 2))")).toEqual([0, 0])
+    expect(value("p: [[0.3, 1.7], [4.2, -3.5]], turbulence(p, 2) - (abs(noise(p)) + (abs(noise(2×p + 7.31)) ÷ 2))")).toEqual([0, 0])
+  })
+  test("∇ flows through noise: its slope is the finite difference's, in 2, 3 and 4 dimensions", () => {
+    for (const p of ["[[0.3, 1.7], [5.5, -0.25], [-12.9, 3.3]]", "[[0.3, 1.7, 2.2], [5.5, 0.25, 9.1], [12.9, 3.3, 0.01]]", "[[0.3, 1.7, 2.2, 7.7]]"]) {
+      const gap = value(`q: ${p}, e: 1e-3, n: shape(q)_1, I: 0..<n ⊗(=) 0..<n,
+        dn: ∇({ x | Σ(noise(x)) })(q),
+        fd: stack(ListMap(unstack(I), { u | noise(q + (u × e)) - noise(q - (u × e)) ÷ (2×e) }), -1),
+        max(abs(dn - fd))`) as number
+      expect([p, gap]).toEqual([p, expect.any(Number)])
+      expect(gap).toBeLessThan(1e-3)
+    }
+  })
+  test("a stroke alone has no pull from far away; a halo under it gives one", () => {
+    // fit a wave's phase from 1.5 off: a stroke's ink changes only along its own edge, so a
+    // stroke that misses the goal's line feels nothing, while a halo reaches across the gap
+    const [stroke, halo] = value(`W: 64, H: 40,
+      picture: { t, ink |
+        wave: { p | q: unstack(p, -1), q_1 - H÷2 + (sin(q_0 × 2×π ÷ W + t) × H÷2.4) },
+        canvas(W, H, 0) . paint(level(wave), ink)
+      },
+      fit: { ink |
+        goal: picture(0.9, ink), t: ~(-0.6),
+        𝓛: { mean((picture(t, ink) - goal)^2) }, opt: adam(0.03),
+        ({ s | opt(𝓛) } ⍣ 150)(0), (𝓛(), t)
+      },
+      (fit(stroke(1, 3)), fit(stroke(1, 3) above halo(0.5, 4)))`).map((r: any[]) => r.map(unwrap)) as number[][]
+    expect(stroke![0]).toBeGreaterThan(0.1)
+    expect(Math.abs(stroke![1]! - 0.9)).toBeGreaterThan(1)
+    expect(halo![0]).toBeLessThan(1e-5)
+    expect(halo![1]).toBeCloseTo(0.9, 2)
   })
   test("viridis has no color for NaN, and the ends' colors past them", () => {
     expect(value("isNaN(viridis(0 ÷ 0))")).toEqual([1, 1, 1])
