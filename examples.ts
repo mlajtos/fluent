@@ -683,7 +683,7 @@ ring: { g, n, c | ; the goal image: a bright ring of radius 0.5 around c, on an 
   r: √((gx - c_0)^2 + (gy - c_1)^2),
   exp(-((r - 0.5)^2) ÷ 0.006)
 },
-paint: { p, g, n | ; render K Gaussian blobs at centers p [K, 2] onto an n×n image
+blobs: { p, g, n | ; K Gaussian blobs at centers p [K, 2] onto an n×n image
   q: transpose(p),
   dx: g ⍴ [1, n, 1] - (q_0 ⍴ [1, 1, K]),
   dy: g ⍴ [n, 1, 1] - (q_1 ⍴ [1, 1, K]),
@@ -693,10 +693,10 @@ paint: { p, g, n | ; render K Gaussian blobs at centers p [K, 2] onto an n×n im
 a0: 0..<K × (2×π ÷ K), ; blobs start as a tiny huddle at the middle
 θ: ~stack((0.15 × cos(a0), 0.15 × sin(a0)), 1), ; K blob centers – the only trainable thing
 
-𝓛: { Σ((paint(θ, lg, lres) - ring(lg, lres, center()))^2) }, ; coarse pixel mismatch
+𝓛: { Σ((blobs(θ, lg, lres) - ring(lg, lres, center()))^2) }, ; coarse pixel mismatch
 
 opt: adam(0.02),
-shown: \${ paint(θ, vg, vres) }, ; the fine picture, for display
+shown: \${ blobs(θ, vg, vres) }, ; the fine picture, for display
 { opt(𝓛) } ⟳ Time()×120, ; descend the mismatch, 120 steps a second
 
 view: [[-1, 1], [-1, 1]],
