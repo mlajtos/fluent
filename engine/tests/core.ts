@@ -2,7 +2,7 @@
 // finite differences on random graphs, and a training smoke. Runs in headless Chrome:
 //   bun engine/tests/run.ts
 
-import { buffer, konst, data, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, numel, type UOp } from "../ir.ts";
+import { buffer, konst, data, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, pad, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, numel, type UOp } from "../ir.ts";
 import { optimize, optimizeMany, simplifyMany, rangesIn, accCost, COST } from "../opt.ts";
 import { grad, gradAll } from "../grad.ts";
 import { CPU, type HostData } from "../cpu.ts";
@@ -202,6 +202,21 @@ export default async function (): Promise<{ fails: number }> {
     const at = new Map<string, HostData>([["Y", T(rv(3 * 8 ** 5), [3, 8, 8, 8, 8, 8])], ["X", T(rv(3 * 8 ** 4), [3, 8, 8, 8, 8])]]);
     const c = await realize(cpu, r, at), d = gpu ? await realize(gpu, r, at) : c;
     check("parity: chained sums", rel(d.data, c.data) < 1e-4, `relΔ ${rel(d.data, c.data).toExponential(1)}`);
+  }
+  { // butterflies: each stage reads the one before at two indices, so computed in place the
+    // copies double at each stage down. The plan stores a stage once its copies cost more than
+    // storing it, so no stage recomputes more than storing costs: 12 stages of 4096 points
+    const Nf = 4096, H = Nf / 2, S = 12;
+    let f: UOp = buffer("f", [Nf]);
+    for (let s = 0; s < S; s++) {
+      const a = slice(f, 0, 0, H), b = mul(slice(f, 0, H, H), data(Float32Array.from({ length: H }, (_, i) => Math.cos(i + s)), [H]));
+      f = add(pad(add(a, b), 0, 0, H), pad(sub(a, b), 0, H, 0));
+    }
+    const body = kernels(f).reduce((n, k) => n + toposort(k.src[1]!).length, 0);
+    check("butterflies: no stage recomputes more than storing it costs", body <= S * COST.recompute, `${body} ops in the plan's kernels`);
+    const at = new Map<string, HostData>([["f", T(Float32Array.from({ length: Nf }, (_, i) => Math.sin(i)), [Nf])]]);
+    const c = await realize(cpu, f, at), d = gpu ? await realize(gpu, f, at) : c;
+    check("parity: butterflies", rel(d.data, c.data) < 1e-4, `relΔ ${rel(d.data, c.data).toExponential(1)}`);
   }
   { // a kernel's body is a graph: a value it reads twice is one value, and printing walks it
     // once – a term squared 30 times is 30 nodes, not 2³⁰ paths. Both shapes a reduction can

@@ -226,6 +226,21 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
     const input = (b: UOp): number => { let i = slot.get(b.id); if (i === undefined) { i = inputs.length; inputs.push(b); slot.set(b.id, i); if (small(b)) smalls++; } return i; };
     let smalls = 0;
     const wide = () => inputs.length - smalls + Math.ceil(smalls / HARD_INPUTS) > cap;           // the bindings, as `bindings` counts them, past the cap
+    // The plan's rule for storing a node, as the body grows: each node's finished copies here
+    // – the computations they make, the most work one does – and a node whose next copy
+    // would take them past what storing it costs is stored now, and that copy loads it. The
+    // plan counts at least as many, so it would store the node too; deciding it here keeps a
+    // chain of forks read at two indices each, butterflies, from building 2^depth copies first.
+    const tally = new Map<number, [number, number]>();
+    const note = ([x, i, w]: [UOp, UOp, number]) => { const t = tally.get(x.id) ?? [0, 0]; t[0] += outN * steps(i, gid); t[1] = Math.max(t[1], w); tally.set(x.id, t); };
+    const costlier = (v: UOp, ix: UOp): boolean => {
+      const t = tally.get(v.id);
+      if (!t || v.op === "GATHER" || (reads.get(v.id) ?? 1) < 2) return false;
+      const n = Math.max(numel(v.shape), 1), e = t[0] + outN * steps(ix, gid);
+      if (e <= n || !stored(t[1], e / n)) return false;
+      store.add(v.id); settled.add(v.id);
+      return true;
+    };
     // whether v, read at ix, is computed here or loaded from its own kernel. A map is computed
     // where it is read – a loop it reads decides for itself – and so is a gather, a read of
     // its table
@@ -278,7 +293,7 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
         const below = node("LESS_THAN", [c, konst(before + len)], null, []);
         const inside = before ? node("MULTIPLY", [below, node("ADD", [konst(1), node("MULTIPLY", [node("LESS_THAN", [c, konst(before)], null, []), konst(-1)], null, [])], null, [])], null, []) : below;
         o = node("WHERE", [inside, value(src, iadd(srcIdx, iconst(-before * sst[axis]!))), konst(0)], null, []);   // wraps below 0 only where `inside` is 0
-      } else if (inPlace(v, ix, whole)) {
+      } else if (inPlace(v, ix, whole) && !costlier(v, ix)) {
         // a map whose reads take the kernel past its cap is undone, and loaded
         const mark = [inputs.length, keys.length, here.length] as const, entry: [UOp, UOp, number] = [v, ix, 0];
         here.push(entry);
@@ -288,9 +303,11 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
           for (const x of inputs.splice(mark[0])) { slot.delete(x.id); if (small(x)) smalls--; }
           for (const [i, id] of keys.splice(mark[1])) memo.get(i)!.delete(id);
           here.length = mark[2];
+          tally.clear();
+          for (const h of here) if (h[2]) note(h); // the copies still here, those finished
           over.add(v.id);
           o = load(input(kernelOf(v)), ix);
-        }
+        } else note(entry);
       } else { o = load(input(kernelOf(v)), ix); loads.push([v, ix]); }
       let row = memo.get(at);
       if (!row) memo.set(at, (row = new Map()));
