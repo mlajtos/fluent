@@ -414,6 +414,17 @@ compute device. Where it is heading, with the source of each idea:
   command buffer, and a dispatch estimated over ~20 ms split, against watchdogs.
 - **Indirect dispatch** for data-dependent loops (`⍣` until, `solve`): encode N
   iterations, let a convergence kernel zero the rest, read once.
+- **Per-lane exit in one kernel** (§3.4). A loop with lanes runs masked: every lane
+  computes every step, 983,040 lane-steps for a 256 × 128 Mandelbrot of 30 steps where
+  each lane stopping on its own needs 285,460 (`engine/tests/loops.ts`). A loop whose step
+  is elementwise along its lanes could be one kernel: a thread per lane, its states in
+  registers, a loop bounded by the step count that breaks once the lane's state stops
+  changing (exact: a step that changes nothing changes nothing again, and a lane that is
+  done keeps its state). It needs a kernel node for a loop with carried values in both
+  printers; plan keys over a loop's body; dispatches of a bounded number of steps each,
+  since a loop until that never stops is 10,000 steps a lane (87,500 pixels × 20 ops ×
+  10,000 is seconds of GPU, past macOS's watchdog); and multi-output kernels, or each of a
+  loop's states reruns the whole loop.
 - **Device-loss recovery**: a new adapter, re-evaluation, `~` variables restored from an
   OPFS checkpoint (WebLLM, Figma).
 - **Parsing in the worker.** The page re-parses on every keystroke for its markers.
