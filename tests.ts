@@ -1969,6 +1969,172 @@ describe("gallery examples smoke suite", () => {
       expect(hear((i) => Math.sin(2 * Math.PI * 440 * i / 48000))).toEqual(["A", 4, 439])
     } finally { extendEnvironment({ Microphone: microphone! }) }
   })
+
+  // honest-fit: the program, its fit run to the end as the page's ⟳ runs it – 24 frames of two
+  // steps – and other numbers shown as its buttons show them
+  describe("honest-fit", () => {
+    const read = (scope: Record<string, Value>, expression: string) => unwrap(occurrence(() => evaluateSyntaxTreeNode(CodeParse(expression), scope)))
+    const loops = new WeakMap<Record<string, Value>, Function>()
+    const settle = (scope: Record<string, Value>) => { const step = loops.get(scope)!; for (let i = 0; i < 30; i++) { step(engine.scalar(i)) } }
+    const fitted = (source = EXAMPLES["honest-fit"]) => {
+      steps.length = 0
+      const scope = scopeOf(source)
+      loops.set(scope, steps[0]!)
+      settle(scope)
+      return scope
+    }
+    const show = (scope: Record<string, Value>, rows: string, shape: string, goal: number) => { read(scope, `begin("${rows}", ${shape}, ${goal})`); settle(scope) }
+    const table = (rows: (number | string)[][]) => rows.map((r) => r.join("\t")).join("\n")
+    // the refits' values at x, smallest first, and where the middle 90% of them lie
+    const refitsAt = (scope: Record<string, Value>, x: number) => (read(scope, `F([${x}], copies()) ⍴ [K]`) as number[]).sort((a, b) => a - b)
+    const middle = (v: number[]) => [v[2]!, v[61]!]
+    // a seeded generator, so the simulated numbers are the same on every run
+    const random = (seed: number) => {
+      let s = seed
+      const uniform = () => (s = (s * 16807) % 2147483647) / 2147483647
+      return { uniform, normal: () => Math.sqrt(-2 * Math.log(uniform())) * Math.cos(2 * Math.PI * uniform()) }
+    }
+
+    test("it reads a pasted table: commas, tabs, semicolons, a header, a decimal comma, thousands, notes", () => {
+      const scope = scopeOf(EXAMPLES["honest-fit"])
+      const parse = (text: string) => [read(scope, `readTable("${text}")_0`), read(scope, `readTable("${text}")_1`)]
+      expect(parse("x,y\n1,2.5\n2,-3.25\n")).toEqual([[[1, 2.5], [2, -3.25]], ["x", "y"]])
+      expect(parse("week\tsign-ups\n1\t12,450\n2\t13,075\n")).toEqual([[[1, 12450], [2, 13075]], ["week", "sign-ups"]])
+      expect(parse("Week;Visitors;Note\n1;1 204,5;\n2;1 310,0;holiday\n5;1 52,5;typo?\n")).toEqual([[[1, 1204.5], [2, 1310], [5, 152.5]], ["Week", "Visitors", "Note"]])
+      expect(parse("t\tv\n0\t1,250\n1\t0,875\n")).toEqual([[[0, 1.25], [1, 0.875]], ["t", "v"]])
+      expect(parse("1\t1,234.5\n2\t2,000.25\n")).toEqual([[[1, 1234.5], [2, 2000.25]], []])
+      // a title with numbers of its own, and Windows' line ends
+      expect(parse("Export 2026-10-12\r\nx y\r\n1 2\r\n3 4\r\n5 6\r\n")).toEqual([[[1, 2], [3, 4], [5, 6]], ["x", "y"]])
+      // one column: x counts the rows; more than two: each is a y at the first column's x
+      read(scope, `begin("181\n164\n171\n", straight, 200)`)
+      expect([read(scope, "x()"), read(scope, "y()"), String(read(scope, "xName()"))]).toEqual([[1, 2, 3], [181, 164, 171], "row"])
+      read(scope, `begin("dose\tA\tB\n1\t10\t11\n2\t20\t21\n", straight, 200)`)
+      expect([read(scope, "x()"), read(scope, "y()"), String(read(scope, "yName()"))]).toEqual([[1, 2, 1, 2], [10, 20, 11, 21], "A"])
+      flushRetirements()
+    }, 60_000)
+
+    test("a misread number glows, the words name it, and the curve leaves it out", () => {
+      const decay = (at50: number) => table([["time", "volts"], ...[4.94, 4.03, 3.26, 2.62, 2.15, at50, 1.35, 1.15, 0.93, 0.77, 0.64, 0.49, 0.39].map((v, i) => [10 * i, v])])
+      const misread = fitted(), clean = fitted()
+      show(misread, decay(1.27), "exponential", 2.5)
+      show(clean, decay(1.72), "exponential", 2.5)
+      const doubt = read(misread, "doubt()") as number[]
+      expect(doubt.map((d) => d > 5)).toEqual(doubt.map((_, i) => i === 5))
+      expect(Math.max(...read(clean, "doubt()") as number[])).toBeLessThan(5)
+      expect(String(read(misread, "doubtful()"))).toMatch(/^\*\*In doubt:\*\* time 50 +– your numbers say 1\.27 +but the others say about 1\.7\d +so the curve leaves it out$/)
+      // the curve with the misread number is the curve with the right one, within a hundredth
+      const a = read(misread, "fit()") as number[], b = read(clean, "fit()") as number[]
+      expect(Math.max(...a.map((v, i) => Math.abs(v - b[i]!) / b[i]!))).toBeLessThan(0.01)
+      flushRetirements()
+    }, 60_000)
+
+    test("when is the formula run backwards: the fit's own answer is the direct solve", () => {
+      const scope = fitted()
+      // a × e^(b x) reaches g at x = ln(g ÷ a) ÷ b
+      const [[[a]], [[b]]] = read(scope, "slice(θ(), [0, 0], [-1, 1])") as number[][][]
+      for (const g of [3000, 10000, 1e6]) {
+        expect(Math.abs((read(scope, `reach(${g})_0`) as number) - Math.log(g / a!) / b!)).toBeLessThan(1e-3 * Math.log(g / a!) / b!)
+      }
+      expect(String(read(scope, "told()"))).toMatch(/^\*\*It reaches\*\* 10000 +between week 1[89]\.\d +and (19|20)\.\d +in 9 threads of 10 *$/)
+      // a level the curve never meets – it is always above 0 – is ∞ for every refit
+      expect(read(scope, "reach(-5)")).toEqual(Array(65).fill(Infinity))
+      // and a curve so steep that, far from the numbers, it is more than a number can hold
+      const { normal } = random(3)
+      show(scope, table([["x", "y"], ...Array.from({ length: 40 }, (_, i) => [i + 1, +(120 * Math.exp(0.14 * (i + 1)) + 60 * normal()).toFixed(1)])]), "exponential", 1298)
+      const [[[a2]], [[b2]]] = read(scope, "slice(θ(), [0, 0], [-1, 1])") as number[][][]
+      expect(Math.abs((read(scope, "whens()_0") as number) - Math.log(1298 / a2!) / b2!)).toBeLessThan(1e-3 * 17)
+      flushRetirements()
+    }, 60_000)
+
+    test("where to measure next ranks doses as refits with one more reading there do, on a dose plate", () => {
+      const plate: number[][] = [[-0.5, 100, 101, 94], [0, 100, 93, 96], [0.5, 99, 98, 105], [1, 90, 99, 94], [1.5, 83, 82, 94], [2, 63, 62, 65], [2.5, 36, 29, 42], [3, 19, 14, 20]]
+      const rows = (extra: number[][]) => table([["log dose", "response"], ...plate.flatMap(([d, ...r]) => r.map((v) => [d!, v])), ...extra])
+      const scope = fitted()
+      show(scope, rows([]), "doseResponse", 50)
+      const grid = read(scope, "gx()") as number[], worth = read(scope, "worth()") as number[]
+      // how far apart the refits run at each x of the picture
+      const spread = (s: Record<string, Value>) => {
+        const f = read(s, `F([${grid.join(", ")}], copies())`) as number[][]
+        return grid.map((_, j) => { const c = f.map((r) => r[j]!), m = c.reduce((p, q) => p + q) / c.length; return Math.sqrt(c.reduce((p, q) => p + (q - m) ** 2, 0) / c.length) })
+      }
+      const before = spread(scope)
+      // a reading added where the fit says it lands, at five doses across the picture
+      const doses = [0, 32, 64, 96, 127], said: number[] = [], found: number[] = []
+      for (const j of doses) {
+        const at = grid[j]!, reading = (read(scope, `F([${at}], θ())_0_0`) as number)
+        const other = fitted()
+        show(other, rows([[at, reading]]), "doseResponse", 50)
+        said.push(worth[j]!)
+        // how much narrower the light is, on average across the picture
+        found.push(spread(other).reduce((sum, after, k) => sum + 1 - after / before[k]!, 0) / grid.length)
+      }
+      // the refits rank the doses as the advice does – the doses it says gain little gain about
+      // nothing, within the refits' own scatter of a few in a hundred – and it says how much
+      const top = (v: number[]) => [...v.keys()].sort((p, q) => v[q]! - v[p]!).slice(0, 2)
+      expect(top(found)).toEqual(top(said))
+      expect(doses[top(said)[0]!]).toBe(127)
+      expect(Math.max(...said.map((v, k) => Math.abs(v - found[k]!)))).toBeLessThan(0.1)
+      flushRetirements()
+    }, 120_000)
+
+    test("new numbers scatter the copies again, and an edit starts them afresh", () => {
+      const scope = fitted()
+      const before = refitsAt(scope, 14)
+      // the button's press: the copies start again from the new numbers' guess, all alike
+      const wide = table([["x", "y"], [1, 2], [2, 9], [3, 4], [4, 12], [5, 7]])
+      read(scope, `begin("${wide}", straight, 20)`)
+      expect(read(scope, "state()_2")).toBe(0)
+      const guess = read(scope, "guess()") as number[]
+      expect(read(scope, "slice(θ(), [0, 0], [-1, 1]) ⍴ [-1]")).toEqual(guess)
+      expect(new Set(read(scope, "copies() ⍴ [-1]") as number[]).size).toBe(2)
+      settle(scope)
+      // and settle where a fresh fit of those numbers does: wide, not the tight sign-ups' threads
+      const fresh = fitted()
+      show(fresh, wide, "straight", 20)
+      const sd = (v: number[]) => { const m = v.reduce((p, q) => p + q) / v.length; return Math.sqrt(v.reduce((p, q) => p + (q - m) ** 2, 0) / v.length) }
+      expect(Math.abs(sd(refitsAt(scope, 3)) / sd(refitsAt(fresh, 3)) - 1)).toBeLessThan(0.3)
+      // the sign-ups' threads were a hundredth of their height apart; these are a tenth
+      expect(sd(before) / before[32]!).toBeLessThan(0.03)
+      expect(sd(refitsAt(scope, 3)) / refitsAt(scope, 3)[32]!).toBeGreaterThan(0.1)
+      // an edit runs the program again: its copies are its own, at the guess, whatever ran before
+      steps.length = 0
+      const edited = createScope()
+      // keepingFrom is how the page runs an edit: a top-level ~ or ~~ of the last run is kept
+      evaluateGeneration(() => keepingFrom(scope, edited, () => evaluateSyntaxTreeNode(CodeParse(EXAMPLES["honest-fit"].replace("14\t6385", "14\t6400")), edited)))
+      expect(read(edited, "state()_2")).toBe(0)
+      expect(new Set(read(edited, "copies() ⍴ [-1]") as number[]).size).toBe(2)
+      flushRetirements()
+    }, 60_000)
+
+    test("the light holds the truth 9 times in 10: simulated growth, and a few points on a line", () => {
+      // numbers drawn around a known curve; the truth is inside the middle 90% of the refits at
+      // three places – the middle, the last x, half a span past it – and when it reaches a level
+      const scope = fitted()
+      const { normal } = random(7)
+      let inside = 0, checks = 0
+      const scenarios = [
+        { n: 14, runs: 24, shape: "exponential", truth: (x: number) => 120 * Math.exp(0.14 * x), noise: (m: number) => m * 0.08 * normal(), goal: 1298 },
+        { n: 8, runs: 24, shape: "straight", truth: (x: number) => 3 + 0.5 * x, noise: () => normal(), goal: 10 },
+      ]
+      for (const { n, runs, shape, truth, noise, goal } of scenarios) {
+        for (let run = 0; run < runs; run++) {
+          const rows = Array.from({ length: n }, (_, i) => { const m = truth(i + 1); return [i + 1, +(m + noise(m)).toFixed(3)] })
+          show(scope, table([["x", "y"], ...rows]), shape, goal)
+          for (const x of [n / 2, n, 1.5 * n]) {
+            const [lo, hi] = middle(refitsAt(scope, x))
+            inside += +(lo <= truth(x) && truth(x) <= hi); checks++
+          }
+          let a = 0, b = 4 * n
+          for (let k = 0; k < 60; k++) { const m = (a + b) / 2; if (truth(m) < goal) { a = m } else { b = m } }
+          const [lo, hi] = middle((read(scope, "whens()") as number[]).slice(1).sort((p, q) => p - q))
+          inside += +(lo <= a && a <= hi); checks++
+        }
+      }
+      expect(inside / checks).toBeGreaterThan(0.85)
+      expect(inside / checks).toBeLessThan(0.98)
+      flushRetirements()
+    }, 120_000)
+  })
 })
 
 describe("String is the inverse of CodeEvaluate", () => {
