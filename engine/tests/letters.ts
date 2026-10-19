@@ -23,6 +23,8 @@ const CASES = [
   'Σ(plot(0..<3000, (0..<3000 % 7, 0..<3000 % 600), ("seven", "saw")) > 0.3)',
   // a color with a 0 channel over a lit background: coverage that rounds past 1 in f32 made NaN
   'Σ(isNaN(canvas(40, 20, 0.5) . draw(dots([[10, 10], [30, 10]]), [1, 149 ÷ 255, 0], 6)))',
+  // every byte to light and back as the screen shows it, and how far each lands from its byte
+  'b: 0..<256 + Σ(⚄([4]) × 0), Σ(abs(screen(light(b ÷ 255)) × 255 - b)) × 1000',
   // noise hashes whole numbers mod 289 exactly in f32: a corner hashed differently is a
   // patch of the picture a unit wide, far from the coordinates' origin as well
   'Σ(abs(noise(pixels(canvas(160, 100)) ÷ 7 + [300, -250])))',

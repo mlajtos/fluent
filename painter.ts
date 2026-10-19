@@ -1,6 +1,7 @@
 // MARK: Painter
 // A picture the page shows is painted by the worker into a canvas the page handed over. A
-// picture is an image, [h, w, 3] or [h, w, 4] in 0–1: RGB or RGBA. A NaN is a hole, and the
+// picture is an image, [h, w, 3] or [h, w, 4] in 0–1 as the screen shows it – the host
+// makes it from light with the Prelude's screen: RGB or RGBA. A NaN is a hole, and the
 // canvas stays clear there. On the GPU the image's buffer goes straight to the screen. An
 // image larger than the canvas allows shows every n-th pixel.
 

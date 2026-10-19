@@ -220,7 +220,7 @@ s10: Grid(1)(
   head("**Fluent Tour** · 10 / 16"),
   Text("### Draw it
 
-**A shape is a distance.** \`dot: dots([[80, 60]])\` is a function: hand it a spot \`p\` — an \`[x, y]\` — and it tells you how far \`p\` is from the point at 80, 60. \`draw(shape, color, width)\` paints every pixel whose distance comes out near zero, so a point drawn 4 wide is a small disk. \`ring\` below asks how far each spot’s distance is from 0 — still just the dot. Ask about 40 instead, and the pixels that answer zero are the ones 40 away."),
+**A shape is a distance.** \`dot: dots([[80, 60]])\` is a function: hand it a spot \`p\` — an \`[x, y]\` — and it tells you how far \`p\` is from the point at 80, 60. \`draw(shape, color, width)\` paints every pixel whose distance comes out near zero, so a point drawn 4 wide is a small disk. Its color, \`[1, 0.8, 0.2]\`, is written as the screen shows it; a picture holds light, so a 0.5 in a picture is half the light, which the screen shows as 188 of 255. \`ring\` below asks how far each spot’s distance is from 0 — still just the dot. Ask about 40 instead, and the pixels that answer zero are the ones 40 away."),
   challenge("dot: dots([[80, 60]]),
 ring: { p | abs(dot(p) - 0) }, ; ← a ring: 40 away
 canvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)",

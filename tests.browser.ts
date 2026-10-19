@@ -20,9 +20,8 @@ const open = async (page: Page, code: string) => {
 // the result panel – scoped so Monaco's text and line numbers never match
 const panel = (page: Page) => page.getByTestId("print-panel").first()
 
-// How far apart the darkest and the brightest red on screen are, over an element – what
-// the screen shows, whoever painted it; a blank canvas is 0
-const spreadOf = async (element: Locator): Promise<number> => {
+// What the screen shows over an element, whoever painted it: its pixels' bytes, RGBA
+const screenOf = async (element: Locator): Promise<{ width: number, data: number[] }> => {
   const png = (await element.screenshot()).toString("base64")
   return element.page().evaluate(async (b64) => {
     const img = new Image()
@@ -33,14 +32,19 @@ const spreadOf = async (element: Locator): Promise<number> => {
     copy.height = img.height
     const ctx = copy.getContext("2d")!
     ctx.drawImage(img, 0, 0)
-    const { data } = ctx.getImageData(0, 0, copy.width, copy.height)
-    let min = 255, max = 0
-    for (let i = 0; i < data.length; i += 4) {
-      min = Math.min(min, data[i]!)
-      max = Math.max(max, data[i]!)
-    }
-    return max - min
+    return { width: img.width, data: [...ctx.getImageData(0, 0, copy.width, copy.height).data] }
   }, png)
+}
+// How far apart the darkest and the brightest red on screen are, over an element; a blank
+// canvas is 0
+const spreadOf = async (element: Locator): Promise<number> => {
+  const { data } = await screenOf(element)
+  let min = 255, max = 0
+  for (let i = 0; i < data.length; i += 4) {
+    min = Math.min(min, data[i]!)
+    max = Math.max(max, data[i]!)
+  }
+  return max - min
 }
 
 test("evaluates a program and renders the result", async ({ page }) => {
@@ -373,6 +377,21 @@ test("camera (fake device) streams into a canvas", async ({ page }) => {
   // --use-fake-device-for-media-stream feeds a synthetic video – no hardware
   await open(page, "Camera(64, 48)")
   await expect(panel(page).locator("canvas").first()).toBeVisible({ timeout: 20_000 })
+})
+
+test("an image enters as light and shows as it was, every byte", async ({ page }) => {
+  // a picture holds light: a byte of 128 is light(128 ÷ 255), and the painter shows it
+  // through screen as 128 again. A 256 × 1 image: column i is i, 255 - i, 7i mod 256
+  const url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAABCAIAAAC+O+cgAAADDElEQVR4nAEBA/78AAD/AAH+BwL9DgP8FQT7HAX6Iwb5Kgf4MQj3OAn2Pwr1Rgv0TQzzVA3yWw7xYg/waRDvcBHudxLtfhPshRTrjBXqkxbpmhfooRjnqBnmrxrlthvkvRzjxB3iyx7h0h/g2SDf4CHe5yLd7iPc9STb/CXaAybZCifYESjXGCnWHyrVJivULSzTNC3SOy7RQi/QSTDPUDHOVzLNXjPMZTTLbDXKczbJejfIgTjHiDnGjzrFljvEnTzDpD3Cqz7Bsj/AuUC/wEG+x0K9zkO81US73EW640a56ke48Ui3+Em2/0q1Bku0DUyzFE2yG06xIk+wKVCvMFGuN1KtPlOsRVSrTFWqU1apWleoYVinaFmmb1qldlukfVyjhF2ii16hkl+gmWCfoGGep2KdrmOctWSbvGWaw2aZymeY0WiX2GmW32qV5muU7WyT9G2S+26RAm+QCXCPEHGOF3KNHnOMJXSLLHWKM3aJOneIQXiHSHmGT3qFVnuEXXyDZH2Ca36Bcn+AeYB/gIF+h4J9joN8lYR7nIV6o4Z5qod4sYh3uIl2v4p1xot0zYxz1I1y245x4o9w6ZBv8JFu95Jt/pNsBZRrDJVqE5ZpGpdoIZhnKJlmL5plNptkPZxjRJ1iS55hUp9gWaBfYKFeZ6JdbqNcdaRbfKVag6ZZiqdYkahXmKlWn6pVpqtUraxTtK1Su65Rwq9QybBP0LFO17JN3rNM5bRL7LVK87ZJ+rdIAbhHCLlGD7pFFrtEHbxDJL1CK75BMr9AOcA/QME+R8I9TsM8VcQ7XMU6Y8Y5asc4ccg3eMk2f8o1hss0jcwzlM0ym84xos8wqdAvsNEut9ItvtMsxdQrzNUq09Yp2tco4dgn6Nkm79ol9tsk/dwjBN0iC94hEt8gGeAfIOEeJ+IdLuMcNeQbPOUaQ+YZSucYUegXWOkWX+oVZusUbewTdO0Se+4Rgu8QifAPkPEOl/INnvMMpfQLrPUKs/YJuvcIwfgHyPkGz/oF1vsE3fwD5P0C6/4B8v8A+bScfpBEdGQWAAAAAElFTkSuQmCC"
+  await open(page, `img: LoadTensorFromImageUrl("${url}"),\n(img, \${ round(img()_0_128_0 × 10000) })`)
+  await expect(panel(page)).toContainText("2159", { timeout: 20_000 })
+  const canvas = panel(page).locator("canvas").first()
+  const row = async () => {
+    const { width, data } = await screenOf(canvas), y = Math.floor(data.length / 4 / width / 2)
+    return Array.from({ length: width }, (_, x) => data.slice(4 * (y * width + x), 4 * (y * width + x) + 3).join(" "))
+  }
+  const bytes = Array.from({ length: 256 }, (_, i) => `${i} ${255 - i} ${(7 * i) % 256}`)
+  await expect.poll(row, { timeout: 15_000 }).toEqual(bytes)
 })
 
 test("a busy worker gets the newest pointer position, not a queue of them", async ({ page }) => {

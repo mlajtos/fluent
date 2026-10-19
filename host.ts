@@ -45,7 +45,8 @@ const widget = (type: string, props?: Record<string, unknown>, slots?: Record<st
   new Widget(type, props, slots, children) as unknown as Value
 
 // MARK: Pixels
-// Pixels enter the language as float32 RGB in 0–1.
+// Pixels enter the language as float32 RGB in 0–1 of light, as pictures hold it: a screen's
+// byte b is light(b ÷ 255), the Prelude's.
 
 let pixelCanvas: OffscreenCanvas | null = null
 const fromPixels = (image: ImageBitmap): engine.Tensor => {
@@ -65,7 +66,9 @@ const fromPixels = (image: ImageBitmap): engine.Tensor => {
     flat[j + 1] = data[i + 1]! / 255
     flat[j + 2] = data[i + 2]! / 255
   }
-  return engine.tensor(flat, { shape: [height, width, 3] })
+  const light = tensorOf(seeing.DrawLight(engine.tensor(flat, { shape: [height, width, 3] })))
+  engine.materialize([light])
+  return light
 }
 
 // MARK: Descriptions
@@ -243,11 +246,13 @@ const numbersOf = (id: number, t: engine.Tensor): { payload?: Float32Array } => 
 
 // How a tensor looks is the prelude's own heat and bars (prelude.fl, Drawing), so a
 // program that binds its own doesn't change how values show
-let seeing: Record<"DrawHeatOf" | "DrawTiles" | "DrawBarsOf" | "DrawExtent", (...args: Value[]) => Value>
+let seeing: Record<"DrawHeatOf" | "DrawTiles" | "DrawBarsOf" | "DrawExtent" | "DrawLight" | "DrawShown", (...args: Value[]) => Value>
 const tensorOf = (v: Value): engine.Tensor => {
   if (v instanceof Error) { throw v }
   return v as engine.Tensor
 }
+// a picture of light as the screen shows it, for the painter
+const shown = (picture: Value): engine.Tensor => tensorOf(seeing.DrawShown(tensorOf(picture)))
 
 // A vector is drawn through a window a power of two long, NaN past its end, with its
 // length as data: the engine compiles a plan for each shape, and a vector that grows a
@@ -264,26 +269,27 @@ const densityNow = (): number => getAsSyncList(density.peek()) as number
 
 // A tensor's picture, and the numbers that cross with it for the page's labels: its values
 // when they are labelled, otherwise the finite range they span. An image's colors are what
-// it shows, and no numbers cross with it. A heatmap and bars are made when they are
-// painted, at the display's density – a heatmap with its maps laid out and magnified, its
-// size in units, bars for the canvas's size – and live only until they are on the screen.
+// it shows, and no numbers cross with it. Every picture is light, made as the screen shows
+// it when it is painted, at the display's density – a heatmap with its maps laid out and
+// magnified, its size in units, bars for the canvas's size – and lives only until it is on
+// the screen.
 const prepare = (view: TensorView, t: engine.Tensor): { picture: Picture, numbers?: engine.Tensor, size?: [number, number] } => {
   const numbers = (range: engine.Tensor) => (labelled(t.shape) ? t : range)
   if (view === "image") {
     engine.materialize([t])
-    return { picture: t }
+    return { picture: () => shown(t) }
   }
   if (!t.size) { return { picture: () => null, numbers: t } }
   if (view === "heat") {
     // the maps' layout is known before anything is computed
     const range = tensorOf(seeing.DrawExtent(t)), [h = 1, w = 1] = tensorOf(seeing.DrawTiles(t)).shape, k = heatScale(h, w)
     engine.materialize([t, range])
-    return { picture: () => tensorOf(seeing.DrawHeatOf(t, range, engine.scalar(Math.max(1, Math.round(k * densityNow()))))), numbers: numbers(range), size: [w * k, h * k] }
+    return { picture: () => shown(seeing.DrawHeatOf(t, range, engine.scalar(Math.max(1, Math.round(k * densityNow()))))), numbers: numbers(range), size: [w * k, h * k] }
   }
   const v = windowOf(t), n = engine.scalar(t.size), range = tensorOf(seeing.DrawExtent(v))
   engine.materialize([t, v, range])
   return {
-    picture: ([w, h]) => (w >= 1 && h >= 1 ? tensorOf(seeing.DrawBarsOf(v, n, range, ...[w, h, roomy(w), roomy(h), densityNow()].map(engine.scalar))) : null),
+    picture: ([w, h]) => (w >= 1 && h >= 1 ? shown(seeing.DrawBarsOf(v, n, range, ...[w, h, roomy(w), roomy(h), densityNow()].map(engine.scalar))) : null),
     numbers: numbers(range),
   }
 }

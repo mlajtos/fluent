@@ -2259,7 +2259,7 @@ describe("pictures", () => {
   test("draw is paint in a stroke ink: pixel for pixel the box overlap mixed in linear light", async () => {
     // the overlap of a pixel and the stroke, written out
     const boxed = `{ shape, color, width | { picture | D: Density(), d: shape(pixels(picture)) × D, r: width × D ÷ 2,
-      cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ (-r)) ⌈ 0 ⌊ 1, -1), picture^2.2 × 1-cover + color^2.2×cover ^ 1÷2.2 } }`
+      cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ (-r)) ⌈ 0 ⌊ 1, -1), picture × 1-cover + light(color)×cover } }`
     const same = () => [["dots([[10.3, 20.7], [33.1, 40.9]])", "[1, 0, 1]", 7], ["line([[0, 3], [40, 47], [64, 9]])", "[10, 129, 239] ÷ 255", 2.5],
       ['letters("Ag", [4, 4], 18)', "1", 1]].map(([shape, color, width]) => {
       const at = `canvas(64, 48, 0.3) . `
@@ -2269,20 +2269,31 @@ describe("pictures", () => {
     await atDensity2(() => expect(same()).toEqual([[1, 1], [1, 1], [1, 1]]))
   })
   test("an ink gives its light, its cover and how far it reaches; one above another is Porter–Duff over", async () => {
-    expect(value("stroke([1, 0.5, 0], 4)(0) ≡ ([1, 0.5^2.2, 0], 1, 3)")).toBe(1)
+    expect(value("stroke([1, 0.5, 0], 4)(0) ≡ (light([1, 0.5, 0]), 1, 3)")).toBe(1)
     // nothing past its reach: half the width and a pixel for a stroke, 3 radii for a halo
     expect((value("(stroke(1, 4)(2.4)_1 > 0, stroke(1, 4)(3)_1, halo(1, 5)(15)_0 < 2e-4, halo(1, 5)(0)_2, solid(1)(1)_1)") as any[]).map(unwrap)).toEqual([1, 0, 1, 15, 0])
     // light over light: b shows through as much as a leaves uncovered, and the reach is the farther
     expect(value("(stroke(1, 2) above ramp([[0, 0, 1], [0, 0, 1]]))(1) ≡ ([0.5, 0.5, 1], 1, 1÷0)")).toBe(1)
     expect(value("((stroke(1, 2) above halo(1, 1)) above solid(0))(0.5) ≡ (stroke(1, 2) above (halo(1, 1) above solid(0)))(0.5)")).toBe(1)
     // a halo adds light and hides nothing: far from it the picture is as it was
-    expect((value("x: canvas(40, 10, 0.5) . paint(dots([[5, 5]]), halo(1, 2)), (x_5_5_0 > 1, abs(x_5_35_0 - 0.5) < 1e-6)") as any[]).map(unwrap)).toEqual([1, 1])
+    expect((value("x: canvas(40, 10, 0.5) . paint(dots([[5, 5]]), halo(1, 2)), (x_5_5_0 > 1, abs(x_5_35_0 - light(0.5)) < 1e-6)") as any[]).map(unwrap)).toEqual([1, 1])
     await atDensity2(() => expect(value("stroke(1, 4)(0)_2")).toBe(2.5))
+  })
+  test("light and screen undo each other, every byte comes back, and their slopes stay finite", () => {
+    expect(value("b: 0..<256, min(round(screen(light(b ÷ 255)) × 255) = b)")).toBe(1)
+    expect(value("(light(1), screen(0), light(0.5) < 0.22)").map(unwrap)).toEqual([1, 0, 1])
+    expect(value("(∇{ x | Σ(screen(x)) })([0, 1])")).toEqual([expect.closeTo(12.92, 4), expect.closeTo(0.4396, 3)])
+    expect(value("(∇{ x | Σ(light(x)) })([-0.5, 0])")).toEqual([expect.closeTo(1 / 12.92, 6), expect.closeTo(1 / 12.92, 6)])
+    // run backwards by Newton: ⍣ -1, and screen ⍢ f – f done as the screen shows light
+    expect(value("max(abs((screen ⍣ -1)([0.2, 0.5, 0.9]) - light([0.2, 0.5, 0.9])))")).toBeLessThan(1e-5)
+    expect(value("abs((screen ⍢ { x | x × 0.5 })(light(0.8)) - light(screen(light(0.8)) × 0.5))")).toBeLessThan(1e-5)
+    // the IDE shows a picture's colors through screen, and its alpha as it is
+    expect(value("DrawShown(fill([1, 1, 4], 0.5))_0_0 = [screen(0.5), screen(0.5), screen(0.5), 0.5]")).toEqual([1, 1, 1, 1])
   })
   test("ramp colors a number from 0 to 1 along its stops, blended in the colors given", () => {
     const stops = "[[0, 0, 0], [1, 0, 0], [1, 1, 1]]"
     // an ink is given each place's number on an axis of its own, [..., 1]
-    expect(value(`ramp(${stops})([[-1], [0], [0.25], [0.5], [1], [2]])_0 ≡ [[0, 0, 0], [0, 0, 0], [0.5^2.2, 0, 0], [1, 0, 0], [1, 1, 1], [1, 1, 1]]`)).toBe(1)
+    expect(value(`ramp(${stops})([[-1], [0], [0.25], [0.5], [1], [2]])_0 ≡ light([[0, 0, 0], [0, 0, 0], [0.5, 0, 0], [1, 0, 0], [1, 1, 1], [1, 1, 1]])`)).toBe(1)
     expect((value(`(ramp(${stops})(0.3)_1, ramp(${stops})(0.3)_2)`) as any[]).map(unwrap)).toEqual([1, Infinity])
     expect(value(`shape(canvas(8, 4) . paint({ p | Σ(p, -1) ÷ 12 }, ramp(${stops})))`)).toEqual([4, 8, 3])
   })
@@ -2323,22 +2334,26 @@ describe("pictures", () => {
   })
   test("a stroke alone has no pull from far away; a halo under it gives one", () => {
     // fit a wave's phase from 1.5 off: a stroke's ink changes only along its own edge, so a
-    // stroke that misses the goal's line feels nothing, while a halo reaches across the gap
-    const [stroke, halo] = value(`W: 64, H: 40,
+    // stroke that misses the goal's line feels nothing, while a halo reaches across the gap,
+    // about 15 units here. A loss over light weighs a halo's faint tail little, so it needs
+    // a halo 8 wide; compared as the screen shows it, a halo 4 wide pulls
+    const fits = value(`W: 64, H: 40,
       picture: { t, ink |
         wave: { p | q: unstack(p, -1), q_1 - H÷2 + (sin(q_0 × 2×π ÷ W + t) × H÷2.4) },
         canvas(W, H, 0) . paint(level(wave), ink)
       },
-      fit: { ink |
-        goal: picture(0.9, ink), t: ~(-0.6),
-        𝓛: { mean((picture(t, ink) - goal)^2) }, opt: adam(0.03),
+      fit: { ink, seen |
+        goal: seen(picture(0.9, ink)), t: ~(-0.6),
+        𝓛: { mean((seen(picture(t, ink)) - goal)^2) }, opt: adam(0.03),
         ({ s | opt(𝓛) } ⍣ 150)(0), (𝓛(), t)
       },
-      (fit(stroke(1, 3)), fit(stroke(1, 3) above halo(0.5, 4)))`).map((r: any[]) => r.map(unwrap)) as number[][]
-    expect(stroke![0]).toBeGreaterThan(0.1)
-    expect(Math.abs(stroke![1]! - 0.9)).toBeGreaterThan(1)
-    expect(halo![0]).toBeLessThan(1e-5)
-    expect(halo![1]).toBeCloseTo(0.9, 2)
+      light: { x | x },
+      (fit(stroke(1, 3), light), fit(stroke(1, 3) above halo(0.5, 4), light),
+        fit(stroke(1, 3) above halo(0.5, 8), light), fit(stroke(1, 3) above halo(0.5, 4), screen))`).map((r: any[]) => r.map(unwrap)) as number[][]
+    const phases = fits.map(([, t]) => Math.abs(t! - 0.9) < 0.01)
+    expect(phases).toEqual([false, false, true, true])
+    expect(fits[2]![0]).toBeLessThan(1e-5)
+    expect(fits[3]![0]).toBeLessThan(1e-5)
   })
   test("viridis has no color for NaN, and the ends' colors past them", () => {
     expect(value("isNaN(viridis(0 ÷ 0))")).toEqual([1, 1, 1])
@@ -2506,7 +2521,7 @@ describe("the evaluation host", () => {
     // growing vector and a resized canvas: what shows is the same
     const source = "sin(0 ..< 300 ÷ 9) × (0 ..< 300) - 20"
     const { width, height, px } = await paintOf(await evaluate(source), [123, 45])
-    const drawn = value(`bars(${source}, 123, 45)`) as number[][][]
+    const drawn = value(`screen(bars(${source}, 123, 45))`) as number[][][]
     expect([width, height]).toEqual([123, 45])
     const differ = drawn.flat().filter((c, i) => String(c.some((x) => x !== x) ? [0, 0, 0, 0] : [...c.map((x) => Math.round(x * 255)), 255]) !== String(px(i))).length
     expect(differ).toBe(0)
@@ -2537,9 +2552,10 @@ describe("the evaluation host", () => {
     // to label it "0.09 … 1"
     const d = await evaluate("reshape(0 ..< 12, [2, 2, 3]) ÷ 22 - 0.25")
     expect([d.paint, d.payload]).toEqual([true, undefined])
+    // its colors are light, shown through screen: half the light is 188; its alpha is as it is
     const rgba = await evaluate("fill([2, 2, 4], 0.5)")
     const { px } = await paintOf(rgba)
-    expect(px(0)).toEqual([128, 128, 128, 128])
+    expect(px(0)).toEqual([188, 188, 188, 128])
   })
 
   test("a bar past the scale ends in a caret", async () => {
@@ -2566,7 +2582,7 @@ describe("the evaluation host", () => {
     expect(value("shape(plot(0..<3, [1, 2, 3]))")).toEqual([320, 1040, 3])
   }))
   test("text is sized in units: about as much ink a unit at any density", async () => {
-    const ink = () => value(`Σ((canvas(120, 30, 0) . draw(letters("Ag 2.31", [2, 2], 18), 1, 1))^2.2) ÷ 3 ÷ Density()^2`) as number
+    const ink = () => value(`Σ(canvas(120, 30, 0) . draw(letters("Ag 2.31", [2, 2], 18), 1, 1)) ÷ 3 ÷ Density()^2`) as number
     const one = ink(), two = await atDensity(2, ink)
     expect(Math.abs(two - one) / one).toBeLessThan(0.06)
   })
@@ -2926,9 +2942,10 @@ describe("plot: lines on one pair of axes", () => {
     expect(value(`shape(DrawDigits([[1, -2]]))`)).toEqual([1, 2, 9])
   })
   test("letters draw the IDE's font, as much of it as each glyph covers", () => {
-    // a glyph's coverage, summed in linear light, and the glyph's area: BQN386's W covers
-    // 0.177 of a square of the font's size, measured on Chrome's render of it at 240 pixels
-    const ink = (text: string, size: number, at = "[0, 0]") => value(`Σ((canvas(${size * text.length}, ${size * 2}, 0) . draw(letters("${text}", ${at}, ${size}), 1, 1))^2.2) ÷ 3`) as number
+    // a glyph's coverage, summed in the light a picture holds, and the glyph's area: BQN386's
+    // W covers 0.177 of a square of the font's size, measured on Chrome's render of it at 240
+    // pixels
+    const ink = (text: string, size: number, at = "[0, 0]") => value(`Σ(canvas(${size * text.length}, ${size * 2}, 0) . draw(letters("${text}", ${at}, ${size}), 1, 1)) ÷ 3`) as number
     expect(ink("W", 24) / (0.177 * 24 * 24)).toBeCloseTo(1, 1)
     // as much ink wherever a text falls among the pixels
     expect(ink("held out 2.31", 12, "[0.3, 0.7]") / ink("held out 2.31", 12)).toBeCloseTo(1, 1)
@@ -2946,7 +2963,7 @@ describe("plot: lines on one pair of axes", () => {
   test("each series draws in its own color, and a series of fewer than 2 points draws nothing", () => {
     // how many pixels of the first two series colors the picture has – at density 1, a line
     // 1.25 units wide covers few pixels in full and the rest in part
-    const count = (p: string) => value(`p: ${p}, near: { c | Σ(Σ(abs(p - c), -1) < 0.05) }, stack((near([0.224, 0.529, 0.898]), near([0.851, 0.349, 0.149])))`) as number[]
+    const count = (p: string) => value(`p: ${p}, near: { c | Σ(Σ(abs(p - light(c)), -1) < 0.05) }, stack((near([0.224, 0.529, 0.898]), near([0.851, 0.349, 0.149])))`) as number[]
     const [blue, orange] = count(`plot(0..<50, (0..<50, 50 - 0..<50), ("up", "down"))`)
     expect(blue).toBeGreaterThan(100)
     expect(orange).toBeGreaterThan(100)
@@ -2960,7 +2977,7 @@ describe("plot: lines on one pair of axes", () => {
     toHost({ t: "density", value: 2 })
     try {
       const [h, w, spike] = value(`p: plot(0..<20000, (where(0..<20000 = 12345, 1, 0), 0..<20000 % 7 ÷ 12), ("spike", "saw")),
-        blue: Σ(abs(p - [0.224, 0.529, 0.898]), -1) < 0.05,
+        blue: Σ(abs(p - light([0.224, 0.529, 0.898])), -1) < 0.05,
         concat((take(shape(p), 2), [Σ(slice(blue, [20, 540], [120, 20]))]))`)
       expect([h, w]).toEqual([320, 1040])
       expect(spike).toBeGreaterThan(200)
@@ -2973,7 +2990,7 @@ describe("plot: lines on one pair of axes", () => {
     const apart = (x: string, y: string) => value(`x: ${x}, y: ${y}, u: x ÷ x_(-1) × 50 + 5, v: y × 20 + 5,
       full: canvas(60, 30, 0) . draw(line(stack((u, v), -1)), 1, 1.25),
       columns: canvas(60, 30, 0) . draw(DrawTrace(u, v, 5, 55, 1.25), 1, 1.25),
-      d: abs(full - columns), [max(d), Σ(d) ÷ (#flat(d)), Σ(d > 0.1) ÷ (#flat(d))]`) as number[]
+      d: abs(screen(full) - screen(columns)), [max(d), Σ(d) ÷ (#flat(d)), Σ(d > 0.1) ÷ (#flat(d))]`) as number[]
     // at most a point a column: the same line, cut where it crosses from one column to the next
     expect(apart("0..<40", "sin(x)")[0]).toBeLessThan(1e-4)
     // every point in one column, and no point in the columns after it
