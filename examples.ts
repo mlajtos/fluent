@@ -225,7 +225,7 @@ x: linspace([-π, π], points),
 )
 `,
   "drawing": `
-; Drawing as values – a picture is colors, a shape is a distance
+; Drawing as values – a picture is colors, a shape is a distance, an ink makes it light
 W: 640, H: 400,
 t: Time(),
 
@@ -233,6 +233,7 @@ t: Time(),
 blue: [10, 129, 239] ÷ 255,
 magenta: [242, 56, 227] ÷ 255,
 gray: [68, 68, 68] ÷ 255,
+dark: [23, 23, 23] ÷ 255,
 
 ; y = sin(x + t) over a full turn, in pixels (the screen's y runs down)
 x: linspace([0, 2×π], 128),
@@ -245,8 +246,8 @@ marks: curve_(0..<8 × 18),
   Text("# ✏️ Drawing as values"),
   canvas(W, H)
     . draw(line(axis), gray, 1)
-    . draw(line(curve), blue, 2.5)
-    . draw(dots(marks), magenta, 7),
+    . paint(line(curve), stroke(blue, 2.5) above halo(blue × 0.5, 8))
+    . paint(dots(marks), stroke(magenta, 7) above stroke(dark, 11)),
 )
 `,
   "tasks": `
@@ -618,17 +619,17 @@ last: oneHot(n - 1, n) ⍴ [n, 1], ; picks the tip
 },
 
 opt: adam(0.05), ; optimiser
-joints: \${ fk(θ) }, ; live pose for the glow
+joints: \${ fk(θ) }, ; live pose for the picture
 { opt(𝓛) } ⟳ Time()×60, ; 60 steps a second
 
 view: [[-1, 1], [-1, 1]],
-gres: 300, ; glow resolution
-g: linspace([-1, 1], gres), ; grid axis
-arm: \${ ; the glowing arm
-  q: transpose(joints()), ; xs, ys as rows
-  dx: g ⍴ [1, gres, 1] - (q_0 ⍴ [1, 1, n]),
-  dy: g ⍴ [gres, 1, 1] - (q_1 ⍴ [1, 1, n]),
-  Σ(exp(-(dx^2 + dy^2) ÷ 0.005), 2) ; Σ gaussians
+S: 300, ; the picture is S × S units, the view's -1 … 1 across it
+arm: \${ ; the arm as a lit line from its base, a bead at every joint
+  P: concat(([[-0.45, 0]], joints())) + 1 × S÷2,
+  canvas(S, S)
+    . paint(line(P), stroke([0.55, 0.8, 1], 4) above halo([0.05, 0.4, 0.9] × 0.8, 14))
+    . draw(dots(P), [0.92, 0.96, 1], 5)
+    . draw(dots(P_[0]), [0.92, 0.96, 1], 14)
 },
 
 (
@@ -650,16 +651,17 @@ target: $[0.72, -0.12], ; drag me (orange)
 𝓛: { Σ((fly(vel)_(T - 1) - target())^2) }, ; squared miss of where the shot lands
 
 opt: adam(0.06), ; optimiser
-path: \${ fly(vel) }, ; live trajectory for the glow
+path: \${ fly(vel) }, ; live trajectory for the picture
 { opt(𝓛) } ⟳ Time()×60, ; descend the miss, 60 steps a second
 
-view: [[-1, 1], [-1, 1]], gres: 280,
-gg: linspace([-1, 1], gres),
-shot: \${ ; glow along the trajectory – a Gaussian at every sample
-  q: transpose(path()),
-  dx: gg ⍴ [1, gres, 1] - (q_0 ⍴ [1, 1, T]),
-  dy: gg ⍴ [gres, 1, 1] - (q_1 ⍴ [1, 1, T]),
-  Σ(exp(-(dx^2 + dy^2) ÷ 0.0005), 2)
+view: [[-1, 1], [-1, 1]],
+S: 280, ; the picture is S × S units, the view's -1 … 1 across it
+shot: \${ ; the trajectory as a lit trail, a bead at every step, the muzzle at its start
+  P: path() + 1 × S÷2,
+  canvas(S, S)
+    . paint(line(P), stroke([0.6, 1, 0.75], 1.5) above halo([0.1, 0.8, 0.5] × 0.6, 10))
+    . draw(dots(P), [0.85, 1, 0.9], 4)
+    . draw(dots(P_[0]), [0.85, 1, 0.9], 10)
 },
 
 (
