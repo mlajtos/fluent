@@ -19,6 +19,8 @@ const CASES = [
   'Σ(plot(0..<10, (0..<10, 9 - 0..<10), ("up", "down")) > 0.3)',
   'z: Σ(⚄([4]) × 0), Σ(canvas(520, 160, 0) . draw(letters(unstack(DrawDigits([z ÷ z, -1 ÷ z, z - 1.5e9, z - 0.052, z - 4.2e-11, z + 2e-37])), [[0, 0], [0, 20], [0, 40], [0, 60], [0, 80], [0, 100]], 12), 1, 1))',
   'Σ(plot(0..<10 × 1e8, (0..<10 - 5, 9 - 0..<10), ("up", "down")) > 0.3)',
+  // more points than the picture has columns: each column keeps its first, top, bottom and last
+  'Σ(plot(0..<3000, (0..<3000 % 7, 0..<3000 % 600), ("seven", "saw")) > 0.3)',
   // a color with a 0 channel over a lit background: coverage that rounds past 1 in f32 made NaN
   'Σ(isNaN(canvas(40, 20, 0.5) . draw(dots([[10, 10], [30, 10]]), [1, 149 ÷ 255, 0], 6)))',
 ];

@@ -3,7 +3,7 @@
 //   bun engine/tests/run.ts
 
 import { buffer, konst, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, type UOp } from "../ir.ts";
-import { optimize, optimizeMany } from "../opt.ts";
+import { optimize, optimizeMany, simplifyMany } from "../opt.ts";
 import { grad, gradAll } from "../grad.ts";
 import { CPU, type HostData } from "../cpu.ts";
 import { realize, realizeMany } from "./realize.ts";
@@ -70,6 +70,18 @@ export default async function (): Promise<{ fails: number }> {
     const tbl = (await realize(cpu, g1, i2)).data;
     const Wd = i2.get("W")!.data;
     check("gather values", [0, 1, 2, 3].every((c) => tbl[c] === Wd[2 * 4 + c]));
+    // a gather read twice, a gather of a computed table, a gather of a gather, and a gather of
+    // one row named in the graph: the same numbers on both devices as the plain gather gives
+    const twice = add(mul(g1, g1), exp(g1)), ofExp = gather(exp(W), ids), ofGather = gather(g1, buffer("j", [3]));
+    const row = gather(W, reshape(konst(4), [1]));
+    i2.set("j", T(new Float32Array([4, 0, 3]), [3]));
+    for (const [nm, g] of [["gather read twice", twice], ["gather of exp", ofExp], ["gather of a gather", ofGather], ["gather of a constant row", row]] as const) {
+      const a = await realize(cpu, g, i2), b = gpu ? await realize(gpu, g, i2) : a;
+      check(`parity: ${nm}`, rel(b.data, a.data) < 1e-5);
+    }
+    const ofGatherV = (await realize(cpu, ofGather, i2)).data, rowV = (await realize(cpu, row, i2)).data, idsV = [2, 0, 4, 2, 5];
+    check("gather of a gather: rows ids[j]", [4, 0, 3].every((j, r) => [0, 1, 2, 3].every((c) => ofGatherV[r * 4 + c] === Wd[idsV[j]! * 4 + c])));
+    check("gather of a constant row: that row", [0, 1, 2, 3].every((c) => rowV[c] === Wd[4 * 4 + c]));
   }
   { // −0 is a constant of its own: 1 ÷ (p·0) is ∞, 1 ÷ (p·−0) is −∞
     const p = buffer("p", [2]), at = new Map([["p", T(Float32Array.of(1, 2), [2])]]);
@@ -151,6 +163,14 @@ export default async function (): Promise<{ fails: number }> {
   check("softmax row is ONE kernel", kernels(softmaxRow(x)).length === 1);
   check("matmul is ONE kernel", kernels(matmul(x, transpose(y))).length === 1);
   check("matvec + bias + silu epilogue is ONE kernel", kernels(silu(add(matmul(buffer("h", [1, 32]), buffer("Wg", [32, 16])), buffer("b", [16])))).length === 1);
+  { // a gather is a read: never stored only to be read back
+    const W = buffer("W", [6, 4]), ids = buffer("ids", [5]), g = gather(W, ids);
+    check("a gather read twice is ONE kernel", kernels(add(mul(g, g), exp(g))).length === 1);
+    check("a gather of a gather is ONE kernel", kernels(exp(gather(g, buffer("j", [3])))).length === 1);
+    check("a gather of a table it takes about once computes the table in place: ONE kernel", kernels(gather(exp(W), ids)).length === 1);
+    check("a gather of a table it takes many times reads it stored: TWO kernels", kernels(gather(exp(W), buffer("many", [64]))).length === 2);
+    check("a gather of one row named in the graph is a view of the row", !toposort(simplifyMany([gather(W, reshape(konst(4), [1]))])).some((u) => u.op === "GATHER"));
+  }
   {
     const fat = wgslOf(matmul(buffer("A", [128, 64]), buffer("B", [64, 128])));   // a grid that fills the GPU, K past COST.tileMinK
     const thin = wgslOf(matmul(buffer("h", [1, 1024]), buffer("W", [1024, 512]))), rows = wgslOf(matmul(buffer("h", [1, 1024]), permute(buffer("W", [512, 1024]), [1, 0])));

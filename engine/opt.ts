@@ -9,7 +9,7 @@
 
 import type { UOp, Op } from "./ir.ts";
 import {
-  node, konst, buffer, numel, strides, sameShape, permute, broadcastTo, toposort, viewMap, bcIndex,
+  node, konst, buffer, numel, strides, sameShape, permute, broadcastTo, slice, toposort, viewMap, bcIndex,
   range, iconst, iadd, imul, idiv, imod, load, acc, iidx, ival, fused, kInputs, rebuild, at, siteLabel,
 } from "./ir.ts";
 import { graphRewriteMany, type Rule } from "./rewrite.ts";
@@ -35,6 +35,12 @@ const SIMPLIFY: Rule[] = [
   (u) => (u.op === "BROADCAST" && sameShape(u.src[0]!.shape, u.shape) ? u.src[0]! : null),
   (u) => (u.op === "PERMUTE" && (u.arg as number[]).every((p, i) => p === i) ? u.src[0]! : null),
   (u) => (u.op === "PERMUTE" && u.src[0]!.op === "PERMUTE" ? permute(u.src[0]!.src[0]!, (u.arg as number[]).map((i) => (u.src[0]!.arg as number[])[i]!)) : null),
+  // a gather of one row named when the graph is built is a view of that row
+  (u) => {
+    if (u.op !== "GATHER" || u.shape[0] !== 1) return null;
+    const i = u.src[1]!, c = i.op === "RESHAPE" ? i.src[0]! : i, v = c.op === "CONSTANT" && numel(c.shape) === 1 ? (c.arg as Float32Array)[0]! : NaN;
+    return Number.isInteger(v) && v >= 0 && v < u.src[0]!.shape[0]! ? slice(u.src[0]!, 0, v, 1) : null;
+  },
 ];
 export const simplifyMany = (roots: UOp[]): UOp[] => graphRewriteMany(roots, SIMPLIFY);
 
@@ -139,9 +145,10 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
   // index expression `at`; `loop` is the reduction's loop variable, if the kernel has one.
   // `cap` bounds growth: inlining and splicing stop there, but mandatory reads may still
   // push past it — the caller retries an over-wide kernel with cap 1 (materialize
-  // everything non-mandatory).
-  const kernel = (top: UOp, regionShape: readonly number[], at: UOp, cap = MAX_INPUTS, outN = Math.max(numel(regionShape), 1), loop?: UOp): { inputs: UOp[]; value: UOp } => {
-    const inputs: UOp[] = [], slot = new Map<number, number>(), spliced = new Map<string, UOp>();
+  // everything non-mandatory). `first` are inputs `at` already loads, in slots 0, 1, …;
+  // with them `top` is read as an input is, not computed as the kernel's own op.
+  const kernel = (top: UOp, regionShape: readonly number[], at: UOp, cap = MAX_INPUTS, outN = Math.max(numel(regionShape), 1), loop?: UOp, first: readonly UOp[] = []): { inputs: UOp[]; value: UOp } => {
+    const inputs: UOp[] = [...first], slot = new Map<number, number>(first.map((b, i) => [b.id, i])), spliced = new Map<string, UOp>();
     let grown = 0;                                                             // ops inlined so far — bounds the region BEFORE its reads materialize
     const addInput = (b: UOp): number => { let i = slot.get(b.id); if (i === undefined) { i = inputs.length; inputs.push(b); slot.set(b.id, i); } return i; };
     const iKey = (u: UOp): string => `${u.op}:${u.op === "RANGE" ? u.id : u.op === "ICONST" ? u.arg : ""}(${u.src.map(iKey).join(",")})`;
@@ -181,8 +188,10 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
       // the inputs a splice adds: a second read of a spliced kernel adds none
       const fresh = () => kInputs(b).filter((x) => !slot.has(x.id)).length;
       const c = b.op === "FUSED" ? accCost(b.src[1]!) : 0;                     // c = 1: a pure map folds free; a loop folds while recompute stays cheap
-      // a loop nest the plan materializes is loaded, never also recomputed
-      if (b.op === "FUSED" && chainUse(v) === 1 && slot.get(b.id) === undefined && inputs.length + fresh() <= cap && !(c > 1 && loaded.has(vm.base.id))) {
+      // a loop nest the plan materializes is loaded, never also recomputed. A gather is a
+      // read of its table: each of its readers reads the table itself, as each recomputes an
+      // elementwise fork, so a gather is never stored only to be read back
+      if (b.op === "FUSED" && (chainUse(v) === 1 || vm.base.op === "GATHER") && slot.get(b.id) === undefined && inputs.length + fresh() <= cap && !(c > 1 && loaded.has(vm.base.id))) {
         // a spliced value runs once a thread, and again each step of the reduction's loop
         // only where its index reads the loop variable – the printers hoist it otherwise
         const evals = outN * (loop && rangesIn(e).has(loop) ? (loop.arg as { extent: number }).extent : 1);
@@ -236,7 +245,7 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
       vals.set(v.id, o);
       return o;
     };
-    const value = ELEM.has(top.op) ? node(top.op, top.src.map((x) => val(x)), top.arg, []) : val(top, true);
+    const value = first.length ? read(top, at) : ELEM.has(top.op) ? node(top.op, top.src.map((x) => val(x)), top.arg, []) : val(top, true);
     return { inputs, value };
   };
 
@@ -266,14 +275,21 @@ function fuseWith(roots: UOp[], uc: Map<number, number>, mat: Set<number>, loade
       };
       out = mk(MAX_INPUTS);
       if (out.src.length - 2 > HARD_INPUTS) out = mk(0);
-    } else if (u.op === "GATHER") {                                            // out[i] = table[idx[i]] — the table read through ITS view map, never copied
-      const rest = u.shape.slice(1), R = Math.max(numel(rest), 1), rs = strides(rest);
-      const gid = range(Math.max(numel(u.shape), 1));
-      const tv = viewMap(u.src[0]!), tb = build(tv.base), ib = build(u.src[1]!);
-      const row = iidx(load(1, idiv(gid, iconst(R))));
-      let addr = iadd(iconst(tv.offset), imul(row, iconst(tv.strides[0]!)));
-      for (let d = 0; d < rest.length; d++) addr = iadd(addr, imul(imod(idiv(imod(gid, iconst(R)), iconst(rs[d]!)), iconst(rest[d]!)), iconst(tv.strides[d + 1]!)));
-      out = fused(gid, load(0, addr), [tb, ib], u.shape);                      // slots: 0 = table base, 1 = idx
+    } else if (u.op === "GATHER") {                                            // out[i] = table[idx[i]] — the table read as any kernel reads its input
+      // the index is loaded (slot 0); the table is read at the row it names, through its
+      // views. A gather that takes each element of the table's base about once reads it as
+      // any kernel reads its input – a computed table computed where it is taken, a gather
+      // of a gather one read; a gather that takes them many times reads them stored
+      const R = Math.max(numel(u.shape.slice(1)), 1), t = u.src[0]!, ib = build(u.src[1]!);
+      const once = numel(u.shape) <= 2 * Math.max(numel(viewMap(t).base.shape), 1);
+      const mk = (cap: number) => {
+        const gid = range(Math.max(numel(u.shape), 1));
+        const at = iadd(imul(iidx(load(0, idiv(gid, iconst(R)))), iconst(R)), imod(gid, iconst(R)));
+        const { inputs, value } = kernel(t, t.shape, at, once ? cap : 0, Math.max(numel(u.shape), 1), undefined, [ib]);
+        return fused(gid, value, inputs, u.shape);
+      };
+      out = mk(MAX_INPUTS);
+      if (out.src.length - 2 > HARD_INPUTS) out = mk(0);
     } else if (u.op === "SCATTER_ADD") {                                       // out[v,c] = Σ_i (idx[i]==v ? values[i,c] : 0) — GATHER's transpose, as one nest
       const rest = u.shape.slice(1), R = Math.max(numel(rest), 1), N = u.src[0]!.shape[0]!;
       const gid = range(Math.max(numel(u.shape), 1));
