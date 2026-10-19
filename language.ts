@@ -794,6 +794,10 @@ const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert
       step = inverse
     }
     let value: Value = (dyadic ? args[1] : args[0]) ?? null
+    if ((until || times) && !gradients) {
+      const looped = loopStep(step, until, value, until ? REPEAT_UNTIL_BUDGET : Math.abs(times), scope)
+      if (looped !== undefined) { return looped }
+    }
     for (let i = 0; until || i < Math.abs(times); i++) {
       if (until && i >= REPEAT_UNTIL_BUDGET) {
         return new Error(`\`(f ⍣ p)\`: the predicate didn't hold within ${REPEAT_UNTIL_BUDGET} steps`)
@@ -809,6 +813,34 @@ const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert
     }
     return value
   })
+}
+// The loop as one engine step, wherever no ∇ needs its history: step, and the predicate,
+// run once on placeholders shaped like the state – a tensor, or a list of them – and the
+// engine runs what they built. A step that reads the state's numbers, writes a cell, draws
+// random numbers or gives anything but numbers of the state's shapes runs step by step
+// instead (undefined), and the draws it made are taken back.
+const loopStep = (step: Function, until: Value, value: Value, n: number, scope: CurrentScope): Value | undefined => {
+  const list = Array.isArray(value), xs = list ? value : [value]
+  if (!xs.length || !xs.every(isTensor)) { return undefined }
+  const outer = reader, before = new Map(draws), drawn = drawCount
+  reader = { read: (s) => outer ? outer.read(s) : s.peek() }
+  try {
+    const out = engine.loop(xs, n, isFn(until), (cells) => {
+      const s = list ? cells : cells[0]!, next = step(s)
+      const ns = list ? (Array.isArray(next) && next.length === cells.length ? next : []) : [next]
+      const verdict = isFn(until) && ns.length && ns.every(isTensor) ? safeApply(until, [next, s], scope) : null
+      if (drawCount !== drawn || !ns.length || !ns.every(isTensor) || (isFn(until) && !isTensor(verdict))) { return undefined }
+      return isTensor(verdict) ? [...ns, verdict] : ns
+    })
+    if (out) { return list ? out : out[0]! }
+  } catch (e) {
+    if (!(e instanceof StateWrite)) { return asError(e) }
+  } finally {
+    reader = outer
+  }
+  draws.clear()
+  before.forEach((v, k) => draws.set(k, v))
+  return undefined
 }
 
 // MARK: Memo
@@ -1344,13 +1376,18 @@ const differentiating = <T,>(trace: ((cell: Signal, value: unknown) => unknown) 
     sampling = outerSampling
   }
 }
-// a write a differentiated body tries is an Error that names the body
+// a write a differentiated body tries is an Error that names the body; `gradients` counts
+// the ∇s running
+let gradients = 0
 const differentiated = (body: string, trace: ((cell: Signal, value: unknown) => unknown) | null, run: () => Value): Value => {
+  gradients++
   try {
     return differentiating(trace, run)
   } catch (e) {
     if (e instanceof StateWrite) { return new Error(`${body} cannot change state while it is differentiated (${e.message})`) }
     throw e
+  } finally {
+    gradients--
   }
 }
 // vjp with a ones cotangent: a scalar output gives the classic gradient, an elementwise
@@ -1461,10 +1498,12 @@ setMeta(TensorAssign, { noAutoLift: true })
 // many draws that call has made in this run: the same program draws the same numbers,
 // and a value drawn elsewhere, looked at or not, moves no other draw
 const draws = new Map<string, number>()
+let drawCount = 0
 const TensorRandomUniform = (a: Value) => {
   const site = engine.at.site, here = site ? `${site.start.line}:${site.start.column}:${site.source}` : ""
   const n = draws.get(here) ?? 0
   draws.set(here, n + 1)
+  drawCount++
   let key = 2166136261
   for (let i = 0; i < here.length; i++) { key = Math.imul(key ^ here.charCodeAt(i), 16777619) }
   return engine.uniform(Math.imul(key ^ n, 0x9e3779b1) >>> 0, asWholeList(a))

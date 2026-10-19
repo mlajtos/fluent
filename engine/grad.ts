@@ -112,6 +112,9 @@ export const JVP: Partial<Record<UOp["op"], Jvp>> = {
   BROADCAST: linear, PERMUTE: linear, RESHAPE: linear, SLICE: linear, PAD: linear, WINDOW: linear,
   GATHER: (u, [t = null]) => t && node("GATHER", [t, u.src[1]!], u.arg, u.shape),          // linear in the table; idx is primal
   SCATTER_ADD: (u, [, v = null]) => v && node("SCATTER_ADD", [u.src[0]!, v], u.arg, u.shape),
+  // a loop holds no history to differentiate: under ∇ the language runs ⍣ step by step,
+  // and a loop built anywhere else reads nothing ∇ follows
+  LOOP: (_u, d) => (d.some((t) => t) ? ((): never => { throw new Error("∇: a loop has no derivative – ∇ needs ⍣ step by step"); })() : null),
 };
 
 // A cotangent of exactly 0 carries nothing back, whatever it meets. `where` routes 0 to

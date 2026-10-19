@@ -7,6 +7,7 @@ import { CPU, type HostData } from "./cpu.ts";
 import { GPU } from "./gpu.ts";
 import { vjp as graphVjp } from "./grad.ts";
 import { batch } from "./batch.ts";
+import { UNROLLED } from "./opt.ts";
 
 type Axis = number | number[] | null | undefined;
 export type Like = Tensor | number | boolean | readonly unknown[];
@@ -38,8 +39,13 @@ let gpu: GPU | null = null;
 const SMALL = 1 << 16;
 const leafOf = new WeakMap<UOp, UOp>();
 const hostData = new WeakMap<UOp, Float32Array>();
+// the device buffers values stand on, by leaf name; their bytes, and the most there were
+// since the last ask (deviceBytes)
 const onDevice = new Map<string, GPUBuffer>();
-const freeOnCollect = new FinalizationRegistry<string>((name) => { const b = onDevice.get(name); onDevice.delete(name); if (b) gpu?.release(b); });
+let live = 0, peak = 0;
+const stand = (name: string, b: GPUBuffer): void => { onDevice.set(name, b); live += b.size; peak = Math.max(peak, live); };
+const unstand = (name: string): GPUBuffer | undefined => { const b = onDevice.get(name); if (b) { onDevice.delete(name); live -= b.size; } return b; };
+const freeOnCollect = new FinalizationRegistry<string>((name) => { const b = unstand(name); if (b) gpu?.release(b); });
 let nextLeaf = 0;
 // A rank-0 leaf is a one-element leaf seen as rank 0, on the host (see `scalar`) and on the
 // device alike, so a scalar that crosses time keeps one structure and its step one plan.
@@ -54,10 +60,12 @@ const leaf = (u: UOp): UOp | undefined => leafOf.get(u) ?? (isLeaf(u) ? u : unde
 const remote = (l: UOp): boolean => stored(l).op === "BUFFER" || ir.numel(l.shape) > SMALL;
 // the edges a walk follows: none out of a leaf
 const toLeaves = (u: UOp) => (leaf(u) ? [] : u.src);
+// a loop the walk reaches runs there, and is a leaf from then on
+const running = (u: UOp) => { if (u.op === "LOOP" && !leafOf.has(u)) runLoop(u); return toLeaves(u); };
 function cut(roots: UOp[]): { roots: UOp[]; hostOnly: boolean } {
   const memo = new Map<number, UOp>();
   let hostOnly = true, work = 0;
-  for (const u of ir.toposort(roots, toLeaves)) {
+  for (const u of ir.toposort(roots, running)) {
     const l = leaf(u);
     if (l) { memo.set(u.id, l); hostOnly &&= !remote(l); continue; }
     const srcs = u.src.map((x) => memo.get(x.id)!);
@@ -66,16 +74,26 @@ function cut(roots: UOp[]): { roots: UOp[]; hostOnly: boolean } {
   }
   return { roots: roots.map((r) => memo.get(r.id)!), hostOnly: hostOnly && work <= SMALL };
 }
-// A cell placeholder holds no numbers: any read of one, on either device, throws, and f
-// runs cell by cell (overFrame)
+// A placeholder holds no numbers: a read of one, on either device, throws and marks the
+// trace it stands in for – ⍤ then runs f cell by cell (overFrame), ⍣ step by step (loop)
+type Trace = { read: boolean };
+const placeholderOf = new WeakMap<UOp, Trace>();
+let tracing = 0;
+const placeholder = (t: Trace, name: string, shape: readonly number[]): UOp => { const p = ir.buffer(name, shape); placeholderOf.set(p, t); return p; };
 const readCells = (nodes: readonly UOp[]): void => {
-  if (traces.length && ir.toposort(nodes, toLeaves).some((u) => placeholders.has(u))) { cellReads++; throw new Error("⍤: f reads its cell's numbers"); }
+  if (!tracing) return;
+  let hit = false;
+  for (const u of ir.toposort(nodes, toLeaves)) { const t = placeholderOf.get(u); if (t) { t.read = hit = true; } }
+  if (hit) throw new Error("a traced function reads the numbers of its argument");
 };
 function compute(nodes: readonly UOp[]): void {
   readCells(nodes);
-  const need = [...new Set(nodes.filter((n) => !leafOf.has(n) && !isLeaf(n)))];
+  const fresh = [...new Set(nodes.filter((n) => !leafOf.has(n) && !isLeaf(n)))];
+  if (!fresh.length) return;
+  const cutAll = cut(fresh), hostOnly = cutAll.hostOnly;
+  // a root that was a loop ran in the cut
+  const need = fresh.filter((n) => !leafOf.has(n)), roots = cutAll.roots.filter((_, i) => !leafOf.has(fresh[i]!));
   if (!need.length) return;
-  const { roots, hostOnly } = cut(need);
   if (!gpu || hostOnly) {
     cpu.realizeSync(roots).forEach((t, i) => {
       const n = need[i]!, size = ir.numel(n.shape), d = t.data.length === size ? t.data : t.data.subarray(0, size);   // a kernel writes at least one element
@@ -85,8 +103,9 @@ function compute(nodes: readonly UOp[]): void {
   }
   gpu.computeSync(roots, (name) => onDevice.get(name)).forEach((b, i) => {
     const n = need[i]!, name = `%v${nextLeaf++}`, buf = ir.buffer(name, n.shape.length ? n.shape : [1]), leaf = rank0(buf, n.shape);
-    onDevice.set(name, b); freeOnCollect.register(buf, name);
+    stand(name, b); freeOnCollect.register(buf, name);
     leafOf.set(n, leaf); leafOf.set(leaf, leaf);
+    steps.at(-1)?.add(leaf);
   });
 }
 // the site the ops built now come from – the Fluent call the language is making
@@ -120,9 +139,11 @@ async function readAsync(a: Tensor): Promise<Float32Array> {
   compute([a.node]);
   return dataOf(a.node) ?? keep(a.node, await gpu!.readAsync(deviceBuffer(a.node), ir.numel(a.node.shape)));
 }
+// a computed node's numbers
+const readNode = (n: UOp): Float32Array => dataOf(n) ?? keep(n, gpu!.readSync(deviceBuffer(n), ir.numel(n.shape)));
 function realize(arrays: readonly Tensor[]): Float32Array[] {
   compute(arrays.map((a) => a.node));
-  return arrays.map((a) => dataOf(a.node) ?? keep(a.node, gpu!.readSync(deviceBuffer(a.node), ir.numel(a.node.shape))));
+  return arrays.map((a) => readNode(a.node));
 }
 // A value that outlives its step stands on its leaf — computed, with no history behind it
 // for later graphs, and later ∇ walks, to drag along. A scalar is held as data, never kernel
@@ -145,18 +166,91 @@ function gpuBufferOf(a: Tensor): GPUBuffer {
   const l = stored(leafOf.get(a.node) ?? a.node);
   if (l.op === "CONSTANT") {                                                   // host data: upload it once, as a device leaf
     const [b] = gpu.computeSync([l], () => undefined), name = `%v${nextLeaf++}`, dl = ir.buffer(name, l.shape), r = rank0(dl, a.node.shape);
-    onDevice.set(name, b!); freeOnCollect.register(dl, name);
+    stand(name, b!); freeOnCollect.register(dl, name);
     leafOf.set(a.node, r); leafOf.set(r, r); keep(a.node, l.arg as Float32Array);
   }
   return deviceBuffer(a.node);
 }
 // A value nothing reads again – a picture once it is on the screen – gives its device
 // buffer back now, not when it is collected
-export function free(a: Tensor): void {
-  const l = leafOf.get(a.node), name = l && stored(l).op === "BUFFER" ? ir.bufName(stored(l)) : undefined, b = name && onDevice.get(name);
-  if (!b) return;
-  onDevice.delete(name);
-  gpu!.release(b);
+const give = (l: UOp): void => { const s = stored(l), b = s.op === "BUFFER" ? unstand(ir.bufName(s)) : undefined; if (b) gpu!.release(b); };
+export function free(a: Tensor): void { const l = leafOf.get(a.node); if (l) give(l); }
+export const deviceBytes = (): { live: number; peak: number } => { const p = peak; peak = live; return { live, peak: p }; };
+
+// ── loops ───────────────────────────────────────────────────────────────────────
+// ⍣ as one engine step: f runs once, on placeholders shaped like the state xs, and gives
+// the next state – and, for a loop until, the verdict, which holds where some element is
+// nonzero and not NaN. A loop runs where it is built, unless a trace holds what it reads.
+// undefined when f reads the state's numbers or gives other shapes: the caller runs it
+// step by step.
+export function loop(xs: readonly Tensor[], n: number, until: boolean, f: (xs: Tensor[]) => Tensor[] | undefined): Tensor[] | undefined {
+  // batch has no rule for a loop
+  if (traces.length) return undefined;
+  const t: Trace = { read: false }, carries = xs.map((x) => placeholder(t, "%carry", x.node.shape)), k = xs.length;
+  let out: Tensor[] | undefined;
+  tracing++;
+  try { out = f(carries.map((c) => new Tensor(c))); } finally { tracing--; }
+  if (t.read || !out || out.length !== k + (until ? 1 : 0) || out.slice(0, k).some((o, j) => !ir.sameShape(o.node.shape, xs[j]!.node.shape))) return undefined;
+  const outs = out.map((o) => o.node);
+  if (until) outs[k] = out[k]!.size ? max(truthy(out[k]!)).node : ir.konst(0);
+  const nodes = ir.loop(xs.map((x) => x.node), carries, outs, n), { body } = nodes[0]!.arg as ir.LoopArg;
+  // a short count loop is straight-line code: n copies of its step, in the graph that reads it
+  const stop = new Set([...body.carries, ...body.frontier]);
+  if (!until && n * ir.toposort(body.outs, (u) => (stop.has(u) ? [] : u.src)).length <= UNROLLED) {
+    const bound = new Map(body.frontier.map((p) => [p, p] as const));
+    let state = xs.map((x) => x.node);
+    for (let i = 0; i < n; i++) { body.carries.forEach((c, j) => bound.set(c, state[j]!)); state = substitute(body.outs, bound); }
+    return state.map((u) => new Tensor(u));
+  }
+  if (!ir.toposort(nodes, toLeaves).some((u) => placeholderOf.has(u))) compute(nodes);
+  return nodes.map((u) => new Tensor(u));
+}
+// A loop runs on leaves it owns. Each step stands the states' leaves in for the body's
+// carries and computes the next states and the verdict as one graph, whose plan is found
+// again by its structure: every step runs the plan the first one built. A synchronous loop
+// waits for no collection, so what a step computed that no later step reads – the state
+// before it, the verdict, an inner loop's leaves – goes back to the device's pool at once,
+// and the device holds about two states however long the loop runs. What a loop ends with
+// passes to the step around it, if it runs inside one.
+// the device leaves each running step computed, and each loop's last run, which its other
+// states share
+const steps: Set<UOp>[] = [];
+const ran = new WeakMap<ir.Body, { src: readonly UOp[]; state: UOp[] }>();
+const substitute = (roots: readonly UOp[], bound: ReadonlyMap<UOp, UOp>): UOp[] => {
+  const memo = new Map<number, UOp>();
+  for (const u of ir.toposort(roots, (u) => (bound.has(u) ? [] : u.src))) {
+    const b = bound.get(u), src = b ? [] : u.src.map((s) => memo.get(s.id)!);
+    memo.set(u.id, b ?? (src.every((s, i) => s === u.src[i]) ? u : ir.node(u.op, src, u.arg, u.shape, u.site)));
+  }
+  return roots.map((r) => memo.get(r.id)!);
+};
+function runLoop(u: UOp): void {
+  const { body, n, out } = u.arg as ir.LoopArg, k = body.carries.length, until = body.outs.length > k;
+  let last = ran.get(body);
+  if (!last || last.src.some((s, i) => s !== u.src[i])) {
+    // the first step computes what the body closes over too, once, and any start not
+    // computed yet; a literal start is held as data
+    const frontier = u.src.slice(k), bound = new Map(body.frontier.map((p, m) => [p, frontier[m]!] as const)), owned = new Set<UOp>(), kept: UOp[] = [];
+    let state = u.src.slice(0, k).map((x) => { const l = leaf(x) ?? x; return l.op === "CONSTANT" && !l.shape.length ? held(l.arg as Float32Array, []) : l; });
+    for (let i = 0; until || i < n; i++) {
+      if (i >= n) throw new Error(`\`(f ⍣ p)\`: the predicate didn't hold within ${n} steps`);
+      body.carries.forEach((c, j) => bound.set(c, state[j]!));
+      const roots = substitute(body.outs, bound), made = new Set<UOp>();
+      let done = false;
+      steps.push(made);
+      try { compute(i ? roots : [...roots, ...frontier]); done = until && readNode(roots[k]!)[0] !== 0; } finally { steps.pop(); }
+      if (!i) body.frontier.forEach((p, m) => { const l = leaf(frontier[m]!)!; bound.set(p, l); if (made.delete(l)) kept.push(l); });
+      const next = roots.slice(0, k).map((r) => leaf(r)!);
+      for (const l of [...owned, ...made]) if (!next.includes(l)) { owned.delete(l); give(l); }
+      for (const l of next) if (made.has(l)) owned.add(l);
+      state = next;
+      if (done) break;
+    }
+    compute(state);
+    for (const l of [...owned, ...kept]) steps.at(-1)?.add(l);
+    ran.set(body, last = { src: u.src, state: state.map((x) => leaf(x)!) });
+  }
+  leafOf.set(u, last.state[out]!);
 }
 
 const nest = (d: ArrayLike<number>, shape: readonly number[]): unknown => {
@@ -617,17 +711,15 @@ export const uniform = (seed: number, shape: readonly number[]): Tensor =>
 // the frame F: xs are [...F, ...cell]. A placeholder holds no numbers, so a read of one – f
 // branching on its cell's values – throws, and the call gives undefined: the caller runs f
 // cell by cell. Traces nest, the outermost first.
-type Trace = { F: readonly number[]; cells: Map<UOp, UOp> };
-const traces: Trace[] = [];
-const placeholders = new WeakSet<UOp>();
-let cellReads = 0;
-const cellOf = (t: Trace, u: UOp): UOp => { const p = ir.buffer("%cell", u.shape.slice(t.F.length)); placeholders.add(p); t.cells.set(p, u); return p; };
+type CellTrace = Trace & { F: readonly number[]; cells: Map<UOp, UOp> };
+const traces: CellTrace[] = [];
+const cellOf = (t: CellTrace, u: UOp): UOp => { const p = placeholder(t, "%cell", u.shape.slice(t.F.length)); t.cells.set(p, u); return p; };
 export function overFrame(F: readonly number[], xs: readonly Tensor[], f: (cells: Tensor[]) => unknown): Tensor | undefined {
-  const t: Trace = { F, cells: new Map() }, reads = cellReads;
-  traces.push(t);
+  const t: CellTrace = { read: false, F, cells: new Map() };
+  traces.push(t); tracing++;
   let out: unknown;
-  try { out = f(xs.map((x) => new Tensor(cellOf(t, x.node)))); } finally { traces.pop(); }
-  return out instanceof Tensor && cellReads === reads ? new Tensor(batch(out.node, t.cells, F)) : undefined;
+  try { out = f(xs.map((x) => new Tensor(cellOf(t, x.node)))); } finally { traces.pop(); tracing--; }
+  return out instanceof Tensor && !t.read ? new Tensor(batch(out.node, t.cells, F)) : undefined;
 }
 // ── ∇: the engine's transpose ∘ linearize on the graph a function builds ─────────
 // The derivative is with respect to a traced argument – this use of the value, never a

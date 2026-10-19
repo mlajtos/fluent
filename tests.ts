@@ -1361,6 +1361,34 @@ describe("⍣ power: counts, inverses, and fixed points", () => {
   test("a predicate that never holds is an Error, not a frozen tab", () => {
     expect((run("({ x | x + 1 } ⍣ { a, b | 0 })(0)") as Error).message).toContain("didn't hold")
   })
+  // 256 rays marched in step: a state of 513 numbers, more than the engine computes as they
+  // are built, so only a loop that runs one step's plan again keeps it from replanning
+  // the whole history every step
+  const march = (from: number, steps: string) => `N: 256, a: (0 ..< N) - (N ÷ 2) × (0.96 ÷ N), rays: stack((sin(a), a × 0, cos(a)), -1),
+    sdf: { p | norm(p - [0, 0, 3], -1) - 1 }, march: { t | t + sdf(unsqueeze(t, -1) × rays) },
+    step: { s | x: s_0, done: s_1, new: march(x), (where(done, x, new), done ∨ (sdf(unsqueeze(new, -1) × rays) < 1e-3), s_2 + 1) },
+    (step ⍣ ${steps})((a × 0, a × 0, ${from}))`
+  const plans = async (source: string) => {
+    const { plansBuilt } = await import("./engine/opt.ts"), before = plansBuilt(), v = run(source) as engine.Tensor[]
+    v.forEach(unwrap)
+    return { plans: plansBuilt() - before, v }
+  }
+  test("an until loop runs one step's plan every step, and its state carries no history", async () => {
+    const until = "{ new, old | min(new_1) ∨ (new_2 ≥ 40) }"
+    await plans(march(30, until))
+    const { plans: built, v } = await plans(march(0, until))
+    expect(built).toBe(0)
+    expect(unwrap(v[2])).toBe(40)
+    expect(v.map((x) => engine.graphSize(x))).toEqual([1, 1, 1])
+  })
+  test("a count loop runs one step's plan, whatever the count; a short one is straight-line code", async () => {
+    await plans(march(0, "40"))
+    const { plans: built, v } = await plans(march(0, "50"))
+    expect(built).toBe(0)
+    expect(unwrap(v[2])).toBe(50)
+    const short = run("({ x | x × 2 + 1 } ⍣ 3)(fill([300], 1))") as engine.Tensor
+    expect([short.node.op, unwrap(short)[299]]).toEqual(["ADD", 15])
+  })
   test("the bottom of a valley is the inverse of its slope at zero", () => {
     expect(value("(∇({ x | (x - 3)^2 + 1 }) ⍣ -1)(0)")).toBeCloseTo(3, 5)
   })
