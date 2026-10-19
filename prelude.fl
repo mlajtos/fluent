@@ -564,9 +564,9 @@ unstack: doc(TensorUnstack, "unstack(x, axis?)", "A tensor taken apart along an 
 }, "x ⧉ reps  ·  x tile reps", "Tile a tensor: repeat it along each axis, reps giving the count per axis (a scalar reps repeats a vector).", "[1, 2] ⧉ 3 = [1, 2, 1, 2, 1, 2]"),
 
 ; Drawing – a picture is a tensor of colors, [height, width, 3]; a shape is the
-; distance from a point to it, a function. draw(shape, color, width) takes a
-; picture to a picture, so a drawing reads as a pipe:
-;   canvas(640, 400) . draw(axis, gray, 1) . draw(curve, blue, 2)
+; distance from a point to it, a function; an ink turns a distance into light.
+; paint(shape, ink) takes a picture to a picture, so a drawing reads as a pipe:
+;   canvas(640, 400) . draw(axis, gray, 1) . paint(curve, stroke(blue, 2) above halo(blue, 8))
 ; Sizes, places and widths are in units, a CSS pixel each. A picture has the display's own
 ; pixels, Density() of them a unit, so its edges are as sharp as the screen can show –
 ; and its shape depends on the display: canvas(520, 160) is [320, 1040, 3] at Density 2.
@@ -652,31 +652,81 @@ canvas: DrawCanvas: doc({ width, height, color |
   fill([round(height×D), round(width×D), 3], 1) × cond(guard(identical(color, ◌), { 0.09 }), { color })
 }, "canvas(width, height, color?)", "A picture width × height units, all one color – the playground's background unless given. It has the display's pixels, Density() of them a unit: round(width × Density()) across.", "canvas(2, 1, [1, 0, 0]) = [[[1, 0, 0], [1, 0, 0]]]"),
 pixels: DrawPixels: doc({ picture | h: shape(picture)_0, w: shape(picture)_1, stack(meshgrid(0..<w + 0.5, 0..<h + 0.5), -1) ÷ Density() }, "pixels(picture)", "Where each pixel's center is, as [x, y] in units from the top left – a picture's shape with 2 in place of its colors.", "pixels(canvas(2, 1)) = [[[0.5, 0.5], [1.5, 0.5]]]"),
+; An ink turns a distance d, in units, into light. At each place it gives (light, cover,
+; reach): the light it adds, in linear intensity; how much of what lies under it it hides,
+; 0 to 1; and how far from the shape it shows at all, in units. Its light is premultiplied
+; by its cover, so one ink above another is Porter and Duff's over.
+stroke: DrawStroke: doc({ color, width | { d |
+  ; in the display's pixels, across the stroke a pixel spans e-0.5 to e+0.5 and the stroke
+  ; -r to r: the overlap is how much of the pixel it covers, and in f32 it can round past 1
+  D: Density(), e: d × D, r: width × D ÷ 2,
+  cover: e+0.5 ⌊ r - (e-0.5 ⌈ (-r)) ⌈ 0 ⌊ 1,
+  (color^2.2 × cover, cover, width÷2 + 1÷D)
+} }, "stroke(color, width)", "The ink of a line width units wide along the shape, in color, its edges antialiased over one pixel of the display. It reaches half its width and a pixel from the shape.", "stroke([1, 0, 0], 2)(0) = ([1, 0, 0], 1, 2)"),
+solid: DrawSolid: doc({ color | { d |
+  ; a pixel is covered as much as it lies inside the edge, where the distance is 0
+  D: Density(), cover: 0.5 - d×D ⌈ 0 ⌊ 1,
+  (color^2.2 × cover, cover, 1÷D)
+} }, "solid(color)", "The ink that fills a shape with color wherever its distance is below 0 – inside a shape that measures inside as negative, like { p | norm(p - c, -1) - r } – its edge antialiased over one pixel of the display.", "solid([1, 0, 0])(-3) = ([1, 0, 0], 1, 1)"),
+halo: DrawHalo: doc({ color, radius | { d |
+  (color^2.2 × exp(-(d^2 ÷ radius^2)), 0, 3×radius)
+} }, "halo(color, radius)", "The ink of a glow around the shape: light in color that fades over radius units, a bell curve, and adds to what lies under it without hiding it. It reaches 3 × radius from the shape.", "halo(1, 2)(0) = (1, 0, 6)"),
+ramp: DrawRamp: doc({ colors | { t |
+  ; each color weighs by how near t lies to its stop, the stops evenly spaced from 0 to 1
+  m: #colors, s: clamp(t, 0, 1) × (m - 1),
+  w: 1 - abs(s - (0..<m)) ⌈ 0,
+  (Σ(unsqueeze(w, -1) × colors, -2)^2.2, 1, 1÷0)
+} }, "ramp(colors)", "The ink of a color scale: a number from 0 to 1 at each place picks its color along colors, [n, 3], blended between neighbors, and hides everything under it. Paint a field with it – noise, or any number at each place – to see the field.", "ramp([[0, 0, 0], [1, 1, 1]])(0.5)_0 ≈ 0.5^2.2"),
+above: DrawAbove: doc({ a, b | { d |
+  x: a(d), y: b(d),
+  (y_0 × (1 - x_1) + x_0, y_1 × (1 - x_1) + x_1, x_2 ⌈ y_2)
+} }, "a above b", "One ink above another: b shows only as much as a leaves uncovered – Porter and Duff's over. stroke(blue, 2) above halo(blue, 8) is a line that glows.", "(solid(1) above halo(1, 2))(-1) = (1, 1, 6)"),
+paint: DrawPaint: doc({ shape, ink | { picture |
+  d: shape(pixels(picture)),
+  ; one distance for the whole picture is a shape that measured all its pixels together
+  cond(guard((#TensorShape(d)) < 2, { Error("the shape gave one distance for the whole picture, not one for each pixel – p is every pixel at once, [height, width, 2]; measure along its last axis: norm(p - c, -1)") }), {
+    ; mixed as light mixes – in linear intensity, not in the screen's gamma-encoded values
+    c: ink(unsqueeze(d, -1)),
+    picture^2.2 × (1 - c_1) + c_0 ^ 1÷2.2
+  })
+} }, "paint(shape, ink)", "A step from picture to picture: the shape in ink. The shape is given every pixel at once, p as [height, width, 2], and gives each its distance – or any number, for an ink like ramp – so it measures along the last axis: norm(p - c, -1).", "canvas(2, 1, 0) . paint(dots([[0.5, 0.5]]), stroke(1, 1)) = [[[1, 1, 1], [0, 0, 0]]]"),
+draw: DrawShape: doc({ shape, color, width | paint(shape, stroke(color, width)) }, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width units wide in color, its edges antialiased over one pixel of the display – paint(shape, stroke(color, width)). The shape is given every pixel at once, p as [height, width, 2], and gives each its distance, so it measures along the last axis: norm(p - c, -1).", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
 dots: DrawDots: doc({ points | { p | min(norm(p - points, -1)) } ⍤ 1 }, "dots(points)", "The shape of n points, [n, 2]: from p, the distance to the nearest one. Drawn wide, a dot is a disk.", "dots([[0, 0], [9, 9]])([3, 4]) = 5"),
-line: DrawLine: doc({ points |
-  n: length(points) - 1,
-  a: points_(0..<n),
-  ab: points_(1 ..< n+1) - a,
+segments: DrawSegments: doc({ a, b |
+  ab: b - a,
   ; how far along each segment p's nearest point lies: 0 at its start, 1 at its end
   along: { ap | clamp(Σ(ap × ab, -1, 1) ÷ (Σ(ab × ab, -1, 1) ⌈ 1e-12), 0, 1) },
   { p | ap: p - a, min(norm(ap - along(ap)×ab, -1)) } ⍤ 1
-}, "line(points)", "The shape of the line through n points, [n, 2], one segment after another: from p, the distance to the nearest segment.", "line([[0, 0], [10, 0]])([5, 3]) = 3"),
-draw: DrawShape: doc({ shape, color, width |
-  γ: 2.2,
-  { picture |
-    ; in the display's pixels, across the stroke a pixel spans d-0.5 to d+0.5 and the
-    ; stroke -r to r: the overlap is how much of the pixel it covers
-    D: Density(),
-    d: shape(pixels(picture)) × D, r: width × D ÷ 2,
-    ; a fraction of the pixel: in f32 the overlap can round past 1
-    cover: unsqueeze(d+0.5 ⌊ r - (d-0.5 ⌈ (-r)) ⌈ 0 ⌊ 1, -1),
-    ; one distance for the whole picture is a shape that measured all its pixels together
-    cond(guard((#TensorShape(d)) < 2, { Error("draw: the shape gave one distance for the whole picture, not one for each pixel – p is every pixel at once, [height, width, 2]; measure along its last axis: norm(p - c, -1)") }), {
-      ; mixed as light mixes – in linear intensity, not in the screen's gamma-encoded values
-      picture^γ × 1-cover + color^γ×cover ^ 1÷γ
-    })
-  }
-}, "draw(shape, color, width)", "A step from picture to picture: the shape stroked width units wide in color, its edges antialiased over one pixel of the display. The shape is given every pixel at once, p as [height, width, 2], and gives each its distance, so it measures along the last axis: norm(p - c, -1).", "canvas(2, 1, 0) . draw(dots([[0.5, 0.5]]), 1, 1) = [[[1, 1, 1], [0, 0, 0]]]"),
+}, "segments(a, b)", "The shape of n separate segments, each from a row of a to the same row of b, both [n, 2]: from p, the distance to the nearest segment.", "segments([[0, 0], [0, 9]], [[10, 0], [10, 9]])([5, 3]) = 3"),
+line: DrawLine: doc({ points | n: length(points) - 1, segments(points_(0..<n), points_(1 ..< n+1)) }, "line(points)", "The shape of the line through n points, [n, 2], one segment after another: from p, the distance to the nearest segment.", "line([[0, 0], [10, 0]])([5, 3]) = 3"),
+level: DrawLevel: doc({ f | { p | abs(f(p)) ÷ (norm(∇(f)(p), -1) ⌈ 1e-9) } }, "level(f)", "The shape where f is 0: from p, about how far – |f(p)| over how steeply f climbs there, which ∇ gives. Any function becomes a shape, a curve with no points to join. It is a first guess, right near the curve while f's slope stays steady, and off at a sharp corner, where curves cross, and where the slope falls to 0.", "level({ p | Σ(p, -1) - 1 })([[3, 0]]) ≈ [√2]"),
+
+; Noise – a number that wanders smoothly with place: Perlin's gradient noise. Each
+; whole-numbered corner of the grid around p gets a slope, from a permutation polynomial
+; mod 289 that f32 holds exactly, and the slopes blend smoothly. It is arithmetic only,
+; so it fuses, ∇ flows through it, and the GPU and the CPU agree. A point is [n], any n.
+NoiseMix: { x | y: x % 289, 34×y + 1 × y % 289 },
+; the 2^n corners of a cell in n dimensions: the binary digits of 0 ..< 2^n
+NoiseCorners: { n | floor(0 ..< 2^n ⊗(÷) 2^(0..<n)) % 2 },
+noise: Noise: doc({ p |
+  n: #p, c: NoiseCorners(n),
+  i: floor(p), f: p - i,
+  ; a number for each corner from its place, and from it a slope
+  h: fold(unstack(i + c % 289, -1), { h, x | NoiseMix(h + x) }, 0),
+  g: NoiseMix(h ⊗(+) 61×(0..<n)) ÷ 144 - 1,
+  ; Perlin's fade: flat at the corners, so the blend is smooth from cell to cell
+  u: f^3 × (6×f - 15 × f + 10),
+  w: Π(where(c, u, 1 - u), -1),
+  Σ(w × Σ(g × (f - c), -1))
+} ⍤ 1, "noise(p)", "A number between about -1 and 1 that wanders smoothly as p moves – the same p, the same number. p is a point, [x, y] or [x, y, z] or more; many points give a number each. It is 0 at every whole-numbered point, and changes about once a unit.", "noise([3, 4]) = 0"),
+; octaves: noise again and again, each twice as fine and half as strong, shifted apart
+NoiseOctaves: { p, octaves |
+  k: 0 ..< (octaves ⌈ 1),
+  noise(unsqueeze(p, -2) × unsqueeze(2^k, -1) + unsqueeze(k × 7.31, -1)) ÷ 2^k
+},
+fbm: NoiseFractal: doc({ p, octaves | Σ(NoiseOctaves(p, octaves), -1) }, "fbm(p, octaves)", "Fractal noise: octaves of noise added up, each twice as fine and half as strong as the one before – the look of clouds and coastlines.", "fbm([0.5, 0.5], 1) = noise([0.5, 0.5])"),
+turbulence: NoiseTurbulence: doc({ p, octaves | Σ(abs(NoiseOctaves(p, octaves)), -1) }, "turbulence(p, octaves)", "Octaves of noise like fbm, each folded up at 0 by abs before they add: creases where it turns, the look of fire, marble and smoke.", "turbulence([0.5, 0.5], 1) = abs(noise([0.5, 0.5]))"),
+smoothstep: TensorSmoothStep: doc({ x, a, b | t: clamp(x - a ÷ (b - a), 0, 1), t^2 × (3 - 2×t) }, "smoothstep(x, a, b)", "A smooth step from 0, where x is a, to 1, where x is b – flat at both ends, so it starts and stops gently. Past either end it holds, as clamp holds x.", "smoothstep([0, 0.5, 2], 0, 1) = [0, 0.5, 1]"),
 
 ; Plotting – lines on one pair of axes, drawn with the words above, and text drawn as a
 ; shape: letters, in BQN386, the font the IDE shows code in. font.ts writes its glyphs

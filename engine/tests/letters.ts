@@ -23,6 +23,16 @@ const CASES = [
   'Σ(plot(0..<3000, (0..<3000 % 7, 0..<3000 % 600), ("seven", "saw")) > 0.3)',
   // a color with a 0 channel over a lit background: coverage that rounds past 1 in f32 made NaN
   'Σ(isNaN(canvas(40, 20, 0.5) . draw(dots([[10, 10], [30, 10]]), [1, 149 ÷ 255, 0], 6)))',
+  // noise hashes whole numbers mod 289 exactly in f32: a corner hashed differently is a
+  // patch of the picture a unit wide, far from the coordinates' origin as well
+  'Σ(abs(noise(pixels(canvas(160, 100)) ÷ 7 + [300, -250])))',
+  'Σ(abs(fbm(pixels(canvas(160, 100)) ÷ 20 + 1000, 4)))',
+  'p: pixels(canvas(80, 50)) ÷ 9, q: unstack(p, -1), Σ(abs(noise(stack((q_0, q_1, q_0 - q_1 + 77), -1))))',
+  'p: pixels(canvas(80, 50)) ÷ 9, q: unstack(p, -1), Σ(abs(noise(stack((q_0, q_1, q_1 × 0.5, q_0 + 3), -1))))',
+  // inks: a stroke above a halo, a ramp over a field, a curve made a distance by level
+  'Σ(canvas(160, 100, 0) . paint(dots([[40, 50], [120, 50]]), stroke([1, 0, 0.3], 3) above halo([0, 0.5, 1], 12)))',
+  'Σ(canvas(160, 100) . paint({ p | turbulence(p ÷ 30 + 250, 4) }, ramp([[0, 0, 0], [1, 0.5, 0], [1, 1, 1]])))',
+  'Σ(canvas(160, 100, 0) . paint(level({ p | q: unstack(p, -1), q_1 - 50 + (20 × sin(q_0 ÷ 15)) }), stroke(1, 2)))',
 ];
 
 const RUNS = [1, 2].flatMap((d) => CASES.map((source) => [d, source] as const));
