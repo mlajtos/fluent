@@ -203,6 +203,19 @@ export default async function (): Promise<{ fails: number }> {
     const c = await realize(cpu, r, at), d = gpu ? await realize(gpu, r, at) : c;
     check("parity: chained sums", rel(d.data, c.data) < 1e-4, `relΔ ${rel(d.data, c.data).toExponential(1)}`);
   }
+  { // a kernel's body is a graph: a value it reads twice is one value, and printing walks it
+    // once – a term squared 30 times is 30 nodes, not 2³⁰ paths. Both shapes a reduction can
+    // print as: a contraction's tile, and a long sum's cooperative workgroup
+    const square = (t: UOp, n: number): UOp => { for (let i = 0; i < n; i++) t = mul(t, t); return t; };
+    const A = buffer("A", [32, 128, 1]), B = buffer("B", [1, 128, 32]), Xr = buffer("Xr", [4, 4096]);
+    const tile = reduceAxis(square(mul(broadcastTo(A, [32, 128, 32]), broadcastTo(B, [32, 128, 32])), 22), 1, false), coop = reduceAxis(square(Xr, 30), 1, false);
+    for (const [name, g] of [["a contraction's tile", tile], ["a long sum", coop]] as const) {
+      const t0 = performance.now();
+      lowerMany([g]);
+      const ms = performance.now() - t0;
+      check(`${name} over a term squared again and again is printed in time linear in its nodes`, ms < 500, `${ms.toFixed(0)} ms`);
+    }
+  }
   { // a gather is a read: never stored only to be read back
     const W = buffer("W", [6, 4]), ids = buffer("ids", [5]), g = gather(W, ids);
     check("a gather read twice is ONE kernel", kernels(add(mul(g, g), exp(g))).length === 1);
