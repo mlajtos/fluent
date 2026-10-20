@@ -3507,6 +3507,16 @@ describe("the engine", () => {
     const bytes = ir.toposort(optimizeMany([d.node])).filter((u) => u.op === "FUSED").reduce((n, u) => n + ir.numel(u.shape) * 4, 0)
     expect(bytes).toBeLessThan(2 ** 22)
   })
+  test("a copy that takes a kernel past its inputs takes back only its own counts: ∇ through 40 steps of a raymarch plans in under 2.7 s", async () => {
+    const { optimizeMany } = await import("./engine/opt.ts")
+    const g = run(`N: 256, a: (0 ..< N) - (N ÷ 2) × (0.96 ÷ N), rays: stack((sin(a), a × 0, cos(a)), -1),
+      depth: { c | sdf: { p | norm(p - c, -1) - 1 }, march: { t | t + sdf(unsqueeze(t, -1) × rays) },
+        step: { s | new: march(s_0), (where(s_1, s_0, new), s_1 ∨ (sdf(unsqueeze(new, -1) × rays) < 1e-3 ∨ (new > 20)), s_2 + 1) },
+        Σ((step ⍣ { new, old | min(new_1) ∨ (new_2 ≥ 40) })((a × 0, a × 0, 0))_0) },
+      ∇(depth)([0, 0, 3])`) as engine.Tensor
+    const time = () => { const t = performance.now(); optimizeMany([g.node]); return performance.now() - t }
+    expect(Math.min(time(), time())).toBeLessThan(2700)
+  }, 60_000)
   test("joining n pieces the host does not hold takes about n/7 kernels, not n", async () => {
     const { optimizeMany } = await import("./engine/opt.ts")
     const { toposort } = await import("./engine/ir.ts")

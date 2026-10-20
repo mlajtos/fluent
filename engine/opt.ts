@@ -242,8 +242,9 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
     // would take them past what storing it costs is stored now, and that copy loads it. The
     // plan counts at least as many, so it would store the node too; deciding it here keeps a
     // chain of forks read at two indices each, butterflies, from building 2^depth copies first.
-    const tally = new Map<number, [number, number]>();
-    const note = ([x, i, w]: [UOp, UOp, number]) => { const t = tally.get(x.id) ?? [0, 0]; t[0] += outN * steps(i, gid); t[1] = Math.max(t[1], w); tally.set(x.id, t); };
+    // Each note keeps the count it replaces, so an undone copy takes its notes back.
+    const tally = new Map<number, [number, number]>(), noted: [number, [number, number] | undefined][] = [];
+    const note = ([x, i, w]: [UOp, UOp, number]) => { const t = tally.get(x.id); noted.push([x.id, t]); tally.set(x.id, [(t?.[0] ?? 0) + outN * steps(i, gid), Math.max(t?.[1] ?? 0, w)]); };
     const costlier = (v: UOp, ix: UOp): boolean => {
       const t = tally.get(v.id);
       if (!t || v.op === "GATHER" || (reads.get(v.id) ?? 1) < 2) return false;
@@ -306,7 +307,7 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
         o = node("WHERE", [inside, value(src, iadd(srcIdx, iconst(-before * sst[axis]!))), konst(0)], null, []);   // wraps below 0 only where `inside` is 0
       } else if (inPlace(v, ix, whole) && !costlier(v, ix)) {
         // a map whose reads take the kernel past its cap is undone, and loaded
-        const mark = [inputs.length, keys.length, here.length] as const, entry: [UOp, UOp, number] = [v, ix, 0];
+        const mark = [inputs.length, keys.length, here.length, noted.length] as const, entry: [UOp, UOp, number] = [v, ix, 0];
         here.push(entry);
         o = own(v, ix, whole);
         entry[2] = (here.length - mark[2]) * loop(o);                     // its work: the values it computes here, each as often as its loops run
@@ -314,8 +315,7 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
           for (const x of inputs.splice(mark[0])) { slot.delete(x.id); if (small(x)) smalls--; }
           for (const [i, id] of keys.splice(mark[1])) memo.get(i)!.delete(id);
           here.length = mark[2];
-          tally.clear();
-          for (const h of here) if (h[2]) note(h); // the copies still here, those finished
+          for (const [id, t] of noted.splice(mark[3]).reverse()) t ? tally.set(id, t) : tally.delete(id);
           over.add(v.id);
           o = load(input(kernelOf(v)), ix);
         } else note(entry);
