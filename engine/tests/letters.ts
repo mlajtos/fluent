@@ -39,6 +39,14 @@ const CASES = [
   'Σ(canvas(160, 100, 0) . paint(dots([[40, 50], [120, 50]]), stroke([1, 0, 0.3], 3) above halo([0, 0.5, 1], 12)))',
   'Σ(canvas(160, 100) . paint({ p | turbulence(p ÷ 30 + 250, 4) }, ramp([[0, 0, 0], [1, 0.5, 0], [1, 1, 1]])))',
   'Σ(canvas(160, 100, 0) . paint(level({ p | q: unstack(p, -1), q_1 - 50 + (20 × sin(q_0 ÷ 15)) }), stroke(1, 2)))',
+  // outlines: filled with a hole, outlined and glowing, corners on the pixels' centers
+  'a: 0..<140 ÷ 140 × 2×π, o: stack((cos(a), sin(a)), -1), Σ(canvas(520, 160, 0) . paint(polygon((o × 70 + [260, 80], o × 30 + [250, 75])), solid(1)))',
+  'a: 0..<140 ÷ 140 × 2×π, o: stack((cos(a), sin(a)), -1), Σ(canvas(520, 160, 0) . paint(polygon(o × 70 + [260, 80]), stroke(1, 2) above halo([1, 0.5, 0], 8)))',
+  'Σ(canvas(160, 100, 0) . paint(polygon([[10.5, 10.5], [150.5, 10.5], [80.5, 90.5], [40.5, 50.5], [20.5, 50.5]]), solid(1)))',
+  // curves: a cubic stroked, and filled; a slice of a disk, an arc and its center
+  'Σ(canvas(520, 160, 0) . draw(line(bezier([[20, 140], [150, -60], [330, 220], [500, 20]], 0.05)), 1, 2))',
+  'Σ(canvas(520, 160, 0) . paint(polygon(bezier([[20, 140], [150, -60], [330, 220], [500, 20]], 0.05)), solid(1)))',
+  'Σ(canvas(520, 160, 0) . paint(polygon(concat((arc([260, 80], 70, [0.3, 4], 0.05), [[260, 80]]))), solid(1) above halo(1, 4)))',
 ];
 
 const RUNS = [1, 2].flatMap((d) => CASES.map((source) => [d, source] as const));
