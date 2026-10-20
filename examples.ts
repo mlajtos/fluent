@@ -670,6 +670,37 @@ shot: \${ ; the trajectory as a lit trail, a bead at every step, the muzzle at i
   Layers(shot, Point2D(target, view, "orange")),
 )
 `,
+"differentiable-bezier": `
+; 〰️ Differentiable Bézier – ∇ bends a curve until it runs through every ring
+; The curve runs from the first gold ring to the last, and ∇ moves its two middle control
+; points, 60 steps a second. Drag the orange points to bend the rings: the curve follows
+gray: [0.45, 0.45, 0.45],
+blue: [0.35, 0.65, 1],
+magenta: [0.95, 0.4, 0.8], gold: [1, 0.78, 0.3],
+
+bend: $[80, 20], twist: $[180, 150], ; drag me (orange)
+targets: bezier(stack(([30, 130], bend, twist, [230, 30])), 6),
+middle: ~[[110, 140], [150, 20]],
+c: concat((targets_[0], middle, targets_[-1])),
+𝓛: { mean(line(bezier(c, 0.1))(targets)^2) }, opt: adam(3),
+{ opt(𝓛) } ⟳ Time()×60, ; 60 steps a second
+
+curve: canvas(260, 160)
+  .draw(line(c), gray, 1)
+  .paint(
+    line(bezier(c, 0.1)),
+    stroke(blue, 2.5) above halo(blue × 0.4, 8)
+  )
+  .draw(dots(c), magenta, 7)
+  .draw({ p | abs(dots(targets)(p) - 6) }, gold, 1.5),
+
+view: [[0, 260], [0, 160]],
+(
+  Text("# 〰️ Differentiable Bézier"),
+  Text("∇ moves the **pink** control points until the curve runs through every gold ring. Drag the **orange** points to bend the rings."),
+  Layers(curve, Point2D(bend, view, "orange"), Point2D(twist, view, "orange")),
+)
+`,
 "gradient-paint": `
 ; 🖌 Differentiable rasterisation – soft blobs rearrange so the picture they paint matches a target
 K: 14, blobW: 0.008,

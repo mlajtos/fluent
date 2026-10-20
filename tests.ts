@@ -1831,7 +1831,7 @@ describe("gallery examples smoke suite", () => {
     const time = DefaultEnvironment.Time
     extendEnvironment({ FunctionIterate: record, Time: () => clock } as Record<string, Value>)
     try {
-      const rates = ["differentiable-reach", "differentiable-aim", "gradient-paint", "geometric-median", "differentiable-cloth", "caustics"].map((name) => {
+      const rates = ["differentiable-reach", "differentiable-aim", "gradient-paint", "geometric-median", "differentiable-cloth", "caustics", "differentiable-bezier"].map((name) => {
         budgets.length = 0
         scopeOf(EXAMPLES[name as keyof typeof EXAMPLES])
         clock.value = engine.scalar(0.5)
@@ -1839,7 +1839,7 @@ describe("gallery examples smoke suite", () => {
         clock.value = engine.scalar(0)
         return [name, rate]
       })
-      expect(rates).toEqual([["differentiable-reach", 60], ["differentiable-aim", 60], ["gradient-paint", 120], ["geometric-median", 60], ["differentiable-cloth", 240], ["caustics", 60]])
+      expect(rates).toEqual([["differentiable-reach", 60], ["differentiable-aim", 60], ["gradient-paint", 120], ["geometric-median", 60], ["differentiable-cloth", 240], ["caustics", 60], ["differentiable-bezier", 60]])
     } finally {
       extendEnvironment({ FunctionIterate: stepLater, Time: time } as Record<string, Value>)
       flushRetirements()
