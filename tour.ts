@@ -31,9 +31,10 @@ export const TOUR_SOURCE = `
 step: $(0),
 
 ; The challenge light: check is a thunk re-run whenever anything it reads
-; changes; try turns a failing check into a plain “not yet”.
+; changes; try turns a check that fails, or gives more than one number, into
+; a plain “not yet”.
 status: { check, done, hint |
-  $({ cond(guard(cond(try(check), 0), { done }), { hint }) })
+  $({ cond(try({ guard(check(), { done })() }), { hint }) })
 },
 
 ; A checked cell: its own editor, its own scope, a live result, a light.

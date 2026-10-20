@@ -809,7 +809,7 @@ const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert
       if (!until) { continue }
       const verdict = safeApply(until, [value, prev], scope)
       if (verdict instanceof Error) { return verdict }
-      try { if (isTruthy(verdict)) { break } } catch (e) { return asError(e) }
+      try { if (isTruthy(verdict, "⍣")) { break } } catch (e) { return asError(e) }
     }
     return value
   })
@@ -1079,13 +1079,13 @@ const FunctionNoAutoLift = (fn: Value) => {
   return wrapper
 }
 
-// Fluent's truth, one rule for a number and a tensor: some element is nonzero and not
-// NaN. guard, when and the until-form of ⍣ all ask it, and read one number to answer.
-const isTruthy = (v: Value): boolean => {
+// Fluent's truth, the engine's one rule for a condition (engine.oneNumber): guard, when and
+// the until-form of ⍣ read one number to answer.
+const isTruthy = (v: Value, who: string): boolean => {
   const t = operand(v)
   if (!isTensor(t)) { throw new Error(`expected numbers, got ${describeArg(v)}`) }
-  const holds = (n: number) => n !== 0 && !Number.isNaN(n)
-  return t.size === 1 ? holds(t.item()) : t.size > 0 && holds(engine.max(engine.truthy(t)).item())
+  const n = engine.oneNumber(t, who).item()
+  return n !== 0 && !Number.isNaN(n)
 }
 
 // guard(cond, { value }) – a candidate that answers with value while cond holds and
@@ -1093,7 +1093,7 @@ const isTruthy = (v: Value): boolean => {
 // Error there is a failure, not a quiet "no" – the guard itself becomes the Error, and
 // a cascade surfaces it. A body that isn't a thunk is its own value.
 const FunctionGuard = function (this: CurrentScope, cond: Value, body: Value) {
-  const holds = isTruthy(cond), scope = this
+  const holds = isTruthy(cond, "guard"), scope = this
   const candidate = made(function () {
     if (holds) { return isFn(body) ? body.apply(scope) : body }
     // the guard's own call site, so hovering the decline finds it
@@ -1125,7 +1125,7 @@ const FunctionTry = function (this: CurrentScope, body: Value) {
 // otherwise. Not a candidate: whatever the thunk returns – an Error included – is the
 // result, so a broken training step stays loud.
 const FunctionWhen = function (this: CurrentScope, cond: Value, thunk: Value) {
-  if (!isTruthy(cond)) { return null }
+  if (!isTruthy(cond, "when")) { return null }
   return isFn(thunk) ? thunk.apply(this) : new Error("`when(cond, { … })`: second argument must be a thunk")
 }
 
