@@ -2525,6 +2525,18 @@ describe("pictures", () => {
   test("line is segments joining each point to the next", () => {
     expect(value("pts: ⚄([9, 2]) × 40, p: pixels(canvas(50, 40)), max(abs(line(pts)(p) - segments(pts_(0..<8), pts_(1 ..< 9))(p)))")).toBe(0)
   })
+  test("polygon is the distance to a closed outline, negative inside it; an outline within another cuts a hole", () => {
+    expect(value("polygon([[0, 0], [10, 0], [10, 10], [0, 10]])([[5, 4], [5, -3], [10, 5]])")).toEqual([-4, 3, 0])
+    expect(value("polygon(([[0, 0], [20, 0], [20, 20], [0, 20]], [[5, 5], [15, 5], [15, 15], [5, 15]]))([[10, 10], [2, 10], [-1, 10]])")).toEqual([5, -2, 1])
+    // without its sign it is the distance to the closed line, edge for edge: one measure
+    expect(value("pts: ⚄([9, 2]) × 40, p: pixels(canvas(50, 40)), max(abs(abs(polygon(pts)(p)) - line(concat((pts, pts_[0])))(p)))")).toBe(0)
+  })
+  test("a filled polygon covers its area at any density", async () => {
+    // the triangle's area, by the shoelace formula, is 393.495
+    const area = () => value("Σ(canvas(40, 30, 0) . paint(polygon([[3.3, 2.1], [37.2, 9.7], [12.6, 27.4]]), solid(1))) ÷ 3 ÷ Density()^2") as number
+    expect(Math.abs(area() / 393.495 - 1)).toBeLessThan(0.005)
+    await atDensity2(() => expect(Math.abs(area() / 393.495 - 1)).toBeLessThan(0.005))
+  })
   test("level makes any function a distance: |f| over its slope, first-order", () => {
     // exact for a straight line, close beside a circle
     expect(value("level({ p | Σ(p × [3, 4], -1) - 10 })([[2, 1], [0, 0]])")).toEqual([0, 2])
@@ -3312,6 +3324,20 @@ describe("the engine", () => {
     const { leaves } = canonical([drawing.node])
     const kernels = optimizeMany(placeholders([drawing.node], leaves).roots).flatMap((r) => toposort(r)).filter((u) => u.op === "FUSED")
     expect(Math.max(...kernels.map((k) => numel(k.shape)))).toBeLessThanOrEqual(640 * 400 * 2)
+  })
+  test("∇ through an outline's distance holds at most a number for each pixel and edge", async () => {
+    // written x×e_2, a pixel's offset times all five of each edge's numbers, (x×e)_2, gave
+    // each pixel a slope for every one of them: [pixels × 5, edges], 118 MB here in all,
+    // where 14 MB do, and 3.3 GB for a filled curve on a plot at density 2
+    const { canonical, placeholders, optimizeMany } = await import("./engine/opt.ts")
+    const { toposort, numel } = await import("./engine/ir.ts")
+    const slope = run(`
+      P: stack(meshgrid((0 ..< 160) + 0.5, (0 ..< 100) + 0.5), -1), a: 0..<64 ÷ 64 × 2×π,
+      (∇{ k | Σ(clamp(0.5 - polygon(stack((cos(a), sin(a)), -1) × k + [80, 50])(P), 0, 1)) })(30)
+    `) as engine.Tensor
+    const { leaves } = canonical([slope.node])
+    const kernels = optimizeMany(placeholders([slope.node], leaves).roots).flatMap((r) => toposort(r)).filter((u) => u.op === "FUSED")
+    expect(Math.max(...kernels.map((k) => numel(k.shape)))).toBeLessThanOrEqual(160 * 100 * 64)
   })
   test("index ramps of different lengths stay different", () => {
     expect(value("concat((0 ..< 300, 0 ..< 500))_600")).toBe(300)
