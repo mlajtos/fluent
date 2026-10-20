@@ -1,4 +1,5 @@
-// Write the fonts letters draws with – BQN386, the IDE's font – into fonts.fl, as outlines.
+// Write the fonts letters draws with – BQN386, the IDE's font, and Atkinson Hyperlegible – into
+// fonts.fl, as outlines.
 //   bun font.ts
 // A glyph is its contours, read from the font file: lines as they are, and each quadratic
 // curve cut into lines that stray from it at most TOL of the font's size. Its points are in
@@ -9,7 +10,7 @@
 // DrawFont of the characters its glyphs are for, in order; where each glyph's points
 // start, and where the last one's end; the points; and each glyph's width in thousandths
 // of the size, and a space's for the blank glyph after them.
-const FONTS = { BQN386: "BQN386.ttf" }
+const FONTS = { BQN386: "BQN386.ttf", Hyperlegible: "AtkinsonHyperlegible-Regular.ttf" }
 const CODES = String.fromCodePoint(...Array.from({ length: 94 }, (_, i) => 33 + i)) + "·…−∞"
 const TOL = 0.002
 
@@ -104,5 +105,7 @@ const polygon = (c: Point[]): [number, number][] => {
 const digits = (v: number) => String.fromCharCode(35 + Math.floor(v / 92), 35 + (v % 92))
 const text = (s: string) => `"${s.replace(/[\\"]/g, "\\$&")}"`
 const fonts = await Promise.all(Object.entries(FONTS).map(async ([name, file]) => `${name}: ${await outlines(file)},\n`))
-await Bun.write(`${import.meta.dir}/fonts.fl`, `; The fonts letters draws with, as font.ts writes them from their files: BQN386
+await Bun.write(`${import.meta.dir}/fonts.fl`, `; The fonts letters draws with, as font.ts writes them from their files: BQN386, and Atkinson
+; Hyperlegible – © 2020 Braille Institute of America, Inc., under the SIL Open Font License
+; 1.1 (AtkinsonHyperlegible-OFL.txt)
 ${fonts.join("")}`)

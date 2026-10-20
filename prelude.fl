@@ -778,13 +778,14 @@ smoothstep: TensorSmoothStep: doc({ x, a, b | t: clamp(x - a ÷ (b - a), 0, 1), 
 ; shape: letters, in a font. A font is the codes of its characters, in order; each one's
 ; width, in thousandths of the font's size; and their glyphs' edges, [glyphs, E, 6], as
 ; DrawEdges gives them – the last glyph a blank one, as wide as a space. fonts.fl holds
-; BQN386, the font the IDE shows code in, as font.ts writes it from its file: each
-; glyph's closed contours in a line 1.2 of the size tall, as points in thousandths of the
-; size from where the glyph starts on the line's top, x 100 more. A point is four
-; characters of points, x then y, each two digits in base 92 from # on, with 4232 added
-; to the x of a contour's first point; starts says where each glyph's points start, and
-; where the last one's end. A contour's first point is an edge of no length, and edges
-; far away fill each glyph out to the most any has – all of them for the blank
+; BQN386, the font the IDE shows code in, and Hyperlegible, as font.ts writes them from
+; their files: each glyph's closed contours in a line 1.2 of the size tall, as points in
+; thousandths of the size from where the glyph starts on the line's top, x 100 more. A
+; point is four characters of points, x then y, each two digits in base 92 from # on,
+; with 4232 added to the x of a contour's first point; starts says where each glyph's
+; points start, and where the last one's end. A contour's first point is an edge of no
+; length, and edges far away fill each glyph out to the most any has – all of them for
+; the blank
 DrawFont: { codes, starts, points, widths |
   v: Σ(StringToCodes(points) - 35 ⍴ [-1, 2, 2] × [92, 1], -1),
   q: v % 4232 - [100, 0] ÷ 1000,
@@ -833,7 +834,7 @@ letters: DrawLetters: doc({ s, at, size, font |
   },
   ; the density is a live value; measure works with it as it is now
   { p | measure(p, Density()) }
-}, "letters(text, at, size, font?)", "The shape of a line of text at a font size of size units, from its top-left corner at, in font – BQN386, the IDE's font, unless given. The line is 1.2 × size tall, and a character in BQN386 0.6 × size wide. From p, the distance to the outline of the nearest glyph, negative inside it – so solid(color) fills the text, a stroke draws its outline, and a halo makes it glow. It is worked out exactly at the display's pixels around the text, and read between them. A character the font lacks is left blank. text may be character codes, or a list of texts with a row of at for each.", "canvas(100, 16) . paint(letters(\"letters 2.5\", [4, 1], 12, BQN386), solid([1, 1, 1]))"),
+}, "letters(text, at, size, font?)", "The shape of a line of text at a font size of size units, from its top-left corner at, in font: BQN386, the IDE's font, unless given, or Hyperlegible, which the Braille Institute made easy to read, each letter shaped unlike the others. The line is 1.2 × size tall; a character in BQN386 is 0.6 × size wide, and in Hyperlegible as wide as its shape. From p, the distance to the outline of the nearest glyph, negative inside it – so solid(color) fills the text, a stroke draws its outline, and a halo makes it glow. It is worked out exactly at the display's pixels around the text, and read between them. A character the font lacks is left blank. text may be character codes, or a list of texts with a row of at for each.", "canvas(100, 16) . paint(letters(\"letters 2.5\", [4, 1], 12, Hyperlegible), solid([1, 1, 1]))"),
 ; x as the codes of 3 significant digits – "2.31", "−0.0520", "1200" – with an exponent
 ; from 10 million up and below 0.001 – "1.50e9", "4.20e−5" – and NaN, ∞ and −∞ as such,
 ; spaces filling 9 cells, a row of them for each number in x. Arithmetic only, so it

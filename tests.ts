@@ -3076,7 +3076,14 @@ describe("plot: lines on one pair of axes", () => {
     const bar = value(`letters("|", [0, 0], 20)(pixels(canvas(12, 24)))_12_[2, 5, 6]`) as number[]
     expect(bar.map((d) => Math.round(d * 100) / 100)).toEqual([2.62, -0.38, -0.36])
     // a font holds a width and the edges of a glyph for each of its codes, and a blank after them
-    expect(value(`[length(BQN386_1), shape(BQN386_2)_0] - length(BQN386_0)`)).toEqual([1, 1])
+    expect((value(`ListMap((BQN386, Hyperlegible), { f | [length(f_1), shape(f_2)_0] - length(f_0) })`) as any[]).map(unwrap)).toEqual([[1, 1], [1, 1]])
+  })
+  test("a font is a value: in Hyperlegible each character is as wide as its shape", () => {
+    // its | is a bar from 0.076 to 0.157 of the size across, after an i 0.278 wide: at a size
+    // of 20, from 7.08 to 8.70 – the pixel centered at 6.5 lies 0.58 left of it, those at 7.5
+    // and 8.5 inside, 0.42 and 0.2 from its sides
+    const bar = value(`letters("i|", [0, 0], 20, Hyperlegible)(pixels(canvas(12, 24)))_12_[6, 7, 8]`) as number[]
+    expect(bar.map((d) => Math.round(d * 100) / 100)).toEqual([0.58, -0.42, -0.2])
   })
   test("letters filled draw the IDE's font, as much of it as each glyph covers", () => {
     // a glyph's coverage, summed in the light a picture holds, and the glyph's area:
