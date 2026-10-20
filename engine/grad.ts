@@ -119,12 +119,14 @@ export const JVP: Partial<Record<UOp["op"], Jvp>> = {
 
 // A cotangent of exactly 0 carries nothing back, whatever it meets. `where` routes 0 to
 // the branch it didn't take, and that branch's slope may be infinite or NaN there – the
-// slope of sin(x) ÷ x at 0 – where 0 × ∞ would poison the answer. So the transpose is the
-// product in which 0 is strong, mul0; its derivative is the product's, so an outer ∇ still
-// sees ct × f change with ct at ct = 0. A NaN the cotangent itself carries still
-// propagates; a finite constant factor needs no guard.
+// slope of sin(x) ÷ x at 0 – where 0 × ∞ would poison the answer. Nor does an infinite
+// cotangent pass a factor of exactly 0: |p − c| = √Σ(p − c)² meets √'s ∞ at p = c with
+// p − c = 0, and its slope there is 0. So the transpose is the product in which 0 is
+// strong, mul0; its derivative is the product's, so an outer ∇ still sees ct × f change
+// with ct at ct = 0. A NaN the cotangent itself carries still propagates; a finite
+// constant factor other than 0 needs no guard.
 const finite = (f: UOp): boolean =>
-  (f.op === "CONSTANT" && Array.from(f.arg as Float32Array).every(Number.isFinite)) ||
+  (f.op === "CONSTANT" && Array.from(f.arg as Float32Array).every((v) => Number.isFinite(v) && v !== 0)) ||
   ((f.op === "BROADCAST" || f.op === "RESHAPE") && finite(f.src[0]!));
 const times = (ct: UOp, f: UOp): UOp => (finite(f) ? mul(ct, f) : math("mul0", ct, f));
 

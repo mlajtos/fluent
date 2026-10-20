@@ -876,6 +876,12 @@ describe("differentiation and optimization", () => {
     expect(value("(∇(∇gelu))(0)")).toBeCloseTo(0.798, 3)
     expect(value("(∇{ v | (∇{ z | v × z^3 })(2) })(0)")).toBe(12)
   })
+  test("a distance's slope where it is 0 is 0: the chain rule's ∞ × 0, while √ alone is ∞ at 0", () => {
+    expect(value("∇({ p | norm(p - [1, 2]) })([1, 2])")).toEqual([0, 0])
+    expect(value("∇({ c | min(norm([[0, 0], [3, 4]] - c, -1)) })([0, 0])")).toEqual([-0, -0])   // with respect to c, minus that to p
+    expect([value("∇({ x | √(x × x) })(0)"), value("∇(√)(0)"), value("∇({ p | norm(p - [1, 2]) })([4, 6])")]).toEqual([0, Infinity, [0.6, 0.8].map(Math.fround)])
+    expect(value("∇({ x | √(x × x - 1) })(0)")).toBeNaN()   // a NaN the loss itself carries still shows
+  })
   test("gradient of an elementwise function maps over vectors", () => {
     // a non-scalar output pulls back a ones cotangent
     expect(value("∇({ x | x^2 })([1, 2, 3])")).toEqual([2, 4, 6])

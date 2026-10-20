@@ -142,9 +142,13 @@ differentiates with respect to the `~` variables the loss reads and gives (value
 variables, gradients) in one pass. A state write while differentiating is an Error.
 
 - The branch of a `where` not taken gets an exact zero cotangent, and a zero cotangent
-  times an infinite factor stays zero, so NaN from the branch not taken never leaks. The
-  product is `mul0`, in which 0 is strong; its derivative is the product's, so a higher
-  derivative still holds where a cotangent is 0.
+  times an infinite factor stays zero, so NaN from the branch not taken never leaks. A
+  factor of exactly 0 stops an infinite cotangent too: the distance |p − c| = √Σ(p − c)²
+  has slope 0 at p = c, where √'s ∞ meets p − c = 0, as PyTorch's norm does (JAX gives
+  NaN), and √ alone keeps its ∞ at 0. A NaN cotangent still shows. The product is `mul0`,
+  in which 0 is strong; its derivative is the product's, so a higher derivative still holds
+  where a cotangent is 0. Its two tests cost a gradient's matmul tile on the GPU: ∇ through
+  a 1024² matmul 12.1 → 14.8 ms (a plain product: 10.7).
 - `∇max` is its winner's derivative: the backward reads where the max is (argmax, found as the
   max is), takes the derivative there alone, and gives a tie to the first winner, as PyTorch
   does. Nothing is found by comparing a recomputed value with the max, which on a GPU need

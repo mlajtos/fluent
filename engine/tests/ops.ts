@@ -33,7 +33,8 @@ export default async function (): Promise<{ fails: number }> {
     const yd = Float32Array.from({ length: n }, (_, i) => [0, 1, 2, 3, 0.5, -1, -2, 2.5][i % 8]!);
     if (fn === "pow") for (let i = 0; i < n; i++) xd[i] = [-2, -1.5, 0, 0.5, 2, 3][i % 6]!;
     if (fn === "round") for (let i = 0; i < n; i++) xd[i] = [-2.5, -1.5, -0.5, 0.5, 1.5, 2.5, 0.4, -0.6][i % 8]!;
-    if (fn === "mul0") for (let i = 0; i < n; i += 4) { xd[i] = 0; yd[i] = [Infinity, -Infinity, NaN, 2][(i / 4) % 4]!; }   // 0 × ∞ is 0
+    // 0 × ∞ and ∞ × 0 are 0; a NaN cotangent stays NaN
+    if (fn === "mul0") for (let i = 0; i < n; i += 4) { xd[i] = 0; yd[i] = [Infinity, -Infinity, NaN, 2][(i / 4) % 4]!; xd[i + 2] = [Infinity, -Infinity, NaN, -3][(i / 4) % 4]!; yd[i + 2] = 0; }
     const g = m.arity === 1 ? math(fn, xs) : math(fn, xs, ys);
     const { a, b } = await both(g, new Map([["x", T(xd, [n])], ["y", T(yd, [n])]]));
     const ref = Float32Array.from({ length: n }, (_, i) => (m.arity === 1 ? m.js(xd[i]!) : m.js(xd[i]!, yd[i]!)));
