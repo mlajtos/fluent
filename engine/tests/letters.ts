@@ -4,7 +4,7 @@
 // differently: this gate catches it.
 // Each case draws at the display densities 1 and 2.
 //   bun engine/tests/run.ts engine/tests/letters.ts
-import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, Signal, density } from "../../language.ts";
+import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, extendEnvironment, Signal, density } from "../../language.ts";
 import { init, scalar, type Tensor } from "../tensor.ts";
 
 // a picture drawn in units follows the density: its value is a cell's
@@ -20,6 +20,12 @@ const CASES = [
   'Σ(canvas(520, 160, 0) . draw(letters("Ag{}_~", [3, 100], 24), 1, 2))',
   'Σ(canvas(520, 160, 0) . paint(letters("bold", [7.3, 20.6], 18), solid(1) above stroke(1, 2)))',
   'Σ(canvas(520, 160, 0) . paint(letters(("glow", "far"), [[40, 40], [300, 90]], 16), solid(1) above halo([1, 0.5, 0], 6)))',
+  // Hyperlegible: each character as wide as its shape, a j reaching back past its start
+  'Σ(canvas(520, 160, 0) . paint(letters(("−0.0520 ∞ … ·", "NaN g|"), [[10.5, 4.25], [200, 40]], 10, Hyperlegible), solid(1)))',
+  'Σ(canvas(520, 160, 0) . paint(letters("jAg{}_~ ∞∞WW@@mm__ il.;q", [3, 100], 24, Hyperlegible), solid(1)))',
+  'Σ(canvas(520, 160, 0) . draw(letters("jAg{}_~ fiq", [3, 100], 24, Hyperlegible), 1, 2))',
+  'Σ(canvas(520, 160, 0) . paint(letters(("glow", "far"), [[40, 40], [300, 90]], 16, Hyperlegible), solid(1) above halo([1, 0.5, 0], 6)))',
+  'z: Σ(⚄([4]) × 0), Σ(canvas(520, 160, 0) . paint(letters(unstack(DrawDigits([z ÷ z, -1 ÷ z, z - 1.5e9, z - 0.052, z - 4.2e-11, z + 2e-37])), [[0, 0], [0, 20], [0, 40], [0, 60], [0, 80], [0, 100]], 12, Hyperlegible), solid(1)))',
   'Σ(plot(0..<10, (0..<10, 9 - 0..<10), ("up", "down")) > 0.3)',
   'z: Σ(⚄([4]) × 0), Σ(canvas(520, 160, 0) . paint(letters(unstack(DrawDigits([z ÷ z, -1 ÷ z, z - 1.5e9, z - 0.052, z - 4.2e-11, z + 2e-37])), [[0, 0], [0, 20], [0, 40], [0, 60], [0, 80], [0, 100]], 12), solid(1)))',
   'Σ(plot(0..<10 × 1e8, (0..<10 - 5, 9 - 0..<10), ("up", "down")) > 0.3)',
@@ -59,6 +65,8 @@ export default async function (): Promise<{ fails: number }> {
   const cpu: number[] = [];
   for (const [d, source] of RUNS) cpu.push(await at(d, source));
   await init();
+  // the Prelude evaluated again, so the GPU decodes its own fonts
+  extendEnvironment({});
   let fails = 0;
   for (const [i, [d, source]] of RUNS.entries()) {
     const gpu = await at(d, source);

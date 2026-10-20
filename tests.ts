@@ -2128,6 +2128,15 @@ describe("String is the inverse of CodeEvaluate", () => {
   })
 })
 
+describe("the Prelude", () => {
+  test("every program shares it: it is evaluated once for the environment it reads", () => {
+    const prelude = Object.getPrototypeOf(createScope())
+    expect(Object.getPrototypeOf(createScope())).toBe(prelude)
+    extendEnvironment({})
+    expect(Object.getPrototypeOf(createScope())).not.toBe(prelude)
+  })
+})
+
 // A name that resolves to nothing is the shape almost every language change leaves
 // behind in shipped Fluent source: `self` was deleted, `-` stopped being an identifier
 // character, a builtin got renamed. Evaluating the source does NOT catch it – the
@@ -3124,8 +3133,15 @@ describe("plot: lines on one pair of axes", () => {
     // inside, 0.38 and 0.36 from its sides
     const bar = value(`letters("|", [0, 0], 20)(pixels(canvas(12, 24)))_12_[2, 5, 6]`) as number[]
     expect(bar.map((d) => Math.round(d * 100) / 100)).toEqual([2.62, -0.38, -0.36])
-    // the outlines hold a run of points for each of the font's codes, four characters a point
-    expect((value(`(length(DrawFontStarts) - length(DrawFontCodes), DrawFontStarts_(-1) × 4 - length(DrawFontPoints))`) as any[]).map(unwrap)).toEqual([1, 0])
+    // a font holds a width and the edges of a glyph for each of its codes, and a blank after them
+    expect((value(`ListMap((BQN386, Hyperlegible), { f | [length(f_1), shape(f_2)_0] - length(f_0) })`) as any[]).map(unwrap)).toEqual([[1, 1], [1, 1]])
+  })
+  test("a font is a value: in Hyperlegible each character is as wide as its shape", () => {
+    // its | is a bar from 0.076 to 0.157 of the size across, after an i 0.278 wide: at a size
+    // of 20, from 7.08 to 8.70 – the pixel centered at 6.5 lies 0.58 left of it, those at 7.5
+    // and 8.5 inside, 0.42 and 0.2 from its sides
+    const bar = value(`letters("i|", [0, 0], 20, Hyperlegible)(pixels(canvas(12, 24)))_12_[6, 7, 8]`) as number[]
+    expect(bar.map((d) => Math.round(d * 100) / 100)).toEqual([0.58, -0.42, -0.2])
   })
   test("letters filled draw the IDE's font, as much of it as each glyph covers", () => {
     // a glyph's coverage, summed in the light a picture holds, and the glyph's area:
