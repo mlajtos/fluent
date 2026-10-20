@@ -3507,6 +3507,14 @@ describe("the engine", () => {
     const bytes = ir.toposort(optimizeMany([d.node])).filter((u) => u.op === "FUSED").reduce((n, u) => n + ir.numel(u.shape) * 4, 0)
     expect(bytes).toBeLessThan(2 ** 22)
   })
+  test("∇ through a stroked curve keeps no slope for each pixel and edge: what the nearest edge reduces is read where it is reduced", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { optimizeMany } = await import("./engine/opt.ts")
+    // a cubic of about 40 edges, 260 × 160 units at density 2, planned and never run
+    const g = run("p: stack(meshgrid(0..<520 + 0.5, 0..<320 + 0.5), -1) ÷ 2, ∇({ c | Σ(clamp(1.25 - line(bezier(c, 0.12))(p), 0, 1)) })([[30, 130], [80, 20], [180, 150], [230, 30]])") as engine.Tensor
+    const sizes = ir.toposort(optimizeMany([g.node])).filter((u) => u.op === "FUSED").map((u) => ir.numel(u.shape))
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(520 * 320 * 2)   // no more than the points p
+  })
   test("a copy that takes a kernel past its inputs takes back only its own counts: ∇ through 40 steps of a raymarch plans in under 2.7 s", async () => {
     const { optimizeMany } = await import("./engine/opt.ts")
     const g = run(`N: 256, a: (0 ..< N) - (N ÷ 2) × (0.96 ÷ N), rays: stack((sin(a), a × 0, cos(a)), -1),

@@ -392,7 +392,7 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
   // first, a kernel whose node this pass frees counted as often as its node would be
   // computed in place, so a fork freed under a freed fork is counted at both multiples.
   const plan = roots.map(kernelOf), kernels = toposort(plan, (u) => (u.op === "FUSED" ? kInputs(u) : [])).filter((u) => u.op === "FUSED").reverse();
-  const here = new Map<UOp, number>(), loads = new Map<UOp, number>(), works = new Map<UOp, number>(), times = new Map<number, number>();
+  const here = new Map<UOp, number>(), loads = new Map<UOp, number>(), works = new Map<UOp, number>(), times = new Map<number, number>(), top = new Set<UOp>(), crowded = new Set<UOp>();
   const add = (m: Map<UOp, number>, v: UOp, n: number) => m.set(v, (m.get(v) ?? 0) + n);
   for (const k of kernels) {
     const c = computed.get(k), v = owner.get(k)!;
@@ -404,14 +404,19 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
     if (v.op === "REDUCE" && e) store.add(v.id);
     if (ELEM.has(v.op) && store.has(v.id) && !settled.has(v.id) && e && !stored(work(k), e / n)) { store.delete(v.id); settled.add(v.id); times.set(v.id, e / n); }
     const m = times.get(v.id) ?? 1;
-    for (const [x, ix, w] of c.here) { add(here, x, m * c.outN * steps(ix, c.gid)); works.set(x, Math.max(works.get(x) ?? 0, w)); }
+    const once = new Map<UOp, number>();
+    for (const [x, ix, w] of c.here) { const t = c.outN * steps(ix, c.gid); add(here, x, m * t); add(once, x, t); works.set(x, Math.max(works.get(x) ?? 0, w)); if (t <= c.outN) top.add(x); }
+    for (const [x, t] of once) if (t > Math.max(numel(x.shape), 1)) crowded.add(x);
     for (const [x, ix] of c.loads) add(loads, x, m * c.outN * steps(ix, c.gid));
   }
   // a node more than one op reads, computed in place more often than it has elements, is
-  // stored where that costs less than recomputing it. A gather is a read and never stored.
+  // stored where that costs less than recomputing it. A gather is a read and never stored,
+  // and neither is a node only loops read, each of its elements once a kernel – pixels ×
+  // pieces, read where they are reduced: it is computed as often as its loops are, so a
+  // loop, or what reads it, is stored instead
   for (const [v, e] of here) {
     const n = Math.max(numel(v.shape), 1);
-    if ((reads.get(v.id) ?? 1) > 1 && v.op !== "GATHER" && e > n && stored(works.get(v)!, e / n)) { store.add(v.id); settled.add(v.id); }
+    if ((reads.get(v.id) ?? 1) > 1 && v.op !== "GATHER" && (crowded.has(v) || top.has(v)) && e > n && stored(works.get(v)!, e / n)) { store.add(v.id); settled.add(v.id); }
   }
   return plan;
 }
