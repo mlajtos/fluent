@@ -107,8 +107,11 @@ GPU. `worker.ts` calls `init()` before it evaluates anything.
   recompute costs more than a store and its reads (`COST.recompute`). An intermediate of
   pixels × pieces is read where it is reduced, never written: outline text went from
   410 MB and 220 ms of GPU to 2.8 MB and 8 ms, Perlin noise at 1280 × 800 from 11 kernels,
-  184 MB and 9–13 ms to one kernel, 12 MB and 2.2 ms. `engine/tests/bench-fuse.ts`
-  re-derives the constants.
+  184 MB and 9–13 ms to one kernel, 12 MB and 2.2 ms. A sum of 2–4 terms, a point's
+  coordinates, is its terms before the plan is made, so it is priced as the map it is:
+  the nearest of 5,000 dots on a 520 × 160 picture at density 2 went from 6.3 GB, a
+  distance for each pixel and dot, to 5 MB. `engine/tests/bench-fuse.ts` re-derives the
+  constants.
 - **Contractions.** A contraction is spliced into a reduction's body only when it becomes
   the whole, tileable body: 17.5 → 9.2 ms a dreamer step. From K = 8 a contraction runs
   as a tile (`engine/tests/bench-tile.ts` re-derives the gate), and a loop nest the plan
@@ -181,11 +184,10 @@ value; each element to its own stop is `(f ⍣ p) ⍤ 0`).
   `while_loop`. A cell's loop that never stops is the loop's Error, as it was the cell's.
   ⍤ needs no rule of its own for a body that mixes a cell's elements: the frame's loop is
   each cell's.
-- **A short count loop is straight-line code.** At most `UNROLLED` ops in all (1,024, the
-  bound a sum's unrolling has in `opt.ts`), it is n copies of its step in the graph that
-  reads it. Muon's 5 Newton–Schulz steps and the looped dreamer's 3 rounds stay one plan
-  with what reads them, as before; as engine loops they cost a compute a step, muon
-  0.64 → 0.93 ms at 64².
+- **A short count loop is straight-line code.** At most 1,024 ops in all, it is n copies
+  of its step in the graph that reads it. Muon's 5 Newton–Schulz steps and the looped
+  dreamer's 3 rounds stay one plan with what reads them, as before; as engine loops they
+  cost a compute a step, muon 0.64 → 0.93 ms at 64².
 
 Measured on the GPU, ordered A, B, A against own-engine 931e76d (ms):
 

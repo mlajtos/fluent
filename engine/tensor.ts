@@ -7,7 +7,6 @@ import { CPU, type HostData } from "./cpu.ts";
 import { GPU } from "./gpu.ts";
 import { vjp as graphVjp } from "./grad.ts";
 import { batch } from "./batch.ts";
-import { UNROLLED } from "./opt.ts";
 
 type Axis = number | number[] | null | undefined;
 export type Like = Tensor | number | boolean | readonly unknown[];
@@ -192,9 +191,9 @@ export function loop(xs: readonly Tensor[], n: number, until: boolean, f: (xs: T
   const outs = out.map((o) => o.node);
   if (until) outs[k] = out[k]!.size ? max(truthy(out[k]!)).node : ir.konst(0);
   const nodes = ir.loop(xs.map((x) => x.node), carries, outs, n), { body } = nodes[0]!.arg as ir.LoopArg;
-  // a short count loop is straight-line code: n copies of its step, in the graph that reads it
+  // a count loop of 1,024 ops at most is straight-line code: n copies of its step, where read
   const stop = new Set([...body.carries, ...body.frontier]);
-  if (!until && n * ir.toposort(body.outs, (u) => (stop.has(u) ? [] : u.src)).length <= UNROLLED) {
+  if (!until && n * ir.toposort(body.outs, (u) => (stop.has(u) ? [] : u.src)).length <= 1024) {
     const bound = new Map(body.frontier.map((p) => [p, p] as const));
     let state = xs.map((x) => x.node);
     for (let i = 0; i < n; i++) { body.carries.forEach((c, j) => bound.set(c, state[j]!)); state = substitute(body.outs, bound); }

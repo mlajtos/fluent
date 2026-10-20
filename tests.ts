@@ -3476,6 +3476,14 @@ describe("the engine", () => {
     expect(loops(k)).toEqual([500])
     expect(own.length && own.every((u) => [...rangesIn(u)].every((r) => r === k.src[0]))).toBeTruthy()
   })
+  test("the nearest of 5,000 dots is found where it is read: a picture of them plans in a few MB, not a distance for each pixel and dot", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { optimizeMany } = await import("./engine/opt.ts")
+    // 520 × 160 units at density 2, planned and never run
+    const d = run("i: 0..<5000, p: stack(meshgrid(0..<1040 + 0.5, 0..<320 + 0.5), -1) ÷ 2, dots(stack((i × 7.3 % 520, i × 3.1 % 160), -1))(p)") as engine.Tensor
+    const bytes = ir.toposort(optimizeMany([d.node])).filter((u) => u.op === "FUSED").reduce((n, u) => n + ir.numel(u.shape) * 4, 0)
+    expect(bytes).toBeLessThan(2 ** 22)
+  })
   test("joining n pieces the host does not hold takes about n/7 kernels, not n", async () => {
     const { optimizeMany } = await import("./engine/opt.ts")
     const { toposort } = await import("./engine/ir.ts")
