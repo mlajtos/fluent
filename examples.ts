@@ -682,13 +682,13 @@ bend: $[80, 20], twist: $[180, 150], ; drag me (orange)
 targets: bezier(stack(([30, 130], bend, twist, [230, 30])), 6),
 middle: ~[[110, 140], [150, 20]],
 c: concat((targets_[0], middle, targets_[-1])),
-𝓛: { mean(line(bezier(c, 0.1))(targets)^2) }, opt: adam(3),
+𝓛: { mean(line(bezier(c, 32))(targets)^2) }, opt: adam(3),
 { opt(𝓛) } ⟳ Time()×60, ; 60 steps a second
 
 curve: canvas(260, 160)
   .draw(line(c), gray, 1)
   .paint(
-    line(bezier(c, 0.1)),
+    line(bezier(c, 32)),
     stroke(blue, 2.5) above halo(blue × 0.4, 8)
   )
   .draw(dots(c), magenta, 7)

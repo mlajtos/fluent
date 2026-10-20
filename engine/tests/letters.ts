@@ -44,9 +44,9 @@ const CASES = [
   'a: 0..<140 ÷ 140 × 2×π, o: stack((cos(a), sin(a)), -1), Σ(canvas(520, 160, 0) . paint(polygon(o × 70 + [260, 80]), stroke(1, 2) above halo([1, 0.5, 0], 8)))',
   'Σ(canvas(160, 100, 0) . paint(polygon([[10.5, 10.5], [150.5, 10.5], [80.5, 90.5], [40.5, 50.5], [20.5, 50.5]]), solid(1)))',
   // curves: a cubic stroked, and filled; a slice of a disk, an arc and its center
-  'Σ(canvas(520, 160, 0) . draw(line(bezier([[20, 140], [150, -60], [330, 220], [500, 20]], 0.05)), 1, 2))',
-  'Σ(canvas(520, 160, 0) . paint(polygon(bezier([[20, 140], [150, -60], [330, 220], [500, 20]], 0.05)), solid(1)))',
-  'Σ(canvas(520, 160, 0) . paint(polygon(concat((arc([260, 80], 70, [0.3, 4], 0.05), [[260, 80]]))), solid(1) above halo(1, 4)))',
+  'Σ(canvas(520, 160, 0) . draw(line(bezier([[20, 140], [150, -60], [330, 220], [500, 20]], 86)), 1, 2))',
+  'Σ(canvas(520, 160, 0) . paint(polygon(bezier([[20, 140], [150, -60], [330, 220], [500, 20]], 86)), solid(1)))',
+  'Σ(canvas(520, 160, 0) . paint(polygon(concat((arc([260, 80], 70, [0.3, 4], 49), [[260, 80]]))), solid(1) above halo(1, 4)))',
 ];
 
 const RUNS = [1, 2].flatMap((d) => CASES.map((source) => [d, source] as const));
