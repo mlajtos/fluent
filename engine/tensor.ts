@@ -265,7 +265,7 @@ function runLoop(u: UOp): void {
     let state = u.src.slice(0, k).map((x) => { const l = leaf(x) ?? x; return l.op === "CONSTANT" && !l.shape.length ? held(l.arg as Float32Array, []) : l; });
     if (lanes.length) state.push(ir.broadcastTo(ir.konst(0), lanes));
     for (let i = 0; until || i < n; i++) {
-      if (i >= n) throw new Error(`\`(f ⍣ p)\`: the predicate didn't hold within ${n} steps`);
+      if (i >= n) throw new Error(`\`(f ⍣ p)\`: the predicate didn't hold within ${n} steps${lanes.length ? ` in ${readNode(state[k]!).filter((d) => !d).length} of ${ir.numel(lanes)} cells` : ""}`);
       carries.forEach((c, j) => bound.set(c, state[j]!));
       const roots = substitute(outs, bound), made = new Set<UOp>();
       let done = false;

@@ -1481,6 +1481,9 @@ describe("a condition is one number", () => {
     expect(value(`${inGuard("min", "min")} 1)([[11, 12], [1, 2]])`)).toEqual([1, 0])
     expect(message(`${inGuard("", "min")} 1)([[11, 12], [1, 2]])`)).toBe(loopMany(2))
     expect(message(`${inGuard("min", "")} 1)([[11, 12], [1, 2]])`)).toBe(asksMany("guard", 2))
+    // a cell that never stops: the loop's Error counts them
+    expect(message("heron: { a, x | x - (x×x - a)÷(2×x) }, [2.001, 4, 2.001] ((heron ⍣ { new, old | new = old }) ⍤ 0) [1, 1, 1]"))
+      .toBe("`(f ⍣ p)`: the predicate didn't hold within 10000 steps in 2 of 3 cells")
   })
 })
 
