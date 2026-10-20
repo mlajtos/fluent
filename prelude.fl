@@ -727,6 +727,24 @@ polygon: DrawPolygon: doc({ points |
   e: transpose(concat(ListMap(rings, { r | DrawEdges(r, roll(r, -1, 0)) }))),
   { p | DrawSides(p_0, p_1, e)_1 } ⍤ 1
 }, "polygon(points)", "The shape inside the outline through n points, [n, 2], the last joined to the first: from p, the distance to the outline, negative inside it – so solid(color) fills it, a stroke draws its outline, and a halo makes it glow. points may be a list of outlines: a place is inside when it lies inside an odd number of them, so an outline within another cuts a hole.", "polygon([[0, 0], [10, 0], [10, 10], [0, 10]])([[5, 4], [5, -3]]) = [-4, 3]"),
+; Curves – a curve is the points of the lines it is cut into, so line draws it, polygon
+; fills it, and ∇ reaches the points that shape it
+bezier: DrawBezier: doc({ points, tolerance |
+  d: length(points) - 1,
+  ; cut into k equal steps, a curve strays from its lines at most d(d-1)/8 of its points'
+  ; largest second difference, over k²
+  bend: max(norm(drop(points, 2) - 2×drop(drop(points, 1), -1) + drop(points, -2), -1)) ⌈ 0,
+  k: ceil(√(d×(d-1) × bend ÷ 8 ÷ tolerance)) ⌈ 1,
+  t: 0 ..< k+1 ÷ k ⍴ [-1, 1],
+  ; de Casteljau's: d times, each point moves toward the next by t
+  ({ q | drop(q, -1) × 1-t + (drop(q, 1) × t) } ⍣ d)(points ⍴ [-1, 1, 2])_0
+}, "bezier(points, tolerance)", "The points of a Bézier curve, cut into lines that stray from it at most tolerance units: it starts at the first of points, [n, 2], ends at the last, and bends toward the ones between – 3 make a quadratic curve, 4 a cubic one. line(bezier(…)) draws it, and polygon fills a shape whose outline it is.", "bezier([[0, 0], [5, 10], [10, 0]], 2.5) = [[0, 0], [5, 5], [10, 0]]"),
+arc: DrawArc: doc({ center, radius, angles, tolerance |
+  ; a chord across an angle a strays radius × (1 - cos(a ÷ 2)) from its arc
+  n: ceil(abs(angles_1 - angles_0) ÷ (2 × acos(1 - (tolerance ÷ radius) ⌈ -1))) ⌈ 1,
+  a: linspace(angles, n+1),
+  center + (radius × stack((cos(a), sin(a)), -1))
+}, "arc(center, radius, angles, tolerance)", "The points of an arc of the circle radius units around center, cut into lines that stray from it at most tolerance units: from the angle angles_0 to angles_1, in radians, turning from the right toward the bottom, as y grows down. [0, 2×π] is the whole circle, which polygon fills.", "arc([0, 0], 2, [0, π], 0.6) ≈ [[2, 0], [0, 2], [-2, 0]]"),
 level: DrawLevel: doc({ f | { p | abs(f(p)) ÷ (norm(∇(f)(p), -1) ⌈ 1e-9) } }, "level(f)", "The shape where f is 0: from p, about how far – |f(p)| over how steeply f climbs there, which ∇ gives. Any function becomes a shape, a curve with no points to join. It is a first guess, right near the curve while f's slope stays steady, and off at a sharp corner, where curves cross, and where the slope falls to 0.", "level({ p | Σ(p, -1) - 1 })([[3, 0]]) ≈ [√2]"),
 
 ; Noise – a number that wanders smoothly with place: Perlin's gradient noise. Each

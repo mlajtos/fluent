@@ -2537,6 +2537,31 @@ describe("pictures", () => {
     expect(Math.abs(area() / 393.495 - 1)).toBeLessThan(0.005)
     await atDensity2(() => expect(Math.abs(area() / 393.495 - 1)).toBeLessThan(0.005))
   })
+  test("bezier and arc are points within their tolerance of the curve, from its first point to its last", () => {
+    // a cubic's own points, from its Bernstein form, and an arc's, from its angles
+    const [bend, ends, round, on, arcEnds] = (value(`c: [[10, 80], [30, -40], [90, 120], [110, 20]], t: linspace([0, 1], 999) ⍴ [-1, 1],
+      exact: (1-t)^3 × c_0 + (3 × t × (1-t)^2 × c_1) + (3 × t^2 × (1-t) × c_2) + (t^3 × c_3), b: bezier(c, 0.1),
+      s: linspace([0.5, 4], 999), r: arc([50, 40], 30, [0.5, 4], 0.05),
+      (max(line(b)(exact)), (b_0 = c_0) ∧ (b_(-1) = c_3), max(line(r)([50, 40] + (30 × stack((cos(s), sin(s)), -1)))),
+        max(abs(norm(r - [50, 40], -1) - 30)), max(abs(r_[0, -1] - ([50, 40] + (30 × stack((cos([0.5, 4]), sin([0.5, 4])), -1))))))`) as any[]).map(unwrap)
+    expect(bend).toBeLessThan(0.1)
+    expect(ends).toEqual([1, 1])
+    expect(round).toBeLessThan(0.05)
+    expect([on, arcEnds].map((x) => x < 1e-4)).toEqual([true, true])
+    // a straight bezier is its two points
+    expect(value("bezier([[0, 0], [10, 5]], 0.1)")).toEqual([[0, 0], [10, 5]])
+  })
+  test("∇ reaches a curve's control points: a picture's slope is the finite difference's", () => {
+    // a filled cubic and a stroked one, fit to a goal; each control point's coordinate moved
+    // 0.01 either way
+    const gaps = (value(`ink: solid(1) above halo(1, 3), goal: canvas(48, 32, 0) . paint(polygon(bezier([[4, 28], [24, -10], [44, 28]], 0.05)), ink),
+      c: [[4, 28], [20, -4], [44, 26]], e: 0.01,
+      gap: { loss | fd: stack(ListMap(unstack(0..<6 ⊗(=) 0..<6), { u | loss(c + (u ⍴ [3, 2] × e)) - loss(c - (u ⍴ [3, 2] × e)) ÷ (2×e) })) ⍴ [3, 2],
+        max(abs(∇(loss)(c) - fd)) ÷ max(abs(fd)) },
+      (gap({ c | mean((canvas(48, 32, 0) . paint(polygon(bezier(c, 0.05)), ink) - goal)^2) }),
+        gap({ c | mean((canvas(48, 32, 0) . paint(line(bezier(c, 0.05)), stroke(1, 2) above halo(1, 3)) - goal)^2) }))`) as any[]).map(unwrap)
+    expect(gaps.map((g: number) => g < 0.01)).toEqual([true, true])
+  })
   test("level makes any function a distance: |f| over its slope, first-order", () => {
     // exact for a straight line, close beside a circle
     expect(value("level({ p | Σ(p × [3, 4], -1) - 10 })([[2, 1], [0, 0]])")).toEqual([0, 2])
