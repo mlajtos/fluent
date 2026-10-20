@@ -7,8 +7,12 @@ import { grammar, type ActionDict } from "ohm-js"
 import { toAST as ohmToAST } from "ohm-js/extras"
 import dedent from "ts-dedent"
 import * as engine from "./engine/tensor.ts"
-import PRELUDE from "./prelude.fl" with { type: "text" }
+import CODE from "./prelude.fl" with { type: "text" }
+import FONTS from "./fonts.fl" with { type: "text" }
 import { OPERATOR_RANGES, IDENTIFIER_RANGES, numberText } from "./protocol"
+
+// the Prelude: prelude.fl, then the fonts it draws with, which font.ts writes into fonts.fl
+const PRELUDE = CODE + FONTS
 
 const isTensor = (v: unknown): v is engine.Tensor => v instanceof engine.Tensor
 
@@ -1866,7 +1870,7 @@ const setCodeNodePrinter = (printer: CodeNodePrinter): CodeNodePrinter => {
 }
 
 // MARK: Prelude
-// What the language defines in itself lives in prelude.fl, in Fluent. It is evaluated on
+// What the language defines in itself lives in the Prelude, in Fluent. It is evaluated on
 // first use – a page that only parses never needs it – and once for the environment it
 // reads: every program shares it, so what it works out crosses time, and is worked out
 // once. A change to the environment evaluates it again.

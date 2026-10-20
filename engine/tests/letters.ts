@@ -4,7 +4,7 @@
 // differently: this gate catches it.
 // Each case draws at the display densities 1 and 2.
 //   bun engine/tests/run.ts engine/tests/letters.ts
-import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, Signal, density } from "../../language.ts";
+import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope, extendEnvironment, Signal, density } from "../../language.ts";
 import { init, scalar, type Tensor } from "../tensor.ts";
 
 // a picture drawn in units follows the density: its value is a cell's
@@ -59,6 +59,8 @@ export default async function (): Promise<{ fails: number }> {
   const cpu: number[] = [];
   for (const [d, source] of RUNS) cpu.push(await at(d, source));
   await init();
+  // the Prelude evaluated again, so the GPU decodes its own fonts
+  extendEnvironment({});
   let fails = 0;
   for (const [i, [d, source]] of RUNS.entries()) {
     const gpu = await at(d, source);

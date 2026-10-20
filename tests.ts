@@ -3075,8 +3075,8 @@ describe("plot: lines on one pair of axes", () => {
     // inside, 0.38 and 0.36 from its sides
     const bar = value(`letters("|", [0, 0], 20)(pixels(canvas(12, 24)))_12_[2, 5, 6]`) as number[]
     expect(bar.map((d) => Math.round(d * 100) / 100)).toEqual([2.62, -0.38, -0.36])
-    // the outlines hold a run of points for each of the font's codes, four characters a point
-    expect((value(`(length(DrawFontStarts) - length(DrawFontCodes), DrawFontStarts_(-1) × 4 - length(DrawFontPoints))`) as any[]).map(unwrap)).toEqual([1, 0])
+    // a font holds a width and the edges of a glyph for each of its codes, and a blank after them
+    expect(value(`[length(BQN386_1), shape(BQN386_2)_0] - length(BQN386_0)`)).toEqual([1, 1])
   })
   test("letters filled draw the IDE's font, as much of it as each glyph covers", () => {
     // a glyph's coverage, summed in the light a picture holds, and the glyph's area:
