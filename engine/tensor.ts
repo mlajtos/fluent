@@ -61,8 +61,16 @@ const remote = (l: UOp): boolean => stored(l).op === "BUFFER" || ir.numel(l.shap
 const toLeaves = (u: UOp) => (leaf(u) ? [] : u.src);
 // a loop the walk reaches runs there, and is a leaf from then on
 const running = (u: UOp) => { if (u.op === "LOOP" && !leafOf.has(u)) runLoop(u); return toLeaves(u); };
-function cut(roots: UOp[]): { roots: UOp[]; hostOnly: boolean } {
-  const memo = new Map<number, UOp>();
+// A value made at an earlier instant than the graph that reads it crosses time, as a cell's
+// value does: it is computed as a root too (`kept`) and stands on its leaf from then on, so
+// what the top of a program works out is not worked out again by every step that reads it.
+// Not one larger than what it is made of: a broadcast's expansion costs less recomputed.
+let since = 0;
+// the language's time moves on: the nodes made from now are the new instant's
+export const instant = (): void => { since = ir.made(); };
+const base = (u: UOp): UOp => (VIEWS.has(u.op) ? base(u.src[0]!) : u);
+function cut(roots: UOp[]): { roots: UOp[]; hostOnly: boolean; kept: UOp[] } {
+  const memo = new Map<number, UOp>(), kept = new Set<UOp>();
   let hostOnly = true, work = 0;
   for (const u of ir.toposort(roots, running)) {
     const l = leaf(u);
@@ -70,8 +78,10 @@ function cut(roots: UOp[]): { roots: UOp[]; hostOnly: boolean } {
     const srcs = u.src.map((x) => memo.get(x.id)!);
     memo.set(u.id, srcs.every((x, i) => x === u.src[i]) ? u : ir.node(u.op, srcs, u.arg, u.shape, u.site));
     if (u.src.length) work += ir.numel(u.shape);
+    if (u.id >= since) for (const s of u.src) if (s.id < since && !leaf(s) && ir.numel(s.shape) <= Math.max(...s.src.map((x) => ir.numel(base(x).shape)))) kept.add(s);
   }
-  return { roots: roots.map((r) => memo.get(r.id)!), hostOnly: hostOnly && work <= SMALL };
+  const more = [...kept].filter((s) => !roots.includes(s));
+  return { roots: [...roots, ...more].map((r) => memo.get(r.id)!), hostOnly: hostOnly && work <= SMALL, kept: more };
 }
 // A placeholder holds no numbers: a read of one, on either device, throws and marks the
 // trace it stands in for – ⍤ then runs f cell by cell (overFrame), ⍣ step by step (loop)
@@ -89,9 +99,9 @@ function compute(nodes: readonly UOp[]): void {
   readCells(nodes);
   const fresh = [...new Set(nodes.filter((n) => !leafOf.has(n) && !isLeaf(n)))];
   if (!fresh.length) return;
-  const cutAll = cut(fresh), hostOnly = cutAll.hostOnly;
+  const cutAll = cut(fresh), hostOnly = cutAll.hostOnly, all = [...fresh, ...cutAll.kept];
   // a root that was a loop ran in the cut
-  const need = fresh.filter((n) => !leafOf.has(n)), roots = cutAll.roots.filter((_, i) => !leafOf.has(fresh[i]!));
+  const need = all.filter((n) => !leafOf.has(n)), roots = cutAll.roots.filter((_, i) => !leafOf.has(all[i]!));
   if (!need.length) return;
   if (!gpu || hostOnly) {
     cpu.realizeSync(roots).forEach((t, i) => {
@@ -104,7 +114,7 @@ function compute(nodes: readonly UOp[]): void {
     const n = need[i]!, name = `%v${nextLeaf++}`, buf = ir.buffer(name, n.shape.length ? n.shape : [1]), leaf = rank0(buf, n.shape);
     stand(name, b); freeOnCollect.register(buf, name);
     leafOf.set(n, leaf); leafOf.set(leaf, leaf);
-    steps.at(-1)?.add(leaf);
+    if (!cutAll.kept.includes(n)) steps.at(-1)?.add(leaf);
   });
 }
 // the site the ops built now come from – the Fluent call the language is making

@@ -1600,6 +1600,12 @@ describe("values that cross time carry no history", () => {
     expect(value("θ: ~([[1, 2]]), m: moveaxis(θ, 1, 1), θ := [[0, 0]], m")).toEqual([[0, 0]])
     expect(value("θ: ~(5), s: $0, take: { s(Σ(θ)) }, take(), θ := 7, s()")).toBe(5)
   })
+  test("a value worked out at the top of a program is worked out once, not again by every step that reads it", () => {
+    const scope = scopeOf("c: sin(0..<1000) × 2, total: $0, step: { total← total() + Σ(c) }")
+    expect(size(scope.c)).toBeGreaterThan(1)
+    for (let i = 0; i < 3; i++) { occurrence(() => (scope.step as Function)()) }
+    expect([size(scope.c), unwrap(scope.total) / 3]).toEqual([1, value("Σ(sin(0..<1000) × 2)")])
+  })
   test("∇ leaves what its body read untouched", () => {
     expect(value("θ: ~([1, 2]), c: [3, 4], ∇({ z | Σ(z × c × θ) })([1, 1]), θ")).toEqual([1, 2])
     expect(value("θ: ~([1, 2]), c: [3, 4], ∇({ z | Σ(z × c × θ) })([1, 1]), c")).toEqual([3, 4])

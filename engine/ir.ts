@@ -31,6 +31,8 @@ let NEXT = 0;
 export type Site = { readonly source: string; readonly start: { readonly line: number; readonly column: number } };
 export const at: { site?: Site } = {};
 export const node = (op: Op, src: readonly UOp[], arg: unknown, shape: readonly number[], site = at.site): UOp => ({ op, src, arg, shape, id: NEXT++, site });
+// how many nodes have been made: a node made later has a larger id
+export const made = (): number => NEXT;
 export const siteLabel = (s: Site | undefined): string => (s ? `line ${s.start.line} «${s.source.length > 40 ? s.source.slice(0, 39) + "…" : s.source}»` : "");
 
 export const numel = (s: readonly number[]): number => s.reduce((a, b) => a * b, 1);
