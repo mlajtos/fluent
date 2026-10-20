@@ -7,7 +7,6 @@ import { CPU, type HostData } from "./cpu.ts";
 import { GPU } from "./gpu.ts";
 import { vjp as graphVjp } from "./grad.ts";
 import { batch } from "./batch.ts";
-import { UNROLLED } from "./opt.ts";
 
 type Axis = number | number[] | null | undefined;
 export type Like = Tensor | number | boolean | readonly unknown[];
@@ -62,8 +61,16 @@ const remote = (l: UOp): boolean => stored(l).op === "BUFFER" || ir.numel(l.shap
 const toLeaves = (u: UOp) => (leaf(u) ? [] : u.src);
 // a loop the walk reaches runs there, and is a leaf from then on
 const running = (u: UOp) => { if (u.op === "LOOP" && !leafOf.has(u)) runLoop(u); return toLeaves(u); };
-function cut(roots: UOp[]): { roots: UOp[]; hostOnly: boolean } {
-  const memo = new Map<number, UOp>();
+// A value made at an earlier instant than the graph that reads it crosses time, as a cell's
+// value does: it is computed as a root too (`kept`) and stands on its leaf from then on, so
+// what the top of a program works out is not worked out again by every step that reads it.
+// Not one larger than what it is made of: a broadcast's expansion costs less recomputed.
+let since = 0;
+// the language's time moves on: the nodes made from now are the new instant's
+export const instant = (): void => { since = ir.made(); };
+const base = (u: UOp): UOp => (VIEWS.has(u.op) ? base(u.src[0]!) : u);
+function cut(roots: UOp[]): { roots: UOp[]; hostOnly: boolean; kept: UOp[] } {
+  const memo = new Map<number, UOp>(), kept = new Set<UOp>();
   let hostOnly = true, work = 0;
   for (const u of ir.toposort(roots, running)) {
     const l = leaf(u);
@@ -71,8 +78,10 @@ function cut(roots: UOp[]): { roots: UOp[]; hostOnly: boolean } {
     const srcs = u.src.map((x) => memo.get(x.id)!);
     memo.set(u.id, srcs.every((x, i) => x === u.src[i]) ? u : ir.node(u.op, srcs, u.arg, u.shape, u.site));
     if (u.src.length) work += ir.numel(u.shape);
+    if (u.id >= since) for (const s of u.src) if (s.id < since && !leaf(s) && ir.numel(s.shape) <= Math.max(...s.src.map((x) => ir.numel(base(x).shape)))) kept.add(s);
   }
-  return { roots: roots.map((r) => memo.get(r.id)!), hostOnly: hostOnly && work <= SMALL };
+  const more = [...kept].filter((s) => !roots.includes(s));
+  return { roots: [...roots, ...more].map((r) => memo.get(r.id)!), hostOnly: hostOnly && work <= SMALL, kept: more };
 }
 // A placeholder holds no numbers: a read of one, on either device, throws and marks the
 // trace it stands in for – ⍤ then runs f cell by cell (overFrame), ⍣ step by step (loop)
@@ -80,19 +89,19 @@ type Trace = { read: boolean };
 const placeholderOf = new WeakMap<UOp, Trace>();
 let tracing = 0;
 const placeholder = (t: Trace, name: string, shape: readonly number[]): UOp => { const p = ir.buffer(name, shape); placeholderOf.set(p, t); return p; };
+const tracesIn = (nodes: readonly UOp[]): Trace[] => (tracing ? ir.toposort(nodes, toLeaves).flatMap((u) => placeholderOf.get(u) ?? []) : []);
 const readCells = (nodes: readonly UOp[]): void => {
-  if (!tracing) return;
-  let hit = false;
-  for (const u of ir.toposort(nodes, toLeaves)) { const t = placeholderOf.get(u); if (t) { t.read = hit = true; } }
-  if (hit) throw new Error("a traced function reads the numbers of its argument");
+  const ts = tracesIn(nodes);
+  for (const t of ts) t.read = true;
+  if (ts.length) throw new Error("a traced function reads the numbers of its argument");
 };
 function compute(nodes: readonly UOp[]): void {
   readCells(nodes);
   const fresh = [...new Set(nodes.filter((n) => !leafOf.has(n) && !isLeaf(n)))];
   if (!fresh.length) return;
-  const cutAll = cut(fresh), hostOnly = cutAll.hostOnly;
+  const cutAll = cut(fresh), hostOnly = cutAll.hostOnly, all = [...fresh, ...cutAll.kept];
   // a root that was a loop ran in the cut
-  const need = fresh.filter((n) => !leafOf.has(n)), roots = cutAll.roots.filter((_, i) => !leafOf.has(fresh[i]!));
+  const need = all.filter((n) => !leafOf.has(n)), roots = cutAll.roots.filter((_, i) => !leafOf.has(all[i]!));
   if (!need.length) return;
   if (!gpu || hostOnly) {
     cpu.realizeSync(roots).forEach((t, i) => {
@@ -105,7 +114,7 @@ function compute(nodes: readonly UOp[]): void {
     const n = need[i]!, name = `%v${nextLeaf++}`, buf = ir.buffer(name, n.shape.length ? n.shape : [1]), leaf = rank0(buf, n.shape);
     stand(name, b); freeOnCollect.register(buf, name);
     leafOf.set(n, leaf); leafOf.set(leaf, leaf);
-    steps.at(-1)?.add(leaf);
+    if (!cutAll.kept.includes(n)) steps.at(-1)?.add(leaf);
   });
 }
 // the site the ops built now come from – the Fluent call the language is making
@@ -192,9 +201,9 @@ export function loop(xs: readonly Tensor[], n: number, until: boolean, f: (xs: T
   const outs = out.map((o) => o.node);
   if (until) outs[k] = out[k]!.size ? max(truthy(out[k]!)).node : ir.konst(0);
   const nodes = ir.loop(xs.map((x) => x.node), carries, outs, n), { body } = nodes[0]!.arg as ir.LoopArg;
-  // a short count loop is straight-line code: n copies of its step, in the graph that reads it
+  // a count loop of 1,024 ops at most is straight-line code: n copies of its step, where read
   const stop = new Set([...body.carries, ...body.frontier]);
-  if (!until && n * ir.toposort(body.outs, (u) => (stop.has(u) ? [] : u.src)).length <= UNROLLED) {
+  if (!until && n * ir.toposort(body.outs, (u) => (stop.has(u) ? [] : u.src)).length <= 1024) {
     const bound = new Map(body.frontier.map((p) => [p, p] as const));
     let state = xs.map((x) => x.node);
     for (let i = 0; i < n; i++) { body.carries.forEach((c, j) => bound.set(c, state[j]!)); state = substitute(body.outs, bound); }
@@ -604,10 +613,11 @@ function reduceN(x: UOp, axis: Axis, opts: { keepdims?: boolean } | undefined, o
 const reducer = (op: "ADD" | "MAX" | "MUL", f = (x: UOp) => x) => (a: Like, axis?: Axis, opts?: { keepdims?: boolean }): Tensor => wrap(f(reduceN(f(nodeOf(a)), axis, opts, op)));
 export const sum = reducer("ADD"), prod = reducer("MUL"), max = reducer("MAX"), min = reducer("MAX", neg);
 // ── order: stable, NaN last; values move through a differentiable gather ─────────
-// Data the host has, or computes cheaply, is sorted there at once. Data on the GPU sorts
-// there, by a bitonic network: log₂m·(log₂m + 1)/2 passes, each pairing every element
-// with a partner and keeping the smaller or the larger – one gather and one select, the
-// partner computed in the kernel – so nothing is read back.
+// Data the host has, or computes cheaply, is sorted there at once. Data on the GPU, and a
+// value still traced – ⍣'s step, ⍤'s cell – sort in the graph, by a bitonic network:
+// log₂m·(log₂m + 1)/2 passes, each pairing every element with a partner and keeping the
+// smaller or the larger – one gather and one select, the partner computed in the kernel –
+// so nothing is read back.
 export function order(d: Float32Array, R: number, n: number, desc: boolean): Float32Array {
   const out = new Float32Array(R * n);
   for (let r = 0; r < R; r++) {
@@ -651,7 +661,7 @@ export function bitonic(x: UOp, R: number, n: number, desc: boolean): UOp {
 const scalarRank = (x: UOp) => (x.shape.length ? x : ir.reshape(x, [1]));
 export function argsort(a: Like, descending = false): Tensor {
   const x = scalarRank(nodeOf(a)), n = x.shape.at(-1)!, R = ir.numel(x.shape.slice(0, -1));
-  const host = hostValue(new Tensor(x));
+  const host = tracesIn([x]).length ? undefined : hostValue(new Tensor(x));
   if (host) return new Tensor(ir.data(order(host, R, n, descending), x.shape));
   return new Tensor(ir.reshape(bitonic(ir.reshape(x, [R, n]), R, n, descending), x.shape));
 }

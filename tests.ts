@@ -876,9 +876,22 @@ describe("differentiation and optimization", () => {
     expect(value("(∇(∇gelu))(0)")).toBeCloseTo(0.798, 3)
     expect(value("(∇{ v | (∇{ z | v × z^3 })(2) })(0)")).toBe(12)
   })
+  test("a distance's slope where it is 0 is 0: the chain rule's ∞ × 0, while √ alone is ∞ at 0", () => {
+    expect(value("∇({ p | norm(p - [1, 2]) })([1, 2])")).toEqual([0, 0])
+    expect(value("∇({ c | min(norm([[0, 0], [3, 4]] - c, -1)) })([0, 0])")).toEqual([-0, -0])   // with respect to c, minus that to p
+    expect([value("∇({ x | √(x × x) })(0)"), value("∇(√)(0)"), value("∇({ p | norm(p - [1, 2]) })([4, 6])")]).toEqual([0, Infinity, [0.6, 0.8].map(Math.fround)])
+    expect(value("∇({ x | √(x × x - 1) })(0)")).toBeNaN()   // a NaN the loss itself carries still shows
+  })
   test("gradient of an elementwise function maps over vectors", () => {
     // a non-scalar output pulls back a ones cotangent
     expect(value("∇({ x | x^2 })([1, 2, 3])")).toEqual([2, 4, 6])
+  })
+  test("∇ walks only what was made after what it differentiates: a constant's history is not walked again", async () => {
+    const { made } = await import("./engine/ir.ts")
+    const scope = scopeOf("c: fold(0..<2000, { a, i | sin(a) }, 0..<300), f: { x | Σ(x × c) }")
+    const before = made(), g = evaluateIn("∇(f)(0..<300)", scope)
+    expect(made() - before).toBeLessThan(200)
+    expect(unwrap(g)).toEqual(unwrap(scope.c))
   })
   test("sgd fits y = 3x end-to-end", () => {
     // the optimizer is made once, outside the loop: one made per step starts its moments afresh
@@ -1389,6 +1402,10 @@ describe("⍣ power: counts, inverses, and fixed points", () => {
     const short = run("({ x | x × 2 + 1 } ⍣ 3)(fill([300], 1))") as engine.Tensor
     expect([short.node.op, unwrap(short)[299]]).toEqual(["ADD", 15])
   })
+  test("a step that sorts is one loop: the sort of a value still being traced is a network, not a read", () => {
+    const [looped, plain] = run("x: ⚄([300]), (({ x | sort(x) + 1 } ⍣ 50)(x), ({ v | v + 1 } ⍣ 50)(sort(x)))") as engine.Tensor[]
+    expect([looped!.node.op, unwrap(looped)]).toEqual(["LOOP", unwrap(plain)])
+  })
   // ⍣ asks one question of the whole value; ⍤ gives each cell its own: one loop over the
   // frame, a lane per cell, each stopping where its own predicate holds
   test("(f ⍣ p) ⍤ k runs as one loop over the frame, each cell to its own stop", () => {
@@ -1599,6 +1616,12 @@ describe("values that cross time carry no history", () => {
     expect(value("θ: ~(5), s: Σ(θ), θ := 7, s")).toBe(7)
     expect(value("θ: ~([[1, 2]]), m: moveaxis(θ, 1, 1), θ := [[0, 0]], m")).toEqual([[0, 0]])
     expect(value("θ: ~(5), s: $0, take: { s(Σ(θ)) }, take(), θ := 7, s()")).toBe(5)
+  })
+  test("a value worked out at the top of a program is worked out once, not again by every step that reads it", () => {
+    const scope = scopeOf("c: sin(0..<1000) × 2, total: $0, step: { total← total() + Σ(c) }")
+    expect(size(scope.c)).toBeGreaterThan(1)
+    for (let i = 0; i < 3; i++) { occurrence(() => (scope.step as Function)()) }
+    expect([size(scope.c), unwrap(scope.total) / 3]).toEqual([1, value("Σ(sin(0..<1000) × 2)")])
   })
   test("∇ leaves what its body read untouched", () => {
     expect(value("θ: ~([1, 2]), c: [3, 4], ∇({ z | Σ(z × c × θ) })([1, 1]), θ")).toEqual([1, 2])
@@ -3476,6 +3499,32 @@ describe("the engine", () => {
     expect(loops(k)).toEqual([500])
     expect(own.length && own.every((u) => [...rangesIn(u)].every((r) => r === k.src[0]))).toBeTruthy()
   })
+  test("the nearest of 5,000 dots is found where it is read: a picture of them plans in a few MB, not a distance for each pixel and dot", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { optimizeMany } = await import("./engine/opt.ts")
+    // 520 × 160 units at density 2, planned and never run
+    const d = run("i: 0..<5000, p: stack(meshgrid(0..<1040 + 0.5, 0..<320 + 0.5), -1) ÷ 2, dots(stack((i × 7.3 % 520, i × 3.1 % 160), -1))(p)") as engine.Tensor
+    const bytes = ir.toposort(optimizeMany([d.node])).filter((u) => u.op === "FUSED").reduce((n, u) => n + ir.numel(u.shape) * 4, 0)
+    expect(bytes).toBeLessThan(2 ** 22)
+  })
+  test("∇ through a stroked curve keeps no slope for each pixel and edge: what the nearest edge reduces is read where it is reduced", async () => {
+    const ir = await import("./engine/ir.ts")
+    const { optimizeMany } = await import("./engine/opt.ts")
+    // a cubic of about 40 edges, 260 × 160 units at density 2, planned and never run
+    const g = run("p: stack(meshgrid(0..<520 + 0.5, 0..<320 + 0.5), -1) ÷ 2, ∇({ c | Σ(clamp(1.25 - line(bezier(c, 0.12))(p), 0, 1)) })([[30, 130], [80, 20], [180, 150], [230, 30]])") as engine.Tensor
+    const sizes = ir.toposort(optimizeMany([g.node])).filter((u) => u.op === "FUSED").map((u) => ir.numel(u.shape))
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(520 * 320 * 2)   // no more than the points p
+  })
+  test("a copy that takes a kernel past its inputs takes back only its own counts: ∇ through 40 steps of a raymarch plans in under 2.7 s", async () => {
+    const { optimizeMany } = await import("./engine/opt.ts")
+    const g = run(`N: 256, a: (0 ..< N) - (N ÷ 2) × (0.96 ÷ N), rays: stack((sin(a), a × 0, cos(a)), -1),
+      depth: { c | sdf: { p | norm(p - c, -1) - 1 }, march: { t | t + sdf(unsqueeze(t, -1) × rays) },
+        step: { s | new: march(s_0), (where(s_1, s_0, new), s_1 ∨ (sdf(unsqueeze(new, -1) × rays) < 1e-3 ∨ (new > 20)), s_2 + 1) },
+        Σ((step ⍣ { new, old | min(new_1) ∨ (new_2 ≥ 40) })((a × 0, a × 0, 0))_0) },
+      ∇(depth)([0, 0, 3])`) as engine.Tensor
+    const time = () => { const t = performance.now(); optimizeMany([g.node]); return performance.now() - t }
+    expect(Math.min(time(), time())).toBeLessThan(2700)
+  }, 60_000)
   test("joining n pieces the host does not hold takes about n/7 kernels, not n", async () => {
     const { optimizeMany } = await import("./engine/opt.ts")
     const { toposort } = await import("./engine/ir.ts")

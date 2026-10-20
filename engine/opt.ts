@@ -9,7 +9,7 @@
 
 import type { UOp, Op, Fold } from "./ir.ts";
 import {
-  node, konst, buffer, numel, strides, sameShape, permute, broadcastTo, slice, toposort, viewMap, bcIndex,
+  node, konst, buffer, numel, strides, sameShape, permute, reshape, broadcastTo, slice, toposort, viewMap, bcIndex,
   range, iconst, iadd, imul, idiv, imod, load, acc, iidx, ival, fused, kInputs, rebuild, at, siteLabel,
 } from "./ir.ts";
 import { graphRewriteMany, type Rule } from "./rewrite.ts";
@@ -18,6 +18,7 @@ import { graphRewriteMany, type Rule } from "./rewrite.ts";
 const scalarOf = (u: UOp): number | null =>
   u.op === "CONSTANT" && u.shape.length === 0 ? (u.arg as Float32Array)[0]! : u.op === "BROADCAST" ? scalarOf(u.src[0]!) : null;
 const is = (u: UOp, v: number): boolean => Object.is(scalarOf(u), v);
+const UNROLL = 4;
 const SIMPLIFY: Rule[] = [
   (u) => (u.op === "DETACH" ? u.src[0]! : null),                              // ∇ captured this already; identity forward
   (u) => (u.op === "MULTIPLY" && is(u.src[0]!, 1) ? u.src[1]! : null),
@@ -40,6 +41,16 @@ const SIMPLIFY: Rule[] = [
     if (u.op !== "GATHER" || u.shape[0] !== 1) return null;
     const i = u.src[1]!, c = i.op === "RESHAPE" ? i.src[0]! : i, v = c.op === "CONSTANT" && numel(c.shape) === 1 ? (c.arg as Float32Array)[0]! : NaN;
     return Number.isInteger(v) && v >= 0 && v < u.src[0]!.shape[0]! ? slice(u.src[0]!, 0, v, 1) : null;
+  },
+  // a sum or product of UNROLL terms at most – a point's coordinates, a color's channels – is
+  // its terms, in the loop's order: straight-line code, which the schedule prices as the map
+  // it is. A maximum and its winner keep their loops: no elementwise op is maxf
+  (u) => {
+    const g = u.arg as { axis: number; keepdims: boolean; op: Fold }, x = u.src[0]!;
+    if (u.op !== "REDUCE" || (g.op !== "ADD" && g.op !== "MUL") || x.shape[g.axis]! > UNROLL) return null;
+    let t = broadcastTo(konst(g.op === "ADD" ? 0 : 1), x.shape.map((d, i) => (i === g.axis ? 1 : d)));
+    for (let k = 0; k < x.shape[g.axis]!; k++) t = node(g.op === "ADD" ? "ADD" : "MULTIPLY", [t, slice(x, g.axis, k, 1)], null, t.shape);
+    return g.keepdims ? t : reshape(t, u.shape);
   },
 ];
 export const simplifyMany = (roots: UOp[]): UOp[] => graphRewriteMany(roots, SIMPLIFY);
@@ -231,8 +242,9 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
     // would take them past what storing it costs is stored now, and that copy loads it. The
     // plan counts at least as many, so it would store the node too; deciding it here keeps a
     // chain of forks read at two indices each, butterflies, from building 2^depth copies first.
-    const tally = new Map<number, [number, number]>();
-    const note = ([x, i, w]: [UOp, UOp, number]) => { const t = tally.get(x.id) ?? [0, 0]; t[0] += outN * steps(i, gid); t[1] = Math.max(t[1], w); tally.set(x.id, t); };
+    // Each note keeps the count it replaces, so an undone copy takes its notes back.
+    const tally = new Map<number, [number, number]>(), noted: [number, [number, number] | undefined][] = [];
+    const note = ([x, i, w]: [UOp, UOp, number]) => { const t = tally.get(x.id); noted.push([x.id, t]); tally.set(x.id, [(t?.[0] ?? 0) + outN * steps(i, gid), Math.max(t?.[1] ?? 0, w)]); };
     const costlier = (v: UOp, ix: UOp): boolean => {
       const t = tally.get(v.id);
       if (!t || v.op === "GATHER" || (reads.get(v.id) ?? 1) < 2) return false;
@@ -295,7 +307,7 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
         o = node("WHERE", [inside, value(src, iadd(srcIdx, iconst(-before * sst[axis]!))), konst(0)], null, []);   // wraps below 0 only where `inside` is 0
       } else if (inPlace(v, ix, whole) && !costlier(v, ix)) {
         // a map whose reads take the kernel past its cap is undone, and loaded
-        const mark = [inputs.length, keys.length, here.length] as const, entry: [UOp, UOp, number] = [v, ix, 0];
+        const mark = [inputs.length, keys.length, here.length, noted.length] as const, entry: [UOp, UOp, number] = [v, ix, 0];
         here.push(entry);
         o = own(v, ix, whole);
         entry[2] = (here.length - mark[2]) * loop(o);                     // its work: the values it computes here, each as often as its loops run
@@ -303,8 +315,7 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
           for (const x of inputs.splice(mark[0])) { slot.delete(x.id); if (small(x)) smalls--; }
           for (const [i, id] of keys.splice(mark[1])) memo.get(i)!.delete(id);
           here.length = mark[2];
-          tally.clear();
-          for (const h of here) if (h[2]) note(h); // the copies still here, those finished
+          for (const [id, t] of noted.splice(mark[3]).reverse()) t ? tally.set(id, t) : tally.delete(id);
           over.add(v.id);
           o = load(input(kernelOf(v)), ix);
         } else note(entry);
@@ -381,7 +392,7 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
   // first, a kernel whose node this pass frees counted as often as its node would be
   // computed in place, so a fork freed under a freed fork is counted at both multiples.
   const plan = roots.map(kernelOf), kernels = toposort(plan, (u) => (u.op === "FUSED" ? kInputs(u) : [])).filter((u) => u.op === "FUSED").reverse();
-  const here = new Map<UOp, number>(), loads = new Map<UOp, number>(), works = new Map<UOp, number>(), times = new Map<number, number>();
+  const here = new Map<UOp, number>(), loads = new Map<UOp, number>(), works = new Map<UOp, number>(), times = new Map<number, number>(), top = new Set<UOp>(), crowded = new Set<UOp>();
   const add = (m: Map<UOp, number>, v: UOp, n: number) => m.set(v, (m.get(v) ?? 0) + n);
   for (const k of kernels) {
     const c = computed.get(k), v = owner.get(k)!;
@@ -393,73 +404,22 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
     if (v.op === "REDUCE" && e) store.add(v.id);
     if (ELEM.has(v.op) && store.has(v.id) && !settled.has(v.id) && e && !stored(work(k), e / n)) { store.delete(v.id); settled.add(v.id); times.set(v.id, e / n); }
     const m = times.get(v.id) ?? 1;
-    for (const [x, ix, w] of c.here) { add(here, x, m * c.outN * steps(ix, c.gid)); works.set(x, Math.max(works.get(x) ?? 0, w)); }
+    const once = new Map<UOp, number>();
+    for (const [x, ix, w] of c.here) { const t = c.outN * steps(ix, c.gid); add(here, x, m * t); add(once, x, t); works.set(x, Math.max(works.get(x) ?? 0, w)); if (t <= c.outN) top.add(x); }
+    for (const [x, t] of once) if (t > Math.max(numel(x.shape), 1)) crowded.add(x);
     for (const [x, ix] of c.loads) add(loads, x, m * c.outN * steps(ix, c.gid));
   }
   // a node more than one op reads, computed in place more often than it has elements, is
-  // stored where that costs less than recomputing it. A gather is a read and never stored.
+  // stored where that costs less than recomputing it. A gather is a read and never stored,
+  // and neither is a node only loops read, each of its elements once a kernel – pixels ×
+  // pieces, read where they are reduced: it is computed as often as its loops are, so a
+  // loop, or what reads it, is stored instead
   for (const [v, e] of here) {
     const n = Math.max(numel(v.shape), 1);
-    if ((reads.get(v.id) ?? 1) > 1 && v.op !== "GATHER" && e > n && stored(works.get(v)!, e / n)) { store.add(v.id); settled.add(v.id); }
+    if ((reads.get(v.id) ?? 1) > 1 && v.op !== "GATHER" && (crowded.has(v) || top.has(v)) && e > n && stored(works.get(v)!, e / n)) { store.add(v.id); settled.add(v.id); }
   }
   return plan;
 }
-
-// ---- a small loop is straight-line code ---------------------------------------------
-// A sum or product over 2–4 elements – a point's coordinates, a color's channels – becomes
-// its terms, in the loop's order, each with the loop variable a constant. The law table
-// folds what that makes constant, so a select that picks a coordinate folds away and what a
-// point reads leaves the loops around it. Every fold is exact. A maximum and its winner keep
-// their loops: no elementwise op is maxf. UNROLL is the most terms, UNROLLED the most ops an
-// unrolled loop prints – a sum's here, a count loop's (⍣ n) in tensor.ts.
-const UNROLL = 4;
-export const UNROLLED = 1024;
-const fold = (op: Op, src: UOp[], arg: unknown, shape: readonly number[]): UOp => {
-  const u = rebuild(op, src, arg, shape);
-  for (const r of SIMPLIFY) { const o = r(u); if (o) return o; }
-  return u;
-};
-const unroll = (value: UOp): UOp => {
-  const memo = new Map<number, UOp>();
-  const walk = (v: UOp): UOp => {
-    let o = memo.get(v.id);
-    if (o) return o;
-    const src = v.src.map(walk);
-    o = src.every((x, i) => x === v.src[i]) ? v : fold(v.op, src, v.arg, v.shape);
-    const op = v.op === "ACC" ? (v.arg as { op: string }).op : "", n = op ? (v.src[0]!.arg as { extent: number }).extent : 0;
-    if (n && n <= UNROLL && (op === "ADD" || op === "MUL") && n * toposort(o.src[1]!).length <= UNROLLED) {
-      const [r, body] = o.src as [UOp, UOp];
-      let terms = konst(op === "ADD" ? 0 : 1);
-      for (let k = 0; k < n; k++) {
-        // a loop inside a term that reads k is a loop of its own, on a fresh variable
-        const at = new Map<number, UOp>([[r.id, iconst(k)]]), moved = [r];
-        const put = (x: UOp): UOp => {
-          let y = at.get(x.id);
-          if (y) return y;
-          if (!x.src.length || !moved.some((q) => rangesIn(x).has(q))) return x;
-          if (x.op === "ACC") { const q = x.src[0]!; at.set(q.id, range((q.arg as { extent: number }).extent)); moved.push(q); }
-          y = fold(x.op, x.src.map(put), x.arg, x.shape);
-          at.set(x.id, y);
-          return y;
-        };
-        terms = fold(op === "ADD" ? "ADD" : "MULTIPLY", [terms, put(body)], null, []);
-      }
-      o = terms;
-    }
-    memo.set(v.id, o);
-    return o;
-  };
-  return walk(value);
-};
-const unrollMany = (plan: UOp[]): UOp[] => {
-  const memo = new Map<number, UOp>();
-  for (const k of toposort(plan, (u) => (u.op === "FUSED" ? kInputs(u) : []))) {
-    if (k.op !== "FUSED") continue;
-    const ins = kInputs(k).map((x) => memo.get(x.id) ?? x), v = unroll(k.src[1]!);
-    memo.set(k.id, v === k.src[1] && ins.every((x, i) => x === kInputs(k)[i]) ? k : node("FUSED", [k.src[0]!, v, ...ins], null, k.shape, k.site));
-  }
-  return plan.map((r) => memo.get(r.id) ?? r);
-};
 
 // ---- small inputs share a binding -----------------------------------------------------
 // A kernel with more inputs than the device binds reads its small ones from blocks: a block
@@ -510,7 +470,7 @@ const packMany = (plan: UOp[]): UOp[] => {
   return plan.map((r) => memo.get(r.id) ?? r);
 };
 
-// ---- optimize: simplify → schedule → fuse → unroll; result = leaves + FUSED only -------
+// ---- optimize: simplify → schedule → fuse → pack; result = leaves + FUSED only ---------
 export function optimizeMany(roots: UOp[]): UOp[] {
   const s = graphRewriteMany(simplifyMany(roots), SCHED_REWRITES), { reads, ways } = readers(s), settled = new Set<number>(), store = starts(s, ways, settled);
   // a node the plan stores is computed once: fuse again, every reader loading what the last
@@ -523,7 +483,7 @@ export function optimizeMany(roots: UOp[]): UOp[] {
     g = fuseWith(s, reads, store, settled, kept, changed);
     changed = new Set([...before].filter((x) => !store.has(x)).concat([...store].filter((x) => !before.has(x))));
   } while (changed.size && ++passes < 3);
-  g = packMany(unrollMany(g));
+  g = packMany(g);
   for (const u of toposort(g))                                                 // legality: only leaves and kernels may reach the executor
     if (u.op !== "FUSED" && u.op !== "CONSTANT" && u.op !== "BUFFER" && u.shape.length) throw new Error(`optimize: ${u.op} survived to the kernel boundary`);
   return g;

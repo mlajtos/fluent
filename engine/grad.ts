@@ -119,12 +119,14 @@ export const JVP: Partial<Record<UOp["op"], Jvp>> = {
 
 // A cotangent of exactly 0 carries nothing back, whatever it meets. `where` routes 0 to
 // the branch it didn't take, and that branch's slope may be infinite or NaN there – the
-// slope of sin(x) ÷ x at 0 – where 0 × ∞ would poison the answer. So the transpose is the
-// product in which 0 is strong, mul0; its derivative is the product's, so an outer ∇ still
-// sees ct × f change with ct at ct = 0. A NaN the cotangent itself carries still
-// propagates; a finite constant factor needs no guard.
+// slope of sin(x) ÷ x at 0 – where 0 × ∞ would poison the answer. Nor does an infinite
+// cotangent pass a factor of exactly 0: |p − c| = √Σ(p − c)² meets √'s ∞ at p = c with
+// p − c = 0, and its slope there is 0. So the transpose is the product in which 0 is
+// strong, mul0; its derivative is the product's, so an outer ∇ still sees ct × f change
+// with ct at ct = 0. A NaN the cotangent itself carries still propagates; a finite
+// constant factor other than 0 needs no guard.
 const finite = (f: UOp): boolean =>
-  (f.op === "CONSTANT" && Array.from(f.arg as Float32Array).every(Number.isFinite)) ||
+  (f.op === "CONSTANT" && Array.from(f.arg as Float32Array).every((v) => Number.isFinite(v) && v !== 0)) ||
   ((f.op === "BROADCAST" || f.op === "RESHAPE") && finite(f.src[0]!));
 const times = (ct: UOp, f: UOp): UOp => (finite(f) ? mul(ct, f) : math("mul0", ct, f));
 
@@ -169,18 +171,20 @@ export const TRANSPOSE: Partial<Record<UOp["op"], Tr>> = {
 // The one driver: seed a cotangent on `root`, read cotangents for every target — one
 // forward linearization (all seeds live), one reverse transpose (cotangents summed at
 // forks: the tape is literally the set of summed forks).
+// A node made before every target reads none of them: the walks stop there.
 export function vjp(root: UOp, targets: UOp[], seed: UOp): UOp[] {
   const dts = new Map(targets.map((t) => [t.id, buffer(`%dt${t.id}`, t.shape)] as const));
-  const tan = new Map<number, UOp | null>();
-  for (const u of toposort(root)) {
+  const tan = new Map<number, UOp | null>(), first = Math.min(...targets.map((t) => t.id)), since = (u: UOp) => (u.id < first ? [] : u.src);
+  for (const u of toposort(root, since)) {
     const s = dts.get(u.id);
     if (s) { tan.set(u.id, s); continue; }
+    if (u.id < first) continue;
     const rule = JVP[u.op] ?? ((): never => { throw new Error(`∇: no JVP rule for ${u.op}`); })();
     tan.set(u.id, rule(u, u.src.map((x) => tan.get(x.id) ?? null)));
   }
   const df = tan.get(root.id) ?? null;
   if (!df) return targets.map((t) => zeros(t.shape));
-  const order = toposort(df), dtIds = new Set([...dts.values()].map((d) => d.id));
+  const order = toposort(df, since), dtIds = new Set([...dts.values()].map((d) => d.id));
   const lin = new Set<number>(dtIds);
   for (const u of order) if (u.src.some((x) => lin.has(x.id))) lin.add(u.id);
   const isLin = (x: UOp) => lin.has(x.id);

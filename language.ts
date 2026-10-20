@@ -431,7 +431,7 @@ class Signal<T = Value> {
   peek(): T { return this.held }
   protected write(next: T): void {
     if (reader && this.maker !== reader) { throw new StateWrite("a write") }
-    if (next !== this.held) { this.held = next; this.at = ++instant; written() }
+    if (next !== this.held) { this.held = next; this.at = ++instant; engine.instant(); written() }
   }
 }
 
