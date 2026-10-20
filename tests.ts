@@ -795,11 +795,9 @@ describe("language fixes", () => {
     expect(value("a: 1, f: { x, y | x }, f(a, a: 2)")).toBe(1)
     expect(value("a: 1, [a, a: 2]")).toEqual([1, 2])
   })
-  test("NaN is false for a number and for a tensor alike", () => {
+  test("NaN is false for a number and for a tensor of one number alike", () => {
     expect(run("when(0 ÷ 0, { 1 })")).toBe(null)
     expect(run("when([0 ÷ 0], { 1 })")).toBe(null)
-    expect(run("when([0, 0 ÷ 0], { 1 })")).toBe(null)
-    expect(value("when([0, 0 ÷ 0, 2], { 1 })")).toBe(1)
     expect(run("guard([0 ÷ 0], { 1 })()")).toBeInstanceOf(NoMatch)
   })
   test("FunctionNoAutoLift marks a new function, not the one it is given", () => {
@@ -1429,6 +1427,60 @@ describe("⍣ power: counts, inverses, and fixed points", () => {
   })
   test("the loop alone can't run backwards without an inverter", () => {
     expect(run("FunctionRepeat({ x | x }, -1)")).toBeInstanceOf(Error)
+  })
+})
+
+// A condition – of ⍣, guard and when – is one number, and holds when it is nonzero and
+// not NaN. More numbers, or none, are an Error that names the ways to ask: min(…) for
+// all, max(…) for any, ⍤ 0 for each element, whose cells each ask their own.
+describe("a condition is one number", () => {
+  const loopMany = (n: number) => `\`(f ⍣ p)\`: the condition gave ${n} numbers, but ⍣ asks one question of the whole value: min(…) waits for all, max(…) stops at the first, and (f ⍣ p) ⍤ 0 lets each element stop on its own`
+  const asksMany = (who: string, n: number) => `\`${who}\`: the condition gave ${n} numbers, but ${who} asks one question of the whole value: min(…) holds when all do, max(…) when any does, and f ⍤ 0 runs f, the function it is in, on each element`
+  const message = (source: string) => { const v = run(source); return v instanceof Error ? v.message : unwrap(v) }
+  // a step that reads its numbers runs on the host, step by step, not as the engine's loop
+  const hosted = "{ x | cond(guard(x_0 > 100, { x }), { x + 1 }) }"
+  test("one number holds when it is nonzero and not NaN, for guard, when and ⍣ alike", () => {
+    expect([value("guard(1, { 2 })()"), value("guard([1], { 2 })()"), value("when(1, { 5 })"), value("when([[2]], { 5 })")]).toEqual([2, 2, 5, 5])
+    for (const no of ["0", "0 ÷ 0", "[[0]]"]) {
+      expect([run(`guard(${no}, { 2 })()`), run(`when(${no}, { 5 })`)]).toEqual([expect.any(NoMatch), null])
+    }
+    const traced = run("({ x | x + 1 } ⍣ { a, b | a ≥ 3 })(0)") as engine.Tensor
+    expect([traced.node.op, unwrap(traced), value("({ x | x + 1 } ⍣ { a, b | [1] })(0)")]).toEqual(["LOOP", 3, 1])
+    expect(value(`(${hosted} ⍣ { a, b | a_0 > 3 })([0, 10])`)).toEqual([4, 14])
+    expect(message("({ x | x + 1 } ⍣ { a, b | 0 ÷ 0 })(0)")).toBe("`(f ⍣ p)`: the predicate didn't hold within 10000 steps")
+    expect(message(`(${hosted} ⍣ { a, b | 0 ÷ 0 × a_0 })([0, 10])`)).toBe("`(f ⍣ p)`: the predicate didn't hold within 10000 steps")
+    // under ∇ the loop runs on the host, where it reads its condition
+    expect(value("∇({ y | ({ x | x × 1.5 } ⍣ { a, b | a > 10 })(y) })(1)")).toBe(11.390625)
+  })
+  test("more numbers, or none, are an Error that names the ways to ask", () => {
+    expect([message("guard([0, 1], { 2 })"), message("when([1, 1, 1], { 5 })")]).toEqual([asksMany("guard", 2), asksMany("when", 3)])
+    expect([message("guard([], { 2 })"), message("when(fill([0, 3], 1), { 5 })")]).toEqual([asksMany("guard", 0), asksMany("when", 0)])
+    // the engine's loop knows it from the verdict's shape, before it runs a step
+    expect(message("({ x | x + 1 } ⍣ { a, b | a > 3 })([0, 10])")).toBe(loopMany(2))
+    expect(message("({ x | x + 1 } ⍣ { a, b | fill([0], 1) })([0, 10])")).toBe(loopMany(0))
+    expect(message(`(${hosted} ⍣ { a, b | a > 3 })([0, 10])`)).toBe(loopMany(2))
+    expect(message("∇({ y | Σ(({ x | x × 1.5 } ⍣ { a, b | a > 10 })(y)) })([1, 20])")).toBe(loopMany(2))
+    expect(message("∇({ x | Σ(cond(guard(x > 0, { x }), { 0 × x })) })([1, -1])")).toBe(asksMany("guard", 2))
+    // a loop inside a loop's step: the inner one's condition
+    expect(message("({ x | ({ y | y ÷ 2 } ⍣ { a, b | a < 1 })(x + 5) + x } ⍣ { a, b | min(a ≥ 30) })([1, 7])")).toBe(loopMany(2))
+    const fact = "fact: { n | cond(guard(n = 0, { 1 }), { n × fact(n-1) }) },"
+    expect([message(`${fact} fact([1, 4])`), message(`${fact} (fact ⍤ 0)([1, 4])`)]).toEqual([asksMany("guard", 2), [1, 24]])
+  })
+  test("under ⍤ each cell asks its own condition: one number a cell is one loop over the frame", () => {
+    let calls = 0
+    const scope = createScope()
+    scope.spy = (x: Value) => { calls++; return x }
+    const each = evaluateIn("(({ x | spy(x) + 1 } ⍣ { new, old | new > 3 }) ⍤ 0)(0 ..< 4096)", scope) as engine.Tensor
+    const got = unwrap(each) as number[]
+    expect([each.node.op, calls, got.slice(0, 5), got.at(-1)]).toEqual(["LOOP", 1, [4, 4, 4, 4, 5], 4096])
+    expect(value("(({ x | x + 1 } ⍣ { new, old | min(new > 3) }) ⍤ 1)([[0, 10], [2, -5]])")).toEqual([[4, 14], [11, 4]])
+    expect(message("(({ x | x + 1 } ⍣ { new, old | new > 3 }) ⍤ 1)([[0, 10], [2, -5]])")).toBe(loopMany(2))
+    // ⍣ in a guard, in ⍤
+    const inGuard = (p: string, q: string) => `({ x | cond(guard(${q}(({ y | y × 2 } ⍣ { a, b | ${p}(a > 10) })(x) > 20), { 1 }), { 0 }) } ⍤`
+    expect(value(`${inGuard("", "")} 0)([1, 11, 3])`)).toEqual([0, 1, 0])
+    expect(value(`${inGuard("min", "min")} 1)([[11, 12], [1, 2]])`)).toEqual([1, 0])
+    expect(message(`${inGuard("", "min")} 1)([[11, 12], [1, 2]])`)).toBe(loopMany(2))
+    expect(message(`${inGuard("min", "")} 1)([[11, 12], [1, 2]])`)).toBe(asksMany("guard", 2))
   })
 })
 
@@ -2174,17 +2226,17 @@ describe("the Tour's checks", () => {
   }
   const ring = (body: string) => `dot: dots([[80, 60]]),\nring: { p | ${body} },\ncanvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)`
   const rooms: [string, string[], string[]][] = [
-    ["make this say 7", ["1 + 2*3"], ["7", "7 ; +*", "1 + 6 ; *", "1 + (2 * 3)"]],
+    ["make this say 7", ["1 + 2*3"], ["7", "7 ; +*", "1 + 6 ; *", "1 + (2 * 3)", "[1 + 2*3, 7]", "[1 + 2*3, 1 + 2*3]"]],
     ["fish out the 30", ["[10, 20, 30] _ 2", "[10, 20, 30]_2"], ["30"]],
     ["turn this into", ["1 ... 5 * 2", "(1 ... 5) × 2"], ["[2, 4, 6, 8, 10]"]],
     ["waste of good bananas", ["🍌: 7, 🍌 * 🍌"], ["🍌: 7, 49"]],
-    ["now sum 1 through 100", ["sum(1 ... 100)", "Σ(1 ... 100)", "TensorSum(1 ... 100)"], ["(5050)", "5050"]],
+    ["now sum 1 through 100", ["sum(1 ... 100)", "Σ(1 ... 100)", "TensorSum(1 ... 100)"], ["(5050)", "5050", "[sum(1 ... 100), sum(1 ... 100)]"]],
     ["now put plus in the middle", ["plus: add, 40 plus 2", "plus: add,\n40 plus 2 ; ← now put plus in the middle"],
-      ["plus: add, 42", "plus: add, 40 + 2", "plus: add, plus(40, 2)"]],
-    ["almost. a cube is", ["cube: { x | x^3 }, cube(3)", "cube: { x | x × x × x }, ; ← almost.\ncube(3) ; done"], ["cube: { x | x^2 }, 27"]],
+      ["plus: add, 42", "plus: add, 40 + 2", "plus: add, plus(40, 2)", "plus: add, [40 plus 2, 40 plus 2]"]],
+    ["almost. a cube is", ["cube: { x | x^3 }, cube(3)", "cube: { x | x × x × x }, ; ← almost.\ncube(3) ; done"], ["cube: { x | x^2 }, 27", "cube: { x | [x × x × x, x × x × x] }, cube(3)"]],
     ["a ring: 40 away", [ring("abs(dot(p) - 40)"), ring("abs(40 - dot(p))")], [ring("abs(dot(p) - 0)"), ring("0"), "dot: dots([[80, 60]]), ring: { p | abs(dot(p) - 40) }, 5"]],
     ["the slope of x·x·x, at 2", ["f: { x | x^3 }, df: grad(f), df(2)", "f: { x | x^3 },\ndf: ∇(f),\ndf(2) ; ← now: the slope of x·x·x, at 2"],
-      ["f: { x | x^2 }, df: grad(f), 12", "f: { x | x^3 }, df: { x | 3 × x^2 }, df(2)"]],
+      ["f: { x | x^2 }, df: grad(f), 12", "f: { x | x^3 }, df: { x | 3 × x^2 }, df(2)", "f: { x | x^3 }, df: { x | grad(f)(x) × [1, 1] }, df(2)"]],
   ]
   for (const [seed, solutions, cheats] of rooms) {
     test(`“${seed}”`, () => {

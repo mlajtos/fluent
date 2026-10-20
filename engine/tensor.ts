@@ -187,8 +187,17 @@ export function free(a: Tensor): void { const l = leafOf.get(a.node); if (l) giv
 export const deviceBytes = (): { live: number; peak: number } => { const p = peak; peak = live; return { live, peak: p }; };
 
 // ── loops ───────────────────────────────────────────────────────────────────────
+// A condition is one number, which holds when it is nonzero and not NaN: ⍣, guard and when
+// ask it of the whole value, and under ⍤ of each cell. Any other count of numbers is an
+// Error, known from the shape alone, that names the ways to ask many.
+export function oneNumber(t: Tensor, who: string): Tensor {
+  if (t.size === 1) return t;
+  const ways = who === "⍣" ? "min(…) waits for all, max(…) stops at the first, and (f ⍣ p) ⍤ 0 lets each element stop on its own"
+    : "min(…) holds when all do, max(…) when any does, and f ⍤ 0 runs f, the function it is in, on each element";
+  throw new Error(`\`${who === "⍣" ? "(f ⍣ p)" : who}\`: the condition gave ${t.size} numbers, but ${who} asks one question of the whole value: ${ways}`);
+}
 // ⍣ as one engine step: f runs once, on placeholders shaped like the state xs, and gives
-// the next state – and, for a loop until, the verdict, which holds where some element is
+// the next state – and, for a loop until, the verdict: one number, which holds when it is
 // nonzero and not NaN. A loop runs where it is built, unless a trace holds what it reads.
 // undefined when f reads the state's numbers or gives other shapes: the caller runs it
 // step by step.
@@ -199,7 +208,7 @@ export function loop(xs: readonly Tensor[], n: number, until: boolean, f: (xs: T
   try { out = f(carries.map((c) => new Tensor(c))); } finally { tracing--; }
   if (t.read || !out || out.length !== k + (until ? 1 : 0) || out.slice(0, k).some((o, j) => !ir.sameShape(o.node.shape, xs[j]!.node.shape))) return undefined;
   const outs = out.map((o) => o.node);
-  if (until) outs[k] = out[k]!.size ? max(truthy(out[k]!)).node : ir.konst(0);
+  if (until) outs[k] = reshape(truthy(oneNumber(out[k]!, "⍣")), []).node;
   const nodes = ir.loop(xs.map((x) => x.node), carries, outs, n), { body } = nodes[0]!.arg as ir.LoopArg;
   // a count loop of 1,024 ops at most is straight-line code: n copies of its step, where read
   const stop = new Set([...body.carries, ...body.frontier]);

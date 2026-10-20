@@ -3,7 +3,7 @@
 // runs – an inner loop too, inside each step of an outer one. Runs in headless Chrome:
 //   bun engine/tests/run.ts engine/tests/loops.ts
 
-import { init, engineGpu, loop, overFrame, tensor, scalar, add, subtract, multiply, maximum, less, full, deviceBytes, type Tensor } from "../tensor.ts";
+import { init, engineGpu, loop, overFrame, tensor, scalar, add, subtract, multiply, maximum, less, min, full, deviceBytes, type Tensor } from "../tensor.ts";
 
 export default async function (): Promise<{ fails: number }> {
   let fails = 0;
@@ -19,13 +19,13 @@ export default async function (): Promise<{ fails: number }> {
   check("2000 steps hold two states", count.held <= 2.5 * state, `${mb(count.held)} for a ${mb(state)} state`);
   check("a count loop runs every step", count.v[n - 1] === 2000);
 
-  const until = await held(() => loop([full([n], 0)], 10000, true, ([x]) => { const y = add(x!, 1); return [y, less(199.5, y)]; })![0]!.read())();
+  const until = await held(() => loop([full([n], 0)], 10000, true, ([x]) => { const y = add(x!, 1); return [y, min(less(199.5, y))]; })![0]!.read())();
   check("a loop until holds two states", until.held <= 2.5 * state, mb(until.held));
   check("it stops where its verdict holds", until.v[n - 1] === 200);
 
   // 50 outer steps, each of 3 inner ones
-  const inner = (x: Tensor) => loop([multiply(x, 1)], 10000, true, ([y]) => { const z = add(y!, 1); return [z, less(add(x, 2.5), z)]; })![0]!;
-  const nested = await held(() => loop([full([n], 0)], 10000, true, ([x]) => { const z = inner(x!); return [z, less(149.5, z)]; })![0]!.read())();
+  const inner = (x: Tensor) => loop([multiply(x, 1)], 10000, true, ([y]) => { const z = add(y!, 1); return [z, min(less(add(x, 2.5), z))]; })![0]!;
+  const nested = await held(() => loop([full([n], 0)], 10000, true, ([x]) => { const z = inner(x!); return [z, min(less(149.5, z))]; })![0]!.read())();
   check("an inner loop's states go back with each outer step", nested.held <= 4.5 * state, mb(nested.held));
   check("the inner loop runs in every outer step", nested.v[n - 1] === 150);
 
