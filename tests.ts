@@ -2165,9 +2165,12 @@ describe("the Tour's checks", () => {
     for (const k of Object.keys(n)) { if (k !== "origin") { find(n[k]) } }
   }
   find(CodeParse(TOUR_SOURCE))
+  // the room's light as the Tour shows it – done (1) or the hint (0), and never anything else
   const lights = (seed: string, src: string) => {
     const check = checks.find(([s]) => s.includes(seed))![1]
-    return unwrap(evaluateGeneration(() => check(CodeEvaluate.call(Object.create(scope), src), src))) === 1
+    const ask = () => check(CodeEvaluate.call(Object.create(scope), src), src)
+    const light = unwrap(evaluateGeneration(() => (scope.status as Function)(ask, engine.scalar(1), engine.scalar(0))))
+    return light === 1 ? true : light === 0 ? false : light
   }
   const ring = (body: string) => `dot: dots([[80, 60]]),\nring: { p | ${body} },\ncanvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)`
   const rooms: [string, string[], string[]][] = [
