@@ -89,11 +89,11 @@ type Trace = { read: boolean };
 const placeholderOf = new WeakMap<UOp, Trace>();
 let tracing = 0;
 const placeholder = (t: Trace, name: string, shape: readonly number[]): UOp => { const p = ir.buffer(name, shape); placeholderOf.set(p, t); return p; };
+const tracesIn = (nodes: readonly UOp[]): Trace[] => (tracing ? ir.toposort(nodes, toLeaves).flatMap((u) => placeholderOf.get(u) ?? []) : []);
 const readCells = (nodes: readonly UOp[]): void => {
-  if (!tracing) return;
-  let hit = false;
-  for (const u of ir.toposort(nodes, toLeaves)) { const t = placeholderOf.get(u); if (t) { t.read = hit = true; } }
-  if (hit) throw new Error("a traced function reads the numbers of its argument");
+  const ts = tracesIn(nodes);
+  for (const t of ts) t.read = true;
+  if (ts.length) throw new Error("a traced function reads the numbers of its argument");
 };
 function compute(nodes: readonly UOp[]): void {
   readCells(nodes);
@@ -613,10 +613,11 @@ function reduceN(x: UOp, axis: Axis, opts: { keepdims?: boolean } | undefined, o
 const reducer = (op: "ADD" | "MAX" | "MUL", f = (x: UOp) => x) => (a: Like, axis?: Axis, opts?: { keepdims?: boolean }): Tensor => wrap(f(reduceN(f(nodeOf(a)), axis, opts, op)));
 export const sum = reducer("ADD"), prod = reducer("MUL"), max = reducer("MAX"), min = reducer("MAX", neg);
 // ── order: stable, NaN last; values move through a differentiable gather ─────────
-// Data the host has, or computes cheaply, is sorted there at once. Data on the GPU sorts
-// there, by a bitonic network: log₂m·(log₂m + 1)/2 passes, each pairing every element
-// with a partner and keeping the smaller or the larger – one gather and one select, the
-// partner computed in the kernel – so nothing is read back.
+// Data the host has, or computes cheaply, is sorted there at once. Data on the GPU, and a
+// value still traced – ⍣'s step, ⍤'s cell – sort in the graph, by a bitonic network:
+// log₂m·(log₂m + 1)/2 passes, each pairing every element with a partner and keeping the
+// smaller or the larger – one gather and one select, the partner computed in the kernel –
+// so nothing is read back.
 export function order(d: Float32Array, R: number, n: number, desc: boolean): Float32Array {
   const out = new Float32Array(R * n);
   for (let r = 0; r < R; r++) {
@@ -660,7 +661,7 @@ export function bitonic(x: UOp, R: number, n: number, desc: boolean): UOp {
 const scalarRank = (x: UOp) => (x.shape.length ? x : ir.reshape(x, [1]));
 export function argsort(a: Like, descending = false): Tensor {
   const x = scalarRank(nodeOf(a)), n = x.shape.at(-1)!, R = ir.numel(x.shape.slice(0, -1));
-  const host = hostValue(new Tensor(x));
+  const host = tracesIn([x]).length ? undefined : hostValue(new Tensor(x));
   if (host) return new Tensor(ir.data(order(host, R, n, descending), x.shape));
   return new Tensor(ir.reshape(bitonic(ir.reshape(x, [R, n]), R, n, descending), x.shape));
 }

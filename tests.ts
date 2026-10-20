@@ -1396,6 +1396,10 @@ describe("⍣ power: counts, inverses, and fixed points", () => {
     const short = run("({ x | x × 2 + 1 } ⍣ 3)(fill([300], 1))") as engine.Tensor
     expect([short.node.op, unwrap(short)[299]]).toEqual(["ADD", 15])
   })
+  test("a step that sorts is one loop: the sort of a value still being traced is a network, not a read", () => {
+    const [looped, plain] = run("x: ⚄([300]), (({ x | sort(x) + 1 } ⍣ 50)(x), ({ v | v + 1 } ⍣ 50)(sort(x)))") as engine.Tensor[]
+    expect([looped!.node.op, unwrap(looped)]).toEqual(["LOOP", unwrap(plain)])
+  })
   // ⍣ asks one question of the whole value; ⍤ gives each cell its own: one loop over the
   // frame, a lane per cell, each stopping where its own predicate holds
   test("(f ⍣ p) ⍤ k runs as one loop over the frame, each cell to its own stop", () => {
