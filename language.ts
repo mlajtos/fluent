@@ -1852,6 +1852,7 @@ Object.assign(DefaultEnvironment, persistedExtensions)
 const extendEnvironment = (extra: Record<string, Value>) => {
   Object.assign(persistedExtensions, extra)
   Object.assign(DefaultEnvironment, extra)
+  prelude = null
 }
 
 // Code literals evaluate through this hook, so the IDE can draw syntax trees; headless,
@@ -1865,16 +1866,19 @@ const setCodeNodePrinter = (printer: CodeNodePrinter): CodeNodePrinter => {
 }
 
 // MARK: Prelude
-// What the language defines in itself lives in prelude.fl, in Fluent. It is parsed once,
-// on first use: createScope runs on every evaluation, and a page that only parses never
-// needs it.
-let preludeTree: SyntaxTreeNode | null = null
+// What the language defines in itself lives in prelude.fl, in Fluent. It is evaluated on
+// first use – a page that only parses never needs it – and once for the environment it
+// reads: every program shares it, so what it works out crosses time, and is worked out
+// once. A change to the environment evaluates it again.
+let preludeTree: SyntaxTreeNode | null = null, prelude: CurrentScope | null = null
 // A program binds in a scope of its own, under the prelude's: its names shadow the
 // prelude's for the program, while the prelude's functions keep reading their own –
 // a program's `max: 10` doesn't reach into softmax
 const createScope = (): CurrentScope => {
-  const prelude = Object.create(DefaultEnvironment) as CurrentScope
-  evaluateSyntaxTreeNode(preludeTree ??= CodeParse(PRELUDE), prelude)
+  if (!prelude) {
+    evaluateSyntaxTreeNode(preludeTree ??= CodeParse(PRELUDE), prelude = Object.create(DefaultEnvironment) as CurrentScope)
+    engine.instant()
+  }
   return Object.create(prelude) as CurrentScope
 }
 

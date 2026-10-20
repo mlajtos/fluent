@@ -2073,6 +2073,15 @@ describe("String is the inverse of CodeEvaluate", () => {
   })
 })
 
+describe("the Prelude", () => {
+  test("every program shares it: it is evaluated once for the environment it reads", () => {
+    const prelude = Object.getPrototypeOf(createScope())
+    expect(Object.getPrototypeOf(createScope())).toBe(prelude)
+    extendEnvironment({})
+    expect(Object.getPrototypeOf(createScope())).not.toBe(prelude)
+  })
+})
+
 // A name that resolves to nothing is the shape almost every language change leaves
 // behind in shipped Fluent source: `self` was deleted, `-` stopped being an identifier
 // character, a builtin got renamed. Evaluating the source does NOT catch it – the
