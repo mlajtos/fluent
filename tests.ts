@@ -880,6 +880,13 @@ describe("differentiation and optimization", () => {
     // a non-scalar output pulls back a ones cotangent
     expect(value("∇({ x | x^2 })([1, 2, 3])")).toEqual([2, 4, 6])
   })
+  test("∇ walks only what was made after what it differentiates: a constant's history is not walked again", async () => {
+    const { made } = await import("./engine/ir.ts")
+    const scope = scopeOf("c: fold(0..<2000, { a, i | sin(a) }, 0..<300), f: { x | Σ(x × c) }")
+    const before = made(), g = evaluateIn("∇(f)(0..<300)", scope)
+    expect(made() - before).toBeLessThan(200)
+    expect(unwrap(g)).toEqual(unwrap(scope.c))
+  })
   test("sgd fits y = 3x end-to-end", () => {
     // the optimizer is made once, outside the loop: one made per step starts its moments afresh
     expect(value(`x: 0 ..< 8, y: x × 3, θ: ~([0]), 𝓛: { mean((x × θ_0 - y)^2) },

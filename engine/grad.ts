@@ -169,18 +169,20 @@ export const TRANSPOSE: Partial<Record<UOp["op"], Tr>> = {
 // The one driver: seed a cotangent on `root`, read cotangents for every target — one
 // forward linearization (all seeds live), one reverse transpose (cotangents summed at
 // forks: the tape is literally the set of summed forks).
+// A node made before every target reads none of them: the walks stop there.
 export function vjp(root: UOp, targets: UOp[], seed: UOp): UOp[] {
   const dts = new Map(targets.map((t) => [t.id, buffer(`%dt${t.id}`, t.shape)] as const));
-  const tan = new Map<number, UOp | null>();
-  for (const u of toposort(root)) {
+  const tan = new Map<number, UOp | null>(), first = Math.min(...targets.map((t) => t.id)), since = (u: UOp) => (u.id < first ? [] : u.src);
+  for (const u of toposort(root, since)) {
     const s = dts.get(u.id);
     if (s) { tan.set(u.id, s); continue; }
+    if (u.id < first) continue;
     const rule = JVP[u.op] ?? ((): never => { throw new Error(`∇: no JVP rule for ${u.op}`); })();
     tan.set(u.id, rule(u, u.src.map((x) => tan.get(x.id) ?? null)));
   }
   const df = tan.get(root.id) ?? null;
   if (!df) return targets.map((t) => zeros(t.shape));
-  const order = toposort(df), dtIds = new Set([...dts.values()].map((d) => d.id));
+  const order = toposort(df, since), dtIds = new Set([...dts.values()].map((d) => d.id));
   const lin = new Set<number>(dtIds);
   for (const u of order) if (u.src.some((x) => lin.has(x.id))) lin.add(u.id);
   const isLin = (x: UOp) => lin.has(x.id);
