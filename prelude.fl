@@ -923,10 +923,10 @@ plot: DrawPlot: doc({ x, ys, names |
     lo: min(py), hi: max(py),
     sx: { v | v - px_0 ÷ (px_(-1) - px_0 ⌈ 1e-9) × (R - L) + L },
     sy: { v | hi - v ÷ (hi - lo ⌈ 1e-9) × (B - T) + T },
-    ; a range frame: each axis spans the data, labeled at its ends in BQN386 at a font size
-    ; of 12 – a label as wide as its characters, and a digit's middle 7 below the top
-    font: BQN386, ends: DrawDigits([hi, lo, px_0, px_(-1)]), w: Σ(font_1_(DrawGlyphs(font, ends)) × (ends ≠ 32), -1) × 12 ÷ 1000,
-    corners: [[L - 10 - w_0, T - 7], [L - 10 - w_1, B - 7], [L, B + 9], [R - w_3, B + 9]],
+    ; a range frame: each axis spans the data, labeled at its ends in Hyperlegible at a font
+    ; size of 12 – a label as wide as its characters, and a digit's middle mid below the top
+    font: Hyperlegible, mid: 7.4, ends: DrawDigits([hi, lo, px_0, px_(-1)]), w: Σ(font_1_(DrawGlyphs(font, ends)) × (ends ≠ 32), -1) × 12 ÷ 1000,
+    corners: [[L - 10 - w_0, T - mid], [L - 10 - w_1, B - mid], [L, B + 9], [R - w_3, B + 9]],
     ; each line labeled at its end with its name and last value, the labels pushed apart
     ; so they never overlap
     last: slice(py, [0, N-1]) ⍴ [k],
@@ -942,7 +942,7 @@ plot: DrawPlot: doc({ x, ys, names |
       . draw(line([[L, B + 6], [R, B + 6]]), faint, 1)
       . paint(letters(unstack(ends), corners, 12, font), solid(faint)),
     fold(0..<k, { pic, i | pic . draw(DrawTrace(sx(px), sy(py_i), L, R, 1.25), colors_(i % 8), 1.25) }, frame)
-      . paint(letters(words, stack((fill([k], R + 8), clamp(at - 7, 0, H - 14)), -1), 12, font), solid(ink))
+      . paint(letters(words, stack((fill([k], R + 8), clamp(at - mid, 0, H - 14)), -1), 12, font), solid(ink))
   })
 }, "plot(x, ys, names?)", "Lines on one pair of axes, a picture 520 × 160 units: ys is a list of vectors, or a matrix of rows, each over the points x, in ascending order. Each axis spans the data and is labeled at its ends; each line is labeled at its end with its name and last value. However many points a line has, it costs what the picture's width does: in each column half a unit wide, it keeps its first, top, bottom and last points.", "plot(0..<10, (0..<10, 9 - 0..<10), (\"up\", \"down\"))"),
 
