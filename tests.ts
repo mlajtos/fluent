@@ -2461,29 +2461,38 @@ describe("pictures", () => {
     expect(Math.abs(area() / 393.495 - 1)).toBeLessThan(0.005)
     await atDensity2(() => expect(Math.abs(area() / 393.495 - 1)).toBeLessThan(0.005))
   })
-  test("bezier and arc are points within their tolerance of the curve, from its first point to its last", () => {
-    // a cubic's own points, from its Bernstein form, and an arc's, from its angles
-    const [bend, ends, round, on, arcEnds] = (value(`c: [[10, 80], [30, -40], [90, 120], [110, 20]], t: linspace([0, 1], 999) ⍴ [-1, 1],
-      exact: (1-t)^3 × c_0 + (3 × t × (1-t)^2 × c_1) + (3 × t^2 × (1-t) × c_2) + (t^3 × c_3), b: bezier(c, 0.1),
-      s: linspace([0.5, 4], 999), r: arc([50, 40], 30, [0.5, 4], 0.05),
-      (max(line(b)(exact)), (b_0 = c_0) ∧ (b_(-1) = c_3), max(line(r)([50, 40] + (30 × stack((cos(s), sin(s)), -1)))),
+  test("bezier and arc are the points of n lines that follow the curve, from its first point to its last", () => {
+    // a cubic's own points, from its Bernstein form, and an arc's, from its angles. The
+    // cubic's points lie at most 141.42 from halfway between their neighbors, so its n lines
+    // stray at most 1.5 × 141.42 ÷ n²; a line across an arc's angle a, 30 × (1 - cos(a ÷ 2))
+    const [few, many, ends, round, on, arcEnds] = (value(`c: [[10, 80], [30, -40], [90, 120], [110, 20]], t: linspace([0, 1], 999) ⍴ [-1, 1],
+      exact: (1-t)^3 × c_0 + (3 × t × (1-t)^2 × c_1) + (3 × t^2 × (1-t) × c_2) + (t^3 × c_3), b: bezier(c, 32),
+      s: linspace([0.5, 4], 999), r: arc([50, 40], 30, [0.5, 4], 20),
+      (max(line(bezier(c, 8))(exact)), max(line(b)(exact)), (b_0 = c_0) ∧ (b_(-1) = c_3), max(line(r)([50, 40] + (30 × stack((cos(s), sin(s)), -1)))),
         max(abs(norm(r - [50, 40], -1) - 30)), max(abs(r_[0, -1] - ([50, 40] + (30 × stack((cos([0.5, 4]), sin([0.5, 4])), -1))))))`) as any[]).map(unwrap)
-    expect(bend).toBeLessThan(0.1)
+    expect([few < 1.5 * 141.42 / 8 ** 2, many < 1.5 * 141.42 / 32 ** 2]).toEqual([true, true])
     expect(ends).toEqual([1, 1])
-    expect(round).toBeLessThan(0.05)
+    expect(round).toBeCloseTo(30 * (1 - Math.cos(3.5 / 20 / 2)), 3)
     expect([on, arcEnds].map((x) => x < 1e-4)).toEqual([true, true])
     // a straight bezier is its two points
-    expect(value("bezier([[0, 0], [10, 5]], 0.1)")).toEqual([[0, 0], [10, 5]])
+    expect(value("bezier([[0, 0], [10, 5]], 1)")).toEqual([[0, 0], [10, 5]])
+  })
+  // how many lines is the caller's, never read from the points: a step through a curve
+  // never waits on their numbers, so descent through one is a single engine loop
+  test("descent through a curve runs as one loop: ∇ never reads the points' numbers", () => {
+    const descend = (shape: string, start: string) => (run(`targets: [[30, 130], [80, 110], [130, 60], [180, 40], [230, 30]],
+      loss: { x | mean(${shape}(targets)^2) }, ({ x | x - (0.5 × ∇(loss)(x)) } ⍣ 50)(${start})`) as engine.Tensor).node.op
+    expect([descend("line(bezier(x, 32))", "[[30, 130], [110, 140], [150, 20], [230, 30]]"), descend("line(arc([130, 130], x, [3.2, 6.2], 32))", "100")]).toEqual(["LOOP", "LOOP"])
   })
   test("∇ reaches a curve's control points: a picture's slope is the finite difference's", () => {
     // a filled cubic and a stroked one, fit to a goal; each control point's coordinate moved
     // 0.01 either way
-    const gaps = (value(`ink: solid(1) above halo(1, 3), goal: canvas(48, 32, 0) . paint(polygon(bezier([[4, 28], [24, -10], [44, 28]], 0.05)), ink),
+    const gaps = (value(`ink: solid(1) above halo(1, 3), goal: canvas(48, 32, 0) . paint(polygon(bezier([[4, 28], [24, -10], [44, 28]], 20)), ink),
       c: [[4, 28], [20, -4], [44, 26]], e: 0.01,
       gap: { loss | fd: stack(ListMap(unstack(0..<6 ⊗(=) 0..<6), { u | loss(c + (u ⍴ [3, 2] × e)) - loss(c - (u ⍴ [3, 2] × e)) ÷ (2×e) })) ⍴ [3, 2],
         max(abs(∇(loss)(c) - fd)) ÷ max(abs(fd)) },
-      (gap({ c | mean((canvas(48, 32, 0) . paint(polygon(bezier(c, 0.05)), ink) - goal)^2) }),
-        gap({ c | mean((canvas(48, 32, 0) . paint(line(bezier(c, 0.05)), stroke(1, 2) above halo(1, 3)) - goal)^2) }))`) as any[]).map(unwrap)
+      (gap({ c | mean((canvas(48, 32, 0) . paint(polygon(bezier(c, 20)), ink) - goal)^2) }),
+        gap({ c | mean((canvas(48, 32, 0) . paint(line(bezier(c, 20)), stroke(1, 2) above halo(1, 3)) - goal)^2) }))`) as any[]).map(unwrap)
     expect(gaps.map((g: number) => g < 0.01)).toEqual([true, true])
   })
   test("level makes any function a distance: |f| over its slope, first-order", () => {
@@ -3419,7 +3428,7 @@ describe("the engine", () => {
     const ir = await import("./engine/ir.ts")
     const { optimizeMany } = await import("./engine/opt.ts")
     // a cubic of about 40 edges, 260 × 160 units at density 2, planned and never run
-    const g = run("p: stack(meshgrid(0..<520 + 0.5, 0..<320 + 0.5), -1) ÷ 2, ∇({ c | Σ(clamp(1.25 - line(bezier(c, 0.12))(p), 0, 1)) })([[30, 130], [80, 20], [180, 150], [230, 30]])") as engine.Tensor
+    const g = run("p: stack(meshgrid(0..<520 + 0.5, 0..<320 + 0.5), -1) ÷ 2, ∇({ c | Σ(clamp(1.25 - line(bezier(c, 40))(p), 0, 1)) })([[30, 130], [80, 20], [180, 150], [230, 30]])") as engine.Tensor
     const sizes = ir.toposort(optimizeMany([g.node])).filter((u) => u.op === "FUSED").map((u) => ir.numel(u.shape))
     expect(Math.max(...sizes)).toBeLessThanOrEqual(520 * 320 * 2)   // no more than the points p
   })
