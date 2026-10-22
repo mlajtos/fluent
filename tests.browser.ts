@@ -494,6 +494,34 @@ test("?example= with an unknown name spells 404 in a binary tensor", async ({ pa
   await expect(panel(page).locator("canvas").first()).toBeVisible()
 })
 
+test("fft2, ifft2 and ∇ through them on the GPU agree with the DFT", async ({ page }) => {
+  // a 6×10 picture takes fft's DFT matrices, a 4×128 one its fast path
+  const sizes = [[6, 10], [4, 128]] as const
+  const pictures = sizes.map(([h, w]) => Array.from({ length: h }, (_, i) => Array.from({ length: w }, (_, j) => Math.fround(Math.sin((i * w + j) * 0.37)))))
+  const sources = sizes.map(([h, w]) => `sin(0..<(${h}*${w}) × 0.37) ⍴ [${h}, ${w}]`)
+  // ∇ of Σ(ifft2(fft2(v))) is 1 everywhere: the round trip is the identity
+  await open(page, `Text(String((${sources.map((s) => `fft2(${s}), ifft2(fft2(${s}), ${s.match(/(\d+)\]$/)![1]})`).join(", ")}, (∇{ v | Σ(ifft2(fft2(v))) })(${sources[1]}))))`)
+  await expect(panel(page)).toContainText("[[[", { timeout: 30_000 })
+  const numbers = (await panel(page).innerText()).match(/-?\d+(\.\d+)?(e-?\d+)?/g)!.map(Number)
+  let at = 0, worst = 0
+  const next = () => numbers[at++]!
+  for (const x of pictures) {
+    const h = x.length, w = x[0]!.length, m = w / 2 + 1, spectrum = [[] as number[], [] as number[]]
+    for (let u = 0; u < h; u++) {
+      for (let v = 0; v < m; v++) {
+        let re = 0, im = 0
+        for (let i = 0; i < h; i++) { for (let j = 0; j < w; j++) { const t = 2 * Math.PI * (u * i / h + v * j / w); re += x[i]![j]! * Math.cos(t); im -= x[i]![j]! * Math.sin(t) } }
+        spectrum[0]!.push(re); spectrum[1]!.push(im)
+      }
+    }
+    for (const part of spectrum) { for (const v of part) { worst = Math.max(worst, Math.abs(next() - v) / (h * w)) } }
+    for (const row of x) { for (const v of row) { worst = Math.max(worst, Math.abs(next() - v)) } }
+  }
+  for (let k = 0; k < 4 * 128; k++) { worst = Math.max(worst, Math.abs(next() - 1)) }
+  expect(at).toBe(numbers.length)
+  expect(worst).toBeLessThan(1e-5)
+})
+
 test("printing a documented built-in shows its doc card, never JS internals", async ({ page }) => {
   await open(page, "sum")
   await expect(panel(page)).toContainText("Sum of the elements")
