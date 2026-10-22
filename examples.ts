@@ -884,6 +884,8 @@ secret: \${
   n: length(word()), size: N×0.95 ÷ 0.6 ÷ n ⌊ (N×0.4),
   clamp(1 - letters(word(), [N - (0.6×size×n), N - (1.2×size)] ÷ 2, size)(cells), 0, 1)
 },
+; the pair from afar should look like this: the word bright, the rest nearly dark
+goal: \${ afar(0.05 + (0.35 × secret())) },
 
 ; how much light each cell lets through, 0 to 1
 a: ~randn([N, N]), b: ~randn([N, N]),
@@ -893,7 +895,7 @@ sheets: { (sigmoid(a), sigmoid(b)) },
 seen: { A, B | afar(stack((A × B, A, B, A × A, B × B))) },
 𝓛: {
   s: sheets(), A: s_0, B: s_1, v: seen(A, B),
-  mean((v_0 - afar(0.05 + (0.35 × secret())))^2) + (4 × Σ(drop(𝕍(v ⍴ [5, -1], 1), 1))) + (0.02 × μ(A × (1 - A) + (B × (1 - B))))
+  mean((v_0 - goal())^2) + (4 × Σ(drop(𝕍(v ⍴ [5, -1], 1), 1))) + (0.02 × μ(A × (1 - A) + (B × (1 - B))))
 },
 opt: adam(0.1),
 { opt(𝓛) } ⟳ Time()×60,
@@ -927,7 +929,7 @@ both: \${
 
 (
   Text("# 🔐 Moiré secrets"),
-  Text("Two sheets of fine noise. Laid one on the other, they show a word: on its letters the two sheets match, so light passes through half the cells; around them, each clear cell of one sheet meets a dark cell of the other. ∇ designs both, 60 times a second. From afar – blurred, as an eye sees fine print across a room – the pair must show the word, and each sheet alone must look even, in its light and in its grain. Type a new secret and watch them change. Drag the **orange** dot to slide B over A, or turn it: a cell out of place, and the word is gone."),
+  Text("Two sheets of fine noise. Laid one on the other, they show a word: on its letters the two sheets match, so light passes through half the cells; around them, each clear cell of one sheet meets a dark cell of the other. ∇ designs both, many times a second. From afar – blurred, as an eye sees fine print across a room – the pair must show the word, and each sheet alone must look even, in its light and in its grain. Type a new secret and watch them change. Drag the **orange** dot to slide B over A, or turn it: a cell out of place, and the word is gone."),
   Grid([1, 3])(Text("**secret**"), TextEditor(word)),
   Grid([1, 3])(Text("**turn B**"), Slider(turn)),
   Grid([1, 1, 1])(Text("**A**"), Text("**B**"), Text("**B on A**")),
