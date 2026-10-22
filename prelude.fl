@@ -263,7 +263,7 @@ stencil: TensorStencil: doc({ w, f, arr |
 (⊛): conv: doc(TensorConvolution, "arr ⊛ kernel  ·  arr conv kernel", "Convolve an array with a kernel; the kernel's rank sets the conv's – a 1-D kernel runs along a vector, a 2-D kernel over an image. A kernel of lower rank runs over the last axes, each row on its own. Zero-padded, so the output keeps the input's shape.", "[1, 2, 3, 4] ⊛ [1, 1, 1] = [3, 6, 9, 7]"),
 
 ; List operations – a list is a heterogeneous (a, b, …); ListMap is the list side of ⍤
-List: doc(List, "List(a, b, …)", "Build a list from its arguments – the same list a bare (a, b, …) makes.", "#List(1, 2, 3) = 3"),
+List: doc(List, "List(a, b, …)", "Build a list from its arguments – the same list a bare (a, b, …) makes.", "(#List(1, 2, 3)) = 3"),
 ListMap: doc(ListMap, "ListMap(list, f)", "Apply f to every element, giving a new list – the list-land counterpart of ⍤.", "ListMap((1, 2, 3), { x | x × 10 })_1 = 20"),
 ListZip: doc({ a, b | ListMap(take(a, #b), { v, i | (v, b_i) }) }, "ListZip(a, b)", "Pair up elements of a and b, stopping at the shorter length.", "ListZip((1, 2), (3, 4)) = ((1, 3), (2, 4))"),
 ListEnumerate: doc({ list | ListMap(list, { v, i | (i, v) }) }, "ListEnumerate(list)", "Pair each element with its index, as (index, element).", "ListEnumerate((7, 8)) = ((0, 7), (1, 8))"),
