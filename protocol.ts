@@ -299,7 +299,7 @@ const IDENTIFIER_CHARS = charClass(IDENTIFIER_RANGES)
 export const identifierRegexp = new RegExp(`[\\p{L}${IDENTIFIER_CHARS}][\\p{L}\\p{N}${IDENTIFIER_CHARS}]*`, "u")
 export const numberRegexp = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/
 export const stringRegexp = /"(?:[^"\\]|\\.)*"/
-// one operator symbol – the grammar's `specialChar`; identifiers, numbers, strings and
-// delimiters are taken first, so the ASCII letters and digits it covers never reach it
+// one character of the grammar's `operator`; identifiers, numbers, strings and delimiters
+// are taken first, so the ASCII letters and digits it covers never reach it
 export const operatorRegexp = new RegExp(`[${charClass(OPERATOR_RANGES)}]`, "u")
 export const delimiterRegexp = new RegExp(RESERVED_SYMBOLS, "u")

@@ -27,24 +27,22 @@ Fluent {
   Program
     = ListOf<Expr, ","> ","?
 
-  Expr
-    = Operation
-
   // Every operator but a glued one lives here; the space around it picks its tier:
   //  · glued-LEFT "a op· b" is the loosest. It splits: the whole chain on its left, the
   //    whole rest on its right, right-associatively – "a: 1 + 2"; "1 + 2* 3 + 4" is
   //    "(1 + 2) * (3 + 4)". The operator is any Atom: "1add 2 * 3" is add(1, 2*3).
   //  · spaced "a op b" (and an inert glued-RIGHT "a ·op b") chains left to right.
   //  · a leading operator with no left operand is prefix "-a".
-  Operation
-    = (Operation | TightOperation) #(~space) Atom #(space) Expr --gluedSplit
-    | (Operation | TightOperation) TightOperation TightOperation --infix
+  Expr
+    = (Expr | TightOperation) #(~space) Atom #(space) Expr --gluedSplit
+    | (Expr | TightOperation) TightOperation TightOperation --infix
     | TightOperation TightOperation --prefix
     | TightOperation
 
-  // glued operators bind tighter than spaced ones – "1 + 2*3" is "1 + (2 * 3)"
+  // glued operators bind tighter than spaced ones – "1 + 2*3" is "1 + (2 * 3)". Only a
+  // glyph glues as an operator here; a glued name is an operand – "(x)mul(2)" is x(mul(2))
   TightOperation
-    = TightOperation #(~space) operator #(~space) Application --infix
+    = TightOperation #(~space ~identifier) Symbol #(~space) Application --infix
     | Application
 
   // application binds tightest – "f(x)", "∇(f)(x)". A "(...)" glued to the right of
@@ -52,44 +50,32 @@ Fluent {
   // whatever x is. A parenthesized function used infix is spaced, "1 (add) 2"; the glued
   // forms are "1add 2" and "1+ 2".
   Application
-    = Application #(~space) (List | NestedExpr) --apply
+    = Application #(~space) List --apply
     | Atom
 
   Atom
     = Number | Lambda | NestedExpr | List | Symbol | String | Code | Tensor | Null
 
-  NestedExpr
-    = "(" Expr ")"
-
-  Lambda
-    = "{" (LambdaArgs "|")? Program "}"
-  LambdaArgs
-    = ListOf<Symbol, ",">
-
   List
     = "(" NonemptyListOf<Expr, ","> ","? ")" --multi
     | "(" ")" --empty
 
+  NestedExpr      = "(" Expr ")"
+  Lambda          = "{" (ListOf<Symbol, ","> "|")? Program "}"
   Number          = number
   Tensor          = "[" ListOf<Expr, ","> ","? "]"
   Null            = "◌"
   Symbol          = identifier | operator
   // identifier owns the name symbols (math alphanumerics, emoji), so they glue like
   // names in every slot: "1🔥 2 * 3" is 🔥(1, 2 * 3)
-  identifier      = &(letter | idRanges) (alnum | idRanges)+
+  identifier      = (letter | idRanges) (alnum | idRanges)*
   idRanges        = ${ohmRanges(IDENTIFIER_RANGES)}
-  number
-    = "-"? digitGroup ("." digitGroup)? exponent?
-  exponent
-    = ("e" | "E") ("+" | "-")? digitGroup
-  digitGroup
-    = digit+
+  number          = "-"? digit+ ("." digit+)? (("e" | "E") ("+" | "-")? digit+)?
   String          = #("\"" (stringEscape | ~"\"" any)* "\"")
   stringEscape    = "\\" any
   Code            = #("${"`"}" (~"${"`"}" any)* "${"`"}")
   reserved        = "|" | "," | "{" | "}" | "(" | ")" | "[" | "]" | ";" | "\"" | "${"`"}"
-  operator        = (#(~(reserved | alnum) specialChar))+
-  specialChar     = ${ohmRanges(OPERATOR_RANGES)}
+  operator        = (~(reserved | alnum) ${ohmRanges(OPERATOR_RANGES)})+
   space          += ";" (~"\n" any)* -- comment
 }
 `
@@ -167,16 +153,13 @@ const shiftOrigins = (node: any, startLine: number, startColumn: number, documen
 const toAST = (node: any, action: any): any => node.toAST(action.args.mapping)
 const leaf = (type: string, value: unknown, action: any): SyntaxTreeNode =>
   ({ type, content: { value }, origin: originOf(action) }) as SyntaxTreeNode
-// An infix application. Its operands are not an explicit ( … ), so they don't scope
-// their bindings.
-const infix = (action: any, left: any, operator: SyntaxTreeNode, right: any): SyntaxTreeNode => ({
-  type: "Operation",
-  content: {
-    operator,
-    args: { type: "List", origin: originOf(action), content: { value: [toAST(left, action), toAST(right, action)], synthetic: true } },
-  },
-  origin: originOf(action),
-})
+// An infix application; its operator keeps its own node – a Symbol, a Lambda, any atom.
+// Its operands are not an explicit ( … ), so they don't scope their bindings.
+function infix(this: any, left: any, operator: any, right: any): SyntaxTreeNode {
+  const op: SyntaxTreeNode = toAST(operator, this), value = [toAST(left, this), toAST(right, this)]
+  const args = { type: "List", origin: originOf(this), content: { value, synthetic: true } } as SyntaxTreeNode & { type: "List" }
+  return { type: "Operation", content: { operator: op, args }, origin: originOf(this) }
+}
 // f(x), f(x, y) and the prefix -x: a bare argument becomes a one-element list
 function apply(this: any, left: any, right: any): SyntaxTreeNode {
   const arg: SyntaxTreeNode = toAST(right, this)
@@ -186,14 +169,11 @@ function apply(this: any, left: any, right: any): SyntaxTreeNode {
 
 const syntaxTreeMapping: ActionDict<SyntaxTreeNode> = {
   Program(exprs, _) { return { type: "Program", content: toAST(exprs, this), origin: originOf(this) } },
-  // a glued or spaced operator keeps its own node – a Symbol, a Lambda, any atom
-  Operation_gluedSplit(left, operator, _, right) { return infix(this, left, toAST(operator, this), right) },
-  Operation_infix(left, operator, right) { return infix(this, left, toAST(operator, this), right) },
-  TightOperation_infix(left, operator, right) {
-    return infix(this, left, { type: "Symbol", content: { value: operator.sourceString }, origin: originOf(operator) }, right)
-  },
+  Expr_gluedSplit(left, operator, _, right) { return infix.call(this, left, operator, right) },
+  Expr_infix: infix,
+  TightOperation_infix: infix,
   Application_apply: apply,
-  Operation_prefix: apply,
+  Expr_prefix: apply,
   List_multi(_, exprs, __, ___) { return leaf("List", toAST(exprs, this), this) },
   List_empty(_, __) { return leaf("List", [], this) },
   Symbol(value) { return leaf("Symbol", value.sourceString, this) },
