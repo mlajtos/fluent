@@ -3617,6 +3617,8 @@ describe("doc cards", () => {
     if (!example) { continue }
     test(`${names[0]}: ${example.split("\n")[0]}`, () => {
       for (const ex of example.split("\n")) {
+        // as written, not only inside the claim's parentheses
+        expect([ex, getParseErrors(ex)]).toEqual([ex, []])
         const parts = split(ex, ", ")
         const binds = split(ex, ":").slice(1).some((p) => !p.startsWith("="))
         for (const [head, last] of binds ? [[parts.slice(0, -1), parts.at(-1)!] as const] : parts.map((p) => [[], p] as const)) {
