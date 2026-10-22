@@ -866,6 +866,133 @@ wall: \${
   glass,
 )
 `,
+"moire-secret": `
+; 🔐 Moiré secrets – two sheets of noise, each meaningless alone: laid one on the other, they show a word
+; Laid on each other, sheets multiply the light through them, and from afar the eye sees
+; a blur of it. Every cell is to end up clear or dark, so the sheets could be printed.
+N: 128, ; cells across a sheet, a unit each
+word: $"Fluent",
+
+; the eye from afar, done on the spectrum: frequency f fades as exp(-2π²·blur²·f²)
+blur: 1.5, ; how far the eye smears a cell, in cells
+f: (0..<N ⌊ (N - 0..<N))^2 ⊗(+) (0..<(N÷2 + 1))^2 ÷ N^2,
+afar: { x | ifft2(fft2(x) × exp(-(2 × π^2 × blur^2 × f)), N) },
+
+; the word, cell by cell: 1 on its letters, 0 off them
+cells: stack(meshgrid(0..<N + 0.5, 0..<N + 0.5), -1),
+secret: \${
+  n: length(word()), size: N×0.95 ÷ 0.6 ÷ n ⌊ (N×0.4),
+  clamp(1 - letters(word(), [N - (0.6×size×n), N - (1.2×size)] ÷ 2, size)(cells), 0, 1)
+},
+; the pair from afar should look like this: the word bright, the rest nearly dark
+goal: \${ afar(0.05 + (0.35 × secret())) },
+
+; how much light each cell lets through, 0 to 1
+a: ~randn([N, N]), b: ~randn([N, N]),
+sheets: { (sigmoid(a), sigmoid(b)) },
+; from afar: the pair; each sheet's light; and each sheet's light squared, which with its
+; light gives its grain – how much the light varies around itself
+seen: { A, B | afar(stack((A × B, A, B, A × A, B × B))) },
+𝓛: {
+  s: sheets(), A: s_0, B: s_1, v: seen(A, B),
+  mean((v_0 - goal())^2) + (4 × Σ(drop(𝕍(v ⍴ [5, -1], 1), 1))) + (0.02 × μ(A × (1 - A) + (B × (1 - B))))
+},
+opt: adam(0.1),
+{ opt(𝓛) } ⟳ Time()×60,
+
+; how much of the word a sheet alone shows from afar, against the pair: the gap between
+; the letters and the rest, in its light or in its grain, whichever is larger
+contrast: { v | on: secret() > 0.5, Σ(v × on) ÷ Σ(on) - (Σ(v × (1 - on)) ÷ Σ(1 - on)) },
+leak: \${
+  s: sheets(), v: seen(s_0, s_1), c: { k | abs(contrast(v_k)) ⌈ abs(contrast(v_(k+2) - v_k^2)) },
+  [c(1), c(2)] ÷ abs(contrast(v_0))
+},
+; in tenths of a percent, and no division: a GPU divides only nearly exactly
+percent: { x | t: round(x × 1000), d: t % 10, StringConcat(String(round(t - d × 0.1)), ".", String(d)) },
+told: \${ StringConcat("From afar, sheet A alone shows ", percent(leak()_0), " % of the word the pair shows, and sheet B ", percent(leak()_1), " %.") },
+
+; a sheet at the points (x, y), clear past its edges, and the ink of the light through it
+look: { s, x, y | i: floor(x), j: floor(y), where(i≥0 ∧ i<N ∧ j≥0 ∧ j<N, flat(s)_(clamp(j, 0, N-1) × N + clamp(i, 0, N-1)), 1) },
+backlit: { t | (t, 1, 1÷0) },
+sheet: { s | canvas(N, N) . paint({ p | q: moveaxis(p, -1, 0), look(s, q_0, q_1) }, backlit) },
+; B laid on A as you place it: slid by the orange dot, a whole cell at a time, and turned
+home: [N÷2, N÷2],
+at: $home,
+turn: $0.5,
+both: \${
+  s: sheets(), d: round(at() - home), θ: turn() - 0.5 × 0.2,
+  canvas(N, N) . paint({ p |
+    q: moveaxis(p, -1, 0), u: q_0 - N÷2 - d_0, v: q_1 - N÷2 - d_1,
+    look(s_0, q_0, q_1) × look(s_1, cos(θ)×u + sin(θ)×v + N÷2, cos(θ)×v - sin(θ)×u + N÷2)
+  }, backlit)
+},
+
+(
+  Text("# 🔐 Moiré secrets"),
+  Text("Two sheets of fine noise. Laid one on the other, they show a word: on its letters the two sheets match, so light passes through half the cells; around them, each clear cell of one sheet meets a dark cell of the other. ∇ designs both, many times a second. From afar – blurred, as an eye sees fine print across a room – the pair must show the word, and each sheet alone must look even, in its light and in its grain. Type a new secret and watch them change. Drag the **orange** dot to slide B over A, or turn it: a cell out of place, and the word is gone."),
+  Grid([1, 3])(Text("**secret**"), TextEditor(word)),
+  Grid([1, 3])(Text("**turn B**"), Slider(turn)),
+  Grid([1, 1, 1])(Text("**A**"), Text("**B**"), Text("**B on A**")),
+  Grid([1, 1, 1])(\${ sheet(sheets()_0) }, \${ sheet(sheets()_1) }, Layers(both, Point2D(at, [[0, N], [0, N]], "orange"))),
+  Text(told),
+)
+`,
+"frequency-space": `
+; 🌊 Learning in frequencies – one picture rebuilt from its edges, by pixels and by waves
+; Both learners are given the same thing: the picture's edges – how much each cell differs
+; from its neighbor to the right and below – and its average brightness. Both learn by
+; gradient descent with Adam, step for step, each at the learning rate that suits it best.
+N: 128,
+x: 0..<N + 0.5 ⍴ [1, N], y: 0..<N + 0.5 ⍴ [N, 1],
+; the picture: a sunset over mountains – big shapes, and fine crags in the rock
+ridge: N×0.62 + (N×0.12 × fbm(stack((flat(x) ÷ N × 4, flat(x) × 0 + 0.3), -1), 5)),
+sun: √((x - N×0.68)^2 + (y - N×0.34)^2) < N×0.13,
+rock: fbm(stack(meshgrid(flat(x), flat(y)), -1) ÷ 6, 3),
+truth: where(y > ridge, 0.12 + (0.08 × rock), where(sun, 1, 0.15 + (0.55 × y ÷ N))),
+
+edges: { p | stack((roll(p, -1, 1) - p, roll(p, -1, 0) - p)) },
+given: edges(truth),
+miss: { p | mean((edges(p) - given)^2) + (μ(p) - μ(truth))^2 },
+
+; left, the numbers it learns are the pixels
+byPixel: ~(randn([N, N]) × 0.1),
+; right, they are waves across the whole picture – its spectrum, which ifft2 turns into
+; the picture. A wave that crosses the picture k times counts 1 ÷ k as much
+k: √((0..<N ⌊ (N - 0..<N))^2 ⊗(+) (0..<(N÷2 + 1))^2) ⌈ 1,
+waves: ~(randn([2, N, N÷2 + 1]) × 0.1),
+byWave: { ifft2(waves ÷ k, N) × N },
+
+; each at its best rate: the lowest loss after 300 steps, over three starts
+optL: adam(0.1), optR: adam(3),
+; the race: T steps, 60 a second. Each step's two losses are kept in one place of fixed
+; size, so the plot of them keeps its plan as it grows
+T: 900,
+losses: ~~fill([2, T], 1), done: $0,
+{ i |
+  a: optL({ miss(byPixel) }), b: optR({ miss(byWave()) }),
+  losses:= where(0..<T = i, [a, b] ⍴ [2, 1], losses),
+  done← i + 1
+} ⟳ Time()×60 ⌊ T,
+
+; how they look: each cell s units wide, in the colors of a sunset
+dusk: ramp([[0.05, 0.03, 0.15], [0.45, 0.12, 0.35], [0.95, 0.45, 0.25], [1, 0.9, 0.6]]),
+view: { pic, s | canvas(s×N, s×N) . paint({ p | q: floor(moveaxis(p, -1, 0) ÷ s) ⌊ (N-1), flat(pic)_(q_1 × N + q_0) }, dusk) },
+asPixels: \${ view(byPixel, 2) },
+asWaves: \${ view(byWave(), 2) },
+; a step not taken yet sits on the last one taken, so the lines end there
+curves: \${ s: 0..<T ⌊ (done() - 1 ⌈ 0), plot(s + 1, log10(transpose(transpose(losses)_s)), ("pixels", "waves")) },
+
+(
+  Text("# 🌊 Learning in frequencies"),
+  Text("Two learners rebuild one picture from its edges alone: how much each cell differs from its neighbors. On the left, the numbers that learn are the pixels – and a pixel hears only from its neighbors, so news of a big shape crawls across the picture a cell at a time. On the right, the numbers are waves across the whole picture – its spectrum, which ifft2 turns into the picture, the wide waves weighted more. Same optimizer, same steps, each at its best learning rate. **Big shapes first, details later.**"),
+  Grid([1, 1])(Text("**pixels**"), Text("**waves**")),
+  Grid([1, 1])(asPixels, asWaves),
+  Text("**the loss**, as a power of ten: -4 is 0.0001"),
+  curves,
+  Text("**what both are given** – the edges – and **the picture they never see**:"),
+  Grid([1, 1])(view(norm(given, 0) × 2, 1), view(truth, 1)),
+)
+`,
 "growing-automata": `
 ; 🌱 Morphogenesis – a learned local rule grows a global shape from one lit cell
 

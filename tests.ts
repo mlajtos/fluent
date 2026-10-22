@@ -1959,6 +1959,39 @@ describe("gallery examples smoke suite", () => {
     expect(edited.glass).toBe(scope.glass)
     flushRetirements()
   }, 60_000)
+  test("the moiré sheets learn their secret, and the leak says how much of it a sheet alone gives away", () => {
+    steps.length = 0
+    const scope = scopeOf(EXAMPLES["moire-secret"])
+    const read = (expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope))
+    const loss = read("𝓛()") as number
+    for (let i = 0; i < 4; i++) { steps[0]!(engine.scalar(i)) }
+    expect(read("𝓛()")).toBeLessThan(loss / 2)
+    // a pair made by hand: random cells in A, and B the same cells on the letters and their
+    // opposite off them – each sheet alone is noise, so it gives away almost nothing
+    read("r: ⚄([N, N]) < 0.5, a:= (2×r - 1 × 20), b:= (2×where(secret() > 0.5, r, 1 - r) - 1 × 20)")
+    const fair = read("leak()") as number[]
+    expect(Math.max(...fair)).toBeLessThan(0.08)
+    // a sheet A that is the word itself gives it all away; B, noise, gives little
+    read("a:= (2×secret() - 1 × 20), b:= (2×(⚄([N, N]) < 0.5) - 1 × 20)")
+    const [shownA, shownB] = read("leak()") as number[]
+    expect(shownA).toBeGreaterThan(0.5)
+    expect(shownB).toBeLessThan(0.2)
+    flushRetirements()
+  }, 120_000)
+  test("learning in frequencies: from the same edges, the waves' picture is three times nearer the truth after 30 steps", () => {
+    steps.length = 0
+    const scope = scopeOf(EXAMPLES["frequency-space"])
+    const read = (expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope)) as number
+    const before = [read("miss(byPixel)"), read("miss(byWave())")]
+    for (let i = 0; i < 30; i++) { steps[0]!(engine.scalar(i)) }
+    // both losses fall, the waves' further
+    expect(read("miss(byPixel)")).toBeLessThan(before[0]! / 10)
+    expect(read("miss(byWave())")).toBeLessThan(read("miss(byPixel)"))
+    const off = (picture: string) => read(`√μ((${picture} - truth)^2)`)
+    expect(off("byWave()") * 3).toBeLessThan(off("byPixel"))
+    expect(read("done()")).toBe(30)
+    flushRetirements()
+  }, 120_000)
   test("deep-delta-learning learns a function: one number in, one out, right where it never trained", () => {
     steps.length = 0
     const scope = scopeOf(EXAMPLES["deep-delta-learning"])
@@ -3082,6 +3115,45 @@ describe("numbers come out right", () => {
       }
       expect(worst / top).toBeLessThan(1e-5)
     }
+  })
+  test("ifft undoes fft and ifft2 undoes fft2, at any length, the fast path included", () => {
+    // a power-of-two length of 64 or more takes fft's fast path; an odd one says its n
+    for (const [x, n] of [["sin(0..<4 × 0.3)", 4], ["sin(0..<5 × 0.3)", 5], ["sin(0..<64 × 0.3) + cos(0..<64 × 1.7)", 64], ["sin(0..<200 × 0.3)", 200], ["sin(0..<(6*10) × 0.7) ⍴ [6, 10]", 10], ["sin(0..<(5*7) × 0.7) ⍴ [5, 7]", 7], ["cos(0..<(3*64*128) × 0.37) ⍴ [3, 64, 128]", 128]] as const) {
+      const back = x.includes("⍴") ? "ifft2(fft2(x), n)" : "ifft(fft(x), n)"
+      expect([x, value(`n: ${n}, x: ${x}, max(abs(${back} - x))`)]).toEqual([x, expect.closeTo(0, 5)])
+    }
+    // without n, an even length comes back
+    expect(value("ifft(fft([1, 2, 3, 4]))")).toEqual([1, 2, 3, 4].map((v) => expect.closeTo(v, 5)))
+  })
+  test("fft2 is the 2-D DFT: rows, then columns", () => {
+    const h = 6, w = 10, x = Array.from({ length: h }, (_, i) => Array.from({ length: w }, (_, j) => Math.fround(Math.sin(i * 1.3 + j * 0.37) + ((i * 7 + j * 13) % 5) / 5)))
+    const got = value(`fft2(${JSON.stringify(x)})`) as number[][][]
+    let worst = 0
+    for (let u = 0; u < h; u++) {
+      for (let v = 0; v <= w / 2; v++) {
+        let re = 0, im = 0
+        for (let i = 0; i < h; i++) { for (let j = 0; j < w; j++) { const t = 2 * Math.PI * (u * i / h + v * j / w); re += x[i]![j]! * Math.cos(t); im -= x[i]![j]! * Math.sin(t) } }
+        worst = Math.max(worst, Math.abs(got[0]![u]![v]! - re), Math.abs(got[1]![u]![v]! - im))
+      }
+    }
+    expect(worst).toBeLessThan(1e-4)
+  })
+  test("the spectrum holds the signal's energy: Parseval's identity", () => {
+    // each frequency past 0 and n ÷ 2 stands for its mirror image too, so it counts twice
+    const twice = "k: 0..<(#(f, -1)), c: where(k = 0 ∨ (2×k = n), 1, 2)"
+    expect(value(`n: 64, x: sin(0..<n × 0.3) + (0..<n % 7), f: fft(x), ${twice}, Σ(x^2) ÷ (Σ(c × (f_0^2 + f_1^2)) ÷ n)`)).toBeCloseTo(1, 5)
+    expect(value(`n: 9, x: sin(0..<n × 0.3) + (0..<n % 7), f: fft(x), ${twice}, Σ(x^2) ÷ (Σ(c × (f_0^2 + f_1^2)) ÷ n)`)).toBeCloseTo(1, 5)
+    expect(value(`n: 128, x: cos(0..<(32*n) × 0.37) ⍴ [32, n], f: fft2(x), ${twice}, Σ(x^2) ÷ (Σ(c × (f_0^2 + f_1^2)) ÷ n ÷ 32)`)).toBeCloseTo(1, 5)
+  })
+  test("∇ flows through fft, ifft, fft2 and ifft2 as central differences say", () => {
+    const check = (setup: string, loss: string, at: string, e: number) => {
+      const [g, d] = value(`${setup}, L: { y | ${loss} }, g: (∇L)(x), e: ${e}, d: ${at} × e, [Σ(g × d) ÷ e, L(x + d) - L(x - d) ÷ 2×e]`) as number[]
+      expect(Math.abs(g! - d!) / (Math.abs(g!) + 1e-3)).toBeLessThan(1e-3)
+    }
+    check("x: cos(0..<64 × 0.9)", "f: fft(y), Σ(sin(ifft(f × exp(-(0..<33) ÷ 9))))", "0..<64 = 5", 0.01)
+    check("x: cos(0..<9 × 0.9)", "f: fft(y), Σ(sin(ifft(f, 9))) + Σ(f^2)", "0..<9 = 4", 0.01)
+    check("x: cos(0..<(6*10) × 0.9) ⍴ [6, 10], w: exp(-(0..<6 ⊗(+) 0..<6) ÷ 4)", "f: fft2(y), Σ(sin(ifft2(f × w))) + Σ(f^2 × w) ÷ 50", "(0..<60 = 22) ⍴ [6, 10]", 0.01)
+    check("x: cos(0..<(64*64) × 0.9) ⍴ [64, 64], w: exp(-(0..<64 ⊗(+) 0..<33) ÷ 9)", "Σ(sin(ifft2(fft2(y) × w)))", "(0..<(64*64) = 1000) ⍴ [64, 64]", 0.01)
   })
   test("scan is a running fold, ∇ included", () => {
     expect(value("[1, 2, 3, 4] scan +")).toEqual([1, 3, 6, 10])
