@@ -1959,6 +1959,39 @@ describe("gallery examples smoke suite", () => {
     expect(edited.glass).toBe(scope.glass)
     flushRetirements()
   }, 60_000)
+  test("the moiré sheets learn their secret, and the leak says how much of it a sheet alone gives away", () => {
+    steps.length = 0
+    const scope = scopeOf(EXAMPLES["moire-secret"])
+    const read = (expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope))
+    const loss = read("𝓛()") as number
+    for (let i = 0; i < 4; i++) { steps[0]!(engine.scalar(i)) }
+    expect(read("𝓛()")).toBeLessThan(loss / 2)
+    // a pair made by hand: random cells in A, and B the same cells on the letters and their
+    // opposite off them – each sheet alone is noise, so it gives away almost nothing
+    read("r: ⚄([N, N]) < 0.5, a:= (2×r - 1 × 20), b:= (2×where(secret() > 0.5, r, 1 - r) - 1 × 20)")
+    const fair = read("leak()") as number[]
+    expect(Math.max(...fair)).toBeLessThan(0.08)
+    // a sheet A that is the word itself gives it all away; B, noise, gives little
+    read("a:= (2×secret() - 1 × 20), b:= (2×(⚄([N, N]) < 0.5) - 1 × 20)")
+    const [shownA, shownB] = read("leak()") as number[]
+    expect(shownA).toBeGreaterThan(0.5)
+    expect(shownB).toBeLessThan(0.2)
+    flushRetirements()
+  }, 120_000)
+  test("learning in frequencies: from the same edges, the waves' picture is three times nearer the truth after 30 steps", () => {
+    steps.length = 0
+    const scope = scopeOf(EXAMPLES["frequency-space"])
+    const read = (expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope)) as number
+    const before = [read("miss(byPixel)"), read("miss(byWave())")]
+    for (let i = 0; i < 30; i++) { steps[0]!(engine.scalar(i)) }
+    // both losses fall, the waves' further
+    expect(read("miss(byPixel)")).toBeLessThan(before[0]! / 10)
+    expect(read("miss(byWave())")).toBeLessThan(read("miss(byPixel)"))
+    const off = (picture: string) => read(`√μ((${picture} - truth)^2)`)
+    expect(off("byWave()") * 3).toBeLessThan(off("byPixel"))
+    expect(read("#lossL()")).toBe(30)
+    flushRetirements()
+  }, 120_000)
   test("deep-delta-learning learns a function: one number in, one out, right where it never trained", () => {
     steps.length = 0
     const scope = scopeOf(EXAMPLES["deep-delta-learning"])
