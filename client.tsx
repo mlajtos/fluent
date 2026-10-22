@@ -1348,11 +1348,12 @@ function fluentTokenAt(model: editor.ITextModel, position: monaco.Position): str
   return line.slice(start, end + 1)
 }
 
-// A hover or completion card: signature, one-liner, worked example. Completion's details
-// pane already shows the signature as its header, so its body leaves it out.
+// A hover or completion card: signature, one-liner, the value's other names, worked
+// example. Completion's details pane already shows the signature as its header, so its
+// body leaves it out.
 const fenced = (code?: string) => code && "```fluent\n" + code + "\n```"
 const docCard = (m: Doc, signature = true): string =>
-  [signature && fenced(m.signature), m.doc, fenced(m.example)].filter(Boolean).join("\n\n")
+  [signature && fenced(m.signature), m.doc, m.also && "Also " + m.also.map((name) => "`" + name + "`").join(", "), fenced(m.example)].filter(Boolean).join("\n\n")
 
 // Monaco's language setup is global, so it runs once, as the page loads – before any
 // editor mounts or any text is colorized. register*Provider calls accumulate, each one

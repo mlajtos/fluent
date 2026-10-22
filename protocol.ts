@@ -22,7 +22,7 @@ export type Where = { s: [number, number], e: [number, number], d: number }
 // A syntax tree as the tree view draws it
 export type Tree = { label: string, o: Where, children: Tree[] }
 
-export type Doc = { signature?: string, doc?: string, example?: string }
+export type Doc = { signature?: string, doc?: string, example?: string, also?: string[] }
 
 export type Desc = { o?: Where } & (
   | { k: "null" }

@@ -2637,6 +2637,18 @@ describe("the evaluation host", () => {
     const ready = inbox.find((m) => m.t === "ready") as Extract<ToPage, { t: "ready" }>
     const sum = ready.names.find(([name]) => name === "sum")
     expect(sum?.[2]?.doc).toContain("Sum of the elements")
+    // a glyph and its word are one value, and each card names the other
+    const card = (name: string) => ready.names.find(([n]) => n === name)?.[2]
+    expect(card("√")?.also).toContain("root")
+    expect(card("root")?.also).toContain("√")
+    expect(card("$")?.also).toContain("signal")
+    expect(card("⌺")?.also).toContain("moving")
+    // every arithmetic glyph has a card that names its words
+    expect(card("+")?.doc).toContain("add(x, y)")
+    expect(card("-")?.doc).toContain("neg(x)")
+    expect(card("×")?.also).toContain("*")
+    expect(card("⌈")?.doc).toContain("maximum(x, y)")
+    expect(card("⌊")?.doc).toContain("floor(x)")
     // the Tour is built only when read, and listed all the same
     expect(ready.names.find(([name]) => name === "Tour")?.[2]?.doc).toContain("tour")
   })

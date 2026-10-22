@@ -836,9 +836,16 @@ export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
   seeing = scope as unknown as typeof seeing
   // the color table, decoded once
   engine.materialize([scope["DrawViridisTable"] as engine.Tensor])
+  // a value bound under several names – √ and root, # and length – lists the others on its card
+  const namesOf = new Map<unknown, string[]>()
   for (const key in scope) {
-    const value = scope[key], meta = typeof value === "function" ? getMeta(value) : {}
-    names.push([key, meta.signature ?? (typeof value === "function" ? "function" : String(value).slice(0, 50)), docOf(value) ?? null])
+    const value = scope[key]
+    if (typeof value === "function") { namesOf.set(value, [...(namesOf.get(value) ?? []), key]) }
+  }
+  for (const key in scope) {
+    const value = scope[key], meta = typeof value === "function" ? getMeta(value) : {}, doc = docOf(value)
+    const also = namesOf.get(value)?.filter((name) => name !== key)
+    names.push([key, meta.signature ?? (typeof value === "function" ? "function" : String(value).slice(0, 50)), doc ? { ...doc, ...(also?.length && { also }) } : null])
   }
   post({ t: "ready", names })
   return receive

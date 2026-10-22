@@ -67,7 +67,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | `≡` | `match` | `Match` |
 | `.` | `pipe` | `FunctionPipe` |
 | `@` | `apply` | `FunctionApply` |
-| `$` | — | `Reactive` |
+| `$` | `signal` | `Reactive` |
 | `⊛` | `conv` | `TensorConvolution` |
 
 Some cells are still empty — the language is young, and names are earned.
