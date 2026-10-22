@@ -473,6 +473,20 @@ fft: TensorFFT: doc({ x |
   },
   cond(guard(n≥64 ∧ 2^round(log2(n))=n, radix2), dft)
 }, "fft(x)", "The spectrum of x along its last axis: the m = n ÷ 2 + 1 frequencies of a real signal, stacked as (real, imaginary). A power-of-two length takes the fast path.", "fft([1, 0, 0, 0]) = [[1, 1, 1], [0, 0, 0]]"),
+; a real signal's spectrum at all n frequencies, from the m that fft gives: past them,
+; each is the mirror image of one of them, conjugated
+TensorSpectrumWhole: { f, n | k: 0..<n, g: moveaxis(moveaxis(f, -1, 0)_(k ⌊ (n - k)), 0, -1), stack((g_0, g_1 × where(2×k > n, -1, 1))) },
+; the spectrum of complex values z, stacked as (real, imaginary), at all n frequencies:
+; fft(a + ib) is fft(a) + i·fft(b), the spectra of two real signals
+TensorComplexFFT: { z | f: TensorSpectrumWhole(fft(z), #(z, -1)), stack((f_0_0 - f_1_1, f_1_0 + f_0_1)) },
+; and back: the conjugate of the spectrum of the conjugate, over n
+TensorComplexInverseFFT: { z | f: TensorComplexFFT(stack((z_0, (-z_1)))), stack((f_0, (-f_1))) ÷ #(z, -1) },
+ifft: TensorInverseFFT: doc({ z, n |
+  N: cond(guard(identical(n, ◌), { #(z, -1) - 1 × 2 }), { n }),
+  TensorComplexInverseFFT(TensorSpectrumWhole(z, N))_0
+}, "ifft(z, n?)", "The signal whose spectrum is z – fft undone. z holds m frequencies as (real, imaginary); the signal has 2 × (m - 1) values, or n if given – an odd n has the same m as n - 1.", "ifft(fft([1, 2, 3, 4])) ≈ [1, 2, 3, 4], ifft(fft([1, 2, 3]), 3) ≈ [1, 2, 3]"),
+fft2: TensorFFT2: doc({ x | moveaxis(TensorComplexFFT(moveaxis(fft(x), -1, -2)), -1, -2) }, "fft2(x)", "The spectrum of a picture x, [h, w]: fft along each row, then down each column. (real, imaginary), each [h, w ÷ 2 + 1] – the frequencies of the other half mirror these.", "fft2([[1, 0], [0, 0]]) = [[[1, 1], [1, 1]], [[0, 0], [0, 0]]]"),
+ifft2: TensorInverseFFT2: doc({ z, n | ifft(moveaxis(TensorComplexInverseFFT(moveaxis(z, -1, -2)), -1, -2), n) }, "ifft2(z, n?)", "The picture whose spectrum is z – fft2 undone: back down each column, then along each row, to n values a row as ifft gives them.", "ifft2(fft2([[1, 2], [3, 4]])) ≈ [[1, 2], [3, 4]]"),
 meshgrid: doc(TensorMeshgrid, "meshgrid(xs, ys, …)", "Coordinate grids: each argument spread over the whole grid – the first varies along the columns, the second down the rows.", "meshgrid([1, 2], [3, 4])_0 = [[1, 2], [1, 2]]"),
 pad: TensorPad: doc({ x, w | fold(0..<(#shape(x)), { y, k | padAxis(y, k, w, w) }, x) }, "pad(x, w)", "w zeros around x, on both sides of every axis.", "pad([1, 2], 1) = [0, 1, 2, 0]"),
 repeat: TensorRepeat: doc({ x, n | f: flat(x), broadcast(f ⍴ [-1, 1], [#f, n]) ⍴ [-1] }, "repeat(x, n)", "Each element of x, n times in a row.", "repeat([1, 2], 2) = [1, 1, 2, 2]"),
