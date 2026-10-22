@@ -905,7 +905,8 @@ leak: \${
   s: sheets(), v: seen(s_0, s_1), c: { k | abs(contrast(v_k)) ⌈ abs(contrast(v_(k+2) - v_k^2)) },
   [c(1), c(2)] ÷ abs(contrast(v_0))
 },
-percent: { x | String(round(x × 1000) ÷ 10) },
+; in tenths of a percent, and no division: a GPU divides only nearly exactly
+percent: { x | t: round(x × 1000), d: t % 10, StringConcat(String(round(t - d × 0.1)), ".", String(d)) },
 told: \${ StringConcat("From afar, sheet A alone shows ", percent(leak()_0), " % of the word the pair shows, and sheet B ", percent(leak()_1), " %.") },
 
 ; a sheet at the points (x, y), clear past its edges, and the ink of the light through it
@@ -961,18 +962,23 @@ byWave: { ifft2(waves ÷ k, N) × N },
 
 ; each at its best rate: the lowest loss after 300 steps, over three starts
 optL: adam(0.1), optR: adam(3),
-lossL: $[], lossR: $[],
+; the race: T steps, 60 a second. Each step's two losses are kept in one place of fixed
+; size, so the plot of them keeps its plan as it grows
+T: 900,
+losses: ~~fill([2, T], 1), done: $0,
 { i |
   a: optL({ miss(byPixel) }), b: optR({ miss(byWave()) }),
-  lossL(lossL() concat [a]), lossR(lossR() concat [b])
-} ⟳ Time()×60 ⌊ 900,
+  losses:= where(0..<T = i, [a, b] ⍴ [2, 1], losses),
+  done← i + 1
+} ⟳ Time()×60 ⌊ T,
 
 ; how they look: each cell s units wide, in the colors of a sunset
 dusk: ramp([[0.05, 0.03, 0.15], [0.45, 0.12, 0.35], [0.95, 0.45, 0.25], [1, 0.9, 0.6]]),
 view: { pic, s | canvas(s×N, s×N) . paint({ p | q: floor(moveaxis(p, -1, 0) ÷ s) ⌊ (N-1), flat(pic)_(q_1 × N + q_0) }, dusk) },
 asPixels: \${ view(byPixel, 2) },
 asWaves: \${ view(byWave(), 2) },
-curves: \${ n: #lossL(), plot(0..<n + 1, (log10(lossL()), log10(lossR())), ("pixels", "waves")) },
+; a step not taken yet sits on the last one taken, so the lines end there
+curves: \${ s: 0..<T ⌊ (done() - 1 ⌈ 0), plot(s + 1, log10(transpose(transpose(losses)_s)), ("pixels", "waves")) },
 
 (
   Text("# 🌊 Learning in frequencies"),

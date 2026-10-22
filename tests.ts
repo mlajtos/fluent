@@ -1989,7 +1989,7 @@ describe("gallery examples smoke suite", () => {
     expect(read("miss(byWave())")).toBeLessThan(read("miss(byPixel)"))
     const off = (picture: string) => read(`√μ((${picture} - truth)^2)`)
     expect(off("byWave()") * 3).toBeLessThan(off("byPixel"))
-    expect(read("#lossL()")).toBe(30)
+    expect(read("done()")).toBe(30)
     flushRetirements()
   }, 120_000)
   test("deep-delta-learning learns a function: one number in, one out, right where it never trained", () => {
