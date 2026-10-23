@@ -444,6 +444,7 @@ isNaN: doc(TensorIsNaN, "isNaN(x)", "Where an element is not a number (like 0 ÷
 𝕀: eye: TensorIdentity: doc({ n | 0..<n (⊗ =) 0..<n }, "𝕀(n)", "The n×n identity matrix – 1 on the diagonal, 0 elsewhere.", "eye(2) = [[1, 0], [0, 1]]"),
 dot: doc(TensorDotProduct, "dot(a, b)", "The dot product of two vectors, Σ(a × b).", "dot([1, 2], [3, 4]) = 11"),
 matmul: doc(TensorMatrixMultiply, "matmul(a, b)", "Matrix multiplication: each row of a with each column of b; leading axes batch. Also a (× ∙ +) b.", "matmul([[1, 2]], [[3], [4]]) = [[11]]"),
+TensorApply: doc(TensorApply, "A(x)  ·  x A y", "A list or a grid of numbers is a function: A(x) multiplies each row of A with x and adds up. A list of numbers measures, a grid turns and stretches. Given many lists, one a row, it maps each – W(x) is matmul(x, transpose(W)). x A y is Σ(x × A(y)), and A() is A. ∘, ⍣, ⍤ and ∇ take it as a function; a hook holds it constant. A number is not a function: to multiply, write ×.", "[[0, -1], [1, 0]]([3, 4]) = [-4, 3], [1, 2, 3]([4, 5, 6]) = 32, [1, 0] [[1, 2], [3, 4]] [0, 1] = 2"),
 fft: TensorFFT: doc({ x |
   n: #(x, -1), m: floor(n ÷ 2) + 1,
   ; any length: the DFT as one matrix, n × m

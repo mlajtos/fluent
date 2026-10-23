@@ -206,6 +206,102 @@ describe("combinators", () => {
   })
 })
 
+// An array applied is its linear map: A(x) meets A's last axis with x's last, and x's
+// leading axes are a frame – W(x) is F.linear, built as matmul builds it
+describe("an array applied is its linear map", () => {
+  test("A(x) maps each row of x: K(Q) is Q·Kᵀ", () => {
+    expect(value("[[0, -1], [1, 0]]([3, 4])")).toEqual([-4, 3])
+    expect(value("[1, 2, 3]([4, 5, 6])")).toBe(32)
+    const KQ = "K: [[1, 2], [3, 4], [5, 6]], Q: [[1, 0], [0, 1], [1, -1], [2, 3]]"
+    expect(value(`${KQ}, K(Q)`)).toEqual(value(`${KQ}, matmul(Q, transpose(K))`))
+    expect(value(`${KQ}, shape(K(Q))`)).toEqual([4, 3])
+    // a frame of any rank; an array of any rank, its leading axes last
+    expect(value("T: fill([2, 3, 4], 1), shape(T(fill([5, 6, 4], 1)))")).toEqual([5, 6, 2, 3])
+  })
+  test("x A y is the bilinear form xᵀAy, frame by frame", () => {
+    expect(value("[1, 0] [[1, 2], [3, 4]] [0, 1]")).toBe(2)
+    const xy = "A: [[1, 2], [3, 4]], x: [[1, 0], [2, 1], [-1, 3]], y: [[0, 1], [1, 1], [2, -2]]"
+    expect(value(`${xy}, x A y`)).toEqual([2, 13, -4])
+    expect(value(`${xy}, x A y`)).toEqual(value(`${xy}, Σ(x × matmul(y, transpose(A)), -1)`))
+  })
+  test("A() is A", () => {
+    expect(value("A: [[1, 2], [3, 4]], A()")).toEqual([[1, 2], [3, 4]])
+  })
+  test("a number is not a function: 2(3), x -2 and 2 x stay errors", () => {
+    for (const source of ["2(3)", "2(3 + 4)", "x: 5, x -2", "x: 5, 2 x", "x: 5, x()"]) {
+      expect([source, (run(source) as Error).message]).toEqual([source, "a number is not a function"])
+    }
+    // nor does an array take a number: xs -1 is no subtraction
+    expect((run("xs: [1, 2, 3], xs -1") as Error).message).toBe("a list of 3 numbers, applied, takes lists of 3 numbers – got a number")
+  })
+  test("a length that doesn't fit is an Error that names both lengths", () => {
+    expect((run("A: [[1, 2], [3, 4]], A([1, 2, 3])") as Error).message).toBe("numbers of shape [2 2], applied, take lists of 2 numbers – got a list of 3 numbers")
+    expect((run("[1, 2, 3] [[1, 2], [3, 4]] [1, 2]") as Error).message).toBe("numbers of shape [2 2] take lists of 2 numbers on the left, x A y – got a list of 3 numbers")
+    expect(run("A: [[1, 2], [3, 4]], A([1, 2], [1, 2], [1, 2])")).toBeInstanceOf(Error)
+    expect(run("[1, 2] [1, 2] [1, 2]")).toBeInstanceOf(Error)
+  })
+  test("⍣, ⍤, 𝕀 and ∘ take an array as its map", () => {
+    expect(value("F: [[1, 1], [1, 0]], (F ⍣ 10)([1, 0])")).toEqual([89, 55])
+    const Ax = "A: [[1, 2], [3, 4]], x: [1, -1]"
+    expect(value(`${Ax}, (A ⍣ 3)(x)`)).toEqual(value(`${Ax}, A(A(A(x)))`))
+    const AX = "A: [[1, 2], [3, -4], [0, 5]], X: [[1, 2], [3, 4], [5, 6], [7, 8]]"
+    expect(value(`${AX}, (A ⍤ 1)(X)`)).toEqual(value(`${AX}, A(X)`))
+    expect(value("𝕀(3)([4, 5, 6])")).toEqual([4, 5, 6])
+    const W = "W1: [[1, 2], [3, 4], [5, 6]], W2: [[1, 0, 1], [0, 1, 1]], x: [[1, 2], [-1, 0]]"
+    expect(value(`${W}, (W1 ∘ W2)(x)`)).toEqual(value(`${W}, W2(W1(x))`))
+    expect(value(`${W}, (W1 ∘ gelu ∘ W2)(x)`)).toEqual(value(`${W}, W2(gelu(W1(x)))`))
+  })
+  test("a hook and a fork hold an array constant", () => {
+    expect(value("isFunction([1, 2])")).toBe(0)
+    expect(value("W: [1, 2], (W ⊸ +)(10)")).toEqual([11, 12])
+    expect(value("(÷ ⟜ [2, 4])(8)")).toEqual([4, 2])
+    expect(value("Φ([1, 2], +, √)(9)")).toEqual([4, 5])
+  })
+  const at = "W: sin(0..<12) ⍴ [3, 4], X: cos(0..<20) ⍴ [5, 4], V: sin(0..<15 × 0.3) ⍴ [5, 3]"
+  test("∇ through W(x) is matmul's gradient, exactly", () => {
+    expect(value(`${at}, (∇{ w | Σ(V × w(X)) })(W)`)).toEqual(value(`${at}, (∇{ w | Σ(V × matmul(X, transpose(w))) })(W)`))
+    expect(value(`${at}, (∇{ x | Σ(V × W(x)) })(X)`)).toEqual(value(`${at}, (∇{ x | Σ(V × matmul(x, transpose(W))) })(X)`))
+    // ∇ takes an array as its map: Aᵀ applied to ones
+    expect(value("A: [[1, 2], [3, 4]], (∇A)([0, 0])")).toEqual([4, 6])
+  })
+  test("W(x) builds matmul's graph: the engine plans the same kernels, and its ∇ too", async () => {
+    const { canonical, optimizeMany } = await import("./engine/opt.ts")
+    const { toposort, buffer } = await import("./engine/ir.ts")
+    // the inputs are buffers, as a plan's slots are: nothing folds them away
+    const scope = createScope()
+    Object.assign(scope, { W: new engine.Tensor(buffer("W", [3, 4])), X: new engine.Tensor(buffer("X", [5, 4])), V: new engine.Tensor(buffer("V", [5, 3])) })
+    const plan = (source: string) => {
+      const t = evaluateIn(source, scope) as engine.Tensor
+      return { key: canonical([t.node]).key, kernels: toposort(optimizeMany([t.node])).filter((u) => u.op === "FUSED").length }
+    }
+    const forward = plan("W(X)")
+    expect(forward).toEqual(plan("matmul(X, transpose(W))"))
+    expect(forward.kernels).toBe(1)
+    const backward = plan("(∇{ w | Σ(V × w(X)) })(W)")
+    expect(backward).toEqual(plan("(∇{ w | Σ(V × matmul(X, transpose(w))) })(W)"))
+  })
+  test("W(x) on the CPU is exact where its sums are – the case tests.browser.ts runs on the GPU", () => {
+    // whole numbers whose sums float32 holds exactly, in any order
+    const W = Array.from({ length: 64 }, (_, o) => Array.from({ length: 48 }, (_, k) => (o * 48 + k) % 7 - 3))
+    const X = Array.from({ length: 32 }, (_, b) => Array.from({ length: 48 }, (_, k) => (b * 48 + k) % 5 - 2))
+    const reference = X.map((x) => W.map((w) => w.reduce((s, v, k) => s + v * x[k]!, 0)))
+    expect(value("W: (0..<3072 % 7 - 3) ⍴ [64, 48], X: (0..<1536 % 5 - 2) ⍴ [32, 48], W(X)")).toEqual(reference)
+  })
+  test("a model written W1 ∘ gelu ∘ W2 trains bit for bit like the one written with matmul", () => {
+    const model = (loss: string) => `X: sin(0..<24 × 0.7) ⍴ [6, 4], Y: cos(0..<18 × 0.3) ⍴ [6, 3],
+      W1: ~(sin(0..<32 × 1.3) ⍴ [8, 4] × 0.5), W2: ~(cos(0..<24 × 0.9) ⍴ [3, 8] × 0.5),
+      ffn: W1 ∘ gelu ∘ W2, 𝓛: { μ((${loss} - Y)^2) }, opt: adam(0.05), step: { opt(𝓛) }`
+    const train = (loss: string) => {
+      const scope = scopeOf(model(loss))
+      const losses = Array.from({ length: 5 }, () => unwrap(occurrence(() => (scope.step as Function)())))
+      return [losses, unwrap(scope.W1), unwrap(scope.W2)]
+    }
+    const applied = train("ffn(X)")
+    expect(applied).toEqual(train("matmul(gelu(matmul(X, transpose(W1))), transpose(W2))"))
+    expect(applied[0][4]).toBeLessThan(applied[0][0])
+  })
+})
+
 describe("tensors", () => {
   test("broadcasting", () => {
     expect(value("[1, 2, 3] + 1")).toEqual([2, 3, 4])
@@ -2422,7 +2518,9 @@ describe("error messages carry context", () => {
   })
   test("calling what isn't a function says what it is, in the tour's words", () => {
     expect(chain("sine(1)")).toEqual([{ message: "unknown name: sine", user: true, line: 1 }])
-    expect(chain("x: [1, 2, 3], x[0]")).toEqual([{ message: "a list of 3 numbers is not a function", user: true, line: 1 }])
+    expect(chain("x: 5, x[0]")).toEqual([{ message: "a number is not a function", user: true, line: 1 }])
+    // an array applied is its linear map: one that doesn't fit says what it takes
+    expect(chain("x: [1, 2, 3], x[0]")).toEqual([{ message: "a list of 3 numbers, applied, takes lists of 3 numbers – got a list of 1 number", user: true, line: 1 }])
     // an Error in call position is that Error, not "'Error: …' is not a function"
     expect(chain("(double ⍣ 5)(1)").map((l) => l.message)).toEqual(["`(f ⍣ n)`: `f` must be a function, got the unknown name double"])
     expect(chain("x: [1, 2], W: ~[3, 4], loss: Σ(x × W), opt: adam(0.1), opt(loss)")[0]!.message).toContain("write it in braces")

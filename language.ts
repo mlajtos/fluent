@@ -573,11 +573,12 @@ const readsCell = (fn: Function, args: Value[]): boolean =>
   lambdas.has(fn) || shallow.has(fn) ? args.some((a) => a instanceof Signal) : args.some(containsSignal)
 
 // The one way a function is applied. A signal is called to read it, s(), or to write it,
-// s(v). An application whose arguments hold signals is a computed that recomputes with
-// their current values, unless the function takes signals as they are (noAutoLift); the
-// engine fuses whatever a chain of computeds builds, at the read. Called for a node, the
-// result is named by it, and the engine ops it builds carry its site – a reader's call
-// only: inside the prelude the reader's call that reached it stays the site.
+// s(v). An array is applied as its linear map, TensorApply. An application whose arguments
+// hold signals is a computed that recomputes with their current values, unless the
+// function takes signals as they are (noAutoLift); the engine fuses whatever a chain of
+// computeds builds, at the read. Called for a node, the result is named by it, and the
+// engine ops it builds carry its site – a reader's call only: inside the prelude the
+// reader's call that reached it stays the site.
 // KNOWN WART: arity is not checked, so +(1, 2, 4) is 3 – see arity-plan.md.
 function safeApply(fn: Value, args: Value[], env: CurrentScope, node?: { origin: Origin }): Value {
   // a cell holding a function is applied as the function it holds – in a definition, as
@@ -587,6 +588,7 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope, node?: { origin:
     const live = computed(() => safeApply(fn.value, args, env, node))
     return node ? located(live, node) : live
   }
+  if (isMap(fn)) { return safeApply(TensorApply, [fn, ...args], env, node) }
   if (!isFn(fn) || getMeta(fn).noAutoLift) { return appliedAt(fn, args, env, node) }
   if (sampling) {
     if (lambdas.has(fn)) { return appliedAt(fn, args, env, node) }
@@ -764,7 +766,8 @@ const CodeEvaluate = function (this: CurrentScope, program: Value) {
 // invert(f) runs |n| times – the prelude passes its Newton inverse, so this loop never
 // decides how inversion is done. A dyadic x (f ⍣ n) y iterates f(x, ·) from y, as in APL.
 const REPEAT_UNTIL_BUDGET = 10000
-const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert?: Value) {
+const FunctionRepeat = function (this: CurrentScope, f: Value, n: Value, invert?: Value) {
+  const fn = asMap(f)
   if (!isFn(fn)) { return new Error(`\`(f ⍣ n)\`: \`f\` must be a function, got ${describeArg(fn)}`) }
   const until = isFn(n) ? n : null
   let times = 0
@@ -883,12 +886,19 @@ const FunctionMemo = (f: Value) => {
 // function: a (f ∘ g) b.
 
 const isFn = (v: Value): v is Function => typeof v === "function"
+// An array of rank ≥ 1 applies too: it is its linear map (TensorApply). A number does not,
+// so 2(3 + 4) and x -2 stay mistakes. A slot that takes nothing but a function – ∘, ⍣,
+// ⍤, ∇ – takes an array as its map; the hooks and the fork hold one as a constant, and
+// isFunction is 0 for it.
+const isMap = (v: Value): v is engine.Tensor => isTensor(v) && v.ndim > 0
+const asMap = (v: Value): Value => isMap(v) ? made(function (...args: Value[]) { return TensorApply(v, ...args) }) : v
 
 // Q (Queer bird) – then: apply f, then g to the result. Reading order is evaluation
 // order – (f ∘ g)(…x) = g(f(…x)) – so this is APL's atop (B/B₁) with the tines swapped
 // to read left to right, like the . pipe. It passes on any number of arguments, so
 // List ∘ f is a function of any number of them.
-const FunctionThen = (f: Value, g: Value) => {
+const FunctionThen = (a: Value, b: Value) => {
+  const f = asMap(a), g = asMap(b)
   if (!isFn(f) || !isFn(g)) { return new Error("`(f ∘ g)`: both operands must be functions") }
   return made(function (this: CurrentScope, ...args: Value[]) { return safeApply(g, [safeApply(f, args, this)], this) })
 }
@@ -1278,6 +1288,28 @@ for (const [op, reduction] of [["TensorAdd", "TensorSum"], ["TensorMultiply", "T
   setMeta(BINARY[op]!, { reducer: REDUCTIONS[reduction] as (x: Value, axis?: Value) => Value })
 }
 
+// An array applied is its linear map. A(x) meets A's last axis with x's last, and x's
+// leading axes are a frame: each row of x is mapped, so W(x) is matmul(x, transpose(W)) –
+// the graph matmul builds. x A y is the bilinear form Σ(x × A(y)) over the same frames, and
+// A() is A. A number is not a function.
+const TensorApply = (map: Value, ...args: Value[]): Value => {
+  const A = tensorArg(map)
+  if (!A.ndim) { throw new Error("a number is not a function") }
+  if (args.length > 2) { throw new Error(`an array applied takes one list of numbers, or two – x A y – got ${args.length}`) }
+  if (!args.length) { return A }
+  if (args.length === 1) { return linearMap(A, args[0]!) }
+  if (A.ndim !== 2) { throw new Error(`x A y takes a grid of numbers between x and y, got ${describeArg(A)}`) }
+  const x = tensorArg(args[0]!)
+  if (x.shape.at(-1) !== A.shape[0]) { throw new Error(`${describeArg(A)} take lists of ${A.shape[0]} numbers on the left, x A y – got ${describeArg(x)}`) }
+  return engine.sum(engine.multiply(x, linearMap(A, args[1]!)), -1)
+}
+const linearMap = (A: engine.Tensor, a: Value): engine.Tensor => {
+  const x = tensorArg(a), n = A.shape.at(-1)!, out = A.shape.slice(0, -1)
+  if (x.shape.at(-1) !== n) { throw new Error(`${describeArg(A)}, applied, ${A.ndim === 1 ? "takes" : "take"} lists of ${n} numbers – got ${describeArg(x)}`) }
+  const y = engine.matmul(x, engine.transpose(engine.reshape(A, [out.reduce((p, q) => p * q, 1), n])))
+  return engine.reshape(y, [...x.shape.slice(0, -1), ...out])
+}
+
 // stack broadcasts its inputs to a common shape, as arithmetic does: stack(x - a, y - b)
 // works when the pieces only meet by broadcasting
 const broadcastRefs = (values: Value[]): engine.Tensor[] => {
@@ -1302,7 +1334,8 @@ const TensorUnstack = (a: Value, b?: Value): Value[] => {
 // numbers – a branch on them, a bounds check – or writes state, which it may not do
 // while it is traced, runs cell by cell instead. With no cells, f on a cell of zeros
 // tells the shape of the result's cells, as in J.
-const TensorRank = (f: Value, k?: Value) => {
+const TensorRank = (map: Value, k?: Value) => {
+  const f = asMap(map)
   if (!isFn(f)) { return new Error(`\`(f ⍤ k)\`: \`f\` must be a function, got ${describeArg(f)}`) }
   const rank = k == null ? 0 : asWhole(k)
   return made(function (this: CurrentScope, a: Value, b?: Value) {
@@ -1409,7 +1442,8 @@ const differentiated = (body: string, trace: ((cell: Signal, value: unknown) => 
 // one per-element derivatives – ∇({x | x^2}) works on vectors
 // A loss written without braces is a value, read once: grad needs the function that
 // recomputes it.
-const TensorGradient = (f: Value) => {
+const TensorGradient = (map: Value) => {
+  const f = asMap(map)
   if (!isFn(f)) { return new Error(`\`grad(f)\`: \`f\` must be a function, got ${describeArg(f)} – write it in braces, { … }, so each step recomputes it`) }
   return made((x: Value) => x == null ? gradientOfReads(f) : differentiated("`grad(f)`: `f`", null, () => {
     const [out, pullback] = engine.vjp((traced: engine.Tensor) => {
@@ -1820,7 +1854,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc, FunctionIdentity,
   Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate,
   ...UNARY, ...BINARY, ...REDUCTIONS,
-  TensorStack, TensorUnstack, TensorRank, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
+  TensorApply, TensorStack, TensorUnstack, TensorRank, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
   TensorPermute, TensorBroadcast, TensorPadAxis, TensorWindow, TensorScatterAdd, TensorRange,
   TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorShape,
   TensorWhere, TensorSlice, TensorVariable, TensorData, TensorRandomUniform, TensorMemoryOf,
