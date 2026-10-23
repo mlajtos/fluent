@@ -522,6 +522,20 @@ test("fft2, ifft2 and ∇ through them on the GPU agree with the DFT", async ({ 
   expect(worst).toBeLessThan(1e-5)
 })
 
+test("an array applied on the GPU gives what the CPU gives, and what matmul gives", async ({ page }) => {
+  // W(X)'s 98,304 products are past the host's share, so the GPU computes them; whole
+  // numbers whose sums float32 holds exactly, in any order – tests.ts runs this case on the CPU
+  const W = Array.from({ length: 64 }, (_, o) => Array.from({ length: 48 }, (_, k) => (o * 48 + k) % 7 - 3))
+  const X = Array.from({ length: 32 }, (_, b) => Array.from({ length: 48 }, (_, k) => (b * 48 + k) % 5 - 2))
+  const reference = X.flatMap((x) => W.map((w) => w.reduce((s, v, k) => s + v * x[k]!, 0)))
+  await open(page, `W: (0..<3072 % 7 - 3) ⍴ [64, 48], X: (0..<1536 % 5 - 2) ⍴ [32, 48],
+Text(String((Σ(abs(W(X) - matmul(X, transpose(W)))), W(X))))`)
+  await expect(panel(page)).toContainText("[[", { timeout: 30_000 })
+  expect(await page.evaluate(() => "gpu" in navigator)).toBe(true)
+  const numbers = (await panel(page).innerText()).match(/-?\d+(\.\d+)?(e-?\d+)?/g)!.map(Number)
+  expect(numbers).toEqual([0, ...reference])
+})
+
 test("printing a documented built-in shows its doc card, never JS internals", async ({ page }) => {
   await open(page, "sum")
   await expect(panel(page)).toContainText("Sum of the elements")

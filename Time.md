@@ -34,7 +34,9 @@ instant. The three kinds differ in one fact:
 | `~~v`, `$v` | no |
 
 So a `~` is a cell plus an identity that ∇ can move along. `~~` and `$` are read the
-same way; `:=` writes the tensor cells (`~`, `~~`), and lists of them at once.
+same way. `←` and `:=` are one write with two spellings: it writes any cell, and a list
+of cells takes a list of as many values, every one read before any is written – so
+`(a, b) ← (b, a)` swaps. A `~` or `~~` takes numbers only.
 
 **A computed** – `${ … }`, or an application that reads a cell where the program is
 being defined (§2) – is a function of the cells: `b(t)` is its body with every cell
@@ -103,9 +105,9 @@ in a step is its own".
 
 ## 3. One write semantics
 
-A write – `s(v)`, `s← v`, `θ:= v`, and making a cell – stores the value now. A live value
-is read, never followed; a list keeps the cells it holds as identities. To follow a
-value, define it: `s: ${ x × 2 }`.
+A write – `s(v)`, `s← v` (also spelled `s:= v`), and making a cell – stores the value
+now. A live value is read, never followed; a list keeps the cells it holds as
+identities. To follow a value, define it: `s: ${ x × 2 }`.
 
 A value read back from the GPU arrives later. `CodesToString` gives an `Arriving` cell,
 "" until the codes land. A native applied to one in an occurrence gives another, computed

@@ -317,11 +317,12 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     }
     case "Lambda": {
       const params = node.content.args.map((arg) => (arg as { content: { value: string } }).content.value)
+      const body = node.content.expr, statements = body.type === "Program" ? body.content : [body]
       const fn = function (...args: Value[]) {
         const local = Object.create(env) as CurrentScope
         // a missing argument is ◌, an argument not given
         params.forEach((p, i) => { local[p] = args[i] ?? null })
-        return evaluateSyntaxTreeNode(node.content.expr, local)
+        return block(statements, local)
       }
       lambdas.add(fn)
       return located(made(fn), node)
@@ -349,6 +350,19 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     case "Error": return located(new Error(node.content), node)
     default: return null // ◌
   }
+}
+
+// A block's statements run in reading order, and its value is the last one's. A statement
+// before the last that fails fails the block, which stops there: its Error would be dropped
+// unseen. A decline (NoMatch) is no failure – a choice that had nothing to do. A program's
+// top level shows each statement, so there every statement runs.
+const block = (statements: SyntaxTreeNode[], env: CurrentScope): Value => {
+  let last: Value = null
+  for (let i = 0; i < statements.length; i++) {
+    last = evaluateSyntaxTreeNode(statements[i]!, env)
+    if (i < statements.length - 1 && isFailure(last)) { return last }
+  }
+  return last
 }
 
 engine.Tensor.prototype.toString = function () {
@@ -559,11 +573,12 @@ const readsCell = (fn: Function, args: Value[]): boolean =>
   lambdas.has(fn) || shallow.has(fn) ? args.some((a) => a instanceof Signal) : args.some(containsSignal)
 
 // The one way a function is applied. A signal is called to read it, s(), or to write it,
-// s(v). An application whose arguments hold signals is a computed that recomputes with
-// their current values, unless the function takes signals as they are (noAutoLift); the
-// engine fuses whatever a chain of computeds builds, at the read. Called for a node, the
-// result is named by it, and the engine ops it builds carry its site – a reader's call
-// only: inside the prelude the reader's call that reached it stays the site.
+// s(v). An array is applied as its linear map, TensorApply. An application whose arguments
+// hold signals is a computed that recomputes with their current values, unless the
+// function takes signals as they are (noAutoLift); the engine fuses whatever a chain of
+// computeds builds, at the read. Called for a node, the result is named by it, and the
+// engine ops it builds carry its site – a reader's call only: inside the prelude the
+// reader's call that reached it stays the site.
 // KNOWN WART: arity is not checked, so +(1, 2, 4) is 3 – see arity-plan.md.
 function safeApply(fn: Value, args: Value[], env: CurrentScope, node?: { origin: Origin }): Value {
   // a cell holding a function is applied as the function it holds – in a definition, as
@@ -573,6 +588,7 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope, node?: { origin:
     const live = computed(() => safeApply(fn.value, args, env, node))
     return node ? located(live, node) : live
   }
+  if (isMap(fn)) { return safeApply(TensorApply, [fn, ...args], env, node) }
   if (!isFn(fn) || getMeta(fn).noAutoLift) { return appliedAt(fn, args, env, node) }
   if (sampling) {
     if (lambdas.has(fn)) { return appliedAt(fn, args, env, node) }
@@ -750,7 +766,8 @@ const CodeEvaluate = function (this: CurrentScope, program: Value) {
 // invert(f) runs |n| times – the prelude passes its Newton inverse, so this loop never
 // decides how inversion is done. A dyadic x (f ⍣ n) y iterates f(x, ·) from y, as in APL.
 const REPEAT_UNTIL_BUDGET = 10000
-const FunctionRepeat = function (this: CurrentScope, fn: Value, n: Value, invert?: Value) {
+const FunctionRepeat = function (this: CurrentScope, f: Value, n: Value, invert?: Value) {
+  const fn = asMap(f)
   if (!isFn(fn)) { return new Error(`\`(f ⍣ n)\`: \`f\` must be a function, got ${describeArg(fn)}`) }
   const until = isFn(n) ? n : null
   let times = 0
@@ -869,12 +886,19 @@ const FunctionMemo = (f: Value) => {
 // function: a (f ∘ g) b.
 
 const isFn = (v: Value): v is Function => typeof v === "function"
+// An array of rank ≥ 1 applies too: it is its linear map (TensorApply). A number does not,
+// so 2(3 + 4) and x -2 stay mistakes. A slot that takes nothing but a function – ∘, ⍣,
+// ⍤, ∇ – takes an array as its map; the hooks and the fork hold one as a constant, and
+// isFunction is 0 for it.
+const isMap = (v: Value): v is engine.Tensor => isTensor(v) && v.ndim > 0
+const asMap = (v: Value): Value => isMap(v) ? made(function (...args: Value[]) { return TensorApply(v, ...args) }) : v
 
 // Q (Queer bird) – then: apply f, then g to the result. Reading order is evaluation
 // order – (f ∘ g)(…x) = g(f(…x)) – so this is APL's atop (B/B₁) with the tines swapped
 // to read left to right, like the . pipe. It passes on any number of arguments, so
 // List ∘ f is a function of any number of them.
-const FunctionThen = (f: Value, g: Value) => {
+const FunctionThen = (a: Value, b: Value) => {
+  const f = asMap(a), g = asMap(b)
   if (!isFn(f) || !isFn(g)) { return new Error("`(f ∘ g)`: both operands must be functions") }
   return made(function (this: CurrentScope, ...args: Value[]) { return safeApply(g, [safeApply(f, args, this)], this) })
 }
@@ -993,15 +1017,32 @@ const heldValue = (v: Value): Value => Array.isArray(v) ? v.map(heldValue) : isT
 const SignalCreate = (<T,>(initial: T) => signal(heldValue(sampled(initial as Value)))) as typeof signal
 const SignalComputed = computed
 const SignalRead = (s: Value) => s instanceof Signal ? s.value : new Error(`'SignalRead': expected a signal, got ${describeArg(s)}`)
-// A write stores the value now – a live value is read, never followed; a list keeps the
-// cells it holds, as identities. A value still on its way is written again when it
-// arrives. A variable's write is :=, for tensors only.
+// A write is an occurrence: it stores the value now – a live value is read, never followed.
+// It is one write for every cell, spelled ← or :=. A signal takes any value, and a list
+// keeps the cells it holds, as identities. A variable (~ or ~~) takes numbers: an Error –
+// a failed expression, an emptied corpus – leaves it holding its last good value. A list
+// of cells takes a list of as many values, every one read before any is written, so
+// (a, b) ← (b, a) swaps, and their numbers are computed together. A value still on its
+// way is written again when it arrives.
 const SignalUpdate = (s: Value, v: Value): Value => {
-  if (s instanceof FluentVariable) { return TensorAssign(s, v) }
-  if (!(s instanceof Signal)) { return new Error(`'SignalUpdate': expected a signal, got ${describeArg(s)}`) }
-  if (s instanceof Computed) { return new Error("this live value is made from others – write the values it is made from") }
-  if (isArriving(v)) { v.arrival.then(() => SignalUpdate(s, v)) }
-  s.value = heldValue(sampled(v))
+  if (!Array.isArray(s)) { return writeCells([s], [v]) }
+  const vs = sampled(v)
+  return Array.isArray(vs) && vs.length === s.length ? writeCells(s, vs) : new Error("a list of cells takes a list of as many values")
+}
+const writeCells = (cells: Value[], given: Value[]): Value => {
+  const values = given.map(sampled)
+  for (const [i, s] of cells.entries()) {
+    const v = values[i]!
+    if (!(s instanceof Signal)) { return new Error(`← writes a signal ($) or a variable (~, ~~), got ${describeArg(s)}`) }
+    if (s instanceof Computed) { return new Error("this live value is made from others – write the values it is made from") }
+    if (s instanceof FluentVariable && !isTensor(v)) { return new Error(`a variable (~ or ~~) holds numbers, got ${describeArg(v)}`) }
+  }
+  engine.materialize(values.filter(isTensor))
+  cells.forEach((s, i) => {
+    const v = given[i]!
+    if (isArriving(v)) { v.arrival.then(() => SignalUpdate(s, v)) }
+    if (s instanceof FluentVariable) { s.assign(values[i] as engine.Tensor) } else { (s as Signal).value = heldValue(values[i]!) }
+  })
   return null
 }
 // $v: a signal holding v, or a computed signal of a thunk
@@ -1247,6 +1288,28 @@ for (const [op, reduction] of [["TensorAdd", "TensorSum"], ["TensorMultiply", "T
   setMeta(BINARY[op]!, { reducer: REDUCTIONS[reduction] as (x: Value, axis?: Value) => Value })
 }
 
+// An array applied is its linear map. A(x) meets A's last axis with x's last, and x's
+// leading axes are a frame: each row of x is mapped, so W(x) is matmul(x, transpose(W)) –
+// the graph matmul builds. x A y is the bilinear form Σ(x × A(y)) over the same frames, and
+// A() is A. A number is not a function.
+const TensorApply = (map: Value, ...args: Value[]): Value => {
+  const A = tensorArg(map)
+  if (!A.ndim) { throw new Error("a number is not a function") }
+  if (args.length > 2) { throw new Error(`an array applied takes one list of numbers, or two – x A y – got ${args.length}`) }
+  if (!args.length) { return A }
+  if (args.length === 1) { return linearMap(A, args[0]!) }
+  if (A.ndim !== 2) { throw new Error(`x A y takes a grid of numbers between x and y, got ${describeArg(A)}`) }
+  const x = tensorArg(args[0]!)
+  if (x.shape.at(-1) !== A.shape[0]) { throw new Error(`${describeArg(A)} take lists of ${A.shape[0]} numbers on the left, x A y – got ${describeArg(x)}`) }
+  return engine.sum(engine.multiply(x, linearMap(A, args[1]!)), -1)
+}
+const linearMap = (A: engine.Tensor, a: Value): engine.Tensor => {
+  const x = tensorArg(a), n = A.shape.at(-1)!, out = A.shape.slice(0, -1)
+  if (x.shape.at(-1) !== n) { throw new Error(`${describeArg(A)}, applied, ${A.ndim === 1 ? "takes" : "take"} lists of ${n} numbers – got ${describeArg(x)}`) }
+  const y = engine.matmul(x, engine.transpose(engine.reshape(A, [out.reduce((p, q) => p * q, 1), n])))
+  return engine.reshape(y, [...x.shape.slice(0, -1), ...out])
+}
+
 // stack broadcasts its inputs to a common shape, as arithmetic does: stack(x - a, y - b)
 // works when the pieces only meet by broadcasting
 const broadcastRefs = (values: Value[]): engine.Tensor[] => {
@@ -1271,7 +1334,8 @@ const TensorUnstack = (a: Value, b?: Value): Value[] => {
 // numbers – a branch on them, a bounds check – or writes state, which it may not do
 // while it is traced, runs cell by cell instead. With no cells, f on a cell of zeros
 // tells the shape of the result's cells, as in J.
-const TensorRank = (f: Value, k?: Value) => {
+const TensorRank = (map: Value, k?: Value) => {
+  const f = asMap(map)
   if (!isFn(f)) { return new Error(`\`(f ⍤ k)\`: \`f\` must be a function, got ${describeArg(f)}`) }
   const rank = k == null ? 0 : asWhole(k)
   return made(function (this: CurrentScope, a: Value, b?: Value) {
@@ -1378,7 +1442,8 @@ const differentiated = (body: string, trace: ((cell: Signal, value: unknown) => 
 // one per-element derivatives – ∇({x | x^2}) works on vectors
 // A loss written without braces is a value, read once: grad needs the function that
 // recomputes it.
-const TensorGradient = (f: Value) => {
+const TensorGradient = (map: Value) => {
+  const f = asMap(map)
   if (!isFn(f)) { return new Error(`\`grad(f)\`: \`f\` must be a function, got ${describeArg(f)} – write it in braces, { … }, so each step recomputes it`) }
   return made((x: Value) => x == null ? gradientOfReads(f) : differentiated("`grad(f)`: `f`", null, () => {
     const [out, pullback] = engine.vjp((traced: engine.Tensor) => {
@@ -1455,28 +1520,6 @@ const TensorData = (init: Value) => {
   return isTensorish(a) ? new FluentData(operand(a)) : new Error(`\`~~(init)\`: the initial value must be numbers, got ${describeArg(a)} – one slot holds one list of numbers`)
 }
 for (const f of [TensorVariable, TensorData]) { setMeta(f, { noAutoLift: true }) }
-
-// A write is an occurrence: it stores the value now – a live value is read, not followed
-const TensorAssign = (a: Value, live: Value): Value => {
-  const b = unwrapSignals(live)
-  // a list of variables takes a list of as many values, computed together
-  if (Array.isArray(a)) {
-    if (!Array.isArray(b) || b.length !== a.length) { return new Error("`:=`: a list of variables takes a list of as many values") }
-    const bad = a.findIndex((v, i) => !(v instanceof FluentVariable) || !isTensorish(b[i]!))
-    if (bad >= 0) { return TensorAssign(a[bad]!, b[bad]!) }
-    const values = b.map(operand) as engine.Tensor[]
-    engine.materialize(values)
-    a.forEach((v, i) => { (v as FluentVariable).assign(values[i]!) })
-    return null
-  }
-  if (!(a instanceof FluentVariable)) { return new Error(`\`:=\`: the left side must be a variable made with ~ or ~~, got ${describeArg(a)}`) }
-  // an Error (an emptied corpus, a failed expression) doesn't corrupt the variable: it
-  // keeps its last good value, and the Error surfaces
-  if (!isTensorish(b)) { return new Error(`\`:=\`: the value must be numbers, got ${describeArg(b)}`) }
-  a.assign(operand(b))
-  return null
-}
-setMeta(TensorAssign, { noAutoLift: true })
 
 // A draw is keyed by where it is made – the reader's call that reached it – and by how
 // many draws that call has made in this run: the same program draws the same numbers,
@@ -1811,10 +1854,10 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc, FunctionIdentity,
   Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate,
   ...UNARY, ...BINARY, ...REDUCTIONS,
-  TensorStack, TensorUnstack, TensorRank, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
+  TensorApply, TensorStack, TensorUnstack, TensorRank, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
   TensorPermute, TensorBroadcast, TensorPadAxis, TensorWindow, TensorScatterAdd, TensorRange,
   TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorShape,
-  TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorRandomUniform, TensorMemoryOf,
+  TensorWhere, TensorSlice, TensorVariable, TensorData, TensorRandomUniform, TensorMemoryOf,
   List, ListMap, StringLiteral, StringToCodes, CodesToString,
   TensorLength, ListLength, StringLength, TensorGet, ListGet, StringGet, TensorGather, ListGather, StringGather,
   TensorTake, ListTake, StringTake, TensorDrop, ListDrop, StringDrop, ListReverse, StringReverse, TensorConcat, ListConcat,
