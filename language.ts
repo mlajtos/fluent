@@ -317,11 +317,12 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     }
     case "Lambda": {
       const params = node.content.args.map((arg) => (arg as { content: { value: string } }).content.value)
+      const body = node.content.expr, statements = body.type === "Program" ? body.content : [body]
       const fn = function (...args: Value[]) {
         const local = Object.create(env) as CurrentScope
         // a missing argument is ◌, an argument not given
         params.forEach((p, i) => { local[p] = args[i] ?? null })
-        return evaluateSyntaxTreeNode(node.content.expr, local)
+        return block(statements, local)
       }
       lambdas.add(fn)
       return located(made(fn), node)
@@ -349,6 +350,19 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     case "Error": return located(new Error(node.content), node)
     default: return null // ◌
   }
+}
+
+// A block's statements run in reading order, and its value is the last one's. A statement
+// before the last that fails fails the block, which stops there: its Error would be dropped
+// unseen. A decline (NoMatch) is no failure – a choice that had nothing to do. A program's
+// top level shows each statement, so there every statement runs.
+const block = (statements: SyntaxTreeNode[], env: CurrentScope): Value => {
+  let last: Value = null
+  for (let i = 0; i < statements.length; i++) {
+    last = evaluateSyntaxTreeNode(statements[i]!, env)
+    if (i < statements.length - 1 && isFailure(last)) { return last }
+  }
+  return last
 }
 
 engine.Tensor.prototype.toString = function () {

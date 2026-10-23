@@ -1322,6 +1322,32 @@ describe("choosing: a candidate answers or declines", () => {
   })
 })
 
+// a block drops every value but its last, so an Error before the last would be lost
+describe("a failing statement fails its block", () => {
+  const failure = "a string (\"a\") is not a number – + and × need numbers; join text with StringConcat"
+  test("the block's value is the first failure, and the block stops there", () => {
+    expect((run(`{ 1 + "a", 5 }()`) as Error).message).toBe(failure)
+    expect((run(`{ a: 1 + "a", 5 }()`) as Error).message).toBe(failure)
+    expect(value(`n: $0, { n← n + 1, 1 + "a", n← n + 1 }(), n()`)).toBe(1)
+  })
+  test("a decline is no failure: a NoMatch before the last is dropped", () => {
+    expect(value("{ NoMatch, 5 }()")).toBe(5)
+    expect(value("{ cond(guard(0, { 1 })), 5 }()")).toBe(5)
+  })
+  test("a failing body declines in try, and stops a cascade anywhere else", () => {
+    expect(value(`cascade((try({ 1 + "a", 5 }), { 7 }))()`)).toBe(7)
+    expect((run(`cascade((guard(1, { 1 + "a", 5 }), { 7 }))()`) as Error).message).toBe(failure)
+    expect((run(`cond(guard(1, { 1 + "a", 5 }), { 7 })`) as Error).message).toBe(failure)
+  })
+  test("a failing training step stops ⍣ with its Error", () => {
+    const e = run("θ: $0, opt: adam(0.1), ({ i | opt({ Σ(θ^2) }), i } ⍣ 3)(0)") as Error
+    expect(e.message).toContain("reads no ~ variable")
+  })
+  test("a program's top level runs every statement: the host marks the ones that fail", () => {
+    expect(value(`1 + "a", 5`)).toBe(5)
+  })
+})
+
 describe("an optimizer step that can't be honoured is a value, not a crash", () => {
   test("a loss that writes a variable", () => {
     const e = run("θ: ~([2]), 𝓛: { θ := [3], θ_0 ^ 2 }, opt: adam(0.1), opt(𝓛)") as Error
