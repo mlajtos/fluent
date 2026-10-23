@@ -972,7 +972,7 @@ losses: ~~fill([2, T], 1), done: $0,
   a: optL({ miss(byPixel) }), b: optR({ miss(byWave()) }),
   losses:= where(0..<T = i, [a, b] ⍴ [2, 1], losses),
   done← i + 1
-} ⟳ Time()×60 ⌊ T,
+} ⟳ (Time()×60 ⌊ T),
 
 ; how they look: each cell s units wide, in the colors of a sunset
 dusk: ramp([[0.05, 0.03, 0.15], [0.45, 0.12, 0.35], [0.95, 0.45, 0.25], [1, 0.9, 0.6]]),

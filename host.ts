@@ -759,9 +759,10 @@ const receive = (m: ToWorker) => {
       return
     }
     case "call": {
-      // a press is an occurrence
+      // a press is an occurrence; what fails in it is marked where its code is
       const fn = callbacks.get(m.id)?.fn
-      if (fn) { occurrence(() => fn()) }
+      const result = fn && occurrence(() => fn())
+      if (result instanceof Error) { warn(result, getOrigin(fn)); sendWarnings() }
       return
     }
     case "drop": {

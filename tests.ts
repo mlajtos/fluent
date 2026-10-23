@@ -1924,6 +1924,22 @@ describe("gallery examples smoke suite", () => {
     }
   })
 
+  test("Learning in frequencies stops at its last step: the clock's count is capped at T", () => {
+    const clock = SignalCreate(engine.scalar(0)), budgets: Value[] = []
+    const record = (_: Value, n: Value) => { budgets.push(n); return null }
+    setMeta(record, { noAutoLift: true })
+    const time = DefaultEnvironment.Time
+    extendEnvironment({ FunctionIterate: record, Time: () => clock } as Record<string, Value>)
+    try {
+      scopeOf(EXAMPLES["frequency-space"])
+      clock.value = engine.scalar(1000)
+      expect(unwrap(budgets.at(-1))).toBe(900)
+    } finally {
+      extendEnvironment({ FunctionIterate: stepLater, Time: time } as Record<string, Value>)
+      flushRetirements()
+    }
+  })
+
   test("the cloth swings like a mass on springs: its far corner lags, overshoots, then comes to rest within a second", () => {
     steps.length = 0
     const scope = scopeOf(EXAMPLES["differentiable-cloth"])
@@ -2886,6 +2902,15 @@ describe("the evaluation host", () => {
     const { id } = await after(start, "source")
     toHost({ t: "frame", id, samples: Float32Array.of(0.25, 0.75) })
     expect(await after(start, "took")).toMatchObject({ id })
+  })
+
+  test("a press that fails is marked where its code is", async () => {
+    const go = await evaluate(`Button("go", { Error("the press failed") })`)
+    const start = inbox.length
+    toHost({ t: "call", id: go.slots.onClick.id })
+    const { warnings } = await after(start, "warnings")
+    expect(warnings).toMatchObject([{ message: "the press failed" }])
+    toHost({ t: "drawn" })
   })
 
   test("an Error of a statement before the last is marked where the statement is", async () => {
