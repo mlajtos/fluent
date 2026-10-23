@@ -1,7 +1,7 @@
 ; Prelude – the standard library, written in Fluent
 
 SymbolAssign(:, doc(SymbolAssign, "name: value", "Bind a name in the current scope. Glued to its left operand, `:` takes everything to its right – `a: 1 + 2` binds 3.", "a: 1 + 2, a × 10 = 30")),
-(:=): doc(TensorAssign, "θ:= value", "Assign a new value to a variable (made with ~ or ~~); optimizers do this every step, and everything that reads the variable follows. Mid-expression, parenthesize the value: θ := (a + b).", "θ: ~[0, 0], θ:= [1, 2]"),
+(←): (:=): SignalWrite: TensorAssign: doc(SignalUpdate, "cell← value  ·  θ:= value", "Write a value into a cell – a signal ($), a variable (~) or a data slot (~~) – and everything that reads it follows; ← and := are the same write. A variable takes numbers. A list of cells takes a list of as many values, every one read before any is written: (a, b) ← (b, a) swaps. Chains like any spaced operator: parenthesize compound values, s ← (a + b).", "a: $1, b: $2, (a, b) ← (b, a), b:= b + 5, (a(), b()) = (2, 6)"),
 
 ; Functions
 (.): pipe: FunctionPipe: doc({ x, f | f @ x }, "args . f", "Pipe: apply the function on the right to the value on the left; a list spreads as arguments.", "[3, 1, 2] . sort = [1, 2, 3]"),
@@ -1172,9 +1172,7 @@ doc: FunctionDoc: doc(doc, "doc(f, signature, description, example)", "Attach a 
 SignalCreate: doc(SignalCreate, "SignalCreate(value)", "A signal holding value – read it with s(), write it with s(v). $(value) is the short form.", "s: SignalCreate(1), s() = 1"),
 SignalComputed: doc(SignalComputed, "SignalComputed(thunk)", "A signal whose value is the thunk's, computed again whenever a signal the thunk reads changes. $({ … }) is the short form.", "a: $1, b: SignalComputed({ a() × 10 }), b() = 10"),
 SignalRead: doc(SignalRead, "SignalRead(s)", "A signal's value – the same as s().", "s: $3, SignalRead(s) = 3"),
-SignalUpdate: doc(SignalUpdate, "SignalUpdate(s, v)", "Write v into the signal s – the same as s(v).", "s: $3, SignalUpdate(s, 4), s() = 4"),
 Storage: doc(Storage, "Storage(key)", "A signal kept in this browser under key: it survives a reload. It is ◌ until a saved value arrives; writing it saves the value – a variable's value at that moment, tensors, strings and lists of them – and writing ◌ forgets it. A checkpoint is one: save the weights and the optimizer's memory, and := puts them back.", "s: Storage(\"notes\"), s(\"hello\"), s() = \"hello\""),
 
 ; Misc
 ($): signal: doc(Reactive, "$value", "Wrap a value in a signal (or a thunk in a computed signal). Read with x(), write with x(v).", "x: $0.5, x^2 = 0.25"),
-(←): SignalWrite: doc(FunctionNoAutoLift({ s, v | SignalUpdate(s, v) }), "signal← value", "Write a value into a signal – same as signal(value), but reads left-to-right. Chains like any spaced operator: parenthesize compound values, s ← (a + b).", "x: $1, x← 9, x() = 9"),

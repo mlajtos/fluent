@@ -666,6 +666,16 @@ describe("reactivity", () => {
   test("signal write with ←", () => {
     expect(value("x: $(1), x ← 9, x()")).toBe(9)
   })
+  test("← and := are one write: any cell, and a list of cells at once", () => {
+    expect(value("identical((:=), (←))")).toBe(1)
+    expect(value("s: $1, s:= 4, s()")).toBe(4)
+    // a list of cells takes a list of values, every one read before any is written
+    expect(value("a: $1, b: $2, (a, b) ← (b, a), [a(), b()]")).toEqual([2, 1])
+    expect(value("a: ~[1], b: $[2], (a, b) := (b, a), [a, b()]")).toEqual([[2], [1]])
+    // one that can't be written leaves them all as they were
+    const scope = scopeOf(`a: ~[1], b: $"x", r: (a, b) ← (b, a)`)
+    expect([scope.r instanceof Error, unwrap(scope.a), String(unwrap(scope.b))]).toEqual([true, [1], "x"])
+  })
   test("computed auto-lifts and unwraps", () => {
     expect(value("x: $(2), y: x + 1, y")).toBe(3)
   })

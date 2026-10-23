@@ -53,7 +53,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | `×` | `mul` | `TensorMultiply` |
 | `~` | `var` | `TensorVariable` |
 | `~~` | `data` | `TensorData` |
-| `:=` | — | `TensorAssign` |
+| `←` `:=` | — | `SignalUpdate` |
 | `⟳` | `iter` | `FunctionIterate` |
 | `⍣` | `power` | `FunctionPower` |
 | `∘` | `then` | `FunctionThen` |

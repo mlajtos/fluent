@@ -1007,15 +1007,32 @@ const heldValue = (v: Value): Value => Array.isArray(v) ? v.map(heldValue) : isT
 const SignalCreate = (<T,>(initial: T) => signal(heldValue(sampled(initial as Value)))) as typeof signal
 const SignalComputed = computed
 const SignalRead = (s: Value) => s instanceof Signal ? s.value : new Error(`'SignalRead': expected a signal, got ${describeArg(s)}`)
-// A write stores the value now – a live value is read, never followed; a list keeps the
-// cells it holds, as identities. A value still on its way is written again when it
-// arrives. A variable's write is :=, for tensors only.
+// A write is an occurrence: it stores the value now – a live value is read, never followed.
+// It is one write for every cell, spelled ← or :=. A signal takes any value, and a list
+// keeps the cells it holds, as identities. A variable (~ or ~~) takes numbers: an Error –
+// a failed expression, an emptied corpus – leaves it holding its last good value. A list
+// of cells takes a list of as many values, every one read before any is written, so
+// (a, b) ← (b, a) swaps, and their numbers are computed together. A value still on its
+// way is written again when it arrives.
 const SignalUpdate = (s: Value, v: Value): Value => {
-  if (s instanceof FluentVariable) { return TensorAssign(s, v) }
-  if (!(s instanceof Signal)) { return new Error(`'SignalUpdate': expected a signal, got ${describeArg(s)}`) }
-  if (s instanceof Computed) { return new Error("this live value is made from others – write the values it is made from") }
-  if (isArriving(v)) { v.arrival.then(() => SignalUpdate(s, v)) }
-  s.value = heldValue(sampled(v))
+  if (!Array.isArray(s)) { return writeCells([s], [v]) }
+  const vs = sampled(v)
+  return Array.isArray(vs) && vs.length === s.length ? writeCells(s, vs) : new Error("a list of cells takes a list of as many values")
+}
+const writeCells = (cells: Value[], given: Value[]): Value => {
+  const values = given.map(sampled)
+  for (const [i, s] of cells.entries()) {
+    const v = values[i]!
+    if (!(s instanceof Signal)) { return new Error(`← writes a signal ($) or a variable (~, ~~), got ${describeArg(s)}`) }
+    if (s instanceof Computed) { return new Error("this live value is made from others – write the values it is made from") }
+    if (s instanceof FluentVariable && !isTensor(v)) { return new Error(`a variable (~ or ~~) holds numbers, got ${describeArg(v)}`) }
+  }
+  engine.materialize(values.filter(isTensor))
+  cells.forEach((s, i) => {
+    const v = given[i]!
+    if (isArriving(v)) { v.arrival.then(() => SignalUpdate(s, v)) }
+    if (s instanceof FluentVariable) { s.assign(values[i] as engine.Tensor) } else { (s as Signal).value = heldValue(values[i]!) }
+  })
   return null
 }
 // $v: a signal holding v, or a computed signal of a thunk
@@ -1470,28 +1487,6 @@ const TensorData = (init: Value) => {
 }
 for (const f of [TensorVariable, TensorData]) { setMeta(f, { noAutoLift: true }) }
 
-// A write is an occurrence: it stores the value now – a live value is read, not followed
-const TensorAssign = (a: Value, live: Value): Value => {
-  const b = unwrapSignals(live)
-  // a list of variables takes a list of as many values, computed together
-  if (Array.isArray(a)) {
-    if (!Array.isArray(b) || b.length !== a.length) { return new Error("`:=`: a list of variables takes a list of as many values") }
-    const bad = a.findIndex((v, i) => !(v instanceof FluentVariable) || !isTensorish(b[i]!))
-    if (bad >= 0) { return TensorAssign(a[bad]!, b[bad]!) }
-    const values = b.map(operand) as engine.Tensor[]
-    engine.materialize(values)
-    a.forEach((v, i) => { (v as FluentVariable).assign(values[i]!) })
-    return null
-  }
-  if (!(a instanceof FluentVariable)) { return new Error(`\`:=\`: the left side must be a variable made with ~ or ~~, got ${describeArg(a)}`) }
-  // an Error (an emptied corpus, a failed expression) doesn't corrupt the variable: it
-  // keeps its last good value, and the Error surfaces
-  if (!isTensorish(b)) { return new Error(`\`:=\`: the value must be numbers, got ${describeArg(b)}`) }
-  a.assign(operand(b))
-  return null
-}
-setMeta(TensorAssign, { noAutoLift: true })
-
 // A draw is keyed by where it is made – the reader's call that reached it – and by how
 // many draws that call has made in this run: the same program draws the same numbers,
 // and a value drawn elsewhere, looked at or not, moves no other draw
@@ -1828,7 +1823,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorStack, TensorUnstack, TensorRank, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
   TensorPermute, TensorBroadcast, TensorPadAxis, TensorWindow, TensorScatterAdd, TensorRange,
   TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorShape,
-  TensorWhere, TensorSlice, TensorVariable, TensorData, TensorAssign, TensorRandomUniform, TensorMemoryOf,
+  TensorWhere, TensorSlice, TensorVariable, TensorData, TensorRandomUniform, TensorMemoryOf,
   List, ListMap, StringLiteral, StringToCodes, CodesToString,
   TensorLength, ListLength, StringLength, TensorGet, ListGet, StringGet, TensorGather, ListGather, StringGather,
   TensorTake, ListTake, StringTake, TensorDrop, ListDrop, StringDrop, ListReverse, StringReverse, TensorConcat, ListConcat,
