@@ -1980,7 +1980,7 @@ describe("gallery examples smoke suite", () => {
     const scope = scopeOf(EXAMPLES["moire-secret"])
     const read = (expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope))
     const loss = read("𝓛()") as number
-    for (let i = 0; i < 4; i++) { steps[0]!(engine.scalar(i)) }
+    for (let i = 0; i < 6; i++) { steps[0]!(engine.scalar(i)) }
     expect(read("𝓛()")).toBeLessThan(loss / 2)
     // a pair made by hand: random cells in A, and B the same cells on the letters and their
     // opposite off them – each sheet alone is noise, so it gives away almost nothing
