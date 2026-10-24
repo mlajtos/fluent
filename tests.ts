@@ -1184,6 +1184,9 @@ describe("numbers the loss reads ($)", () => {
     // the loss pulls θ toward x, so x has a nonzero cotangent path – x comes back untouched anyway
     expect(trained("x_0")).toBe(5)
   })
+  test("cells in a list stack as their values do, broadcast to one shape", () => {
+    expect(value("a: $[1, 2], b: $3, stack((a, b))")).toEqual([[1, 2], [3, 3]])
+  })
   test(":= retargets a $ mid-training and the fit follows", () => {
     // the next step reads the cell's new value, optimizer moments intact
     expect(value(`x: $([3]), θ: ~([0]), 𝓛: { mean((θ_0 - x_0)^2) }, opt: adam(0.2), step: { v | opt(𝓛) },

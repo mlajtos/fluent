@@ -1346,7 +1346,7 @@ const linearMap = (A: engine.Tensor, a: Value): engine.Tensor => {
 // stack broadcasts its inputs to a common shape, as arithmetic does: stack(x - a, y - b)
 // works when the pieces only meet by broadcasting
 const broadcastRefs = (values: Value[]): engine.Tensor[] => {
-  const tensors = values.map((v) => v instanceof FluentVariable ? v.value : v)
+  const tensors = values.map(sampled)
   if (tensors.length === 0 || !tensors.every(isTensor)) { return tensors.map(operand) }
   const rank = Math.max(...tensors.map((t) => t.shape.length))
   const shape = Array.from({ length: rank }, (_, i) => Math.max(...tensors.map((t) => t.shape[t.shape.length - rank + i] ?? 1)))
@@ -1406,7 +1406,7 @@ const TensorRank = (map: Value, k?: Value) => {
 }
 
 // Index values for a bounds check: read when they are on the host or cheap to compute
-// there; values still on the GPU – a minibatch drawn from a data slot – flow through
+// there; values still on the GPU – a minibatch drawn from a cell of data – flow through
 // unchecked, as trusted data
 const cheapValues = (v: Value): Float32Array | undefined => {
   const t = v instanceof FluentVariable ? v.value : v
