@@ -841,8 +841,8 @@ describe("one model of time: cells, computeds, occurrences", () => {
     expect(value("a: $1, b: ${ a × 2 }, c: ${ a + b }, a← 5, [c, b]")).toEqual([15, 10])
     expect(value("a: $1, b: ${ a × 2 }, c: ${ a + b }, a← 5, [b, c]")).toEqual([10, 15])
   })
-  test("every cell reads with () and writes with (v); a variable's write is :=", () => {
-    expect(value("θ: ~[1], θ← [4], θ")).toEqual([4])
+  test("a cell is written with ← or :=, and a variable takes numbers only", () => {
+    expect(value("θ: ~[1], θ:= [4], θ")).toEqual([4])
     expect(value("θ: ~[1], θ← [7], θ")).toEqual([7])
     expect(run("θ: ~[1], θ← \"text\"")).toBeInstanceOf(Error)
   })
