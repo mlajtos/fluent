@@ -722,7 +722,7 @@ test("swapping views does not recycle another view's mounted editor", async ({ p
   await open(page, [
     `step: $(0),`,
     `one: $("1 + 1"), many: $("v: [1, 2, 3],\nw: [4, 5, 6],\nv + w"),`,
-    `roomA: Grid(1)(Text("room a"), CodeEditor(one, "auto"), Button("go", { step(1) })),`,
+    `roomA: Grid(1)(Text("room a"), CodeEditor(one, "auto"), Button("go", { step← 1 })),`,
     `roomB: Grid(1)(Text("room b"), CodeEditor(many, "auto")),`,
     `$({ ListGet((roomA, roomB), step()) })`,
   ].join("\n"))
