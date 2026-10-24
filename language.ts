@@ -630,8 +630,8 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope, node?: { origin:
     return waiting.length ? new Arriving(now(), Promise.all(waiting.map((a) => a.arrival)).then(now)) : now()
   }
   // inside the prelude, what the application makes is named by the reader's call that
-  // reached it, and runs again there
-  const at = node?.origin.document === PRELUDE && engine.at.site ? { origin: engine.at.site } : node
+  // reached it, and runs again there – appliedAt set the engine's site to that call's origin
+  const at = node?.origin.document === PRELUDE && engine.at.site ? { origin: engine.at.site as Origin } : node
   const again = at === node ? now : () => appliedAt(now, [], env, at)
   const run = watching(again)
   if (run.effect || !run.sources.length) { return run.value }
@@ -1068,6 +1068,8 @@ const SignalUpdate = (target: Value, v: Value): Value => {
 }
 const placeOf = (s: Value): Value => s instanceof Computed && (s.peek() instanceof Signal || Array.isArray(s.peek())) ? placeOf(s.peek()) : s
 const writeCells = (places: Value[], given: Value[]): Value => {
+  // a write changes state though it fails: a definition runs it once, and its Error stays
+  reader?.wrote?.()
   const cells = places.map(placeOf), values = given.map(sampled)
   for (const [i, s] of cells.entries()) {
     const v = values[i]!

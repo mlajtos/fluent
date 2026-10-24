@@ -821,6 +821,12 @@ describe("one model of time: cells, computeds, occurrences", () => {
     expect(value("s: $[5], θ: ~[0], θ:= s, θ")).toEqual([5])
     expect(value("s: $[5], θ: ~[0], r: θ:= s, θ")).toEqual([5])
   })
+  test("a write that fails is still a write: the program runs it once, and its Error stays", () => {
+    const scope = scopeOf(`x: $"a", v: ~[1, 2], w: v := x`)
+    expect(scope.w).toBeInstanceOf(Error)
+    evaluateIn("x ← 5", scope)
+    expect([unwrap(scope.v), scope.w]).toEqual([[1, 2], expect.any(Error)])
+  })
   test("a computed cannot change state; it may change cells it made", () => {
     const scope = scopeOf("x: $1, c: ${ x← 2, 3 }, c")
     expect(unwrap(scope.c)).toBeInstanceOf(Error)
