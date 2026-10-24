@@ -814,10 +814,13 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
   await solved("You fixed a function")
   await next()
 
-  // 9 · reactivity – drag the slider past 0.9, no typing
+  // 9 · reactivity – drag the slider past 0.9, no typing; then keep the number x holds
   await room("Make it move")
   await page.locator("input[type=range]").first().fill("0.95")
   await solved("You changed a running program mid-flight")
+  await rejected("make start keep the number", "start: x + 0, start", "stays where")
+  await typeInCell(page, "start: x + 0, start", "now: x, held: (x,), start: $x, (now, held, start)")
+  await solved("stays where")
   await next()
 
   // 10 · draw it – one number turns the dot into a ring

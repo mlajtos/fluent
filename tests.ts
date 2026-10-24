@@ -2433,6 +2433,9 @@ describe("the Tour's checks", () => {
     ["now put plus in the middle", ["plus: add, 40 plus 2", "plus: add,\n40 plus 2 ; ← now put plus in the middle"],
       ["plus: add, 42", "plus: add, 40 + 2", "plus: add, plus(40, 2)", "plus: add, [40 plus 2, 40 plus 2]"]],
     ["almost. a cube is", ["cube: { x | x^3 }, cube(3)", "cube: { x | x × x × x }, ; ← almost.\ncube(3) ; done"], ["cube: { x | x^2 }, 27", "cube: { x | [x × x × x, x × x × x] }, cube(3)"]],
+    // a name and a list hold the live value itself; $x is a new one, holding what x holds now
+    ["make start keep the number", ["now: x, held: (x,), start: $x, (now, held, start)", "start: $(x), start", "start: SignalCreate(x), start"],
+      ["now: x, held: (x,), start: x, (now, held, start)", "start: 0.2, start", "start: $0.3, start", "start: x + 0, start", "start: x(), start", "start: (x,), start_0"]],
     ["a ring: 40 away", [ring("abs(dot(p) - 40)"), ring("abs(40 - dot(p))")], [ring("abs(dot(p) - 0)"), ring("0"), "dot: dots([[80, 60]]), ring: { p | abs(dot(p) - 40) }, 5"]],
     ["the slope of x·x·x, at 2", ["f: { x | x^3 }, df: grad(f), df(2)", "f: { x | x^3 },\ndf: ∇(f),\ndf(2) ; ← now: the slope of x·x·x, at 2"],
       ["f: { x | x^2 }, df: grad(f), 12", "f: { x | x^3 }, df: { x | 3 × x^2 }, df(2)", "f: { x | x^3 }, df: { x | grad(f)(x) × [1, 1] }, df(2)"]],
