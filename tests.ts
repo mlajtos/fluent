@@ -949,6 +949,13 @@ describe("a cell applied is its value applied; following is observed", () => {
     expect(value("W: [[1, 2], [3, 4]], y: W([1, 1]), y")).toEqual([3, 7])
     expect(value("W: [[1, 2], [3, 4]], W([1, 1])")).toEqual([3, 7])
   })
+  test("a definition's effects start when the program runs, looked at or not", async () => {
+    // a cell's live program starts its loop at the run, not at the first look
+    const scope = scopeOf(`n: $0, cell: { code: $"{ n← n + 1 } ⟳ 5", CodeEvaluate(code) }, c: cell()`)
+    await new Promise((r) => setTimeout(r, 150))
+    expect(unwrap(scope.n)).toBe(5)
+    flushRetirements()
+  })
   test("slots that take only a function take an array as its map", () => {
     expect(value("([1, 0], [0, 1]) reduce [[1, 2], [3, 4]]")).toBe(2)
     expect(value("memo([[1, 2], [3, 4]])([1, 1])")).toEqual([3, 7])
