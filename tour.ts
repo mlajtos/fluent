@@ -45,7 +45,7 @@ status: { check, done, hint |
 challenge: { src, check, done, hint |
   code: $(src),
   result: CodeEvaluate(code),
-  (CodeEditor(code, "auto"), result, status({ check(result(), code()) }, done, hint))
+  (CodeEditor(code, "auto"), result, status({ check(result, code) }, done, hint))
 },
 
 ; An unchecked cell – editor and live result only.
@@ -57,9 +57,9 @@ demo: { src |
 ; The header doubles as navigation – every room's first row is
 ; [◂ back]  Fluent Tour · n / 16  [next ▸], and the last room's starts over
 nav: { label, onward |
-  Grid([1, 2, 1])(Button("◂ back", { step(0 ⌈ (step() - 1)) }), Center(Text(label)), onward)
+  Grid([1, 2, 1])(Button("◂ back", { step← 0 ⌈ (step - 1) }), Center(Text(label)), onward)
 },
-head: { label | nav(label, Button("next ▸", { step((step() + 1) ⌊ 15) })) },
+head: { label | nav(label, Button("next ▸", { step← (step + 1) ⌊ 15 })) },
 
 ; the cell's code run again, with one more line after it or before it: both
 ; run in this lambda's scope, so each sees the other's names
@@ -210,7 +210,7 @@ s9: Grid(1)(
   x * 100, ; reads x
   sin((0 ... 79) * x ÷ 2), ; reads x, draws a wave
 )"),
-  status({ x() > 0.9 },
+  status({ x > 0.9 },
     Text("✅ **Alive.** You changed a running program mid-flight and it didn’t even flinch. This is the trick behind every demo in the gallery."),
     Text("🎯 *No typing this time — **drag the slider** and pin \`x\` above 0.9.*")
   )
@@ -290,7 +290,7 @@ s13: Grid(1)(
   dfar(dial), ; slope
   Scrubber(dial), ; ← drag me
 )"),
-  status({ abs(dial() - 42) < 0.5 },
+  status({ abs(dial - 42) < 0.5 },
     Text("✅ **Found it.** Score 0, slope 0, guess 42. You just solved an equation by feel — your hand did what the slope said."),
     Text("🎯 *No typing — **drag the rightmost number** until the slope reads **0**.*")
   )
@@ -310,15 +310,15 @@ s14: Grid(1)(
 **You found the bottom by feel. Now walk there deliberately.** Each press of the first button is one honest step: read the slope where you stand, scale it down, move the *other* way, remember the footprint. Watch the path: long strides far out, baby steps near the bottom — the slope itself shrinks as you close in."),
   demo("(
   Button(stepDownhill, {
-    here: guess(), ; where the guess stands
+    here: guess, ; where the guess stands
     there: here - dfar(here)*0.3, ; a small step against the slope
-    guess(there), ; move
-    hist(hist() concat [there]) ; remember the footprint
+    guess← there, ; move
+    hist← hist concat [there] ; remember the footprint
   }),
-  Button(backTo10, { guess(10), hist([10]) }),
+  Button(backTo10, { guess← 10, hist← [10] }),
 )"),
   hist,
-  status({ abs(guess() - 42) < 1 },
+  status({ abs(guess - 42) < 1 },
     Text("✅ **Arrived.** Look at the path: the step size *is* the slope, so the walk brakes by itself. That graph is gradient descent, drawn by you pressing the button."),
     Text("🎯 *No typing — press **step downhill** until the path lands within 1 of 42. (Overshot? Edit the 0.3 and see why.)*")
   )
@@ -339,14 +339,14 @@ s15: Grid(1)(
   demo("score: { a | (a*a - 42)^2 }, ; how far a·a misses 42
 dscore: grad(score),
 step: {
-  here: answer(),
-  answer(here - dscore(here)*0.0005),
-  trail(trail() concat [answer()])
+  here: answer,
+  answer← here - dscore(here)*0.0005,
+  trail← trail concat [answer]
 },
 step iter 200,
 answer"),
   trailPlot,
-  status({ abs(answer()*answer() - 42) < 0.1 },
+  status({ abs(answer*answer - 42) < 0.1 },
     Text("✅ **6.4807….** That is the square root of 42, and nobody typed it — \`answer\` walked there, pressed downhill by its own slope, two hundred times. This is machine learning entire; the rest is scale. Libraries bottle the step and call it an *optimizer* — \`sgd\`, \`adam\` — and it is the same walk."),
     Text("🎯 *Nothing to press — watch until \`answer · answer\` sits within 0.1 of 42. (Impatient? Raise the 0.0005.)*")
   )
@@ -354,7 +354,7 @@ answer"),
 
 ; 16 · it keeps going
 s16: Grid(1)(
-  nav("**Fluent Tour** · 16 / 16", Button("start over ↺", { step(0) })),
+  nav("**Fluent Tour** · 16 / 16", Button("start over ↺", { step← 0 })),
   Text("### It keeps going
 
 **That was the tour** — numbers, lists, names, functions, a drawing; then a slope, a bottom found by hand, a walk, and a value that found √42 on its own.
@@ -368,5 +368,5 @@ Want the reference instead? Evaluate \`Documentation\`. And the box below is you
 
 ; the tour
 rooms: (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15, s16),
-$({ rooms _ step() })
+$({ rooms _ step })
 `

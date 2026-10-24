@@ -350,7 +350,7 @@ test("text decoded on the GPU from a value that changes every frame still shows"
 test("the last change shows, also one made while the last value was read from the GPU", async ({ page }) => {
   // x, the long way round: a value that takes the GPU a while is read back from it, and
   // presses made while it is read are shown once it lands
-  await open(page, 'x: $(0), n: 2048, (Button("go", { x(x() + 1) }), ${ Σ(matmul(fill([n, n], x()), fill([n, n], 1))) ÷ n^3 })')
+  await open(page, 'x: $(0), n: 2048, (Button("go", { x← x + 1 }), ${ Σ(matmul(fill([n, n], x), fill([n, n], 1))) ÷ n^3 })')
   const go = page.getByRole("button", { name: "go" })
   const press = (times: number) => go.evaluate(async (button, times) => {
     for (let i = 0; i < times; i++) {
@@ -367,7 +367,7 @@ test("the last change shows, also one made while the last value was read from th
 })
 
 test("button click updates a reactive value", async ({ page }) => {
-  await open(page, 'x: $(0), (Button("increment", { x(x() + 41) }), x)')
+  await open(page, 'x: $(0), (Button("increment", { x← x + 41 }), x)')
   await expect(panel(page)).toContainText("0")
   await page.getByRole("button", { name: "increment" }).click()
   await expect(panel(page)).toContainText("41")
@@ -383,7 +383,7 @@ test("an image enters as light and shows as it was, every byte", async ({ page }
   // a picture holds light: a byte of 128 is light(128 ÷ 255), and the painter shows it
   // through screen as 128 again. A 256 × 1 image: column i is i, 255 - i, 7i mod 256
   const url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAABCAIAAAC+O+cgAAADDElEQVR4nAEBA/78AAD/AAH+BwL9DgP8FQT7HAX6Iwb5Kgf4MQj3OAn2Pwr1Rgv0TQzzVA3yWw7xYg/waRDvcBHudxLtfhPshRTrjBXqkxbpmhfooRjnqBnmrxrlthvkvRzjxB3iyx7h0h/g2SDf4CHe5yLd7iPc9STb/CXaAybZCifYESjXGCnWHyrVJivULSzTNC3SOy7RQi/QSTDPUDHOVzLNXjPMZTTLbDXKczbJejfIgTjHiDnGjzrFljvEnTzDpD3Cqz7Bsj/AuUC/wEG+x0K9zkO81US73EW640a56ke48Ui3+Em2/0q1Bku0DUyzFE2yG06xIk+wKVCvMFGuN1KtPlOsRVSrTFWqU1apWleoYVinaFmmb1qldlukfVyjhF2ii16hkl+gmWCfoGGep2KdrmOctWSbvGWaw2aZymeY0WiX2GmW32qV5muU7WyT9G2S+26RAm+QCXCPEHGOF3KNHnOMJXSLLHWKM3aJOneIQXiHSHmGT3qFVnuEXXyDZH2Ca36Bcn+AeYB/gIF+h4J9joN8lYR7nIV6o4Z5qod4sYh3uIl2v4p1xot0zYxz1I1y245x4o9w6ZBv8JFu95Jt/pNsBZRrDJVqE5ZpGpdoIZhnKJlmL5plNptkPZxjRJ1iS55hUp9gWaBfYKFeZ6JdbqNcdaRbfKVag6ZZiqdYkahXmKlWn6pVpqtUraxTtK1Su65Rwq9QybBP0LFO17JN3rNM5bRL7LVK87ZJ+rdIAbhHCLlGD7pFFrtEHbxDJL1CK75BMr9AOcA/QME+R8I9TsM8VcQ7XMU6Y8Y5asc4ccg3eMk2f8o1hss0jcwzlM0ym84xos8wqdAvsNEut9ItvtMsxdQrzNUq09Yp2tco4dgn6Nkm79ol9tsk/dwjBN0iC94hEt8gGeAfIOEeJ+IdLuMcNeQbPOUaQ+YZSucYUegXWOkWX+oVZusUbewTdO0Se+4Rgu8QifAPkPEOl/INnvMMpfQLrPUKs/YJuvcIwfgHyPkGz/oF1vsE3fwD5P0C6/4B8v8A+bScfpBEdGQWAAAAAElFTkSuQmCC"
-  await open(page, `img: LoadTensorFromImageUrl("${url}"),\n(img, \${ round(img()_0_128_0 × 10000) })`)
+  await open(page, `img: LoadTensorFromImageUrl("${url}"),\n(img, \${ round(img_0_128_0 × 10000) })`)
   await expect(panel(page)).toContainText("2159", { timeout: 20_000 })
   const canvas = panel(page).locator("canvas").first()
   const row = async () => {
@@ -589,7 +589,7 @@ test("camera edge-detection demo produces non-flat output", async ({ page }) => 
   await open(page, `
 cam: Camera(320, 240),
 k: [[0, 1, 0], [1, -4, 1], [0, 1, 0]],
-edges: $({ abs(conv(mean(cam(), 2), k)) }),
+edges: $({ abs(conv(mean(cam, 2), k)) }),
 edges
 `.trim())
   const canvas = panel(page).locator("canvas").first()

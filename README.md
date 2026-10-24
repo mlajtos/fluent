@@ -52,7 +52,6 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | `÷` | `div` | `TensorDivide` |
 | `×` | `mul` | `TensorMultiply` |
 | `~` | `var` | `TensorVariable` |
-| `~~` | `data` | `TensorData` |
 | `←` `:=` | — | `SignalUpdate` |
 | `⟳` | `iter` | `FunctionIterate` |
 | `⍣` | `power` | `FunctionPower` |

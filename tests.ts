@@ -3,7 +3,7 @@
 // backend (Bun has no WebGPU). `bun test` runs this file.
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test"
-import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, FluentData, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, getOrigin, PRELUDE, Signal, occurrence, keepingFrom, type Value } from "./language"
+import { CodeParse, getParseErrors, evaluateSyntaxTreeNode, evaluateGeneration, flushRetirements, createScope, engine, FluentVariable, setCodeNodePrinter, setMeta, extendEnvironment, SignalCreate, CodeEvaluate, DefaultEnvironment, NoMatch, getOrigin, PRELUDE, Signal, occurrence, keepingFrom, type Value } from "./language"
 import { startHost } from "./host"
 import { numberText, tensorView, connect, update, call, write, mirrors, type ToPage, type ToWorker } from "./protocol"
 import { EXAMPLES } from "./examples"
@@ -224,11 +224,12 @@ describe("an array applied is its linear map", () => {
     expect(value(`${xy}, x A y`)).toEqual([2, 13, -4])
     expect(value(`${xy}, x A y`)).toEqual(value(`${xy}, Σ(x × matmul(y, transpose(A)), -1)`))
   })
-  test("A() is A", () => {
+  test("A() is A: a value applied to nothing is itself", () => {
     expect(value("A: [[1, 2], [3, 4]], A()")).toEqual([[1, 2], [3, 4]])
+    expect([value("x: 5, x()"), String(value(`t: "hi", t()`)), value("(1, 2)()").map(unwrap)]).toEqual([5, "hi", [1, 2]])
   })
   test("a number is not a function: 2(3), x -2 and 2 x stay errors", () => {
-    for (const source of ["2(3)", "2(3 + 4)", "x: 5, x -2", "x: 5, 2 x", "x: 5, x()"]) {
+    for (const source of ["2(3)", "2(3 + 4)", "x: 5, x -2", "x: 5, 2 x"]) {
       expect([source, (run(source) as Error).message]).toEqual([source, "a number is not a function"])
     }
     // nor does an array take a number: xs -1 is no subtraction
@@ -566,7 +567,7 @@ describe("tensors", () => {
       .toEqual({ value: [[1, 2], [3, 4]], calls: 3 })
     // a bounds check reads the index: one out of range is the loop's Error
     expect((run("({ v | v_(v_0) } ⍤ 1)([[1, 2, 3], [7, 5, 6]])") as Error).message).toBe("index 7 is out of bounds for an axis of length 3")
-    expect(value("c: $0, ({ v | c(c() + 1), Σ(v) } ⍤ 1)([[1, 2], [3, 4], [5, 6]]), c()")).toBe(3)
+    expect(value("c: $0, ({ v | c← c + 1, Σ(v) } ⍤ 1)([[1, 2], [3, 4], [5, 6]]), c")).toBe(3)
   })
   test("rank ⍤ draws ⚄ for every cell, and ∇ goes through it", () => {
     const r = value("({ v | ⚄(shape(v)) } ⍤ 1)(fill([3, 2], 0))") as number[][]
@@ -718,17 +719,17 @@ describe("math functions", () => {
 // Contracts any future compilation of reactive recomputes must preserve
 describe("reactive recomputes stay dynamic", () => {
   test("a write stores a live value as it is now, and does not follow it", () => {
-    expect(value("a: $(1), b: $(0), b(a), b + 1")).toBe(2)
-    expect(value("a: $(1), b: $(0), b(a), c: b + 1, a(5), c")).toBe(2)
+    expect(value("a: $(1), b: $(0), b← a, b + 1")).toBe(2)
+    expect(value("a: $(1), b: $(0), b← a, c: b + 1, a← 5, c")).toBe(2)
   })
   test("repeated updates keep recomputing", () => {
-    expect(value("x: $(2), y: (x × 3) + 1, x(4), x(5), y")).toBe(16)
+    expect(value("x: $(2), y: (x × 3) + 1, x← 4, x← 5, y")).toBe(16)
   })
   test("payload shapes may change between updates", () => {
-    expect(value("x: $([1, 2]), y: sum(x × 2), x([1, 2, 3]), y")).toBe(12)
+    expect(value("x: $([1, 2]), y: sum(x × 2), x← [1, 2, 3], y")).toBe(12)
   })
   test("value-dependent bodies (mask) recompute correctly", () => {
-    expect(value("x: $([3, 1, 2]), y: mask(x, x > 1), x([5, 0, 6]), y")).toEqual([5, 6])
+    expect(value("x: $([3, 1, 2]), y: mask(x, x > 1), x← [5, 0, 6], y")).toEqual([5, 6])
   })
   test("randomness stays fresh per recompute", () => {
     const scope = createScope(), out = evaluateIn("x: $(0), y: x + randn([4]), y", scope) as any
@@ -738,16 +739,16 @@ describe("reactive recomputes stay dynamic", () => {
     expect(first).not.toBe(second)
   })
   test("variable reads in lambda bodies see fresh assignments", () => {
-    expect(value("θ: ~([5]), f: { v | v + θ_0 }, x: $(1), y: f(x), θ := [9], x(2), y")).toBe(11)
+    expect(value("θ: ~([5]), f: { v | v + θ_0 }, x: $(1), y: f(x), θ := [9], x← 2, y")).toBe(11)
   })
   test("chains of computeds recompute end-to-end", () => {
-    expect(value("x: $(2), a: x × 3, b: a + 1, x(4), x(5), b")).toBe(16)
+    expect(value("x: $(2), a: x × 3, b: a + 1, x← 4, x← 5, b")).toBe(16)
   })
   test("diamond dependencies stay consistent", () => {
-    expect(value("x: $(2), a: x × 3, b: a + a, x(4), b")).toBe(24)
+    expect(value("x: $(2), a: x × 3, b: a + a, x← 4, b")).toBe(24)
   })
   test("untraceable middles keep the chain reactive", () => {
-    expect(value("x: $([3, 1, 2]), m: mask(x, x > 1), s: sum(m), x([5, 0, 6]), s")).toBe(11)
+    expect(value("x: $([3, 1, 2]), m: mask(x, x > 1), s: sum(m), x← [5, 0, 6], s")).toBe(11)
   })
   test("chains fed by a computed of θ track assignments", () => {
     expect(value("θ: ~([2]), w: ${ θ }, y: w + 1, θ := [7], y")).toEqual([8])
@@ -756,27 +757,27 @@ describe("reactive recomputes stay dynamic", () => {
 
 describe("reactivity", () => {
   test("signal create, read, write", () => {
-    expect(value("x: $(2), x()")).toBe(2)
-    expect(value("x: $(2), x(7), x()")).toBe(7)
+    expect(value("x: $(2), x")).toBe(2)
+    expect(value("x: $(2), x← 7, x")).toBe(7)
   })
   test("signal write with ←", () => {
-    expect(value("x: $(1), x ← 9, x()")).toBe(9)
+    expect(value("x: $(1), x ← 9, x")).toBe(9)
   })
   test("← and := are one write: any cell, and a list of cells at once", () => {
     expect(value("identical((:=), (←))")).toBe(1)
-    expect(value("s: $1, s:= 4, s()")).toBe(4)
+    expect(value("s: $1, s:= 4, s")).toBe(4)
     // a list of cells takes a list of values, every one read before any is written
-    expect(value("a: $1, b: $2, (a, b) ← (b, a), [a(), b()]")).toEqual([2, 1])
-    expect(value("a: ~[1], b: $[2], (a, b) := (b, a), [a, b()]")).toEqual([[2], [1]])
+    expect(value("a: $1, b: $2, (a, b) ← (b, a), [a, b]")).toEqual([2, 1])
+    expect(value("a: ~[1], b: $[2], (a, b) := (b, a), [a, b]")).toEqual([[2], [1]])
     // one that can't be written leaves them all as they were
     const scope = scopeOf(`a: ~[1], b: $"x", r: (a, b) ← (b, a)`)
-    expect([scope.r instanceof Error, unwrap(scope.a), String(unwrap(scope.b))]).toEqual([true, [1], "x"])
+    expect([unwrap(scope.r) instanceof Error, unwrap(scope.a), String(unwrap(scope.b))]).toEqual([true, [1], "x"])
   })
   test("computed auto-lifts and unwraps", () => {
     expect(value("x: $(2), y: x + 1, y")).toBe(3)
   })
   test("⟳ follows a live count: raised, the loop runs on to the new total", async () => {
-    const scope = scopeOf("budget: $1, n: $0, { n(n() + 1) } ⟳ budget")
+    const scope = scopeOf("budget: $1, n: $0, { n← n + 1 } ⟳ budget")
     await new Promise((r) => setTimeout(r, 120))
     expect(unwrap(scope.n)).toBe(1)
     ;(scope.budget as Signal).value = engine.scalar(4)
@@ -786,13 +787,13 @@ describe("reactivity", () => {
   })
   test("a signal can hold a list", () => {
     // a signal stores a value, a list included – the tasks demo's list, a loader's empty one
-    expect(value("s: $(List(1, 2, 3)), ListLength(s())")).toBe(3)
-    expect(value("(++): ListConcat, s: $(List()), s(s() ++ List(7)), ListLength(s())")).toBe(1)
-    expect(value("(++): ListConcat, s: $(List()), s ← (s() ++ List(1, 2)), ListLength(s())")).toBe(2)
+    expect(value("s: $(List(1, 2, 3)), ListLength(s)")).toBe(3)
+    expect(value("(++): ListConcat, s: $(List()), s← s ++ List(7), ListLength(s)")).toBe(1)
+    expect(value("(++): ListConcat, s: $(List()), s ← (s ++ List(1, 2)), ListLength(s)")).toBe(2)
   })
   test("a list-of-tensors signal survives churn (no use-after-free)", () => {
     // the signal holds each tensor of a list it stores, so none is reclaimed while it does
-    expect(value("xy: $((fill([50], 7.0), fill([50], 3.0))), ({ i | xy((fill([50], 1.0), fill([50], 9.0))), i } ⍣ 20)(0), Σ(xy()_1)")).toBe(450)
+    expect(value("xy: $((fill([50], 7.0), fill([50], 3.0))), ({ i | xy← (fill([50], 1.0), fill([50], 9.0)), i } ⍣ 20)(0), Σ(xy_1)")).toBe(450)
   })
 })
 
@@ -808,8 +809,8 @@ describe("one model of time: cells, computeds, occurrences", () => {
     return unwrap(scope[show])
   }
   test("looking never changes a value", () => {
-    expect(value("θ: ~1, j: ${ θ × 2 }, j(), θ:= 5, j()")).toBe(10)
-    expect(value("θ: ~1, j: ${ θ × 2 }, θ:= 5, j()")).toBe(10)
+    expect(value("θ: ~1, j: ${ θ × 2 }, j, θ:= 5, j")).toBe(10)
+    expect(value("θ: ~1, j: ${ θ × 2 }, θ:= 5, j")).toBe(10)
   })
   test("a computed of a variable follows it after the program has run", () => {
     expect(steps("θ: ~1, j: ${ θ × 2 }, step: { θ:= θ + 1 }, (θ, j, step)", "step", 2, "j")).toBe(6)
@@ -821,29 +822,29 @@ describe("one model of time: cells, computeds, occurrences", () => {
     expect(value("s: $[5], θ: ~[0], r: θ:= s, θ")).toEqual([5])
   })
   test("a computed cannot change state; it may change cells it made", () => {
-    const scope = scopeOf("x: $1, c: ${ x(2), 3 }, c")
+    const scope = scopeOf("x: $1, c: ${ x← 2, 3 }, c")
     expect(unwrap(scope.c)).toBeInstanceOf(Error)
     expect((unwrap(scope.c) as Error).message).toContain("cannot change state")
     expect(unwrap(scope.x)).toBe(1)
-    expect(value("c: ${ y: $1, y(2), y() + 1 }, c")).toBe(3)
+    expect(value("c: ${ y: $1, y← 2, y + 1 }, c")).toBe(3)
   })
   test("∇ sees through a computed, every time", () => {
     const plain = (v: any): any => { while (v instanceof Signal) { v = v.value } return Array.isArray(v) ? v.map(plain) : unwrap(v) }
-    expect(plain(value("θ: ~[0], view: ${ θ × 10 }, 𝓛: { Σ((view() - 30)^2) }, opt: sgd(0.0025), r1: opt(𝓛), r2: opt(𝓛), (r1, r2, θ)")))
+    expect(plain(value("θ: ~[0], view: ${ θ × 10 }, 𝓛: { Σ((view - 30)^2) }, opt: sgd(0.0025), r1: opt(𝓛), r2: opt(𝓛), (r1, r2, θ)")))
       .toEqual([900, expect.closeTo(225, 3), [expect.closeTo(2.25, 5)]])
-    expect(plain(value("θ: ~2, c: ${ θ × 3 }, r1: (∇{ c() })(), r2: (∇{ c() })(), (ListGet(r1, 2), ListGet(r2, 2))"))).toEqual([[3], [3]])
+    expect(plain(value("θ: ~2, c: ${ θ × 3 }, r1: (∇{ c })(), r2: (∇{ c })(), (ListGet(r1, 2), ListGet(r2, 2))"))).toEqual([[3], [3]])
   })
   test("a computed shown while ∇ runs keeps its own value", () => {
-    expect(value("θ: ~2, c: ${ θ × 3 }, c(), (∇{ c() })(), c()")).toBe(6)
+    expect(value("θ: ~2, c: ${ θ × 3 }, c, (∇{ c })(), c")).toBe(6)
   })
   test("a derived value is never seen half-updated, whatever reads it first", () => {
-    expect(value("a: $1, b: ${ a() × 2 }, c: ${ a() + b() }, a(5), [c(), b()]")).toEqual([15, 10])
-    expect(value("a: $1, b: ${ a() × 2 }, c: ${ a() + b() }, a(5), [b(), c()]")).toEqual([10, 15])
+    expect(value("a: $1, b: ${ a × 2 }, c: ${ a + b }, a← 5, [c, b]")).toEqual([15, 10])
+    expect(value("a: $1, b: ${ a × 2 }, c: ${ a + b }, a← 5, [b, c]")).toEqual([10, 15])
   })
   test("every cell reads with () and writes with (v); a variable's write is :=", () => {
-    expect(value("θ: ~[1], θ([4]), θ()")).toEqual([4])
+    expect(value("θ: ~[1], θ← [4], θ")).toEqual([4])
     expect(value("θ: ~[1], θ← [7], θ")).toEqual([7])
-    expect(run("θ: ~[1], θ(\"text\")")).toBeInstanceOf(Error)
+    expect(run("θ: ~[1], θ← \"text\"")).toBeInstanceOf(Error)
   })
   test("a draw is keyed by its call: looking at another draw moves it not", () => {
     const stepped = (look: boolean) => {
@@ -906,18 +907,13 @@ describe("language fixes", () => {
     expect(run("when([0 ÷ 0], { 1 })")).toBe(null)
     expect(run("guard([0 ÷ 0], { 1 })()")).toBeInstanceOf(NoMatch)
   })
-  test("FunctionNoAutoLift marks a new function, not the one it is given", () => {
-    run("FunctionNoAutoLift(sin)")
-    expect(value("s: $(1), y: sin(s), s(0), y")).toBe(0)
-    expect(value("s: $(0), identical(FunctionNoAutoLift({ a | a })(s), s)")).toBe(1)
-  })
   test("SignalRead and SignalUpdate take the signal itself", () => {
     expect(value("s: $3, SignalRead(s)")).toBe(3)
-    expect(value("s: $3, SignalUpdate(s, 4), s()")).toBe(4)
+    expect(value("s: $3, SignalUpdate(s, 4), s")).toBe(4)
   })
   test("⟳ stops at a step that fails, and its signal holds the Error", async () => {
     const scope = createScope()
-    const r = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(`n: $0, { n(n() + 1), 1 + "a" } ⟳ 5`), scope))
+    const r = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(`n: $0, { n← n + 1, 1 + "a" } ⟳ 5`), scope))
     expect(r).toBeInstanceOf(Signal)
     await settle()
     expect((r as Signal<Value>).value).toBeInstanceOf(Error)
@@ -938,8 +934,8 @@ describe("language fixes", () => {
     expect(run(`StringConcat("a", Error("x"))`)).toBeInstanceOf(Error)
   })
   test("String of a cell is the text of its value, and follows it", () => {
-    expect(value("String(~~[1, 2])")).toBe("[1, 2]")
-    expect(value("x: ~~[1, 2], s: String(x), x:= [3], s")).toBe("[3]")
+    expect(value("String($[1, 2])")).toBe("[1, 2]")
+    expect(value("x: $[1, 2], s: String(x), x:= [3], s")).toBe("[3]")
   })
   test("indexing an unknown name names it", () => {
     expect(message("a_0")).toContain("unknown name: a")
@@ -1028,10 +1024,10 @@ describe("training: ∇ follows what the loss reads", () => {
     expect(plain(value("θ: ~([1, 2]), φ: ~(3), r: ∇({ Σ(θ × φ) })(), (ListGet(r, 0), ListLength(ListGet(r, 1)), ListGet(ListGet(r, 2), 0), ListGet(ListGet(r, 2), 1))")))
       .toEqual([9, 2, [3, 3], 3])
     // a data slot is read like a constant: no gradient for it
-    expect(value("θ: ~(2), x: ~~(5), ListLength(ListGet(∇({ θ × x })(), 1))")).toBe(1)
+    expect(value("θ: ~(2), x: $(5), ListLength(ListGet(∇({ θ × x })(), 1))")).toBe(1)
   })
   test(":= takes a list of variables and as many values", () => {
-    expect(plain(value("θ: ~([1]), x: ~~([2]), (θ, x) := ([3], [4]), (θ, x)"))).toEqual([[3], [4]])
+    expect(plain(value("θ: ~([1]), x: $([2]), (θ, x) := ([3], [4]), (θ, x)"))).toEqual([[3], [4]])
     expect(run("θ: ~([1]), (θ,) := ([1], [2])")).toBeInstanceOf(Error)
   })
   test("two optimizers each train only what their loss reads", () => {
@@ -1101,22 +1097,20 @@ describe("training: ∇ follows what the loss reads", () => {
   })
 })
 
-describe("data slots (~~)", () => {
-  test("a data slot reads like a variable and is never trained", () => {
-    const trained = (final: string) => value(`x: ~~([5]), θ: ~([0]), 𝓛: { mean((θ_0 - x_0)^2) }, opt: sgd(0.2), step: { v | opt(𝓛) }, (step ⍣ 60)(◌), ${final}`)
+describe("numbers the loss reads ($)", () => {
+  test("a $ the loss reads is read like a variable and trained only when it is listed", () => {
+    const trained = (final: string) => value(`x: $([5]), θ: ~([0]), 𝓛: { mean((θ_0 - x_0)^2) }, opt: sgd(0.2), step: { v | opt(𝓛) }, (step ⍣ 60)(◌), ${final}`)
     expect(trained("θ_0")).toBeCloseTo(5, 1)
-    // the loss pulls θ toward x, so x has a nonzero cotangent path – the slot comes back untouched anyway
+    // the loss pulls θ toward x, so x has a nonzero cotangent path – x comes back untouched anyway
     expect(trained("x_0")).toBe(5)
-    // three-tier naming: the word alias makes the same slot
-    expect(value("x: data([4]), x_0")).toBe(4)
   })
-  test(":= retargets a data slot mid-training and the fit follows", () => {
-    // the next step reads the slot's new value, optimizer moments intact
-    expect(value(`x: ~~([3]), θ: ~([0]), 𝓛: { mean((θ_0 - x_0)^2) }, opt: adam(0.2), step: { v | opt(𝓛) },
+  test(":= retargets a $ mid-training and the fit follows", () => {
+    // the next step reads the cell's new value, optimizer moments intact
+    expect(value(`x: $([3]), θ: ~([0]), 𝓛: { mean((θ_0 - x_0)^2) }, opt: adam(0.2), step: { v | opt(𝓛) },
       (step ⍣ 60)(◌), x := [7], (step ⍣ 120)(◌), θ_0`)).toBeCloseTo(7, 1)
   }, 20000) // a training loop – slow under CI/load, don't flake on the 5s default
   test(":= to a NEW SHAPE retraces cleanly and training carries on", () => {
-    expect(value(`x: ~~([1, 2]), θ: ~([0]), 𝓛: { mean((θ_0 - mean(x))^2) }, opt: adam(0.3), step: { v | opt(𝓛) },
+    expect(value(`x: $([1, 2]), θ: ~([0]), 𝓛: { mean((θ_0 - mean(x))^2) }, opt: adam(0.3), step: { v | opt(𝓛) },
       (step ⍣ 50)(◌), x := [10, 10, 10, 10], (step ⍣ 120)(◌), θ_0`)).toBeCloseTo(10, 1)
   }, 20000)
   test("when – a conditional effect: the condition gates, thunk errors stay loud", () => {
@@ -1126,15 +1120,15 @@ describe("data slots (~~)", () => {
     expect(run("when(1, { nonsense(3) })")).toBeInstanceOf(Error)
   })
   test("data that follows a corpus is a computed of it", () => {
-    expect(value("corpus: $([1, 2]), D: ${ corpus() × 2 }, corpus ← [7, 8, 9], sum(D())")).toBe(48)
+    expect(value("corpus: $([1, 2]), D: ${ corpus × 2 }, corpus ← [7, 8, 9], sum(D)")).toBe(48)
   })
   test(":= with a non-tensor keeps the variable's last good value", () => {
     // deleting the demo's corpus makes load() an Error; := refuses to store it
-    expect(run("x: ~~([1, 2]), x := unbound(3)")).toBeInstanceOf(Error)
-    expect(value("x: ~~([1, 2]), r: x := unbound(3), sum(x)")).toBe(3)
+    expect(run("x: ~([1, 2]), x := unbound(3)")).toBeInstanceOf(Error)
+    expect(value("x: ~([1, 2]), r: x := unbound(3), sum(x)")).toBe(3)
   })
-  test("passing ~~ in an explicit var list is a loud error, never silent filtering", () => {
-    expect(run("x: ~~([1]), θ: ~([0]), 𝓛: { mean((θ_0 - 1)^2) }, opt: sgd(0.1, (θ, x)), opt(𝓛)")).toBeInstanceOf(Error)
+  test("listing a cell the loss doesn't read is a loud error, never silent filtering", () => {
+    expect(unwrap(run("x: $([1]), θ: ~([0]), 𝓛: { mean((θ_0 - 1)^2) }, opt: sgd(0.1, (θ, x)), opt(𝓛)"))).toBeInstanceOf(Error)
   })
 })
 
@@ -1142,7 +1136,7 @@ describe("Storage: a signal kept across runs", () => {
   const arrive = () => new Promise((r) => setTimeout(r, 10))
   const data = (v: Value) => JSON.parse(JSON.stringify(unwrap(v).map(unwrap)))
   test("a write is saved as the value it had then; the next run gets it back", async () => {
-    const written = run(`θ: ~[1, 2], s: Storage("test: kept"), s((θ, "hi", [[3]])), θ:= [5, 6], s`)
+    const written = run(`θ: ~[1, 2], s: Storage("test: kept"), s← (θ, "hi", [[3]]), θ:= [5, 6], s`)
     expect(data(written)).toEqual([[1, 2], "hi", [[3]]])
     const later = run(`Storage("test: kept")`) as Signal<Value>
     expect(later.value).toBe(null)
@@ -1150,19 +1144,19 @@ describe("Storage: a signal kept across runs", () => {
     expect(data(later)).toEqual([[1, 2], "hi", [[3]]])
   })
   test("◌ forgets – also written to a signal that holds ◌ – and what can't be saved is an Error", async () => {
-    run(`s: Storage("test: forgotten"), s([1])`)
+    run(`s: Storage("test: forgotten"), s← [1]`)
     await arrive()
-    run(`s: Storage("test: forgotten"), s(◌)`)
+    run(`s: Storage("test: forgotten"), s← ◌`)
     const later = run(`Storage("test: forgotten")`) as Signal<Value>
     await arrive()
     expect(later.value).toBe(null)
-    const fn = run(`s: Storage("test: a function"), s({ x | x }), s`) as Signal<Value>
+    const fn = run(`s: Storage("test: a function"), s← { x | x }, s`) as Signal<Value>
     await arrive()
     expect(fn.value).toBeInstanceOf(Error)
   })
   test("a run that writes first keeps its value when an older one arrives", async () => {
-    run(`s: Storage("test: race"), s(1)`)
-    const s = run(`s: Storage("test: race"), s(2), s`) as Signal<Value>
+    run(`s: Storage("test: race"), s← 1`)
+    const s = run(`s: Storage("test: race"), s← 2, s`) as Signal<Value>
     await arrive()
     expect(unwrap(s)).toBe(2)
   })
@@ -1446,7 +1440,7 @@ describe("a failing statement fails its block", () => {
   test("the block's value is the first failure, and the block stops there", () => {
     expect((run(`{ 1 + "a", 5 }()`) as Error).message).toBe(failure)
     expect((run(`{ a: 1 + "a", 5 }()`) as Error).message).toBe(failure)
-    expect(value(`n: $0, { n← n + 1, 1 + "a", n← n + 1 }(), n()`)).toBe(1)
+    expect(value(`n: $0, { n← n + 1, 1 + "a", n← n + 1 }(), n`)).toBe(1)
   })
   test("a decline is no failure: a NoMatch before the last is dropped", () => {
     expect(value("{ NoMatch, 5 }()")).toBe(5)
@@ -1458,7 +1452,7 @@ describe("a failing statement fails its block", () => {
     expect((run(`cond(guard(1, { 1 + "a", 5 }), { 7 })`) as Error).message).toBe(failure)
   })
   test("a failing training step stops ⍣ with its Error", () => {
-    const e = run("θ: $0, opt: adam(0.1), ({ i | opt({ Σ(θ^2) }), i } ⍣ 3)(0)") as Error
+    const e = unwrap(run("θ: $0, opt: adam(0.1), ({ i | opt({ Σ(θ^2) }), i } ⍣ 3)(0)")) as Error
     expect(e.message).toContain("reads no ~ variable")
   })
   test("a program's top level runs every statement: the host marks the ones that fail", () => {
@@ -1806,7 +1800,7 @@ describe("values that cross time carry no history", () => {
     expect(size(scopeOf("θ: ~([1, 2]), ({ s | θ := θ × 2 + 1 } ⍣ 50)(0)")["θ"])).toBe(1)
   })
   test("a signal written in a loop stays a leaf", () => {
-    expect(size((scopeOf("s: $([0, 1]), ({ i | s(s() + 1) } ⍣ 50)(0)")["s"] as Signal<unknown>).peek())).toBe(1)
+    expect(size((scopeOf("s: $([0, 1]), ({ i | s← s + 1 } ⍣ 50)(0)")["s"] as Signal<unknown>).peek())).toBe(1)
   })
   test("an optimizer's parameters stay leaves however long it trains", () => {
     expect(size(scopeOf("θ: ~([0, 0]), opt: adam(0.1), ({ s | opt({ Σ((θ - [1, 2])^2) }) } ⍣ 30)(0)")["θ"])).toBe(1)
@@ -1814,10 +1808,10 @@ describe("values that cross time carry no history", () => {
   test("a value defined from a variable follows it; one taken in a step is its own", () => {
     expect(value("θ: ~(5), s: Σ(θ), θ := 7, s")).toBe(7)
     expect(value("θ: ~([[1, 2]]), m: moveaxis(θ, 1, 1), θ := [[0, 0]], m")).toEqual([[0, 0]])
-    expect(value("θ: ~(5), s: $0, take: { s(Σ(θ)) }, take(), θ := 7, s()")).toBe(5)
+    expect(value("θ: ~(5), s: $0, take: { s← Σ(θ) }, take(), θ := 7, s")).toBe(5)
   })
   test("a value worked out at the top of a program is worked out once, not again by every step that reads it", () => {
-    const scope = scopeOf("c: sin(0..<1000) × 2, total: $0, step: { total← total() + Σ(c) }")
+    const scope = scopeOf("c: sin(0..<1000) × 2, total: $0, step: { total← total + Σ(c) }")
     expect(size(scope.c)).toBeGreaterThan(1)
     for (let i = 0; i < 3; i++) { occurrence(() => (scope.step as Function)()) }
     expect([size(scope.c), unwrap(scope.total) / 3]).toEqual([1, value("Σ(sin(0..<1000) × 2)")])
@@ -1985,8 +1979,8 @@ describe("gallery examples smoke suite", () => {
   const stepLater = (step: Function) => { steps.push(step); return null }
   const button = DefaultEnvironment.Button as Function
   const pressLater = (label: Value, onClick: Value) => { if (typeof onClick === "function") { presses.push(onClick) } return button(label, onClick) }
-  setMeta(stepLater, { noAutoLift: true })
-  setMeta(pressLater, { noAutoLift: true })
+  setMeta(stepLater, { places: [null, "cell"] })
+  setMeta(pressLater, { places: ["cell"] })
   const real = { FunctionIterate: DefaultEnvironment.FunctionIterate, Button: button }
   beforeAll(async () => {
     // safetensors: an 8-byte header length, a JSON header, then the bytes; mnist is U8
@@ -2030,7 +2024,7 @@ describe("gallery examples smoke suite", () => {
       const scope = createScope()
       expect(evaluateGeneration(() => evaluateSyntaxTreeNode(tree, scope))).not.toBeInstanceOf(Error)
       expect(firstError(scope)).toBeNull()
-      const trained = Object.keys(scope).filter((k) => scope[k] instanceof FluentVariable && !(scope[k] instanceof FluentData))
+      const trained = Object.keys(scope).filter((k) => scope[k] instanceof FluentVariable)
       const before = trained.map((k) => JSON.stringify((scope[k] as FluentVariable).value.js()))
       const failures: string[] = []
       const call = (what: string, f: Function, ...args: Value[]) => {
@@ -2049,7 +2043,7 @@ describe("gallery examples smoke suite", () => {
   test("a demo you drag descends on the clock: so many steps a second, on any machine", () => {
     const clock = SignalCreate(engine.scalar(0)), budgets: Value[] = []
     const record = (_: Value, n: Value) => { budgets.push(n); return null }
-    setMeta(record, { noAutoLift: true })
+    setMeta(record, { places: [null, "cell"] })
     const time = DefaultEnvironment.Time
     extendEnvironment({ FunctionIterate: record, Time: () => clock } as Record<string, Value>)
     try {
@@ -2071,7 +2065,7 @@ describe("gallery examples smoke suite", () => {
   test("Learning in frequencies stops at its last step: the clock's count is capped at T", () => {
     const clock = SignalCreate(engine.scalar(0)), budgets: Value[] = []
     const record = (_: Value, n: Value) => { budgets.push(n); return null }
-    setMeta(record, { noAutoLift: true })
+    setMeta(record, { places: [null, "cell"] })
     const time = DefaultEnvironment.Time
     extendEnvironment({ FunctionIterate: record, Time: () => clock } as Record<string, Value>)
     try {
@@ -2303,7 +2297,7 @@ describe("String is the inverse of CodeEvaluate", () => {
     expect(value("make: { n | { x | x + n } }, CodeEvaluate(String(make(3)))(1)")).toBe(4)
   })
   test("no function prints JavaScript", () => {
-    for (const source of ["sin", "sum", "exp ⍣ -1", "⍨ -", "× ⍤ 1", "adam(0.01)", "grad(sin)", "guard(1, { 2 })", "try({ 1 })", "FunctionNoAutoLift(sin)", "cascade((sin, cos))"]) {
+    for (const source of ["sin", "sum", "exp ⍣ -1", "⍨ -", "× ⍤ 1", "adam(0.01)", "grad(sin)", "guard(1, { 2 })", "try({ 1 })", "cascade((sin, cos))"]) {
       expect(value(`String(${source})`)).not.toMatch(/=>|function|return|const /)
     }
   })
@@ -2495,7 +2489,8 @@ describe("error messages carry context", () => {
   // the chain the IDE lists, innermost first, each link with the document it points into
   const chain = (source: string): { message: string, user: boolean, line?: number }[] => {
     const links: Error[] = []
-    for (let e: unknown = run(source); e instanceof Error; e = e.cause) { links.unshift(e) }
+    // what the IDE shows: a live value's value
+    for (let e: unknown = unwrap(run(source)); e instanceof Error; e = e.cause) { links.unshift(e) }
     return links.map((e) => ({ message: e.message, user: getOrigin(e)?.document === source, line: getOrigin(e)?.start.line }))
   }
   test("an Error in arithmetic is that Error, unchanged", () => {
@@ -2536,7 +2531,8 @@ describe("error messages carry context", () => {
     // an Error in call position is that Error, not "'Error: …' is not a function"
     expect(chain("(double ⍣ 5)(1)").map((l) => l.message)).toEqual(["`(f ⍣ n)`: `f` must be a function, got the unknown name double"])
     expect(chain("x: [1, 2], W: ~[3, 4], loss: Σ(x × W), opt: adam(0.1), opt(loss)")[0]!.message).toContain("write it in braces")
-    expect(chain("x: $(1), x(1, 2)")[0]!.message).toContain("a live value is read with s()")
+    // a cell applied is its value applied
+    expect(chain("x: $(1), x(1, 2)")[0]!.message).toBe("a number is not a function")
   })
   test("a NoMatch keeps its own origin, a fresh one per read", () => {
     run("no: { x | NoMatch }, no(1)")
@@ -2546,7 +2542,7 @@ describe("error messages carry context", () => {
   })
   test("no JavaScript text reaches a message", () => {
     // writing a computed live value, binding over a getter
-    expect(chain("a: $(1), b: a + 1, b(5)")[0]!.message).toBe("this live value is made from others – write the values it is made from")
+    expect(chain("a: $(1), b: a + 1, b← 5")[0]!.message).toBe("this live value is made from others – write the values it is made from")
     expect(value("NoMatch: 5, NoMatch")).toBe(5)
     for (const source of ["sine(1)", "x: [1, 2, 3], x[0]", "2 x 3", "f: x → x^2, f(3)", "(double ⍣ 5)(1)", "x: $(1), x(1, 2)", "a: $(1), b: a + 1, b(5)"]) {
       for (const { message } of chain(source)) { expect(message).not.toMatch(/Symbol\(|Attempted|'1,2,3'|Error: |poor signal/) }
@@ -2822,7 +2818,7 @@ describe("the evaluation host", () => {
   })
 
   test("a top-level assignment runs the program once, not again on its own write", async () => {
-    for (const source of ["θ: ~[0, 0], θ:= [1, 2], θ", "D: ~~[1], D:= [3, 4], D"]) {
+    for (const source of ["θ: ~[0, 0], θ:= [1, 2], θ", "D: $[1], D:= [3, 4], D"]) {
       const start = inbox.length
       await evaluate(source)
       await pause(200)
@@ -2831,7 +2827,7 @@ describe("the evaluation host", () => {
   })
 
   test("a picture paints until the page lets go of it, however often its value moves on", async () => {
-    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), $({ fill([5, 5], x()) }))`)
+    const d = await evaluate(`x: $(0), (Button("go", { x← x + 1 }), $({ fill([5, 5], x) }))`)
     const go = d.items[0].slots.onClick.id, live = d.items[1].id
     toHost({ t: "canvas", slot: 1, canvas: canvas as unknown as OffscreenCanvas })
     let start = inbox.length
@@ -3073,7 +3069,7 @@ describe("the evaluation host", () => {
 
   test("a program runs once, and what it shows of a variable follows it", async () => {
     // a top-level read and then a write of the same cell, as an optimizer's step does
-    for (const source of ["s: $0, s(s() + 1), s", "θ: ~[0], opt: sgd(0.1), opt({ Σ((θ - 1)^2) }), θ"]) {
+    for (const source of ["s: $0, s← s + 1, s", "θ: ~[0], opt: sgd(0.1), opt({ Σ((θ - 1)^2) }), θ"]) {
       const start = inbox.length
       await evaluate(source)
       await pause(200)
@@ -3108,7 +3104,7 @@ describe("the evaluation host", () => {
   })
 
   test("a change made while the page draws goes when the page has drawn, not a frame later", async () => {
-    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), x)`)
+    const d = await evaluate(`x: $(0), (Button("go", { x← x + 1 }), x)`)
     const go = d.items[0].slots.onClick.id, x = d.items[1].id
     const draw = hold("frames")
     let start = inbox.length
@@ -3137,7 +3133,7 @@ describe("the evaluation host", () => {
     const clock = performance.now
     const spin = (v: Value) => { now += 2; return v }
     extendEnvironment({ TestSpin: spin } as Record<string, Value>)
-    const d = await evaluate(`x: $(0), ${loop}(Button("go", { x(x() + 1) }), \${ TestSpin(x()) })`)
+    const d = await evaluate(`x: $(0), ${loop}(Button("go", { x← x + 1 }), \${ TestSpin(x) })`)
     const go = d.items[0].slots.onClick.id, y = d.items[1].id
     const frames: ((t: number) => void)[] = []
     ;(globalThis as any).requestAnimationFrame = (f: (t: number) => void) => frames.push(f)
@@ -3168,7 +3164,7 @@ describe("the evaluation host", () => {
   })
 
   test("a run waits for the page as any change does: one batch at most is on its way", async () => {
-    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), x)`)
+    const d = await evaluate(`x: $(0), (Button("go", { x← x + 1 }), x)`)
     const go = d.items[0].slots.onClick.id
     const draw = hold("frames")
     let start = inbox.length
@@ -3207,7 +3203,7 @@ describe("the evaluation host", () => {
   })
 
   test("a live value the page let go of stops sending", async () => {
-    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), x)`)
+    const d = await evaluate(`x: $(0), (Button("go", { x← x + 1 }), x)`)
     const [button, x] = d.items
     const go = button.slots.onClick.id
     let start = inbox.length
@@ -3221,7 +3217,7 @@ describe("the evaluation host", () => {
   })
 
   test("the page sends another worker nothing about the ids the last one named", async () => {
-    const d = await evaluate(`x: $(0), (Button("go", { x(x() + 1) }), Slider(x))`)
+    const d = await evaluate(`x: $(0), (Button("go", { x← x + 1 }), Slider(x))`)
     const go = d.items[0].slots.onClick.id, x = d.items[1].slots.target.id
     const sent: ToWorker[] = []
     connect((message) => { sent.push(message) }, drawn)
