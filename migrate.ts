@@ -2,10 +2,9 @@
 // it now: a read s() is s, a write s(v) is s← v – (s← v) as an operand – FunctionNoAutoLift(f)
 // is f, and a data slot ~~ is a $. A name is a cell where the expression that binds it makes
 // one, through its lexical scope. A saved link carries the version it was written in, and an
-// older one is migrated as it loads.
+// older one is migrated as it loads (protocol.ts, VERSION).
 import { CodeParse, type SyntaxTreeNode } from "./language"
 
-export const VERSION = 2
 const MAKERS = new Set(["$", "signal", "SignalCreate", "Reactive", "SignalComputed", "~", "var", "TensorVariable", "~~", "data", "TensorData",
   "Storage", "Time", "MousePosition", "Camera", "Microphone", "MicrophoneSpectrum", "Fetch", "LoadTensorFromImageUrl", "LoadSafeTensorFromURL", "Density"])
 const RENAMED = new Map([["~~", "$"], ["data", "$"], ["TensorData", "SignalCreate"]])

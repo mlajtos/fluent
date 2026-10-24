@@ -13,12 +13,13 @@ import {
   type Value, type SyntaxTreeNode, type Origin, type CurrentScope,
 } from "./language"
 import {
-  tensorView, labelled, heatScale, documentHash,
+  tensorView, labelled, heatScale, documentHash, VERSION,
   type Desc, type Doc, type SourceKind, type TensorView, type ToPage, type ToWorker, type Tree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
 import { TOUR_SOURCE } from "./tour"
 import { CpuPainter, GpuPainter, type Picture } from "./painter"
+import { migrate } from "./migrate"
 
 type Post = (message: ToPage, transfer?: Transferable[]) => void
 let post: Post = () => { }
@@ -718,6 +719,7 @@ const fromPage = (value: number | number[] | string | ImageBitmap): Value =>
 const receive = (m: ToWorker) => {
   switch (m.t) {
     case "code": {
+      if ((m.v ?? VERSION) < VERSION) { post({ t: "migrated", source: migrate(m.source) }); return }
       source = m.source
       scheduleRun()
       return

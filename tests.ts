@@ -882,6 +882,79 @@ describe("one model of time: cells, computeds, occurrences", () => {
   })
 })
 
+// A cell applied is its value applied, and following is observed: in a definition an
+// application that read cells and changed none follows them; one that wrote a cell or made
+// one runs once. A lambda's body is part of the definition. The laws, as Elliott stated them.
+describe("a cell applied is its value applied; following is observed", () => {
+  // the program, then each later line run in its scope as a press
+  const after = (source: string, ...presses: string[]) => {
+    const scope = scopeOf(source)
+    for (const p of presses) { occurrence(() => evaluateSyntaxTreeNode(CodeParse(p), scope)) }
+    return scope
+  }
+  const at = (scope: Record<string, Value>, expression: string) => unwrap(evaluateSyntaxTreeNode(CodeParse(expression), scope))
+  test("a cell applied is its value applied, so W(x) in a step applies W and writes nothing", () => {
+    expect(value("W: ~[[1, 2], [3, 4]], W([1, 1])")).toEqual([3, 7])
+    const scope = after("W: ~[[1, 2], [3, 4]], y: $0, step: { y← W([1, 1]) }", "step()")
+    expect([at(scope, "y"), at(scope, "W")]).toEqual([[3, 7], [[1, 2], [3, 4]]])
+    expect(value("s: $[1, 2], s()")).toEqual([1, 2])
+    expect(value("f: SignalCreate({ x | x + 1 }), f(2)")).toBe(3)
+  })
+  test("a lambda's body is part of the definition: given a cell, it writes it or follows it", () => {
+    expect(value("inc: { c | c← c + 1 }, s: $0, inc(s), s")).toBe(1)
+    const scope = after("θ: ~[1, 2], s: $0, f: { x | s← Σ(x), x × 2 }, y: f(θ)", "θ := [3, 4]")
+    expect([at(scope, "y"), at(scope, "s")]).toEqual([[6, 8], 3])
+    expect(value("cs: ($1, $2), ListMap(cs, { c | c← c × 10 }), [cs_0, cs_1]")).toEqual([10, 20])
+  })
+  test("what reads a cell follows it: a choice in a closure, a top-level ∇", () => {
+    expect(String(at(after(`s: $1, g: { cond(guard(s > 0, { "pos" }), { "neg" }) }, y: g()`, "s ← -1"), "y"))).toBe("neg")
+    expect(at(after("θ: ~1, g: (∇{ θ^2 })()_2_0", "θ := 3"), "g")).toBe(6)
+  })
+  test("a top-level s() follows its cell, and the snapshot is $s, anywhere", () => {
+    expect(value("s: $5, a: s(), s ← 6, a")).toBe(6)
+    expect(value("s: $5, a: $s, s ← 6, a")).toBe(5)
+    expect(value("s: $5, f: { old: $s, s← s + 1, old }, f()")).toBe(5)
+    // a name and a ( ) list hold the cell itself; a [ ] list reads it
+    expect(value("s: $5, f: { old: s, s← s + 1, old }, f()")).toBe(6)
+    expect(value("s: $1, log: $List(), log← log concat (s,), s ← 2, log_0")).toBe(2)
+    expect(value("s: $1, log: $[], log← log concat [s], s ← 2, log")).toEqual([1])
+  })
+  test("∇ and an optimizer take any listed cell, and run again every value made from it", () => {
+    expect(value("bend: $[1, 2], targets: bend × 3, targets, L: { Σ(bend^2) + Σ(targets^2) }, (∇L)((bend,))_2_0")).toEqual([20, 40])
+    expect(at(after("t: $[0, 0], o: adam(0.1, (t,)), L: { Σ((t - [1, 2])^2) }, o(L)", "o(L)"), "t")).toEqual([expect.closeTo(0.1996, 4), expect.closeTo(0.1998, 4)])
+  })
+  test("a write goes through a live value to the cell it picks now", () => {
+    // Milan's program
+    expect(at(after("a: $2, b: $3, left: 1, which: ${ cond(guard(left, { a }), { b }) }", "which := 23"), "[a, b]")).toEqual([23, 3])
+    expect(at(after("a: $2, b: $3, left: $1, which: ${ cond(guard(left, { a }), { b }) }", "which := 23", "left ← 0", "which := 5"), "[a, b]")).toEqual([23, 5])
+    expect(at(after("s: $1, t: $2, pick: $0, which: ${ cond(guard(pick, { (t,) }), { (s,) }) }, which ← (9,)", "pick← 1", "which ← (7,)"), "[s, t]")).toEqual([9, 7])
+  })
+  test("a top-level $ survives an edit only if something wrote it", () => {
+    const rerun = (from: Record<string, Value>, source: string) => {
+      const scope = createScope()
+      evaluateGeneration(() => keepingFrom(from, scope, () => evaluateSyntaxTreeNode(CodeParse(source), scope)))
+      return scope
+    }
+    const first = after("k: [3], s: $(k), t: $0", "t ← 5")
+    const second = rerun(first, "k: [4], s: $(k), t: $0")
+    expect([at(second, "s"), at(second, "t"), second.t === first.t]).toEqual([[4], 5, true])
+  })
+  test("a dropped statement that applies numbers or text is an Error that names the write", () => {
+    const message = (source: string) => (unwrap(run(source)) as Error).message
+    expect(message("n: $2, n(5), n")).toBe("n holds a number: n(…) uses it and changes nothing, and nothing reads this line – to give n a new value, write n← …")
+    expect(message("n: $2, step: { n(n + 1), n }, step()")).toContain("write n← …")
+    expect(message(`name: $"bob", name("ann"), 1`)).toContain("name holds a string")
+    expect(message("W: [[1, 2], [3, 4]], W([1, 1]), 5")).toBe("W holds numbers of shape [2 2]: W(…) uses it and changes nothing, and nothing reads this line")
+    // what reads the application, or a last statement, is no drop
+    expect(value("W: [[1, 2], [3, 4]], y: W([1, 1]), y")).toEqual([3, 7])
+    expect(value("W: [[1, 2], [3, 4]], W([1, 1])")).toEqual([3, 7])
+  })
+  test("slots that take only a function take an array as its map", () => {
+    expect(value("([1, 0], [0, 1]) reduce [[1, 2], [3, 4]]")).toBe(2)
+    expect(value("memo([[1, 2], [3, 4]])([1, 1])")).toEqual([3, 7])
+  })
+})
+
 describe("language fixes", () => {
   const message = (source: string): string => {
     const v = run(source)
@@ -2362,6 +2435,44 @@ describe("every name in shipped Fluent source resolves", () => {
       expect(names(src.trim())).toEqual({ parsed: true, unresolved: [], shadowed: [] })
     })
   }
+  test("no statement in shipped Fluent applies numbers or text and drops the result", () => {
+    // every sequence – a program, a lambda's body, a cell's seed – in the Prelude, the Tour
+    // and the gallery: a statement before the last whose head is numbers, text, or a name
+    // bound to them, or to a cell made from them, is what the drop guard stops
+    const heads = new Map<string, number>(), data: string[] = []
+    const literal = (n: any): boolean => ["Number", "Tensor", "String"].includes(n?.type)
+    const holdsData = (n: any): boolean => literal(n) || (n?.type === "Operation" && ["$", "~", "signal", "var", "SignalCreate", "TensorVariable"].includes(symbolOf(n.content.operator) ?? "")
+      && n.content.args.content.value.length === 1 && literal(n.content.args.content.value[0]))
+    const walk = (n: any, bound: Map<string, boolean>[]) => {
+      if (!n || typeof n !== "object") { return }
+      if (Array.isArray(n)) { n.forEach((x) => walk(x, bound)); return }
+      if (n.type === "Code") { return }
+      const body = n.type === "Program" ? n.content : n.type === "Lambda" && n.content.expr.type === "Program" ? n.content.expr.content : null
+      if (body) {
+        const scope = new Map<string, boolean>(n.type === "Lambda" ? n.content.args.map((a: any) => [symbolOf(a), false]) : [])
+        for (const s of body) { if (s.type === "Operation" && symbolOf(s.content.operator) === ":") { scope.set(symbolOf(s.content.args.content.value[0]) ?? "", holdsData(s.content.args.content.value[1])) } }
+        const inner = [scope, ...bound]
+        body.slice(0, -1).forEach((s: any) => {
+          if (s.type !== "Operation") { return }
+          const head = s.content.operator, name = symbolOf(head)
+          if (name !== ":") { heads.set(name ?? head.type, (heads.get(name ?? head.type) ?? 0) + 1) }
+          if (literal(head) || (name && inner.find((b) => b.has(name))?.get(name))) { data.push(s.origin.source) }
+        })
+        body.forEach((s: any) => walk(s, inner))
+        return
+      }
+      // a cell's seed, a card's example: Fluent in a string
+      const code = n.type === "Operation" && { demo: 0, challenge: 0, doc: 3 }[symbolOf(n.content.operator) ?? ""]
+      const text = typeof code === "number" && n.content.args.content.value[code]
+      if (text?.type === "String") { walk(CodeParse(text.content.value.replace(/\\(.)/g, "$1")), bound) }
+      for (const k of Object.keys(n)) { if (k !== "origin") { walk(n[k], bound) } }
+    }
+    for (const source of [PRELUDE, TOUR_SOURCE, ...Object.values(EXAMPLES)]) { walk(CodeParse(source), []) }
+    expect(data).toEqual([])
+    // what the dropped statements that aren't bindings apply: writes, ⟳, when, optimizers…
+    expect([...heads.values()].reduce((a, b) => a + b, 0)).toBeGreaterThan(100)
+    expect([...heads.keys()].filter((h) => ["Number", "Tensor", "String"].includes(h))).toEqual([])
+  })
   test("every take in shipped Fluent takes a count: a gather is x_i", () => {
     // take(x, n) is the first n items; it once took the rows at indices, so a gather left
     // spelled take(x, i) with one index would silently take the first i rows
@@ -2794,6 +2905,15 @@ describe("the evaluation host", () => {
   let painted = 0
   const canvas = { width: 0, height: 0, getContext: () => ({ createImageData: (w: number, h: number) => ({ data: new Uint8ClampedArray(w * h * 4) }), putImageData: () => { painted++ } }) }
 
+  test("a link written in an older version comes back migrated, and runs as that", async () => {
+    // the Tour's old room 14, as a saved link still has it
+    const start = inbox.length
+    toHost({ t: "code", source: "guess: $(10), hist: $([10]), Button(\"step\", { here: guess(), guess(here + 1), hist(hist() concat [guess()]) }), ~~[1, 2]", v: 1 })
+    const { source } = await after(start, "migrated")
+    expect(source).toBe("guess: $(10), hist: $([10]), Button(\"step\", { here: guess, guess← here + 1, hist← hist concat [guess] }), $[1, 2]")
+    // the page sends it back as the program, in today's version, and it runs
+    expect((await evaluate(source)).k).not.toBe("error")
+  })
   test("it starts by listing the environment, with doc cards", () => {
     const ready = inbox.find((m) => m.t === "ready") as Extract<ToPage, { t: "ready" }>
     const sum = ready.names.find(([name]) => name === "sum")
@@ -3107,7 +3227,8 @@ describe("the evaluation host", () => {
   })
 
   test("a change made while the page draws goes when the page has drawn, not a frame later", async () => {
-    const d = await evaluate(`x: $(0), (Button("go", { x← x + 1 }), x)`)
+    // a cell of its own: an x the test before wrote would be kept, as an edit keeps it
+    const d = await evaluate(`n: $(0), (Button("go", { n← n + 1 }), n)`)
     const go = d.items[0].slots.onClick.id, x = d.items[1].id
     const draw = hold("frames")
     let start = inbox.length
