@@ -2,7 +2,7 @@
 // finite differences on random graphs, and a training smoke. Runs in headless Chrome:
 //   bun engine/tests/run.ts
 
-import { buffer, konst, data, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, pad, reduceAxis, reduceMax, sum, gather, scatterAdd, toposort, numel, type UOp } from "../ir.ts";
+import { buffer, konst, data, add, mul, recip, exp, sqrt, where, cmplt, reshape, permute, transpose, broadcastTo, slice, pad, reduceAxis, reduceMax, sum, gather, scatterAdd, iota, math, toposort, numel, type UOp } from "../ir.ts";
 import { optimize, optimizeMany, simplifyMany, rangesIn, accCost, COST } from "../opt.ts";
 import { grad, gradAll } from "../grad.ts";
 import { CPU, type HostData } from "../cpu.ts";
@@ -190,6 +190,25 @@ export default async function (): Promise<{ fails: number }> {
     const coords = (j: number) => reshape(slice(cell, 2, j, 1), [P, 4]);
     const n2 = reduceAxis(add(mix(coords(0)), mix(coords(1))), 1, false), kn = kernels(n2);
     check("a fork read as two coordinates is computed where each is read: ONE kernel", kn.length === 1, `${kn.length} kernels`);
+  }
+  { // two strokes of one distance, one above the other, over a picture's three colors: the
+    // loop to the nearest of 8 points under both covers is computed once, in a kernel of its
+    // own, and each cover where the picture reads it – not the loop in a kernel of each cover
+    const H = 40, W = 96, K = 8, D = reshape(buffer("D", [1]), []), pts = buffer("pts", [K, 2]);
+    const min = (a: UOp, b: UOp) => where(cmplt(b, a), b, a), max = (a: UOp, b: UOp) => where(cmplt(a, b), b, a);
+    const at = (n: number, s: number[]) => reshape(broadcastTo(reshape(add(iota(n), konst(0.5)), s), [H, W]), [H, W, 1]);
+    const p = reshape(math("div", add(pad(at(W, [1, W]), 2, 0, 1), pad(at(H, [H, 1]), 2, 1, 0)), broadcastTo(D, [H, W, 2])), [H, W, 1, 2]);
+    const diff = sub(broadcastTo(p, [H, W, K, 2]), broadcastTo(pts, [H, W, K, 2]));
+    const e = mul(mul(reduceMax(mul(sqrt(reduceAxis(mul(diff, diff), 3, false)), konst(-1)), 2, true), konst(-1)), D);
+    const cover = (r: string) => { const R = reshape(buffer(r, [1]), []); return min(max(sub(min(add(e, konst(0.5)), R), max(add(e, konst(-0.5)), mul(R, konst(-1)))), konst(0)), konst(1)); };
+    const top = cover("r1"), under = cover("r2"), colors = (c: string, x: UOp) => mul(broadcastTo(buffer(c, [3]), [H, W, 3]), broadcastTo(x, [H, W, 3]));
+    const g = add(mul(buffer("pic", [H, W, 3]), broadcastTo(sub(konst(1), add(mul(under, sub(konst(1), top)), top)), [H, W, 3])), add(mul(colors("dark", under), broadcastTo(sub(konst(1), top), [H, W, 3])), colors("light", top)));
+    const ks = kernels(g);
+    check("two strokes of one distance compute its loop once: TWO kernels", ks.length === 2 && ks.filter((k) => accCost(k.src[1]!) === K).length === 1, `${ks.length} kernels, loops ${ks.map((k) => accCost(k.src[1]!)).join(", ")}`);
+    const at2 = new Map<string, HostData>([["D", T(Float32Array.of(2), [1])], ["pts", T(rv(K * 2, 40), [K, 2])], ["r1", T(Float32Array.of(7), [1])], ["r2", T(Float32Array.of(11), [1])],
+      ["pic", T(rv(H * W * 3), [H, W, 3])], ["dark", T(rv(3), [3])], ["light", T(rv(3), [3])]]);
+    const c = await realize(cpu, g, at2), d = gpu ? await realize(gpu, g, at2) : c;
+    check("parity: two strokes of one distance", rel(d.data, c.data) < 1e-5, `relΔ ${rel(d.data, c.data).toExponential(1)}`);
   }
   { // a chain of sums over a body with a loop of its own folds into its reader only within
     // COST.perThread steps a thread: 3 outputs, each a sum over four axes of 8 of a product

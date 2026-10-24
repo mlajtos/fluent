@@ -211,6 +211,7 @@ type Built = { outN: number; gid: UOp; here: [UOp, UOp, number][]; loads: [UOp, 
 type Kept = { kernels: Map<number, { k: UOp; rec?: Built }>; owner: Map<UOp, UOp> };
 function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, settled: Set<number>, kept: Kept, changed: Set<number>): UOp[] {
   const built = new Map<number, UOp>(), owner = kept.owner;                  // a node's kernel this pass, and a kernel's node
+  let fresh = 0; // the nodes this pass stores as it builds
   // per kernel: its threads, its index, and each node it computes in place or loads, at its index
   const computed = new Map<UOp, Built>();
   // an index by its structure – the same index built twice is one key, a number – and a value
@@ -250,7 +251,7 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
       if (!t || v.op === "GATHER" || (reads.get(v.id) ?? 1) < 2) return false;
       const n = Math.max(numel(v.shape), 1), e = t[0] + outN * steps(ix, gid);
       if (e <= n || !stored(t[1], e / n)) return false;
-      store.add(v.id); settled.add(v.id);
+      store.add(v.id); settled.add(v.id); fresh++;
       return true;
     };
     // whether v, read at ix, is computed here or loaded from its own kernel. A map is computed
@@ -413,11 +414,14 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
   // stored where that costs less than recomputing it. A gather is a read and never stored,
   // and neither is a node only loops read, each of its elements once a kernel – pixels ×
   // pieces, read where they are reduced: it is computed as often as its loops are, so a
-  // loop, or what reads it, is stored instead
-  for (const [v, e] of here) {
-    const n = Math.max(numel(v.shape), 1);
-    if ((reads.get(v.id) ?? 1) > 1 && v.op !== "GATHER" && (crowded.has(v) || top.has(v)) && e > n && stored(works.get(v)!, e / n)) { store.add(v.id); settled.add(v.id); }
-  }
+  // loop, or what reads it, is stored instead. A loop nest computed more often than it has
+  // elements, each of them once a kernel – in two kernels – is stored, computed once as one
+  // more than one op reads is, by a pass that stores nothing else: a node it stores may
+  // compute the loop once, in its own kernel
+  const more = [...here].map(([v, e]) => [v, e / Math.max(numel(v.shape), 1)] as const).filter(([, a]) => a > 1);
+  const forks = more.filter(([v, a]) => (reads.get(v.id) ?? 1) > 1 && v.op !== "GATHER" && (crowded.has(v) || top.has(v)) && stored(works.get(v)!, a));
+  const loops = forks.length || fresh ? [] : more.filter(([v]) => v.op === "REDUCE" && !crowded.has(v) && accCost(built.get(v.id)!.src[1]!) > UNROLL);
+  for (const [v] of [...forks, ...loops]) { store.add(v.id); settled.add(v.id); }
   return plan;
 }
 
