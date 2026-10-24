@@ -243,16 +243,23 @@ interface FunctionMeta {
   doc?: string
   signature?: string
   example?: string
-  noAutoLift?: boolean
-  quotedArgs?: number[]
+  // its places, by argument – "cell" for each argument when it is a string. A place is
+  // handed over as it is, never read: a cell there stays the cell. The name `:` binds is
+  // a place too: a bare name there stays the name.
+  places?: Place[] | "cell"
   // a binary op's fold: what folding nothing gives, and a native reduction – `reduce +`
   // runs Σ rather than folding slice by slice
   identity?: Value
   reducer?: (x: Value, axis?: Value) => Value
 }
+type Place = "cell" | "name" | null
 const NO_META: FunctionMeta = Object.freeze({})
 const getMeta = (fn: Function): FunctionMeta => (fn as any).__meta__ ?? NO_META
 const setMeta = (fn: Function, updates: Partial<FunctionMeta>): void => { (fn as any).__meta__ = { ...getMeta(fn), ...updates } }
+const placeAt = (fn: Value, i: number): Place => {
+  const places = isFn(fn) ? getMeta(fn).places : undefined
+  return places === "cell" ? "cell" : places?.[i] ?? null
+}
 
 // Where a value came from in the source. A WeakMap, so a function or a frozen value
 // has one too – a composed closure prints the source that made it.
@@ -293,11 +300,7 @@ const named = (value: Value, node: { origin: Origin }, before: number): Value =>
 
 function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value {
   switch (node.type) {
-    case "Program": {
-      let last: Value = null
-      for (const e of node.content) { last = evaluateSyntaxTreeNode(e, env) }
-      return last ?? null
-    }
+    case "Program": return statements(node.content, env, false)
     case "Symbol": return resolve(node.content.value, env)
     case "Number": return located(engine.tensor(node.content.value), node)
     // a backslash escapes the next character: a string can hold \" and \\
@@ -317,30 +320,17 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
     }
     case "Lambda": {
       const params = node.content.args.map((arg) => (arg as { content: { value: string } }).content.value)
-      const body = node.content.expr, statements = body.type === "Program" ? body.content : [body]
+      const body = node.content.expr.type === "Program" ? node.content.expr.content : [node.content.expr]
       const fn = function (...args: Value[]) {
         const local = Object.create(env) as CurrentScope
         // a missing argument is ◌, an argument not given
         params.forEach((p, i) => { local[p] = args[i] ?? null })
-        return block(statements, local)
+        return statements(body, local, true)
       }
       lambdas.add(fn)
       return located(made(fn), node)
     }
-    case "Operation": {
-      const fn = evaluateSyntaxTreeNode(node.content.operator, env)
-      // A binding among a call's arguments, f(a: 2, b), is local to the call; infix
-      // operands are not an explicit ( … ), so a: b: 23 binds both. Only an operation can
-      // bind, so a call with none among its arguments shares the caller's scope. The
-      // arguments run in reading order; a quoted one – the name `:` binds – stays the name
-      // it spells.
-      const { synthetic, value: argNodes } = node.content.args.content
-      const argsEnv = (synthetic || !argNodes.some((a) => a.type === "Operation") ? env : Object.create(env)) as CurrentScope
-      const quoted = typeof fn === "function" ? getMeta(fn).quotedArgs : undefined
-      const args = argNodes.map((arg, i) =>
-        quoted?.includes(i) && arg.type === "Symbol" ? Symbol.for(arg.content.value) : evaluateSyntaxTreeNode(arg, argsEnv))
-      return safeApply(fn, args, env, node)
-    }
+    case "Operation": return operation(node, evaluateSyntaxTreeNode(node.content.operator, env), env)
     case "Code": {
       // the printer is IDE code (the AST viz): a bug there is an Error value, not an abort
       let value: Value
@@ -352,18 +342,52 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
   }
 }
 
-// A block's statements run in reading order, and its value is the last one's. A statement
-// before the last that fails fails the block, which stops there: its Error would be dropped
-// unseen. A decline (NoMatch) is no failure – a choice that had nothing to do. A program's
-// top level shows each statement, so there every statement runs.
-const block = (statements: SyntaxTreeNode[], env: CurrentScope): Value => {
-  let last: Value = null
-  for (let i = 0; i < statements.length; i++) {
-    last = evaluateSyntaxTreeNode(statements[i]!, env)
-    if (i < statements.length - 1 && isFailure(last)) { return last }
-  }
-  return last
+// A function applied, its head already found. A binding among a call's arguments,
+// f(a: 2, b), is local to the call; infix operands are not an explicit ( … ), so a: b: 23
+// binds both. Only an operation can bind, so a call with none among its arguments shares
+// the caller's scope. The arguments run in reading order; a bare name in a name place –
+// the name `:` binds – stays the name it spells.
+const operation = (node: SyntaxTreeNode & { type: "Operation" }, fn: Value, env: CurrentScope): Value => {
+  const { synthetic, value: argNodes } = node.content.args.content
+  const argsEnv = (synthetic || !argNodes.some((a) => a.type === "Operation") ? env : Object.create(env)) as CurrentScope
+  const args = argNodes.map((arg, i) =>
+    placeAt(fn, i) === "name" && arg.type === "Symbol" ? Symbol.for(arg.content.value) : evaluateSyntaxTreeNode(arg, argsEnv))
+  return safeApply(fn, args, env, node)
 }
+
+// Statements run in reading order, and their value is the last one's: the values before it
+// are dropped. Applying numbers or text changes nothing, so a statement before the last that
+// does it does nothing at all: it is an Error, the sequence's value, and it names the write.
+// In a block a statement before the last that fails fails the block, which stops there: its
+// Error would be dropped unseen. A decline (NoMatch) is no failure – a choice that had
+// nothing to do. A program's top level shows each statement, so there every statement runs,
+// and `dropped` hears each value it drops.
+const statements = (nodes: SyntaxTreeNode[], env: CurrentScope, block: boolean, dropped?: (value: Value, node: SyntaxTreeNode) => void): Value => {
+  let last: Value = null
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i]!, final = i === nodes.length - 1
+    if (!final && node.type === "Operation") {
+      const head = evaluateSyntaxTreeNode(node.content.operator, env), held = settled(head)
+      if (isTensor(held) || isText(held)) { return located(inert(node.content.operator, head, held), node) }
+      last = operation(node, head, env)
+    } else {
+      last = evaluateSyntaxTreeNode(node, env)
+    }
+    if (!final) { dropped?.(last, node) }
+    if (block && !final && isFailure(last)) { return last }
+  }
+  return last ?? null
+}
+// what a cell holds now, through any cells it holds
+const settled = (v: Value): Value => v instanceof Signal ? settled(v.peek()) : v
+const inert = (head: SyntaxTreeNode, cell: Value, held: Value): Error => {
+  const name = head.type === "Symbol" ? head.content.value : undefined
+  const what = name ? `${name} holds ${describeArg(held)}: ${name}(…) uses it` : `${describeArg(held)}, applied,`
+  const write = name && cell instanceof Signal && !(cell instanceof Computed) ? ` – to give ${name} a new value, write ${name}← …` : ""
+  return new Error(`${what} and changes nothing, and nothing reads this line${write}`)
+}
+const evaluateProgram = (tree: SyntaxTreeNode, env: CurrentScope, dropped?: (value: Value, node: SyntaxTreeNode) => void): Value =>
+  statements(tree.type === "Program" ? tree.content : [tree], env, false, dropped)
 
 engine.Tensor.prototype.toString = function () {
   return this.size <= 32 ? `${getAsSyncList(this)}` : `Tensor [${this.shape.join(" ")}]`
@@ -389,14 +413,17 @@ const resolve = (name: string, env: CurrentScope): Value => {
 
 // MARK: Cells
 // Time is a sequence of instants: the program's run, a ⟳ tick, a button press, a write
-// from the page, a frame from a source. A cell – $, ~ or ~~ – holds a value that changes
-// only at an instant, by a write. A computed is a function of the cells: read, it runs
-// again when a cell it read has been written since, so looking at a value never changes
-// one. A read goes to whoever is reading – a computed keeps the cells it read, ∇ hands
-// back the values it differentiates with respect to – and with no one reading it is the
-// value now. While a value is computed or differentiated it writes only the cells it
-// made: any other write would depend on how often it was looked at.
-type Reader = { read: (cell: Signal) => unknown }
+// from the page, a frame from a source. A cell – $ or ~ – holds a value that changes only
+// at an instant, by a write. A computed is a function of the cells: read, it runs again
+// when a cell it read has been written since, so looking at a value never changes one. A
+// read goes to whoever is reading – a computed keeps the cells it read, ∇ hands back the
+// values it differentiates with respect to – and with no one reading it is the value now.
+// While a value is computed or differentiated it writes only the cells it made: any other
+// write would depend on how often it was looked at. A definition's application is watched
+// while it runs: what it reads, whether it writes, whether it makes a cell. The cells it
+// makes belong to its owner – the computed it runs in, or none – which may write them.
+type Reader = { read: (cell: Signal) => unknown, wrote?: () => void, made?: () => void, owner?: Reader | null }
+const ownerOf = (r: Reader | null): Reader | null => r && "owner" in r ? r.owner! : r
 let reader: Reader | null = null, instant = 0
 // In a definition – the program's body, a lambda it calls – a cell named bare is its
 // value over time. In an occurrence – a ⟳ step, a press, ∇, a computed's own body – it is
@@ -417,31 +444,41 @@ const onWrite = (hear: () => void) => { written = hear }
 class StateWrite extends Error {}
 
 class Signal<T = Value> {
-  // the instant its value last changed, and the evaluation that made it – the one reader
-  // that may write it
+  // the instant its value last changed; the evaluation it belongs to – the one reader that
+  // may write it – and the application that made it
   at = 0
-  readonly maker = reader
-  constructor(protected held: T) { }
+  readonly maker = ownerOf(reader)
+  readonly madeBy = reader
+  constructor(protected held: T) {
+    // making a cell changes state; a computed and a value on its way are not cells
+    if (reader?.made && !(this instanceof Computed) && !(this instanceof Arriving)) { reader.made() }
+  }
   // whether ∇ differentiates with respect to it
   get trainable(): boolean { return false }
   get value(): T { return reader ? reader.read(this as Signal) as T : this.peek() }
   set value(next: T) { this.write(next) }
   peek(): T { return this.held }
   protected write(next: T): void {
-    if (reader && this.maker !== reader) { throw new StateWrite("a write") }
+    const owner = ownerOf(reader)
+    if (owner && this.maker !== owner) { throw new StateWrite("a write") }
+    if (reader?.wrote && this.madeBy !== reader) { reader.wrote() }
     if (next !== this.held) { this.held = next; this.at = ++instant; engine.instant(); written() }
   }
 }
 
 // A computed runs again only when a cell it read has changed since it last looked – at
-// most once an instant – and a run that gives the same value changes nothing downstream
+// most once an instant – and a run that gives the same value changes nothing downstream.
+// Its value is the graph it built, not settled: a chain of computeds builds one graph,
+// which the engine fuses at the read, and computes once where a later instant reads it.
 class Computed<T = Value> extends Signal<T> {
   sources: [Signal, number][] = []
   checked = -1
   running = false
-  constructor(readonly fn: () => T) { super(undefined as T) }
-  // it reads a trainable cell – or may: it has not run yet
-  override get trainable(): boolean { return this.checked < 0 || this.sources.some(([s]) => s.trainable) }
+  // a definition's application that read cells: its first run, already made, is its value
+  constructor(readonly fn: () => T, first?: { value: T, sources: [Signal, number][] }) {
+    super(undefined as T)
+    if (first) { this.held = first.value; this.sources = first.sources; this.checked = this.at = instant }
+  }
   override peek(): T {
     if (this.checked !== instant && (this.checked < 0 || this.sources.some(([s, at]) => (s.peek(), s.at !== at)))) { this.run() }
     this.checked = instant
@@ -455,8 +492,7 @@ class Computed<T = Value> extends Signal<T> {
     this.running = true
     let value: T
     try {
-      // its value crosses instants, so a tensor in it is settled into a leaf, as a cell's is
-      value = heldValue(occurring(true, this.fn) as Value) as T
+      value = occurring(true, this.fn)
     } catch (e) {
       if (!(e instanceof StateWrite)) { throw e }
       value = new Error("a computed value cannot change state – change it in a step { … }") as T
@@ -472,8 +508,7 @@ const signal = <T,>(value: T) => new Signal<T>(value)
 const computed = <T,>(fn: () => T) => new Computed<T>(fn)
 
 // A variable (~): a cell holding one tensor, settled into a leaf, that ∇ differentiates
-// with respect to. A data slot (~~) is the same cell read like a constant: no gradient
-// flows into it, so no optimizer trains it. Both read bare – the name is the value now.
+// with respect to unless it is told which cells to move
 class FluentVariable extends Signal<engine.Tensor> {
   constructor(initial: engine.Tensor) { super(engine.settle(initial)) }
   override get trainable(): boolean { return true }
@@ -481,9 +516,6 @@ class FluentVariable extends Signal<engine.Tensor> {
   get size() { return this.value.size }
   assign(next: engine.Tensor): void { this.value = engine.settle(next) }
   override toString() { return this.peek().toString() }
-}
-class FluentData extends FluentVariable {
-  override get trainable(): boolean { return false }
 }
 
 const isTensorish = (v: Value): boolean => isTensor(v) || v instanceof FluentVariable
@@ -558,50 +590,53 @@ function evaluateGeneration<T>(evaluate: () => T): T {
 }
 
 // MARK: Applying
-// In a definition, an application that reads a cell – of any kind – is a computed that
-// follows it; a native that computes reads the cells inside lists too, so
-// concat((a, b), axis) follows a and b. In an occurrence, a native reads its cells now,
-// and a lambda receives the cell itself, which it may write or pass on.
-const containsSignal = (a: Value): boolean => a instanceof Signal || (Array.isArray(a) && a.some(containsSignal))
 const unwrapSignals = (a: any): any => a instanceof Signal ? unwrapSignals(a.value) : Array.isArray(a) ? a.map(unwrapSignals) : a
 const sampled = (a: Value): Value => a instanceof Signal ? sampled(a.value) : a
-// What a function reads of its arguments: a native that computes reads the numbers in a
-// list too; a lambda, and a function on lists, reads only what it is given – a list of
-// cells is a structure, its cells their identities
-const lambdas = new WeakSet<Function>(), shallow = new WeakSet<Function>()
-const readsCell = (fn: Function, args: Value[]): boolean =>
-  lambdas.has(fn) || shallow.has(fn) ? args.some((a) => a instanceof Signal) : args.some(containsSignal)
+// What a function is given: a lambda gets its arguments as they are, and its body reads a
+// cell where it uses it; a native reads the cells it is given, but those in its places
+const lambdas = new WeakSet<Function>()
+const given = (fn: Value, args: Value[]): Value[] => isFn(fn) && !lambdas.has(fn) ? args.map((a, i) => placeAt(fn, i) ? a : sampled(a)) : args
 
-// The one way a function is applied. A signal is called to read it, s(), or to write it,
-// s(v). An array is applied as its linear map, TensorApply. An application whose arguments
-// hold signals is a computed that recomputes with their current values, unless the
-// function takes signals as they are (noAutoLift); the engine fuses whatever a chain of
-// computeds builds, at the read. Called for a node, the result is named by it, and the
-// engine ops it builds carry its site – a reader's call only: inside the prelude the
-// reader's call that reached it stays the site.
+// A definition's application, run now and watched: what it read, and whether it changed
+// state – wrote a cell it did not make, or made one. Its writes are the definition's.
+const watching = (run: () => Value): { value: Value, sources: [Signal, number][], effect: boolean } => {
+  const outer = reader, sources: [Signal, number][] = [], seen = { effect: false }
+  reader = {
+    read: (s) => { try { return s.peek() } finally { sources.push([s, s.at]) } },
+    wrote: !outer || outer.wrote ? () => { seen.effect = true; outer?.wrote?.() } : undefined,
+    made: () => { seen.effect = true },
+    owner: ownerOf(outer),
+  }
+  try { return { value: occurring(true, run), sources, effect: seen.effect } } finally { reader = outer }
+}
+
+// The one way a function is applied. A cell applied is its value applied, and an array is
+// applied as its linear map, TensorApply. In an occurrence everything is read now. In a
+// definition a lambda's body is part of the definition; any other application runs now,
+// and if it read cells and changed none it is a computed that follows them – its first run
+// is its value; the engine fuses whatever a chain of computeds builds, at the read. Called
+// for a node, the result is named by it, and the engine ops it builds carry its site – a
+// reader's call only: inside the prelude the reader's call that reached it stays the site.
 // KNOWN WART: arity is not checked, so +(1, 2, 4) is 3 – see arity-plan.md.
 function safeApply(fn: Value, args: Value[], env: CurrentScope, node?: { origin: Origin }): Value {
-  // a cell holding a function is applied as the function it holds – in a definition, as
-  // it holds it over time; a function is written into a cell with ←
-  if (fn instanceof Signal && args.length && isFn(fn.peek())) {
-    if (sampling) { return safeApply(fn.value, args, env, node) }
-    const live = computed(() => safeApply(fn.value, args, env, node))
-    return node ? located(live, node) : live
+  if (isFn(fn) && lambdas.has(fn)) { return appliedAt(fn, args, env, node) }
+  const now = (): Value => {
+    const f = sampled(fn)
+    return isMap(f) && args.length ? appliedAt(TensorApply, [f, ...given(TensorApply, args)], env, node) : appliedAt(f, given(f, args), env, node)
   }
-  if (isMap(fn)) { return safeApply(TensorApply, [fn, ...args], env, node) }
-  if (!isFn(fn) || getMeta(fn).noAutoLift) { return appliedAt(fn, args, env, node) }
   if (sampling) {
-    if (lambdas.has(fn)) { return appliedAt(fn, args, env, node) }
     // a value on its way makes the result one too: computed now, and again on arrival
-    const waiting = args.filter(isArriving), now = () => appliedAt(fn, args.map(sampled), env, node)
+    const waiting = args.filter((a, i): a is Arriving => isArriving(a) && !placeAt(fn, i))
     return waiting.length ? new Arriving(now(), Promise.all(waiting.map((a) => a.arrival)).then(now)) : now()
   }
-  if (!readsCell(fn, args)) { return appliedAt(fn, args, env, node) }
-  // a lifted call is a live value, named by the call like any other; its body runs as an
-  // occurrence, so a lambda reads the cells it is given there
-  const read = lambdas.has(fn) ? (a: Value) => a : shallow.has(fn) ? sampled : unwrapSignals
-  const live = computed(() => appliedAt(fn, args.map(read), env, node))
-  return node ? located(live, node) : live
+  // inside the prelude, what the application makes is named by the reader's call that
+  // reached it, and runs again there
+  const at = node?.origin.document === PRELUDE && engine.at.site ? { origin: engine.at.site } : node
+  const again = at === node ? now : () => appliedAt(now, [], env, at)
+  const run = watching(again)
+  if (run.effect || !run.sources.length) { return run.value }
+  const live = new Computed(again, run)
+  return at ? located(live, at) : live
 }
 const appliedAt = (fn: Value, args: Value[], env: CurrentScope, node?: { origin: Origin }): Value => {
   if (!node) { return outcome(fn, args, env) }
@@ -633,14 +668,11 @@ const causedBy = (e: unknown, cause: Error): boolean => {
   return false
 }
 const call = (fn: Value, args: Value[], env: CurrentScope): Value => {
-  if (fn instanceof Signal) {
-    if (args.length === 0) { return fn.value }
-    if (args.length === 1) { return SignalUpdate(fn, args[0]!) }
-    throw new Error(`a live value is read with s() and written with s(v) – it takes no more than one argument, got ${args.length}`)
-  }
   // calling a failure is that failure
   if (fn instanceof Error) { return fn }
   if (typeof fn === "symbol") { throw new Error(unknownName(fn)) }
+  // a value applied to nothing is itself
+  if (!isFn(fn) && !args.length) { return fn }
   if (!isFn(fn)) { throw new Error(`${describeArg(fn)} is not a function`) }
   return fn.apply(env, args)
 }
@@ -864,7 +896,8 @@ const memoKey = (v: Value): string | null => {
   }
   return null
 }
-const FunctionMemo = (f: Value) => {
+const FunctionMemo = (map: Value) => {
+  const f = asMap(map)
   if (!isFn(f)) { return new Error("`memo(f)`: `f` must be a function") }
   const kept = new Map<string, Value>()
   return made(function (this: CurrentScope, ...args: Value[]) {
@@ -888,8 +921,8 @@ const FunctionMemo = (f: Value) => {
 const isFn = (v: Value): v is Function => typeof v === "function"
 // An array of rank ≥ 1 applies too: it is its linear map (TensorApply). A number does not,
 // so 2(3 + 4) and x -2 stay mistakes. A slot that takes nothing but a function – ∘, ⍣,
-// ⍤, ∇ – takes an array as its map; the hooks and the fork hold one as a constant, and
-// isFunction is 0 for it.
+// ⍤, ∇, ⟳, ListMap, reduce, memo – takes an array as its map; the hooks and the fork hold
+// one as a constant, and isFunction is 0 for it.
 const isMap = (v: Value): v is engine.Tensor => isTensor(v) && v.ndim > 0
 const asMap = (v: Value): Value => isMap(v) ? made(function (...args: Value[]) { return TensorApply(v, ...args) }) : v
 
@@ -931,8 +964,8 @@ const stepsWaiting = (): boolean => behind.size > 0
 // evaluation that started it – a re-evaluation cancels it. It gives back a signal that
 // holds ◌ while the steps succeed; a step that fails stops the loop, and the signal
 // holds its Error. (⍣ is the synchronous f(f(f(x))).)
-const FunctionIterate = function (this: CurrentScope, fn: Value, iterations?: Value) {
-  const live = iterations instanceof Signal
+const FunctionIterate = function (this: CurrentScope, map: Value, iterations?: Value) {
+  const fn = asMap(map), live = iterations instanceof Signal
   if (!isFn(fn) || !(iterations == null || isTensor(iterations) || live)) {
     throw new Error("`FunctionIterate(fn, iterations)`: `fn` must be a function and `iterations` one number")
   }
@@ -1014,28 +1047,33 @@ const Density = () => densityShown
 // leaf, so a value written back every tick (⟳ with ←) never drags the previous ticks along
 const heldValue = (v: Value): Value => Array.isArray(v) ? v.map(heldValue) : isTensor(v) ? engine.settle(v) : v
 
+// Making a cell reads what it is given: its first value is the value now
 const SignalCreate = (<T,>(initial: T) => signal(heldValue(sampled(initial as Value)))) as typeof signal
 const SignalComputed = computed
-const SignalRead = (s: Value) => s instanceof Signal ? s.value : new Error(`'SignalRead': expected a signal, got ${describeArg(s)}`)
+// a cell's value: what it is given, read – the same as s()
+const SignalRead = (v: Value): Value => v
 // A write is an occurrence: it stores the value now – a live value is read, never followed.
 // It is one write for every cell, spelled ← or :=. A signal takes any value, and a list
-// keeps the cells it holds, as identities. A variable (~ or ~~) takes numbers: an Error –
-// a failed expression, an emptied corpus – leaves it holding its last good value. A list
-// of cells takes a list of as many values, every one read before any is written, so
-// (a, b) ← (b, a) swaps, and their numbers are computed together. A value still on its
-// way is written again when it arrives.
-const SignalUpdate = (s: Value, v: Value): Value => {
+// keeps the cells it holds, as identities. A variable (~) takes numbers: an Error – a failed
+// expression, an emptied corpus – leaves it holding its last good value. A list of cells
+// takes a list of as many values, every one read before any is written, so (a, b) ← (b, a)
+// swaps, and their numbers are computed together. A write reads its place now, as it reads
+// its value: a live value that holds cells writes the cells it holds now. A value still on
+// its way is written again when it arrives.
+const SignalUpdate = (target: Value, v: Value): Value => {
+  const s = placeOf(target)
   if (!Array.isArray(s)) { return writeCells([s], [v]) }
   const vs = sampled(v)
   return Array.isArray(vs) && vs.length === s.length ? writeCells(s, vs) : new Error("a list of cells takes a list of as many values")
 }
-const writeCells = (cells: Value[], given: Value[]): Value => {
-  const values = given.map(sampled)
+const placeOf = (s: Value): Value => s instanceof Computed && (s.peek() instanceof Signal || Array.isArray(s.peek())) ? placeOf(s.peek()) : s
+const writeCells = (places: Value[], given: Value[]): Value => {
+  const cells = places.map(placeOf), values = given.map(sampled)
   for (const [i, s] of cells.entries()) {
     const v = values[i]!
-    if (!(s instanceof Signal)) { return new Error(`← writes a signal ($) or a variable (~, ~~), got ${describeArg(s)}`) }
+    if (!(s instanceof Signal)) { return new Error(`← writes a cell ($ or ~), got ${describeArg(s)}`) }
     if (s instanceof Computed) { return new Error("this live value is made from others – write the values it is made from") }
-    if (s instanceof FluentVariable && !isTensor(v)) { return new Error(`a variable (~ or ~~) holds numbers, got ${describeArg(v)}`) }
+    if (s instanceof FluentVariable && !isTensor(v)) { return new Error(`a variable (~) holds numbers, got ${describeArg(v)}`) }
   }
   engine.materialize(values.filter(isTensor))
   cells.forEach((s, i) => {
@@ -1048,8 +1086,9 @@ const writeCells = (cells: Value[], given: Value[]): Value => {
 // $v: a signal holding v, or a computed signal of a thunk
 const Reactive = (a: Value) => isFn(a) ? SignalComputed(a as () => Value) : SignalCreate(a)
 
-// name: value binds in the scope it is called from; the name arrives quoted. A binding is
-// the scope's own, even over a name the environment reads through a getter (Tour).
+// name: value binds in the scope it is called from; the name arrives as the name, and the
+// value as it is – a cell stays the cell. A binding is the scope's own, even over a name
+// the environment reads through a getter (Tour).
 const SymbolAssign = function (this: CurrentScope, name: Value, made: Value) {
   if (typeof name !== "symbol") { return new Error(`\`name: value\` binds a name, got ${describeArg(name)}`) }
   const key = Symbol.keyFor(name) ?? name.description ?? "", value = kept(this, key, made)
@@ -1058,50 +1097,44 @@ const SymbolAssign = function (this: CurrentScope, name: Value, made: Value) {
 }
 
 // MARK: Keeping cells across edits
-// An edit runs the program again, in a fresh scope. A top-level ~ or ~~ is the cell of the
-// run before when it is bound under the same name, made by the same expression, to the
-// same shape – so an edit elsewhere keeps what training learned, and an edit of the cell's
-// own expression starts it afresh. What an optimizer remembers of a variable stays with
-// the variable, so a kept variable keeps its moments too.
+// An edit runs the program again, in a fresh scope. A top-level ~ is the cell of the run
+// before when it is bound under the same name, made by the same expression, to the same
+// shape – so an edit elsewhere keeps what training learned, and an edit of the cell's own
+// expression starts it afresh. A top-level $ that holds data is kept the same way, if
+// something wrote it: a value nothing wrote is the program's, and the program makes it
+// again. What an optimizer remembers of a cell stays with the cell, so a kept variable keeps
+// its moments too.
 let keeping: { from: CurrentScope, into: CurrentScope } | null = null
 const keepingFrom = <T,>(from: CurrentScope | null, into: CurrentScope, run: () => T): T => {
   keeping = from && { from, into }
   try { return run() } finally { keeping = null }
 }
 const kept = (scope: CurrentScope, key: string, value: Value): Value => {
-  if (!keeping || scope !== keeping.into || !(value instanceof FluentVariable) || !Object.hasOwn(keeping.from, key)) { return value }
-  const old = keeping.from[key]
-  return old instanceof FluentVariable && old.constructor === value.constructor && getOrigin(old)?.source === getOrigin(value)?.source
-    && old.peek().shape.join() === value.peek().shape.join() ? old : value
+  if (!keeping || scope !== keeping.into || !(value instanceof Signal) || !Object.hasOwn(keeping.from, key)) { return value }
+  const old = keeping.from[key], kind = value.constructor
+  return old instanceof Signal && old.constructor === kind && (kind === FluentVariable || kind === Signal && old.at > 0)
+    && getOrigin(old)?.source === getOrigin(value)?.source && like(old.peek(), value.peek()) ? old : value
 }
-// the slots an optimizer's init made for a variable, by the init's source
-const memories = new WeakMap<FluentVariable, Map<string, Value>>()
+// two values of a kind an edit keeps: numbers of one shape, or text, ◌ and lists of them
+const like = (a: Value, b: Value): boolean => isTensor(a) || isTensor(b) ? isTensor(a) && isTensor(b) && a.shape.join() === b.shape.join() : isData(a) && isData(b)
+const isData = (v: Value): boolean => v == null || isText(v) || isTensor(v) || Array.isArray(v) && v.every(isData)
+// the slots an optimizer's init made for a cell, by the init's source
+const memories = new WeakMap<Signal, Map<string, Value>>()
 const TensorMemoryOf = function (this: CurrentScope, v: Value, init: Value, make: Value): Value {
   const fresh = isFn(make) ? make.apply(this) : make
-  if (!(v instanceof FluentVariable) || !Array.isArray(fresh)) { return fresh }
+  if (!(v instanceof Signal) || !Array.isArray(fresh)) { return fresh }
   const key = (isFn(init) && getOrigin(init)?.source) || "", byInit = memories.get(v) ?? new Map<string, Value>()
   memories.set(v, byInit)
-  const old = byInit.get(key), shapes = (m: Value) => Array.isArray(m) ? m.map((s) => s instanceof FluentVariable ? s.peek().shape.join() : "").join(";") : ""
+  const old = byInit.get(key), shapes = (m: Value) => Array.isArray(m) ? m.map((s) => s instanceof Signal && isTensor(s.peek()) ? (s.peek() as engine.Tensor).shape.join() : "").join(";") : ""
   if (Array.isArray(old) && shapes(old) === shapes(fresh)) { return old }
   byInit.set(key, fresh)
   return fresh
 }
-setMeta(TensorMemoryOf, { noAutoLift: true })
-setMeta(SymbolAssign, { quotedArgs: [0] })
 
 // f @ x applies f to x; a list spreads as the arguments. x . f is the same, read the
 // other way round.
 const FunctionApply = function (this: CurrentScope, fn: Value, args: Value) {
   return safeApply(fn, Array.isArray(args) ? args : [args], this)
-}
-
-// f, as a new function whose signal arguments arrive as the signals themselves – f
-// itself, which every evaluation shares, stays as it is
-const FunctionNoAutoLift = (fn: Value) => {
-  if (!isFn(fn)) { return new Error("`FunctionNoAutoLift(f)`: f must be a function") }
-  const wrapper = made(function (this: CurrentScope, ...args: Value[]) { return occurrence(() => fn.apply(this, args)) })
-  setMeta(wrapper, { ...getMeta(fn), noAutoLift: true })
-  return wrapper
 }
 
 // Fluent's truth, the engine's one rule for a condition (engine.oneNumber): guard, when and
@@ -1166,25 +1199,25 @@ const doc = (target: Value, signature: Value, description: Value, example: Value
   return target
 }
 
-// These take what they are given as it is – a signal, a thunk, a loop's own count – so a
-// signal argument does not turn the call into a computed. ⟳ lifted would be a computed
-// that nothing reads, and would run no steps at all.
-for (const f of [FunctionCond, FunctionIterate, SignalRead, SignalUpdate, Reactive, SymbolAssign, Identical,
-  FunctionNoAutoLift, FunctionGuard, FunctionTry, FunctionWhen, doc, FunctionIdentity]) { setMeta(f, { noAutoLift: true }) }
+// The kernel's places: the name `:` binds and the value it binds, a write's cell, the two
+// values of an identity, a loop's live count, and the cell an optimizer's memory is for
+setMeta(SymbolAssign, { places: ["name", "cell"] })
+setMeta(SignalUpdate, { places: ["cell"] })
+setMeta(Identical, { places: ["cell", "cell"] })
+setMeta(FunctionIterate, { places: [null, "cell"] })
+setMeta(TensorMemoryOf, { places: ["cell"] })
 
 // MARK: Lists
 const List = (...args: Value[]) => args
 
-const ListMap = function (this: CurrentScope, a: Value, fn: Value) {
+const ListMap = function (this: CurrentScope, a: Value, map: Value) {
+  const fn = asMap(map)
   if (!isFn(fn)) { return new Error("'ListMap': 'fn' must be a function") }
   if (!Array.isArray(a)) { return new Error("'ListMap': 'a' must be a list") }
   return a.map((v, i) => safeApply(fn, [v, engine.tensor(i)], this))
 }
-// a list is a structure: a function on lists reads the list it is given, not the cells
-// inside it – ListMap, and the list members of the verbs on items – and List makes one
-// of what it is given
-shallow.add(ListMap)
-setMeta(List, { noAutoLift: true })
+// a list is a structure: List makes one of what it is given, a cell as the cell
+setMeta(List, { places: "cell" })
 
 // MARK: Tensors
 // What a value is, for a message, in the tour's words: a number, a list of numbers
@@ -1313,7 +1346,7 @@ const linearMap = (A: engine.Tensor, a: Value): engine.Tensor => {
 // stack broadcasts its inputs to a common shape, as arithmetic does: stack(x - a, y - b)
 // works when the pieces only meet by broadcasting
 const broadcastRefs = (values: Value[]): engine.Tensor[] => {
-  const tensors = values.map((v) => v instanceof FluentVariable ? v.value : v)
+  const tensors = values.map(sampled)
   if (tensors.length === 0 || !tensors.every(isTensor)) { return tensors.map(operand) }
   const rank = Math.max(...tensors.map((t) => t.shape.length))
   const shape = Array.from({ length: rank }, (_, i) => Math.max(...tensors.map((t) => t.shape[t.shape.length - rank + i] ?? 1)))
@@ -1373,7 +1406,7 @@ const TensorRank = (map: Value, k?: Value) => {
 }
 
 // Index values for a bounds check: read when they are on the host or cheap to compute
-// there; values still on the GPU – a minibatch drawn from a data slot – flow through
+// there; values still on the GPU – a minibatch drawn from a cell of data – flow through
 // unchecked, as trusted data
 const cheapValues = (v: Value): Float32Array | undefined => {
   const t = v instanceof FluentVariable ? v.value : v
@@ -1402,21 +1435,29 @@ const TensorSlice = (a: Value, begin: Value, size?: Value) => {
 }
 
 // A traced body reads through a reader of its own. What it reads is still read for
-// whoever reads around it; a trainable cell's value comes back through `trace`; a
-// computed that reads a trainable cell runs again inside, so ∇ differentiates its
-// definition, not its last value. The body writes only the cells it made: ∇ would have to
-// undo a write along every direction it takes.
-const differentiating = <T,>(trace: ((cell: Signal, value: unknown) => unknown) | null, run: () => T): T => {
-  const outer = reader, inside = new Map<Signal, unknown>(), outerSampling = sampling
+// whoever reads around it; a cell it moves along – the ones listed, or else every trainable
+// one – gives its value through `trace`; a computed made from one runs again inside, so ∇
+// differentiates its definition, not its last value. The body writes only the cells it
+// made: ∇ would have to undo a write along every direction it takes.
+const differentiating = <T,>(trace: ((cell: Signal, value: unknown) => unknown) | null, run: () => T, along?: Set<Signal>): T => {
+  const outer = reader, inside = new Map<Signal, unknown>(), outerSampling = sampling, known = new Map<Signal, boolean>()
+  const moves = (s: Signal): boolean => along ? along.has(s) : s.trainable
+  // a computed is made from what it read last – run first, if it never has
+  const madeFrom = (s: Signal): boolean => {
+    if (moves(s)) { return true }
+    if (!(s instanceof Computed)) { return false }
+    if (!known.has(s)) { known.set(s, false); s.peek(); known.set(s, s.sources.some(([x]) => madeFrom(x))) }
+    return known.get(s)!
+  }
   sampling = true
   reader = {
     read: (s) => {
-      if (s instanceof Computed && (s.trainable || (s.peek(), s.trainable))) {
+      if (s instanceof Computed && madeFrom(s)) {
         if (!inside.has(s)) { inside.set(s, s.fn()) }
         return inside.get(s)
       }
       const v = outer ? outer.read(s) : s.peek()
-      return trace && s.trainable ? trace(s, v) : v
+      return trace && moves(s) ? trace(s, v) : v
     },
   }
   try { return run() } finally {
@@ -1427,10 +1468,10 @@ const differentiating = <T,>(trace: ((cell: Signal, value: unknown) => unknown) 
 // a write a differentiated body tries is an Error that names the body; `gradients` counts
 // the ∇s running
 let gradients = 0
-const differentiated = (body: string, trace: ((cell: Signal, value: unknown) => unknown) | null, run: () => Value): Value => {
+const differentiated = (body: string, trace: ((cell: Signal, value: unknown) => unknown) | null, run: () => Value, along?: Set<Signal>): Value => {
   gradients++
   try {
-    return differentiating(trace, run)
+    return differentiating(trace, run, along)
   } catch (e) {
     if (e instanceof StateWrite) { return new Error(`${body} cannot change state while it is differentiated (${e.message})`) }
     throw e
@@ -1439,13 +1480,16 @@ const differentiated = (body: string, trace: ((cell: Signal, value: unknown) => 
   }
 }
 // vjp with a ones cotangent: a scalar output gives the classic gradient, an elementwise
-// one per-element derivatives – ∇({x | x^2}) works on vectors
+// one per-element derivatives – ∇({x | x^2}) works on vectors. Given a list of cells, it
+// is ∇(f)() along those cells, whatever kind they are.
 // A loss written without braces is a value, read once: grad needs the function that
 // recomputes it.
 const TensorGradient = (map: Value) => {
   const f = asMap(map)
   if (!isFn(f)) { return new Error(`\`grad(f)\`: \`f\` must be a function, got ${describeArg(f)} – write it in braces, { … }, so each step recomputes it`) }
-  return made((x: Value) => x == null ? gradientOfReads(f) : differentiated("`grad(f)`: `f`", null, () => {
+  return made((x: Value) => x == null ? gradientOfReads(f)
+    : Array.isArray(x) && x.length && x.every((c) => c instanceof Signal) ? gradientOfReads(f, new Set(x as Signal[]))
+    : differentiated("`grad(f)`: `f`", null, () => {
     const [out, pullback] = engine.vjp((traced: engine.Tensor) => {
       const value = unwrapSignals(f(traced))
       if (value instanceof Error) { throw value }
@@ -1457,15 +1501,16 @@ const TensorGradient = (map: Value) => {
 }
 // ∇(loss)(): with nothing to differentiate with respect to, the derivative is with respect
 // to the variables the loss reads – found by reading them, as a computed finds the cells
-// it depends on. It comes back with the value, all computed in one pass: (value,
-// variables, gradients). An enclosing ∇ still differentiates through it.
-const gradientOfReads = (loss: Function): Value => {
+// it depends on – or to the listed cells it reads. It comes back with the value, all
+// computed in one pass: (value, cells, gradients). An enclosing ∇ still differentiates
+// through it.
+const gradientOfReads = (loss: Function, along?: Set<Signal>): Value => {
   const reads = new Map<Signal, engine.Tensor>()
   const value = differentiated("`∇(loss)()`: the loss", (v, value) => {
     let t = reads.get(v)
     if (!t) { t = engine.traced(value as engine.Tensor); reads.set(v, t) }
     return t
-  }, () => unwrapSignals(loss()))
+  }, () => unwrapSignals(loss()), along)
   if (value instanceof Error) { return value }
   if (!isTensor(value)) { return new Error(`\`∇(loss)()\`: the loss must give numbers, got ${describeArg(value)}`) }
   const variables = [...reads.keys()], grads = engine.gradients(value, [...reads.values()])
@@ -1515,11 +1560,6 @@ const TensorVariable = (init: Value) => {
   const a = sampled(init)
   return isTensorish(a) ? new FluentVariable(operand(a)) : new Error(`\`~(init)\`: the initial value must be numbers, got ${describeArg(a)}`)
 }
-const TensorData = (init: Value) => {
-  const a = sampled(init)
-  return isTensorish(a) ? new FluentData(operand(a)) : new Error(`\`~~(init)\`: the initial value must be numbers, got ${describeArg(a)} – one slot holds one list of numbers`)
-}
-for (const f of [TensorVariable, TensorData]) { setMeta(f, { noAutoLift: true }) }
 
 // A draw is keyed by where it is made – the reader's call that reached it – and by how
 // many draws that call has made in this run: the same program draws the same numbers,
@@ -1558,7 +1598,7 @@ const StringLiteral = (v: Value): string => {
   if (v == null) { return "◌" }
   if (isText(v)) { return `"${String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` }
   if (typeof v === "symbol") { return Symbol.keyFor(v) ?? String(v) }
-  if (v instanceof FluentVariable) { return `${v instanceof FluentData ? "~~" : "~"}(${StringLiteral(v.value)})` }
+  if (v instanceof FluentVariable) { return `~(${StringLiteral(v.value)})` }
   if (v instanceof Signal) { return `$(${StringLiteral(v.peek())})` }
   if (isTensor(v)) { return nestedLiteral(getAsSyncList(v)) }
   // a one-element list needs its trailing comma, or the parens are just grouping
@@ -1722,7 +1762,8 @@ const StringConcat = (...args: Value[]) => {
 // The items folded left to right with f(acc, item), from init – or from the first item
 // when there is none. Folding nothing gives f's identity: + folds nothing to 0.
 const emptyFold = (fn: Function): Value => getMeta(fn).identity ?? new Error("an empty fold needs f's identity – give one with identity(f, v)")
-const ListReduce = function (this: CurrentScope, a: Value, fn: Value, init?: Value) {
+const ListReduce = function (this: CurrentScope, a: Value, map: Value, init?: Value) {
+  const fn = asMap(map)
   if (!Array.isArray(a)) { return decline("a list", a) }
   if (!isFn(fn)) { return new Error("'ListReduce': `fn` must be a function") }
   if (init == null && a.length === 0) { return emptyFold(fn) }
@@ -1737,7 +1778,8 @@ const LEADING_AXIS: Value = engine.tensor(0)
 // { a, b | a - b }` = ((x_0-x_1)-x_2)-… A known op takes its native reduction, pinned to
 // the leading axis as a fold is – the native reductions default to every axis. Folding
 // no slices gives f's identity in the shape of one.
-const TensorReduce = function (this: CurrentScope, a: Value, fn: Value, axis?: Value) {
+const TensorReduce = function (this: CurrentScope, a: Value, map: Value, axis?: Value) {
+  const fn = asMap(map)
   if (!isTensorish(a)) { return decline("numbers", a) }
   if (!isFn(fn)) { return new Error("`reduce(x, fn, axis?)`: the second argument must be a function") }
   const { reducer } = getMeta(fn)
@@ -1767,7 +1809,6 @@ const TensorOnly = (f: Value) => isFn(f)
   ? made(function (this: CurrentScope, a: Value, ...rest: Value[]) { return isTensorish(a) ? f.call(this, a, ...rest) : decline("numbers", a) })
   : new Error("`TensorOnly(f)`: f must be a function")
 
-for (const f of [ListLength, ListGather, ListGet, ListTake, ListDrop, ListReverse, ListConcat, ListReduce, ListScan]) { shallow.add(f) }
 
 // MARK: Storage
 // Storage(key) is a signal whose value is kept under key and survives a reload: ◌ until
@@ -1840,7 +1881,6 @@ const Storage = (key: Value): Value => {
   const k = sampled(key)
   return isText(k) ? new StorageCell(String(k)) : new Error(`Storage(key): the key is a string, got ${describeArg(k)}`)
 }
-setMeta(Storage, { noAutoLift: true })
 
 // MARK: Environment
 // Null-prototype: an environment is a bare name→value mapping. A plain `{}` would chain
@@ -1850,14 +1890,14 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   Null: null, null: null,
   SymbolAssign, CodeParse, CodeEvaluate,
   FunctionIterate, FunctionRepeat, FunctionMemo, FunctionThen, FunctionIs, TensorIs, ListIs, StringIs, ErrorIs, Identical,
-  FunctionCascade, FunctionCond, FunctionArity, FunctionApply, FunctionNoAutoLift,
+  FunctionCascade, FunctionCond, FunctionArity, FunctionApply,
   FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc, FunctionIdentity,
   Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate,
   ...UNARY, ...BINARY, ...REDUCTIONS,
   TensorApply, TensorStack, TensorUnstack, TensorRank, TensorOneHot, TensorSort, TensorArgSort, TensorGradient,
   TensorPermute, TensorBroadcast, TensorPadAxis, TensorWindow, TensorScatterAdd, TensorRange,
   TensorConvolution, TensorMeshgrid, TensorTopK, TensorReshape, TensorShape,
-  TensorWhere, TensorSlice, TensorVariable, TensorData, TensorRandomUniform, TensorMemoryOf,
+  TensorWhere, TensorSlice, TensorVariable, TensorRandomUniform, TensorMemoryOf,
   List, ListMap, StringLiteral, StringToCodes, CodesToString,
   TensorLength, ListLength, StringLength, TensorGet, ListGet, StringGet, TensorGather, ListGather, StringGather,
   TensorTake, ListTake, StringTake, TensorDrop, ListDrop, StringDrop, ListReverse, StringReverse, TensorConcat, ListConcat,
@@ -1911,9 +1951,9 @@ const createScope = (): CurrentScope => {
 
 // MARK: Exports
 export {
-  engine, FluentVariable, FluentData, isTensor, TensorScalarLive,
+  engine, FluentVariable, isTensor, TensorScalarLive,
   CodeParse, getParseErrors,
-  evaluateSyntaxTreeNode, CodeEvaluate, getAsSyncList, getMeta, setMeta, getOrigin,
+  evaluateSyntaxTreeNode, evaluateProgram, CodeEvaluate, getAsSyncList, getMeta, setMeta, getOrigin,
   evaluateGeneration, flushRetirements, registerDisposable, nextFrame, stepsWaiting, asError,
   NoMatch, StringLiteral,
   DefaultEnvironment, extendEnvironment, setCodeNodePrinter, PRELUDE, createScope,

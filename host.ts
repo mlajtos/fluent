@@ -5,7 +5,7 @@
 // back through ids.
 
 import {
-  CodeParse, getParseErrors, evaluateSyntaxTreeNode, CodeEvaluate, createScope, DefaultEnvironment,
+  CodeParse, getParseErrors, evaluateProgram, CodeEvaluate, createScope, DefaultEnvironment,
   extendEnvironment, setCodeNodePrinter, evaluateGeneration, registerDisposable,
   getAsSyncList, getMeta, setMeta, getOrigin, SignalCreate, SignalUpdate, StringLiteral,
   Signal, computed, signal, onWrite, awaiting, occurrence, keepingFrom, density,
@@ -13,12 +13,13 @@ import {
   type Value, type SyntaxTreeNode, type Origin, type CurrentScope,
 } from "./language"
 import {
-  tensorView, labelled, heatScale, documentHash,
+  tensorView, labelled, heatScale, documentHash, VERSION,
   type Desc, type Doc, type SourceKind, type TensorView, type ToPage, type ToWorker, type Tree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
 import { TOUR_SOURCE } from "./tour"
 import { CpuPainter, GpuPainter, type Picture } from "./painter"
+import { migrate } from "./migrate"
 
 type Post = (message: ToPage, transfer?: Transferable[]) => void
 let post: Post = () => { }
@@ -135,10 +136,11 @@ const valueOf = (target: Signal): Value => {
 // the GPU (text decoded from codes) is shown once they arrive, and the page keeps the last
 // one until then: a value that changes every frame shows a little late, never blank.
 // While the program has steps waiting – a ⟳ loop behind its count – looking at a live
-// takes at most a twentieth of the worker, over time: a sample that took s ms makes its
-// next due 20s ms after this one was due, or now if it was idle. A cheap value is shown
-// every frame, a costly one less often, and the steps keep the rest. With no steps
-// waiting, every change is shown.
+// takes at most a twentieth of the worker, over time: a look that took s ms makes its next
+// due 20s ms after this one was due, or now if it was idle. A look is the sample and its
+// description: a live value is the graph it builds, and its numbers are computed where it
+// is described. A cheap value is shown every frame, a costly one less often, and the steps
+// keep the rest. With no steps waiting, every change is shown.
 const sampleOf = (live: Live): void => {
   const start = performance.now(), share = stepsWaiting()
   if (share && start < live.quiet) { stale = true; return }
@@ -180,7 +182,9 @@ const flush = () => {
   for (const live of dirty) {
     if (live.reading > 0) { continue }
     dirty.delete(live)
+    const start = performance.now()
     batch.push({ id: live.id, desc: describeNow(live), ack: live.ack })
+    if (stepsWaiting()) { live.quiet += 20 * (performance.now() - start) }
   }
   if (!batch.length) { return }
   send({ t: "lives", lives: batch })
@@ -570,7 +574,7 @@ const ImageUpload = (target: Value) => widget("ImageUpload", {}, { target })
 const Grid = (cols: Value, rows?: Value) => {
   const columns = gridTemplate(cols), rowTemplate = rows === undefined ? "" : gridTemplate(rows)
   const cells = (...children: Value[]) => widget("Grid", { columns, rows: rowTemplate }, {}, children)
-  setMeta(cells, { noAutoLift: true })
+  setMeta(cells, { places: "cell" })
   return cells
 }
 // Center(Text("Fluent Tour")): a child centered in its cell, both axes
@@ -649,7 +653,6 @@ const SampleRate = () => {
 }
 
 const Fetch = (url: Value) => arriving("Error fetching data", null, () => fetched(String(url)).then((r) => r.text()))
-// the loaders resolve later – lifting would re-invoke them (and re-fetch) on every change
 const LoadTensorFromImageUrl = (url: Value) => arriving("LoadTensorFromImageUrl", null, () =>
   withProxy(String(url), (u) => fetched(u).then((r) => r.blob()).then((blob) => createImageBitmap(blob))).then(fromPixels))
 // an empty list until it loads – readers can gate on `#(data()) > 0` – and an Error if it can't
@@ -657,9 +660,10 @@ const LoadSafeTensorFromURL = (url?: Value) => url == null
   ? new Error("loadSafeTensorFromURL: url is required")
   : arriving("LoadSafeTensorFromURL", [], () => withProxy(String(url), cachedFetch).then(parseSafetensors))
 
-for (const f of [Text, Button, TextEditor, Slider, Checkbox, Scrubber, ImageUpload, Center, Layers, Point2D, Trail, Code, CodeEditor, Print, LoadSafeTensorFromURL, LoadTensorFromImageUrl]) {
-  setMeta(f, { noAutoLift: true })
-}
+// A widget's places: the cell it writes, and the slots and children it shows live
+for (const f of [Text, Button, Slider, Checkbox, Scrubber, ImageUpload, Center, Point2D, Trail, Code, CodeEditor, Print]) { setMeta(f, { places: ["cell"] }) }
+setMeta(TextEditor, { places: ["cell", "cell"] })
+setMeta(Layers, { places: "cell" })
 
 // MARK: Running the program
 
@@ -680,17 +684,6 @@ const program = signal<Value>(null)
 const root: Live = { id: 0, target: program, refs: 0, at: -1, quiet: 0, reading: 0, ack: 0 }
 lives.set(0, root)
 
-// A program's statements one after another, as the language runs them: an Error that a
-// statement before the last gives is shown nowhere, so it is marked where it is
-const evaluateStatements = (tree: SyntaxTreeNode, scope: CurrentScope): Value => {
-  const statements = tree.type === "Program" ? tree.content : [tree]
-  let value: Value = null
-  statements.forEach((statement, i) => {
-    value = evaluateSyntaxTreeNode(statement, scope)
-    if (value instanceof Error && i < statements.length - 1) { warn(value, statement.origin) }
-  })
-  return value ?? null
-}
 
 // The program runs once, at the instant its text arrives: what it reads at its top level
 // is read then, and what it shows live follows. Each run's value replaces the last one's;
@@ -705,7 +698,9 @@ const run = () => {
   let value: Value
   try {
     // the cells the last run trained are this run's, where the program still makes them
-    value = evaluateGeneration(() => keepingFrom(from, scope, () => evaluateStatements(CodeParse(code), scope)))
+    // an Error that a statement before the last gives is shown nowhere, so it is marked where it is
+    const dropped = (v: Value, statement: SyntaxTreeNode) => { if (v instanceof Error) { warn(v, statement.origin) } }
+    value = evaluateGeneration(() => keepingFrom(from, scope, () => evaluateProgram(CodeParse(code), scope, dropped)))
   } catch (e) {
     value = asError(e)
   }
@@ -727,6 +722,10 @@ const fromPage = (value: number | number[] | string | ImageBitmap): Value =>
 const receive = (m: ToWorker) => {
   switch (m.t) {
     case "code": {
+      // a program written in an older version goes back to the page as it is written now,
+      // which sends it to run; one that reads the same now runs as it is
+      const now = (m.v ?? VERSION) < VERSION ? migrate(m.source) : m.source
+      if (now !== m.source) { post({ t: "migrated", source: now }); return }
       source = m.source
       scheduleRun()
       return

@@ -69,12 +69,12 @@ Button("Reset", { x(0) }),
   - gradient with \`∇\`: \`∇({ x | x^2 })(3)\` is \`6\`
   - higher-order: \`∇(∇({ x | x^3 }))(1)\` is \`6\`
 - Reactive programming
-  - create signal: \`x: $(0.5)\`
-  - read signal: \`x()\`
-  - update signal: \`x(0.7)\` or \`x ← 0.7\`
-  - computed signal: \`y: x + 1\` – auto-lifts to reactive when \`x\` is a signal
-  - explicit computed: \`y: $({ x() + 1 })\` – manual version (rarely needed)
-  - follow a trainable variable: \`\${ θ × 2 }\` – a computed that reads θ follows every assignment
+  - make a cell: \`x: $(0.5)\` – its name is its value: \`x × 2\` is 1
+  - write it: \`x← 0.7\` (also \`x:= 0.7\`) – in a step or a press, or as the program runs
+  - follow it: \`y: x + 1\` – a definition that reads a cell is a live value that follows it
+  - keep what it holds now: \`old: $x\` – a new cell, holding x's value; \`old: x\` is another name for x
+  - a live value of a block: \`y: \${ x + 1 }\` – the whole block follows what it reads
+  - follow a trainable variable: \`\${ θ × 2 }\` – a live value that reads θ follows every write
 - Iteration
   - repeat N times with \`⟳\`: \`step ⟳ 100\` (async, fire-and-forget)
   - power with \`⍣\`: \`(double ⍣ 5)(1)\` is \`double(double(...))\` = \`32\`

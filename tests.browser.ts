@@ -3,6 +3,7 @@
 // output panel, reactive islands, canvas renderers, media sources.
 // Run with `bun run test:browser`; `bunx playwright install chromium` once.
 import { test, expect, type Locator, type Page } from "@playwright/test"
+import { VERSION } from "./protocol"
 
 // The dev server injects a <bun-hmr> status overlay that sits above the page
 // and swallows pointer events once it has rendered. It is harness chrome, not
@@ -10,9 +11,10 @@ import { test, expect, type Locator, type Page } from "@playwright/test"
 const hideDevOverlay = (page: Page) =>
   page.addStyleTag({ content: "bun-hmr { display: none !important; pointer-events: none !important }" })
 
-// mirror of client.tsx's StringSerialize (js-base64 encodeURI = unpadded base64url)
+// mirror of client.tsx's StringSerialize (js-base64 encodeURI = unpadded base64url), in
+// today's version of Fluent
 const open = async (page: Page, code: string) => {
-  const response = await page.goto(`/?code=${Buffer.from(code).toString("base64url")}`)
+  const response = await page.goto(`/?code=${Buffer.from(code).toString("base64url")}&v=${VERSION}`)
   await hideDevOverlay(page)
   return response
 }
@@ -350,7 +352,7 @@ test("text decoded on the GPU from a value that changes every frame still shows"
 test("the last change shows, also one made while the last value was read from the GPU", async ({ page }) => {
   // x, the long way round: a value that takes the GPU a while is read back from it, and
   // presses made while it is read are shown once it lands
-  await open(page, 'x: $(0), n: 2048, (Button("go", { x(x() + 1) }), ${ Σ(matmul(fill([n, n], x()), fill([n, n], 1))) ÷ n^3 })')
+  await open(page, 'x: $(0), n: 2048, (Button("go", { x← x + 1 }), ${ Σ(matmul(fill([n, n], x), fill([n, n], 1))) ÷ n^3 })')
   const go = page.getByRole("button", { name: "go" })
   const press = (times: number) => go.evaluate(async (button, times) => {
     for (let i = 0; i < times; i++) {
@@ -367,7 +369,7 @@ test("the last change shows, also one made while the last value was read from th
 })
 
 test("button click updates a reactive value", async ({ page }) => {
-  await open(page, 'x: $(0), (Button("increment", { x(x() + 41) }), x)')
+  await open(page, 'x: $(0), (Button("increment", { x← x + 41 }), x)')
   await expect(panel(page)).toContainText("0")
   await page.getByRole("button", { name: "increment" }).click()
   await expect(panel(page)).toContainText("41")
@@ -383,7 +385,7 @@ test("an image enters as light and shows as it was, every byte", async ({ page }
   // a picture holds light: a byte of 128 is light(128 ÷ 255), and the painter shows it
   // through screen as 128 again. A 256 × 1 image: column i is i, 255 - i, 7i mod 256
   const url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAABCAIAAAC+O+cgAAADDElEQVR4nAEBA/78AAD/AAH+BwL9DgP8FQT7HAX6Iwb5Kgf4MQj3OAn2Pwr1Rgv0TQzzVA3yWw7xYg/waRDvcBHudxLtfhPshRTrjBXqkxbpmhfooRjnqBnmrxrlthvkvRzjxB3iyx7h0h/g2SDf4CHe5yLd7iPc9STb/CXaAybZCifYESjXGCnWHyrVJivULSzTNC3SOy7RQi/QSTDPUDHOVzLNXjPMZTTLbDXKczbJejfIgTjHiDnGjzrFljvEnTzDpD3Cqz7Bsj/AuUC/wEG+x0K9zkO81US73EW640a56ke48Ui3+Em2/0q1Bku0DUyzFE2yG06xIk+wKVCvMFGuN1KtPlOsRVSrTFWqU1apWleoYVinaFmmb1qldlukfVyjhF2ii16hkl+gmWCfoGGep2KdrmOctWSbvGWaw2aZymeY0WiX2GmW32qV5muU7WyT9G2S+26RAm+QCXCPEHGOF3KNHnOMJXSLLHWKM3aJOneIQXiHSHmGT3qFVnuEXXyDZH2Ca36Bcn+AeYB/gIF+h4J9joN8lYR7nIV6o4Z5qod4sYh3uIl2v4p1xot0zYxz1I1y245x4o9w6ZBv8JFu95Jt/pNsBZRrDJVqE5ZpGpdoIZhnKJlmL5plNptkPZxjRJ1iS55hUp9gWaBfYKFeZ6JdbqNcdaRbfKVag6ZZiqdYkahXmKlWn6pVpqtUraxTtK1Su65Rwq9QybBP0LFO17JN3rNM5bRL7LVK87ZJ+rdIAbhHCLlGD7pFFrtEHbxDJL1CK75BMr9AOcA/QME+R8I9TsM8VcQ7XMU6Y8Y5asc4ccg3eMk2f8o1hss0jcwzlM0ym84xos8wqdAvsNEut9ItvtMsxdQrzNUq09Yp2tco4dgn6Nkm79ol9tsk/dwjBN0iC94hEt8gGeAfIOEeJ+IdLuMcNeQbPOUaQ+YZSucYUegXWOkWX+oVZusUbewTdO0Se+4Rgu8QifAPkPEOl/INnvMMpfQLrPUKs/YJuvcIwfgHyPkGz/oF1vsE3fwD5P0C6/4B8v8A+bScfpBEdGQWAAAAAElFTkSuQmCC"
-  await open(page, `img: LoadTensorFromImageUrl("${url}"),\n(img, \${ round(img()_0_128_0 × 10000) })`)
+  await open(page, `img: LoadTensorFromImageUrl("${url}"),\n(img, \${ round(img_0_128_0 × 10000) })`)
   await expect(panel(page)).toContainText("2159", { timeout: 20_000 })
   const canvas = panel(page).locator("canvas").first()
   const row = async () => {
@@ -485,6 +487,16 @@ test("?example= loads a gallery example by name; ⌘S switches to a ?code= URL",
     expect(page.url()).toContain("code=")
   }).toPass({ timeout: 20_000 })
   expect(page.url()).not.toContain("example=")
+})
+
+test("a link saved before ?v= is migrated as it loads: the editor shows today's words, and it runs", async ({ page }) => {
+  await page.goto(`/?code=${Buffer.from("x: $(2), x(x() + 1), x").toString("base64url")}`)
+  await hideDevOverlay(page)
+  await expect(panel(page)).toContainText("3")
+  await expect(page.locator(".monaco-editor .view-lines").first()).toContainText("x← x + 1")
+  // one that reads the same today – the README's link to the Tour – runs as it is
+  await page.goto("/?code=VG91cg")
+  await expect(page.getByText("Reading order is meaning")).toBeVisible()
 })
 
 test("?example= with an unknown name spells 404 in a binary tensor", async ({ page }) => {
@@ -589,7 +601,7 @@ test("camera edge-detection demo produces non-flat output", async ({ page }) => 
   await open(page, `
 cam: Camera(320, 240),
 k: [[0, 1, 0], [1, -4, 1], [0, 1, 0]],
-edges: $({ abs(conv(mean(cam(), 2), k)) }),
+edges: $({ abs(conv(mean(cam, 2), k)) }),
 edges
 `.trim())
   const canvas = panel(page).locator("canvas").first()
@@ -607,6 +619,29 @@ test("PointPlot surfaces an error argument, not a blank chart", async ({ page })
   // `::` was removed; an unbound operator must show the error, not draw empty
   await open(page, "PointPlot(1 ..< 10, 1::10)")
   await expect(panel(page)).toContainText("unknown name: ::")
+})
+
+test("a point and a slider on a live value write the cell it holds now, and a drag never rebuilds the point", async ({ page }) => {
+  // at and k are live values holding cells: a write goes to the cell each holds now. The
+  // picture under the point follows a as it is dragged; the point stays the one element
+  await open(page, "a: $([0.25, 0.25]), b: $(0.5), r: [[0, 1], [0, 1]], at: ${ a }, k: ${ b }, (Layers(${ fill([40, 40], a_0) }, Point2D(at, r)), Slider(k), [a_0, b])")
+  const box = panel(page).locator("[data-layers]").first()
+  await expect(box).toBeVisible({ timeout: 20_000 })
+  const point = box.locator(":scope > *").last()
+  const before = await point.elementHandle()
+  const bb = (await box.boundingBox())!
+  await page.mouse.move(bb.x + bb.width * 0.25, bb.y + bb.height * 0.25)
+  await page.mouse.down()
+  for (let i = 1; i <= 8; i++) {
+    await page.mouse.move(bb.x + bb.width * (0.25 + i * 0.05), bb.y + bb.height * 0.25)
+    await page.waitForTimeout(30)
+    expect(await before!.evaluate((e) => e.isConnected)).toBe(true)
+  }
+  await page.mouse.up()
+  await expect(panel(page)).toContainText(/0\.6/)
+  expect(await before!.evaluate((e) => e.isConnected)).toBe(true)
+  await page.locator("input[type=range]").fill("0.8")
+  await expect(panel(page)).toContainText("0.8")
 })
 
 test("Layers: a lower Point2D is draggable, not just the top one", async ({ page }) => {
@@ -687,7 +722,7 @@ test("swapping views does not recycle another view's mounted editor", async ({ p
   await open(page, [
     `step: $(0),`,
     `one: $("1 + 1"), many: $("v: [1, 2, 3],\nw: [4, 5, 6],\nv + w"),`,
-    `roomA: Grid(1)(Text("room a"), CodeEditor(one, "auto"), Button("go", { step(1) })),`,
+    `roomA: Grid(1)(Text("room a"), CodeEditor(one, "auto"), Button("go", { step← 1 })),`,
     `roomB: Grid(1)(Text("room b"), CodeEditor(many, "auto")),`,
     `$({ ListGet((roomA, roomB), step()) })`,
   ].join("\n"))
@@ -814,10 +849,13 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
   await solved("You fixed a function")
   await next()
 
-  // 9 · reactivity – drag the slider past 0.9, no typing
+  // 9 · reactivity – drag the slider past 0.9, no typing; then keep the number x holds
   await room("Make it move")
   await page.locator("input[type=range]").first().fill("0.95")
   await solved("You changed a running program mid-flight")
+  await rejected("make start keep the number", "start: x + 0, start", "stays where")
+  await typeInCell(page, "start: x + 0, start", "now: x, held: (x,), start: $x, (now, held, start)")
+  await solved("stays where")
   await next()
 
   // 10 · draw it – one number turns the dot into a ring

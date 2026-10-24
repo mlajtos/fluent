@@ -83,9 +83,14 @@ export const numberText = (n: number, digits = Infinity): string => {
   return Math.abs(m) >= 1e7 ? m.toExponential().replace("e+", "e") : String(m)
 }
 
+// The version of Fluent a saved program is written in: a link carries it, and a program
+// written in an older one is migrated as it loads (migrate.ts)
+export const VERSION = 2
+
 // page → worker
 export type ToWorker =
-  | { t: "code", source: string }
+  // the program, and the version it is written in when that is older than VERSION
+  | { t: "code", source: string, v?: number }
   // parse a document for its editor's markers
   | { t: "parse", source: string }
   // write a live value: a number, numbers, text, or an image. `seq` comes back as the
@@ -113,6 +118,8 @@ export type SourceKind = "camera" | "microphone" | "spectrum" | "pointer"
 export type ToPage =
   // the environment's documented names, for hover cards and completion
   | { t: "ready", names: [string, string, Doc | null][] }
+  // a program written in an older version, as it is written now
+  | { t: "migrated", source: string }
   // a document's parse errors, by its hash
   | { t: "parsed", d: number, errors: { message: string, o: Where }[] }
   // what the program computed that nothing shows: an Error of a statement before the

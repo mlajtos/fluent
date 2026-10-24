@@ -76,7 +76,7 @@
 
 import { signal, computed, effect } from "@preact/signals-core"
 import {
-  tensorView, labelled, heatScale, numberText, documentHash, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
+  tensorView, labelled, heatScale, numberText, documentHash, VERSION, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
   connect, mirrors, payloads, root, update, write, call,
   type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where,
 } from "./protocol"
@@ -165,6 +165,7 @@ function receive({ data: m, target }: MessageEvent<ToPage>) {
       return
     }
     case "parsed": { showParseErrors(m); return }
+    case "migrated": { program.value = m.source; return }
     case "warnings": { showWarnings(m); return }
     case "lives": case "tensor": { update(m); return }
     case "source": { startSource(m.id, m.kind, m.size, m.fps); return }
@@ -1583,6 +1584,7 @@ const editorOnMount = (editor: editor.IStandaloneCodeEditor) => {
     const url = new URL(window.location.href)
     url.searchParams.delete(key === "code" ? "example" : "code")
     url.searchParams.set(key, value)
+    if (key === "code") { url.searchParams.set("v", String(VERSION)) } else { url.searchParams.delete("v") }
     window.history.pushState({}, "", url.toString())
   }
   editor.addAction({
@@ -1637,14 +1639,17 @@ window.addEventListener("error", (e) => {
 }, true)
 
 // The program: from the URL – ?code=, or a gallery ?example= – then every edit. The worker
-// runs the latest.
-const programInUrl = (): string | null => {
+// runs the latest. A saved program says which version of Fluent it is written in (?v=, 1
+// when it doesn't); one written in an older version comes back migrated, and runs as that.
+const programInUrl = (): { source: string, v: number } | null => {
   const params = new URLSearchParams(window.location.search)
   const code = StringDeserialize(params.get("code") ?? ""), example = params.get("example")
-  return code !== "" ? code : example !== null ? exampleSource(example) : null
+  return code !== "" ? { source: code, v: Number(params.get("v") ?? 1) } : example !== null ? { source: exampleSource(example), v: VERSION } : null
 }
-const program = signal(programInUrl() ?? "Tour")
-effect(() => toWorker({ t: "code", source: program.value }))
+const linked = programInUrl()
+const program = signal(linked?.source ?? "Tour")
+let written = linked?.v ?? VERSION
+effect(() => { toWorker({ t: "code", source: program.value, v: written }); written = VERSION })
 
 // the main editor follows the program: an edit re-renders it, and nothing else
 function MainEditor(): JSX.Element {
@@ -1665,7 +1670,7 @@ function Playground(): JSX.Element {
     }
     // back and forward restore the program from the URL; pushState (⌘S) fires nothing,
     // and the editor already holds that program
-    const onPopState = () => { program.value = programInUrl() ?? program.peek() }
+    const onPopState = () => { const l = programInUrl(); if (l) { written = l.v; program.value = l.source } }
     window.addEventListener("keydown", onKeyDown, true)
     window.addEventListener("popstate", onPopState)
     return () => {

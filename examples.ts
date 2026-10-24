@@ -255,7 +255,7 @@ marks: curve_(0..<8 × 18),
 
 ; Helper operators
 (++): concat,
-(++=): FunctionNoAutoLift({ a, b | a(a() ++ List(b)) }),
+(++=): { a, b | a← a ++ List(b) },
 
 ; Task factory – creates an editable task with a toggle
 taskCreate: { name |
@@ -277,7 +277,7 @@ tasks: $List(),
   Grid([5, 1])(
     TextEditor(taskName),
     Button("Add Task", {
-      tasks ++= taskCreate(taskName()),
+      tasks ++= taskCreate(taskName),
       taskName← "",
     }),
   ),
@@ -285,7 +285,7 @@ tasks: $List(),
 )
 `,
   "tasks-compressed": `
-(++):concat,taskName: $"",taskCreate:{name|s: $name,f: $"🔴",Grid([1,10])(Button(f,{f("✅")}),TextEditor(s))},tasks: $(()),(Text("# TODO"),Grid([5,1])(TextEditor(taskName),Button("Add",{tasks(tasks()++List(taskCreate(taskName()))),taskName("")})),tasks)
+(++):concat,taskName: $"",taskCreate:{name|s: $name,f: $"🔴",Grid([1,10])(Button(f,{f← "✅"}),TextEditor(s))},tasks: $(()),(Text("# TODO"),Grid([5,1])(TextEditor(taskName),Button("Add",{tasks← tasks++List(taskCreate(taskName)),taskName← ""})),tasks)
 `,
   "tasks-mini": `
 ; Minimal TODO app – type a task, add it to the list
@@ -295,8 +295,8 @@ tasks: $List(),
 (
   TextEditor(n),
   Button("Add", {
-    tasks(tasks() ++ List(n())),
-    n("")
+    tasks← tasks ++ List(n),
+    n← ""
   }),
   tasks,
 )
@@ -309,7 +309,7 @@ tasks: $List(),
 
 expr: $"",
 result: expr . CodeEvaluate,
-append: { f | { expr(expr() . f) } },
+append: { f | { expr← expr . f } },
 btn: { c | Button(c, { x | x ++ c } . append) },
 
 (
@@ -345,7 +345,7 @@ f: { x | x × θ_0 + θ_1 },
 opt: adam(0.03),
 losses: $[],
 
-{ losses(losses() ++ [opt(𝓛)]) } ⟳ 200,
+{ losses← losses ++ [opt(𝓛)] } ⟳ 200,
 
 ; Results
 (
@@ -365,7 +365,7 @@ f: { x | x × θ_0 + θ_1 },
 𝓛: { μ((y - f(x))^2) },
 minimize: adam(0.03),
 losses: $[],
-{ losses(losses() concat [minimize(𝓛)]) } ⟳ 400,
+{ losses← losses concat [minimize(𝓛)] } ⟳ 400,
 (losses, θ)`,
   "REPL": `
 ; Multi-cell REPL – each cell evaluates independently
@@ -414,7 +414,7 @@ x: linspace([0.05, 4], 240), ; Box–Cox is defined for x > 0
 p: { l | where(abs(l)<0.001 + x×0, log(x), x^l - 1 ÷ l) },
 
 ; wrap the plot in a computed so it re-draws as you scrub λ (like Scrubber does)
-curve: \${ PointPlot(x, p(λ())) },
+curve: \${ PointPlot(x, p(λ)) },
 
 (
   Text("# 📈 Box–Cox transform"),
@@ -454,7 +454,7 @@ opt: adam(0.02),
 losses: $[],
 half: \${ φ(X) ⍴ [96] }, ; φ(x) – climbs to sit between x and eˣ
 whole: \${ φ(φ(X)) ⍴ [96] }, ; φ(φ(x)) – snaps onto eˣ
-{ losses(losses() ++ [opt(𝓛)]) } ⟳ 2000,
+{ losses← losses ++ [opt(𝓛)] } ⟳ 2000,
 
 (
   Text("# 🌗 The half of exp"),
@@ -510,7 +510,7 @@ pred: \${ f(grid) },
 ; a step at a time; every 10th, the errors are logged
 { i |
   l: opt(𝓛),
-  when(i % 10 = 0, { losses(losses() ++ [l]), tests(tests() ++ [unseen()]) })
+  when(i % 10 = 0, { losses← losses ++ [l], tests← tests ++ [unseen()] })
 } ⟳ 600,
 
 ; Results
@@ -518,7 +518,7 @@ pred: \${ f(grid) },
   Text("**sin(x) and the model**, on the 200 points it never trained on:"),
   plot(grid, (sin(grid), pred), ("sin(x)", "model")),
   Text("**How far off it is** (root-mean-square), on the 24 training points and on the 200 unseen ones:"),
-  \${ plot(0..<(#losses()) × 10, (√(losses()), √(tests())), ("train", "unseen")) },
+  \${ plot(0..<(#losses) × 10, (√(losses), √(tests)), ("train", "unseen")) },
 )
 `,
 "loss-landscape": `
@@ -529,7 +529,7 @@ pred: \${ f(grid) },
 
 θ: ~[0, 0], ; the ball – grab it
 lr: $0.4,
-step: { sgd(lr() × 0.005)({ 𝓛(θ) }) },
+step: { sgd(lr × 0.005)({ 𝓛(θ) }) },
 
 ; the surface: the same 𝓛 evaluated over the whole view via ⊗
 n: 300,
@@ -561,7 +561,7 @@ c: $[0.1, -1.3],
 
 ; total distance from a point p to every anchor (indexed form is ⊗-friendly)
 dist: { p, q | √((p_0 - q_0)^2 + (p_1 - q_1)^2 + soft) },
-F: { p | dist(p, a()) + dist(p, b()) + dist(p, c()) },
+F: { p | dist(p, a) + dist(p, b) + dist(p, c) },
 
 ; the blue point descends F – the only trainable thing here
 p: ~[1.6, 1.6],
@@ -569,15 +569,9 @@ opt: adam(0.06),
 𝓛: { F(p) },
 { opt(𝓛) } ⟳ Time()×60, ; 60 steps a second
 
-; the distance field as a heatmap, recomputed as the anchors move. Read the
-; anchors to concrete tensors first (av/bv/cv), so the ⊗ lambda works on plain
-; tensors.
+; the distance field as a heatmap, recomputed as the anchors move
 g: linspace([-2, 2], n),
-field: \${
-  av: a(), bv: b(), cv: c(),
-  Fc: { q | dist(q, av) + dist(q, bv) + dist(q, cv) },
-  g (⊗ { y, x | Fc([x, y]) }) g
-},
+field: \${ g (⊗ { y, x | F([x, y]) }) g },
 
 (
   Text("# 📍 Geometric median"),
@@ -613,8 +607,8 @@ last: oneHot(n - 1, n) ⍴ [n, 1], ; picks the tip
 𝓛: { ; loss
   P: fk(θ), ; joint positions
   tip: Σ(P × last, 0), ; the hand
-  reach: Σ((tip - target())^2), ; hand → target
-  avoid: Σ(1 ÷ (Σ((P - obstacle())^2, 1) + 0.02)), ; repel
+  reach: Σ((tip - target)^2), ; hand → target
+  avoid: Σ(1 ÷ (Σ((P - obstacle)^2, 1) + 0.02)), ; repel
   reach + 0.005×avoid
 },
 
@@ -625,7 +619,7 @@ joints: \${ fk(θ) }, ; live pose for the picture
 view: [[-1, 1], [-1, 1]],
 S: 300, ; the picture is S × S units, the view's -1 … 1 across it
 arm: \${ ; the arm as a lit line from its base, a bead at every joint
-  P: concat(([[-0.45, 0]], joints())) + 1 × S÷2,
+  P: concat(([[-0.45, 0]], joints)) + 1 × S÷2,
   canvas(S, S)
     . paint(line(P), stroke([0.55, 0.8, 1], 4) above halo([0.05, 0.4, 0.9] × 0.8, 14))
     . draw(dots(P), [0.92, 0.96, 1], 5)
@@ -648,7 +642,7 @@ t: 0..<T × dt, ; sample times [T]
 fly: { u | p0 + (t ⊗(×) u) + (0.5 × (t^2 ⊗(×) g)) }, ; the ballistic path, [T, 2]
 
 target: $[0.72, -0.12], ; drag me (orange)
-𝓛: { Σ((fly(vel)_(T - 1) - target())^2) }, ; squared miss of where the shot lands
+𝓛: { Σ((fly(vel)_(T - 1) - target)^2) }, ; squared miss of where the shot lands
 
 opt: adam(0.06), ; optimiser
 path: \${ fly(vel) }, ; live trajectory for the picture
@@ -657,7 +651,7 @@ path: \${ fly(vel) }, ; live trajectory for the picture
 view: [[-1, 1], [-1, 1]],
 S: 280, ; the picture is S × S units, the view's -1 … 1 across it
 shot: \${ ; the trajectory as a lit trail, a bead at every step, the muzzle at its start
-  P: path() + 1 × S÷2,
+  P: path + 1 × S÷2,
   canvas(S, S)
     . paint(line(P), stroke([0.6, 1, 0.75], 1.5) above halo([0.1, 0.8, 0.5] × 0.6, 10))
     . draw(dots(P), [0.85, 1, 0.9], 4)
@@ -724,7 +718,7 @@ blobs: { p, g, n | ; K Gaussian blobs at centers p [K, 2] onto an n×n image
 a0: 0..<K × (2×π ÷ K), ; blobs start as a tiny huddle at the middle
 θ: ~stack((0.15 × cos(a0), 0.15 × sin(a0)), 1), ; K blob centers – the only trainable thing
 
-𝓛: { Σ((blobs(θ, lg, lres) - ring(lg, lres, center()))^2) }, ; coarse pixel mismatch
+𝓛: { Σ((blobs(θ, lg, lres) - ring(lg, lres, center))^2) }, ; coarse pixel mismatch
 
 opt: adam(0.02),
 shown: \${ blobs(θ, vg, vres) }, ; the fine picture, for display
@@ -767,7 +761,7 @@ pinR: $[0.55, -0.4], ; drag me (cyan) – the top-right corner
   stretch: norm(nbr - θ, 3) - rest, ; how far each spring is from its rest length
   springs: Σ(keep × stretch^2), ; every spring, all four families at once
   gravity: grav × Σ(θ × [0, -1]), ; every node pulled down (screen +y)
-  pins: Σ((θ_0_0 - pinL())^2) + Σ((θ_0_(nx - 1) - pinR())^2), ; the two top corners follow the dots
+  pins: Σ((θ_0_0 - pinL)^2) + Σ((θ_0_(nx - 1) - pinR)^2), ; the two top corners follow the dots
   springs + gravity + pinW×pins
 },
 
@@ -824,22 +818,22 @@ caustic: { x, y, r |
 goal: \${
   p: stack(meshgrid(xs, ys), -1),
   cond(
-    guard(face(), {
-      f: cam(), fh: shape(f)_0, fw: shape(f)_1, s: fh ÷ H ⌊ (fw ÷ W),
-      row: clamp(floor(ys - at()_1 × s + (fh ÷ 2)), 0, fh - 1),
-      col: clamp(floor(at()_0 - xs × s + (fw ÷ 2)), 0, fw - 1),
+    guard(face, {
+      f: cam, fh: shape(f)_0, fw: shape(f)_1, s: fh ÷ H ⌊ (fw ÷ W),
+      row: clamp(floor(ys - at_1 × s + (fh ÷ 2)), 0, fh - 1),
+      col: clamp(floor(at_0 - xs × s + (fw ÷ 2)), 0, fw - 1),
       seen: mean((f ⍴ [-1, 3])_(row ⍴ [-1, 1] × fw + col), -1) + 0.01,
       seen ÷ mean(seen)
     }),
     {
-      n: length(word()), size: H×0.4 ⌊ (W×0.9 ÷ 0.6 ÷ n),
-      ink: clamp(size×0.06 - letters(word(), at() - [0.3×size×n, 0.6×size], size)(p), 0, 1) + 0.05,
+      n: length(word), size: H×0.4 ⌊ (W×0.9 ÷ 0.6 ÷ n),
+      ink: clamp(size×0.06 - letters(word, at - [0.3×size×n, 0.6×size], size)(p), 0, 1) + 0.05,
       ink ÷ mean(ink)
     }
   )
 },
 
-𝓛: { mean((caustic(xs, ys, r) - goal())^2) },
+𝓛: { mean((caustic(xs, ys, r) - goal)^2) },
 opt: adam(0.1),
 { opt(𝓛) } ⟳ Time()×60,
 
@@ -881,11 +875,11 @@ afar: { x | ifft2(fft2(x) × exp(-(2 × π^2 × blur^2 × f)), N) },
 ; the word, cell by cell: 1 on its letters, 0 off them
 cells: stack(meshgrid(0..<N + 0.5, 0..<N + 0.5), -1),
 secret: \${
-  n: length(word()), size: N×0.95 ÷ 0.6 ÷ n ⌊ (N×0.4),
-  clamp(1 - letters(word(), [N - (0.6×size×n), N - (1.2×size)] ÷ 2, size)(cells), 0, 1)
+  n: length(word), size: N×0.95 ÷ 0.6 ÷ n ⌊ (N×0.4),
+  clamp(1 - letters(word, [N - (0.6×size×n), N - (1.2×size)] ÷ 2, size)(cells), 0, 1)
 },
 ; the pair from afar should look like this: the word bright, the rest nearly dark
-goal: \${ afar(0.05 + (0.35 × secret())) },
+goal: \${ afar(0.05 + (0.35 × secret)) },
 
 ; how much light each cell lets through, 0 to 1
 a: ~randn([N, N]), b: ~randn([N, N]),
@@ -895,21 +889,21 @@ sheets: { (sigmoid(a), sigmoid(b)) },
 seen: { A, B | afar(stack((A × B, A, B, A × A, B × B))) },
 𝓛: {
   s: sheets(), A: s_0, B: s_1, v: seen(A, B),
-  mean((v_0 - goal())^2) + (4 × Σ(drop(𝕍(v ⍴ [5, -1], 1), 1))) + (0.02 × μ(A × (1 - A) + (B × (1 - B))))
+  mean((v_0 - goal)^2) + (4 × Σ(drop(𝕍(v ⍴ [5, -1], 1), 1))) + (0.02 × μ(A × (1 - A) + (B × (1 - B))))
 },
 opt: adam(0.1),
 { opt(𝓛) } ⟳ Time()×60,
 
 ; how much of the word a sheet alone shows from afar, against the pair: the gap between
 ; the letters and the rest, in its light or in its grain, whichever is larger
-contrast: { v | on: secret() > 0.5, Σ(v × on) ÷ Σ(on) - (Σ(v × (1 - on)) ÷ Σ(1 - on)) },
+contrast: { v | on: secret > 0.5, Σ(v × on) ÷ Σ(on) - (Σ(v × (1 - on)) ÷ Σ(1 - on)) },
 leak: \${
   s: sheets(), v: seen(s_0, s_1), c: { k | abs(contrast(v_k)) ⌈ abs(contrast(v_(k+2) - v_k^2)) },
   [c(1), c(2)] ÷ abs(contrast(v_0))
 },
 ; in tenths of a percent, and no division: a GPU divides only nearly exactly
 percent: { x | t: round(x × 1000), d: t % 10, StringConcat(String(round(t - d × 0.1)), ".", String(d)) },
-told: \${ StringConcat("From afar, sheet A alone shows ", percent(leak()_0), " % of the word the pair shows, and sheet B ", percent(leak()_1), " %.") },
+told: \${ StringConcat("From afar, sheet A alone shows ", percent(leak_0), " % of the word the pair shows, and sheet B ", percent(leak_1), " %.") },
 
 ; a sheet at the points (x, y), clear past its edges, and the ink of the light through it
 look: { s, x, y | i: floor(x), j: floor(y), where(i≥0 ∧ i<N ∧ j≥0 ∧ j<N, flat(s)_(clamp(j, 0, N-1) × N + clamp(i, 0, N-1)), 1) },
@@ -920,7 +914,7 @@ home: [N÷2, N÷2],
 at: $home,
 turn: $0.5,
 both: \${
-  s: sheets(), d: round(at() - home), θ: turn() - 0.5 × 0.2,
+  s: sheets(), d: round(at - home), θ: turn - 0.5 × 0.2,
   canvas(N, N) . paint({ p |
     q: moveaxis(p, -1, 0), u: q_0 - N÷2 - d_0, v: q_1 - N÷2 - d_1,
     look(s_0, q_0, q_1) × look(s_1, cos(θ)×u + sin(θ)×v + N÷2, cos(θ)×v - sin(θ)×u + N÷2)
@@ -967,7 +961,7 @@ optL: adam(0.1), optR: adam(3),
 ; the race: T steps, 60 a second. Each step's two losses are kept in one place of fixed
 ; size, so the plot of them keeps its plan as it grows
 T: 900,
-losses: ~~fill([2, T], 1), done: $0,
+losses: $fill([2, T], 1), done: $0,
 { i |
   a: optL({ miss(byPixel) }), b: optR({ miss(byWave()) }),
   losses:= where(0..<T = i, [a, b] ⍴ [2, 1], losses),
@@ -980,7 +974,7 @@ view: { pic, s | canvas(s×N, s×N) . paint({ p | q: floor(moveaxis(p, -1, 0) ÷
 asPixels: \${ view(byPixel, 2) },
 asWaves: \${ view(byWave(), 2) },
 ; a step not taken yet sits on the last one taken, so the lines end there
-curves: \${ s: 0..<T ⌊ (done() - 1 ⌈ 0), plot(s + 1, log10(transpose(transpose(losses)_s)), ("pixels", "waves")) },
+curves: \${ s: 0..<T ⌊ (done - 1 ⌈ 0), plot(s + 1, log10(transpose(transpose(losses)_s)), ("pixels", "waves")) },
 
 (
   Text("# 🌊 Learning in frequencies"),
@@ -1034,7 +1028,7 @@ grid: \${ grow() }, ; live grown state for the heatmap
 view: [[-1, 1], [-1, 1]], gres: 192, ; heatmap resolution
 idx: ⌊(0..<gres × H ÷ gres), ; nearest-neighbour upsample indices
 up: { g | transpose(transpose(g_idx)_idx) }, ; [H, W] → [gres, gres]
-field: \${ up(grid()) + 0.18×up(targetG) }, ; grown shape over a faint target ghost
+field: \${ up(grid) + 0.18×up(targetG) }, ; grown shape over a faint target ghost
 
 (
   Text("# 🌱 Growing automata"),
@@ -1213,7 +1207,7 @@ neighbours: { g | box(box(g, 0), 1) - g },
 board: $(rand([n, n]) < 0.3),
 
 step: {
-  c: board(),
+  c: board,
   a: neighbours(c),
 
   ; alive next if 3 neighbours, or 2 and already alive
@@ -1232,7 +1226,7 @@ step ⟳ 100000,
 
 next: ⊛ ⟜ (1 ⧉ [3, 3]) ⊸ Φ(= ⟜ 3, ∨, = ⟜ (3 ⊸ +)),
 board: $(⚄([256, 256]) < 0.3),
-{ board← next(board()) } ⟳ 100000,
+{ board← next(board) } ⟳ 100000,
 (
   Text("# 🐦 Game of Life, tacitly"),
   board,
@@ -1256,7 +1250,7 @@ F: $0.055,
 K: $0.062,
 
 tick: {
-  a: u(), b: v(), f: F(), k: K(),
+  a: u, b: v, f: F, k: K,
   r: a × b^2,
   u← a + 0.16×Δ(a) - r + f - f×a,
   v← b + 0.08×Δ(b) + r - f×b - k×b,
@@ -1298,7 +1292,7 @@ reseed: { world← rand([n, n]) },
 
 ; convolve, grow, and keep the world in [0, 1]
 tick: {
-  w: world(),
+  w: world,
   world← clamp(w + 0.1×growth(conv(w, K)), 0, 1),
 },
 
@@ -1331,7 +1325,7 @@ scores: matmul(Q, transpose(Q)) ÷ (√d),
 
 ; temperature sharpens (or flattens) the softmax – recomputes as you drag
 temp: $4,
-weights: \${ softmax(scores × temp()) },
+weights: \${ softmax(scores × temp) },
 
 (
   Text("# 🧠 Attention"),
@@ -1374,7 +1368,7 @@ loss: { mean((fwd() - target)^2) },
 
 opt: adam(0.15),
 losses: $[],
-{ losses(losses() ++ [opt(loss)]) } ⟳ 400,
+{ losses← losses ++ [opt(loss)] } ⟳ 400,
 
 output: \${ fwd() },
 gates: \${ stack((softmax(t1), softmax(t2), softmax(to))) },
@@ -1400,13 +1394,13 @@ gates: \${ stack((softmax(t1), softmax(t2), softmax(to))) },
 ; --- data: 14×14 binarised MNIST (6000 train, 1000 test) as safetensors ---
 ; the signal is an empty list until the fetch resolves to [Xtrain, Ytrain, Xtest, Ytest]
 mnist: LoadSafeTensorFromURL("mnist.safetensors"),
-loaded: { (#mnist()) > 0 },
+loaded: { (#mnist) > 0 },
 ; train on 3000 of the 6000, score on 500 of the 1000 – keeps each frame light
 ; so the whole thing trains live and smoothly in the browser (pixels × examples)
-Xtr: { transpose(slice(mnist()_0_1, 0, 3000)) }, ; [196, 3000]
-Ytr: { transpose(slice(mnist()_1_1, 0, 3000)) }, ; [10, 3000]
-Xte: { transpose(slice(mnist()_2_1, 0, 500)) }, ; [196, 500]
-Yte: { transpose(slice(mnist()_3_1, 0, 500)) }, ; [10, 500]
+Xtr: { transpose(slice(mnist_0_1, 0, 3000)) }, ; [196, 3000]
+Ytr: { transpose(slice(mnist_1_1, 0, 3000)) }, ; [10, 3000]
+Xte: { transpose(slice(mnist_2_1, 0, 500)) }, ; [196, 500]
+Yte: { transpose(slice(mnist_3_1, 0, 500)) }, ; [10, 500]
 
 ; --- fixed random wiring: two source signals per gate ---
 G1: 512, G2: 200,
@@ -1449,7 +1443,7 @@ loss: { -mean(Σ(Ytr() × logSoftmax(model(Xtr()), 0), 0)) },
 opt: adam(0.05),
 losses: $[],
 budget: \${ loaded() × 1500 },
-{ losses(losses() ++ [opt(loss)]) } ⟳ budget,
+{ losses← losses ++ [opt(loss)] } ⟳ budget,
 
 ; live accuracy on the held-out test set
 accuracy: \${
@@ -1481,11 +1475,11 @@ accuracy: \${
 
 ; --- data: 14×14 binarised MNIST as safetensors (an empty list until it loads) ---
 mnist: LoadSafeTensorFromURL("mnist.safetensors"),
-loaded: { (#mnist()) > 0 },
-Xtr: { mnist()_0_1 }, ; [6000, 196] pixels in {0, 1}
-Ytr: { mnist()_1_1 }, ; [6000, 10] one-hot labels
-Xte: { mnist()_2_1 }, ; [1000, 196]
-Yte: { mnist()_3_1 }, ; [1000, 10]
+loaded: { (#mnist) > 0 },
+Xtr: { mnist_0_1 }, ; [6000, 196] pixels in {0, 1}
+Ytr: { mnist_1_1 }, ; [6000, 10] one-hot labels
+Xte: { mnist_2_1 }, ; [1000, 196]
+Yte: { mnist_3_1 }, ; [1000, 10]
 
 Din: 196, C: 10, H1: 200, H2: 100,
 α: 6, lr: 3, B: 128,
@@ -1523,9 +1517,9 @@ edUp: { W, A, U | W + (matmul(transpose(A), U) × (lr ÷ B)) ⌈ 0.0001 },
 
 ; readout for scoring: the output positive stream's logit, argmax over classes.
 model: { X |
-  l1: fwd(X, X, Wpp1(), Wnp1(), Wnn1(), Wpn1()),
-  l2: fwd(l1_0, l1_1, Wpp2(), Wnp2(), Wnn2(), Wpn2()),
-  matmul(l2_0, Wppo()) - matmul(l2_1, Wnpo()) ; [n, 10]
+  l1: fwd(X, X, Wpp1, Wnp1, Wnn1, Wpn1),
+  l2: fwd(l1_0, l1_1, Wpp2, Wnp2, Wnn2, Wpn2),
+  matmul(l2_0, Wppo) - matmul(l2_1, Wnpo) ; [n, 10]
 },
 
 ; One training step – a full forward, one diffused error, twelve local updates.
@@ -1533,11 +1527,11 @@ train: {
   idx: floor(rand([B]) × 6000),
   X: Xtr()_idx, Y: Ytr()_idx,
   ; forward, keeping every stream's activation for its local update
-  l1: fwd(X, X, Wpp1(), Wnp1(), Wnn1(), Wpn1()),
+  l1: fwd(X, X, Wpp1, Wnp1, Wnn1, Wpn1),
   p1: l1_0, n1: l1_1,
-  l2: fwd(p1, n1, Wpp2(), Wnp2(), Wnn2(), Wpn2()),
+  l2: fwd(p1, n1, Wpp2, Wnp2, Wnn2, Wpn2),
   p2: l2_0, n2: l2_1,
-  lo: fwd(p2, n2, Wppo(), Wnpo(), Wnno(), Wpno()),
+  lo: fwd(p2, n2, Wppo, Wnpo, Wnno, Wpno),
   po: lo_0, no: lo_1,
   ; batch-centred one-vs-all error at the output (prediction = positive stream)
   E: Y - po,
@@ -1553,12 +1547,12 @@ train: {
   Upo: dφ(po) × S,
   Uno: dφ(no) × (-S),
   ; twelve local updates (inhibitory pathways carry the opposite-sign drive)
-  Wpp1(edUp(Wpp1(), X, Up1)), Wnp1(edUp(Wnp1(), X, -Up1)),
-  Wnn1(edUp(Wnn1(), X, Un1)), Wpn1(edUp(Wpn1(), X, -Un1)),
-  Wpp2(edUp(Wpp2(), p1, Up2)), Wnp2(edUp(Wnp2(), n1, -Up2)),
-  Wnn2(edUp(Wnn2(), n1, Un2)), Wpn2(edUp(Wpn2(), p1, -Un2)),
-  Wppo(edUp(Wppo(), p2, Upo)), Wnpo(edUp(Wnpo(), n2, -Upo)),
-  Wnno(edUp(Wnno(), n2, Uno)), Wpno(edUp(Wpno(), p2, -Uno)),
+  Wpp1← edUp(Wpp1, X, Up1), Wnp1← edUp(Wnp1, X, -Up1),
+  Wnn1← edUp(Wnn1, X, Un1), Wpn1← edUp(Wpn1, X, -Un1),
+  Wpp2← edUp(Wpp2, p1, Up2), Wnp2← edUp(Wnp2, n1, -Up2),
+  Wnn2← edUp(Wnn2, n1, Un2), Wpn2← edUp(Wpn2, p1, -Un2),
+  Wppo← edUp(Wppo, p2, Upo), Wnpo← edUp(Wnpo, n2, -Upo),
+  Wnno← edUp(Wnno, n2, Uno), Wpno← edUp(Wpno, p2, -Uno),
   mean(abs(S)) ; how much blame is left to diffuse
 },
 
@@ -1568,13 +1562,13 @@ errs: $[],
 estride: $2,
 { i |
   when(loaded(), {
-    when(training(), {
+    when(training, {
       s: train(), ; train every frame; log periodically
-      when(i % estride() = 0, {
-        errs(errs() ++ (s ⍴ [1])),
-        when((#errs()) ≥ 480, { ; bound the plot: thin + slow logging
-          errs(errs()_(0..<240 × 2)),
-          estride← estride() × 2
+      when(i % estride = 0, {
+        errs← errs ++ (s ⍴ [1]),
+        when((#errs) ≥ 480, { ; bound the plot: thin + slow logging
+          errs← errs_(0..<240 × 2),
+          estride← estride × 2
         })
       })
     })
@@ -1592,14 +1586,14 @@ accuracy: \${
 ; emergent E/I balance: mean excitatory vs inhibitory hidden weight. Starts at
 ; 3:1 (the init), and learning drives it toward the cortical 1:1 on its own.
 eibal: \${
-  mean(Wpp1()) + mean(Wnn1()) + mean(Wpp2()) + mean(Wnn2())
-    ÷ (mean(Wnp1()) + mean(Wpn1()) + mean(Wnp2()) + mean(Wpn2()))
+  mean(Wpp1) + mean(Wnn1) + mean(Wpp2) + mean(Wnn2)
+    ÷ (mean(Wnp1) + mean(Wpn1) + mean(Wnp2) + mean(Wpn2))
 },
 
 ; look inside: the ten class "amplifiers" – for each class, the mean excitatory
 ; input field of its 20 routed hidden units, reshaped to 14×14 and laid in a row.
 amp: \${
-  m: mean(reshape(Wpp1(), [Din, 20, C]), 1), ; [196, 10] per-class excitatory field
+  m: mean(reshape(Wpp1, [Din, 20, C]), 1), ; [196, 10] per-class excitatory field
   ; the ten 14×14 tiles side by side: a 14×140 filmstrip
   concat(unstack(transpose(m) ⍴ [C, 14, 14]), 1)
 },
@@ -1634,7 +1628,7 @@ dec: { t | CodesToString(where(t = 0, 32, t + 96)) },
 ; --- the entire dataset is this editable string ---
 corpus: $"emma olivia ava isabella sophia charlotte mia amelia harper evelyn abigail emily elizabeth mila ella avery sofia camila aria scarlett victoria madison luna grace chloe penelope layla riley zoey nora lily eleanor hannah lillian addison aubrey ellie stella natalie zoe leah hazel violet aurora savannah audrey brooklyn bella claire skylar lucy paisley everly anna caroline nova genesis emilia kennedy samantha maya willow kinsley naomi aaliyah elena sarah ariana allison gabriella alice madelyn cora ruby eva serenity autumn adeline hailey gianna valentina isla eliana quinn ivy sadie piper lydia alexa josephine emery julia delilah arianna vivian kaylee sophie brielle madeline",
 load: { c | window(enc(c), [T + 1]) }, ; every 9-char window is an example
-D: \${ load(corpus()) }, ; follows corpus edits – the weights stay
+D: \${ load(corpus) }, ; follows corpus edits – the weights stay
 
 ; --- the transformer: one pre-norm block, one head ---
 E: ~(randn([V, C]) × 0.1),
@@ -1674,7 +1668,7 @@ score: { from, n | lossOn(D_(from + floor(linspace([0, n - 1], 256)))) },
 
 ; --- sampling: gumbel-max, with a temperature you can drag ---
 τ: $0.5,
-pick: { l | argmax(l ÷ (τ() × 1.5 ⌈ 0.05) - log(-log(rand([V]))), -1) },
+pick: { l | argmax(l ÷ (τ × 1.5 ⌈ 0.05) - log(-log(rand([V]))), -1) },
 ; the likeliest letter: no dice, so a live value can use it
 best: { l | argmax(l, -1) },
 grow: { choose | { s |
@@ -1684,7 +1678,7 @@ grow: { choose | { s |
 } },
 gen: { seed, n, choose | (grow(choose) ⍣ n)(seed) },
 dream: $"### …one moment, it is waking up…",
-dreamNow: { dream(StringConcat("### ", dec(slice(gen(fill([T], 0), 48, pick), T)))) },
+dreamNow: { dream← StringConcat("### ", dec(slice(gen(fill([T], 0), 48, pick), T))) },
 
 ; --- training: ⟳-paced, gated by the checkbox ---
 training: $1,
@@ -1694,29 +1688,29 @@ step: $0,
 history: $fill([0, 3], 0),
 stride: $20, ; steps between measurements
 {
-  when(training(), {
+  when(training, {
     opt(loss),
-    step← step() + 1,
-    s: step(),
-    when(s % stride() = 0, {
+    step← step + 1,
+    s: step,
+    when(s % stride = 0, {
       measured: [s, score(0, cut()), score(cut(), (#D) - cut())],
-      history(concat((history(), measured ⍴ [1, 3]))),
+      history← concat((history, measured ⍴ [1, 3])),
       ; the plot keeps the whole story, bounded: when it fills up,
       ; thin the history to every other row and measure half as often
-      when((#history()) ≥ 240, {
-        history(history()_(0..<120 × 2)),
-        stride← stride() × 2
+      when((#history) ≥ 240, {
+        history← history_(0..<120 × 2),
+        stride← stride × 2
       })
     }),
     when(s % 200 = 0, dreamNow)
   })
 } ⟳ 1000000,
-curves: \${ h: transpose(history()), plot(h_0, (h_1, h_2), ("train", "held out")) },
+curves: \${ h: transpose(history), plot(h_0, (h_1, h_2), ("train", "held out")) },
 
 ; type a beginning – the model finishes it, the likeliest way (works even while paused)
 prompt: $"kri",
 finish: \${
-  p: prompt(),
+  p: prompt,
   s: fill([T], 0) ++ enc(p),
   StringConcat("## ", p, "·", dec(slice(gen(s, 10, best), #s)))
 },
@@ -1729,7 +1723,7 @@ attn: \${
   softmax(einsum("btc,bsc->bts", matmul(x, Wq), matmul(x, Wk)) ÷ (√C) + nmask) ⍴ [T, T]
 },
 
-editable: \${ 1 - training() },
+editable: \${ 1 - training },
 (
   Text("# 🔮 The Name Dreamer"),
   Text("A 12k-parameter transformer learns to invent names – live, in your tab."),
@@ -1773,7 +1767,7 @@ dec: { t | CodesToString(where(t = 0, 32, t + 96)) },
 ; --- the entire dataset is this editable string ---
 corpus: $"emma olivia ava isabella sophia charlotte mia amelia harper evelyn abigail emily elizabeth mila ella avery sofia camila aria scarlett victoria madison luna grace chloe penelope layla riley zoey nora lily eleanor hannah lillian addison aubrey ellie stella natalie zoe leah hazel violet aurora savannah audrey brooklyn bella claire skylar lucy paisley everly anna caroline nova genesis emilia kennedy samantha maya willow kinsley naomi aaliyah elena sarah ariana allison gabriella alice madelyn cora ruby eva serenity autumn adeline hailey gianna valentina isla eliana quinn ivy sadie piper lydia alexa josephine emery julia delilah arianna vivian kaylee sophie brielle madeline",
 load: { c | window(enc(c), [T + 1]) }, ; every 9-char window is an example
-D: \${ load(corpus()) }, ; follows corpus edits – the weights stay
+D: \${ load(corpus) }, ; follows corpus edits – the weights stay
 
 ; --- K=2 physical blocks: this is all the depth there is ---
 E: ~(randn([V, C]) × 0.1),
@@ -1827,17 +1821,17 @@ score: { from, n | lossOn(D_(from + floor(linspace([0, n - 1], 256)))) },
 ; --- sampling: gumbel-max, with temperature and rounds you can drag ---
 τ: $0.5,
 rounds: $0.4, ; 1 + 0.4×5 = the 3 rounds it is trained at
-pick: { l | argmax(l ÷ (τ() × 1.5 ⌈ 0.05) - log(-log(rand([V]))), -1) },
+pick: { l | argmax(l ÷ (τ × 1.5 ⌈ 0.05) - log(-log(rand([V]))), -1) },
 ; the likeliest letter: no dice, so a live value can use it
 best: { l | argmax(l, -1) },
 grow: { choose | { s |
   ctx: slice(s, [-T]),
-  l: modelAt(ctx ⍴ [1, T], 1 + rounds()×5) ⍴ [T, V] _ T-1,
+  l: modelAt(ctx ⍴ [1, T], 1 + rounds×5) ⍴ [T, V] _ T-1,
   s ++ (choose(l) ⍴ [1])
 } },
 gen: { seed, n, choose | (grow(choose) ⍣ n)(seed) },
 dream: $"### …one moment, it is waking up…",
-dreamNow: { dream(StringConcat("### ", dec(slice(gen(fill([T], 0), 48, pick), T)))) },
+dreamNow: { dream← StringConcat("### ", dec(slice(gen(fill([T], 0), 48, pick), T))) },
 
 ; --- training: ⟳-paced, gated by the checkbox ---
 training: $1,
@@ -1849,29 +1843,29 @@ step: $0,
 history: $fill([0, 3], 0),
 stride: $20, ; steps between measurements
 {
-  when(training(), {
+  when(training, {
     opt(loss),
-    step← step() + 1,
-    s: step(),
-    when(s % stride() = 0, {
+    step← step + 1,
+    s: step,
+    when(s % stride = 0, {
       measured: [s, score(0, cut()), score(cut(), (#D) - cut())],
-      history(concat((history(), measured ⍴ [1, 3]))),
+      history← concat((history, measured ⍴ [1, 3])),
       ; the plot keeps the whole story, bounded: when it fills up,
       ; thin the history to every other row and measure half as often
-      when((#history()) ≥ 240, {
-        history(history()_(0..<120 × 2)),
-        stride← stride() × 2
+      when((#history) ≥ 240, {
+        history← history_(0..<120 × 2),
+        stride← stride × 2
       })
     }),
     when(s % 200 = 0, dreamNow)
   })
 } ⟳ 1000000,
-curves: \${ h: transpose(history()), plot(h_0, (h_1, h_2), ("train", "held out")) },
+curves: \${ h: transpose(history), plot(h_0, (h_1, h_2), ("train", "held out")) },
 
 ; type a beginning – the model finishes it, the likeliest way (works even while paused)
 prompt: $"kri",
 finish: \${
-  p: prompt(),
+  p: prompt,
   s: fill([T], 0) ++ enc(p),
   StringConcat("## ", p, "·", dec(slice(gen(s, 10, best), #s)))
 },
@@ -1885,7 +1879,7 @@ attProbe: { x |
 attn1: \${ attProbe(embed(probe ⍴ [1, T])) },
 attn3: \${ attProbe(cycle(cycle(embed(probe ⍴ [1, T])))) },
 
-editable: \${ 1 - training() },
+editable: \${ 1 - training },
 (
   Text("# 🔁 The Looped Dreamer"),
   Text("Two transformer blocks, stored once, revisited three times – a 6-block-deep name dreamer for a third of the weights (~22k parameters)."),
@@ -1904,7 +1898,7 @@ editable: \${ 1 - training() },
   Text("**temperature:**"),
   Slider(τ),
   Text("**block 1's attention** reading “sophia” – round 1 beside round 3, on one scale (row attends to column). Same weights, different work:"),
-  \${ stack((attn1(), attn3())) },
+  \${ stack((attn1, attn3)) },
   Text("**the training data** – uncheck training to edit; resuming keeps the weights:"),
   TextEditor(corpus, editable),
 )
@@ -1927,21 +1921,21 @@ every: 100, ; steps between evaluations, checkpoints and samples
 
 ; --- data: makemore's names.txt, a name a line, from the most common to the rarest ---
 text: Fetch("names.txt"), ; ◌ until it arrives
-loaded: { cond(guard(isString(text()), { (#text()) > 0 }), 0) },
+loaded: { cond(guard(isString(text), { (#text) > 0 }), 0) },
 ; a character as a token: a newline, which ends a name, is 0; a to z are 1 to 26
 encode: { s | clamp(StringToCodes(s) - 96, 0, 26) },
 decode: { t | CodesToString(where(t = 0, 32, t + 96)) },
 ; every tenth name is held out – never trained on, only scored: once the text has
 ; arrived, its two token streams
 streams: \${ when(loaded(), {
-  ids: encode(text()),
+  ids: encode(text),
   name: (ids = 0) scan +, ; which name each character belongs to
   held: name % 10 = 9,
   (mask(ids, ¬held), mask(ids, held))
 }) },
 ; a window is T+1 characters in a row: each of the first T is followed by the next
-train: { window(streams()_0, [T + 1]) },
-val: { window(streams()_1, [T + 1]) },
+train: { window(streams_0, [T + 1]) },
+val: { window(streams_1, [T + 1]) },
 batch: { d | d_floor(⚄([B]) × (#d)) }, ; B windows of d, at random
 
 ; --- the model: one transformer block, as in nanoGPT, its weights drawn small ---
@@ -1984,8 +1978,8 @@ rule: clipNorm({ g, v, s, t, lr | adamRule(decay(v))(g, v, s, t, lr) }, 1),
 opt: optimizer(adamInit, rule, schedule, params),
 
 ; --- the run: everything a checkpoint keeps ---
-step: ~~0,
-history: ~~fill([0, 3], 0), ; a row an evaluation: (step, train loss, val loss)
+step: $0,
+history: $fill([0, 3], 0), ; a row an evaluation: (step, train loss, val loss)
 state: ListConcat((step, history), params, opt()), ; opt() is the optimizer's memory
 ; kept in this browser, under the run's name and the model's shapes
 checkpoint: Storage(StringConcat(run, String(ListMap(params, shape)))),
@@ -1995,10 +1989,10 @@ checkpoint: Storage(StringConcat(run, String(ListMap(params, shape)))),
 next: { s |
   l: model(slice(s, [-T]) ⍴ [1, T]) ⍴ [T, V] _ T-1, ; scores for the next character
   ; the Gumbel trick: the largest of l ÷ τ plus noise is a draw from softmax(l ÷ τ)
-  s ++ (argmax(l ÷ (τ() ⌈ 0.05) - log(-log(⚄([V])))) ⍴ [1])
+  s ++ (argmax(l ÷ (τ ⌈ 0.05) - log(-log(⚄([V])))) ⍴ [1])
 },
 samples: $"",
-sample: { samples(decode(slice((next ⍣ 64)(fill([T], 0)), [T]))) },
+sample: { samples← decode(slice((next ⍣ 64)(fill([T], 0)), [T])) },
 
 ; --- training ---
 training: $1,
@@ -2007,16 +2001,16 @@ since: $0,
 speed: $0, ; tokens a second, over the steps since the last evaluation
 {
   ; resume: a checkpoint ahead of this run – one read from storage – becomes the run
-  saved: checkpoint(),
+  saved: checkpoint,
   when(isList(saved), { when(saved_0 > step, { state := saved }) }),
-  when(training() ∧ isList(streams()) ∧ step<steps, {
-    when(step % every = 0, { since← clock() }),
+  when(training ∧ isList(streams) ∧ step<steps, {
+    when(step % every = 0, { since← clock }),
     opt(loss),
     step:= step + 1,
     when(step % every = 0, {
-      speed← round(B × T × every ÷ (clock() - since())),
+      speed← round(B × T × every ÷ (clock - since)),
       history:= concat((history, [[step, score(train()), score(val())]])),
-      checkpoint(state),
+      checkpoint← state,
       sample()
     })
   })
@@ -2024,9 +2018,9 @@ speed: $0, ; tokens a second, over the steps since the last evaluation
 
 ; --- what it shows ---
 about: \${ cond(
-  guard(isError(text()), { text() }),
-  guard(isList(streams()), {
-    StringConcat(String(#streams()_0), " characters to train on, ", String(#streams()_1), " held out")
+  guard(isError(text), { text }),
+  guard(isList(streams), {
+    StringConcat(String(#streams_0), " characters to train on, ", String(#streams_1), " held out")
   }),
   { "fetching names.txt…" }
 ) },
@@ -2056,7 +2050,7 @@ k: [[0,  1, 0],
     [0,  1, 0]],
 
 ; every frame: grayscale the image (mean over the color axis), convolve
-edges: \${ abs(conv(mean(cam(), 2), k)) },
+edges: \${ abs(conv(mean(cam, 2), k)) },
 
 (
   Text("# 📷 Live Edges"),
@@ -2071,7 +2065,7 @@ mic: Microphone(512),
 
 ; every frame: take the FFT of the waveform, then its magnitude √(re² + im²).
 ; fft returns [real; imag] stacked, so f_0 is real and f_1 is imaginary.
-spectrum: \${ f: fft(mic()), √(f_0^2 + f_1^2) },
+spectrum: \${ f: fft(mic), √(f_0^2 + f_1^2) },
 
 (
   Text("# 🎵 Live Spectrum"),
@@ -2088,7 +2082,7 @@ mic: Microphone(size),
 names: ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"),
 
 detect: \${
-  f: fft(mic()),
+  f: fft(mic),
   mag: √(f_0^2 + f_1^2),
   freqs: 0 ..< (#mag) × sr ÷ size,
   ; only the musical range, so mic rumble and hiss don't win
