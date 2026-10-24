@@ -536,6 +536,27 @@ Text(String((Σ(abs(W(X) - matmul(X, transpose(W)))), W(X))))`)
   expect(numbers).toEqual([0, ...reference])
 })
 
+test("softmax and crossEntropy keep their gradient on the GPU where float32 rounds Σ exp to 1", async ({ page }) => {
+  // 30,000 rows [m, 0, 0], m from 0 to 30, are past the host's share, so the GPU computes
+  // them; each row's gradient has a closed form – tests.ts runs the same rows on the CPU
+  await open(page, `B: 30000, m: 0..<B × (30 ÷ B), z: m (⊗ ×) [1, 0, 0], e: exp(0 - m) ⍴ [B, 1],
+g: (∇{ v | Σ(logSoftmax(v) × [-1, 0, 0]) })(z), h: (∇{ v | Σ(softmax(v) × [1, 2, 3]) })(z),
+Text(String((max(abs(g - (e × [-2, 1, 1] ÷ (1 + 2×e))) ÷ e), max(abs(h - (e × [-3, 1, 2] + (e^2 × [0, -1, 1]) ÷ (1 + 2×e)^2)) ÷ e))))`)
+  await expect(panel(page)).toContainText("(", { timeout: 30_000 })
+  expect(await page.evaluate(() => "gpu" in navigator)).toBe(true)
+  const errors = (await panel(page).innerText()).match(/-?\d+(\.\d+)?(e-?\d+)?/g)!.map(Number)
+  expect(errors).toHaveLength(2)
+  for (const error of errors) { expect(error).toBeLessThan(1e-4) }
+})
+
+test("the GPU adds as the program writes it: (x + 10⁸) - 10⁸ - x keeps float32's rounding", async ({ page }) => {
+  // x + 10⁸ rounds to a multiple of 8, so the difference reaches 4, as on the CPU; a compiler
+  // that regroups the sum folds 0.5 + 10⁸ to 10⁸ and gives 0.5
+  await open(page, "x: 0..<100000 × 0.001 + 0.5, Text(String((max(abs(x + 100000000 - 100000000 - x)),)))")
+  await expect(panel(page)).toContainText("(", { timeout: 30_000 })
+  expect(Number((await panel(page).innerText()).match(/-?\d+(\.\d+)?/)![0])).toBe(4)
+})
+
 test("printing a documented built-in shows its doc card, never JS internals", async ({ page }) => {
   await open(page, "sum")
   await expect(panel(page)).toContainText("Sum of the elements")

@@ -990,6 +990,18 @@ describe("differentiation and optimization", () => {
     // a non-scalar output pulls back a ones cotangent
     expect(value("∇({ x | x^2 })([1, 2, 3])")).toEqual([2, 4, 6])
   })
+  test("softmax and crossEntropy keep their gradient where float32 rounds Σ exp to 1", () => {
+    // Past a margin of about 16.6 the sum rounds to 1, and so the largest logit's own term
+    // rounds to 0. ∇ through max gives it back as minus the others' sum, so the gradients
+    // still add to 0 (arXiv 2610.31642's Softmax Collapse). Rows [m, 0, 0], m from 0 to 30
+    // – tests.browser.ts runs the same rows on the GPU
+    const [ce, sm] = value(`B: 3000, m: 0..<B × (30 ÷ B), z: m (⊗ ×) [1, 0, 0], e: exp(0 - m) ⍴ [B, 1],
+g: (∇{ v | Σ(logSoftmax(v) × [-1, 0, 0]) })(z), h: (∇{ v | Σ(softmax(v) × [1, 2, 3]) })(z),
+(max(abs(g - (e × [-2, 1, 1] ÷ (1 + 2×e))) ÷ e), max(abs(h - (e × [-3, 1, 2] + (e^2 × [0, -1, 1]) ÷ (1 + 2×e)^2)) ÷ e))`).map(unwrap)
+    expect(ce).toBeLessThan(1e-5)
+    expect(sm).toBeLessThan(1e-5)
+    expect(value("∇({ z | crossEntropy(0, z) })([20, 0, 0])")[0]).toBeCloseTo(-4.1223e-9, 12)
+  })
   test("∇ walks only what was made after what it differentiates: a constant's history is not walked again", async () => {
     const { made } = await import("./engine/ir.ts")
     const scope = scopeOf("c: fold(0..<2000, { a, i | sin(a) }, 0..<300), f: { x | Σ(x × c) }")

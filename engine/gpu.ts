@@ -15,6 +15,11 @@ const SUBMIT_CHUNK = 32;
 // workgroups per dispatch axis. Past either it drops the command buffer, without an error.
 const MAX_BINDINGS = 10, MAX_GROUPS = 65535;
 
+// The shader compiler may regroup float sums – Metal's fast math does, in Chrome – which
+// undoes a sum written to cancel exactly, as softmax's gradient is. Each sum passes through
+// an integer OR with a zero the compiler can't prove is zero, so it is added as written, as
+// the CPU adds it.
+const WGSL_ORDERED = "fn ordered(x: f32) -> f32 { return bitcast<f32>(bitcast<u32>(x) | select(0u, 1u, arrayLength(&o) == 0u)); }";
 // WGSL rejects NaN and ±∞ from constant expressions, and the shader compiler may fold a
 // −0.0 literal to 0.0; these build them at runtime. WGSL's max may drop a NaN, and its max
 // of 0 and −0 is either: maxf keeps the NaN and takes 0 over −0, as Math.max does on the
@@ -37,7 +42,7 @@ const wgslF32 = (v: number): string => {
 const fn1 = (f: string) => (r: (i: number) => string) => `${f}(${r(0)})`;
 // a reduction's start and its step, per op
 const REDUCE: Record<string, { start: string; step: (a: string, b: string) => string }> = {
-  ADD: { start: "0.0", step: (a, b) => `${a} + ${b}` }, MUL: { start: "1.0", step: (a, b) => `${a} * ${b}` }, MAX: { start: "-inff()", step: (a, b) => `maxf(${a}, ${b})` },
+  ADD: { start: "0.0", step: (a, b) => `ordered(${a} + ${b})` }, MUL: { start: "1.0", step: (a, b) => `${a} * ${b}` }, MAX: { start: "-inff()", step: (a, b) => `maxf(${a}, ${b})` },
 };
 const WGSL: Syntax = {
   op: {
@@ -45,7 +50,7 @@ const WGSL: Syntax = {
     ICONST: (_, u) => { const v = u.arg as number; return `${v < 0 ? 4294967296 + v : v}u`; },   // a negative offset wraps, as u32 arithmetic does
     CONSTANT: (_, u) => wgslF32((u.arg as Float32Array)[0]!),
     IDIV: infix("/"), IIDX: fn1("u32"), IVAL: fn1("f32"),
-    ADD: infix("+"), MULTIPLY: infix("*"), RECIPROCAL: (r) => `(1.0 / ${r(0)})`, EXP: fn1("exp"), LOG: fn1("log"), SQRT: fn1("sqrt"),
+    ADD: (r) => `ordered(${r(0)} + ${r(1)})`, MULTIPLY: infix("*"), RECIPROCAL: (r) => `(1.0 / ${r(0)})`, EXP: fn1("exp"), LOG: fn1("log"), SQRT: fn1("sqrt"),
     LESS_THAN: (r) => `select(0.0, 1.0, ${r(0)} < ${r(1)})`,
     WHERE: (r) => `select(${r(2)}, ${r(1)}, ${r(0)} != 0.0)`,
     // a template may spell an operand more than once – pow's does five times – so an
@@ -287,7 +292,7 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_id) lid
 }
 
 const withHelpers = (wgsl: string): string =>
-  `${wgsl.includes("hashUniform(") ? WGSL_HASH_UNIFORM + "\n" : ""}${/\b(nanf|inff|negzf|maxf)\(/.test(wgsl) ? WGSL_SPECIALS + "\n" : ""}${wgsl}`;
+  `${wgsl.includes("ordered(") ? WGSL_ORDERED + "\n" : ""}${wgsl.includes("hashUniform(") ? WGSL_HASH_UNIFORM + "\n" : ""}${/\b(nanf|inff|negzf|maxf)\(/.test(wgsl) ? WGSL_SPECIALS + "\n" : ""}${wgsl}`;
 
 // codegen as a rewrite: FUSED → KERNEL (src = inputs; wgsl + dispatch in arg)
 export function lowerMany(roots: UOp[]): UOp[] {
