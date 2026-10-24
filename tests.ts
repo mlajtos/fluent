@@ -2628,6 +2628,14 @@ describe("error messages carry context", () => {
     // one link, not a chain of the prelude's own frames
     expect(chain("softmax((1, 2, 3))")).toEqual([{ message: "shape: expected numbers, got a ( … ) list of 3", user: true, line: 1 }])
   })
+  test("a live value made inside a prelude body is named by the reader's call, and so is what it fails with later", () => {
+    const source = "x: $[1, 2],\ny: softmax(x),\ny"
+    const scope = scopeOf(source)
+    expect(getOrigin(scope.y)?.start.line).toBe(2)
+    occurrence(() => evaluateSyntaxTreeNode(CodeParse(`x← "a"`), scope))
+    const failed = unwrap(scope.y) as Error
+    expect([failed instanceof Error, getOrigin(failed)?.document === source, getOrigin(failed)?.start.line]).toEqual([true, true, 2])
+  })
   test("an Error the reader's own function makes keeps its line inside a prelude body", () => {
     // 𝕐 is the prelude's: the failing line is the reader's second one, not the call
     expect(chain("𝕐({ rec | { n |\n  n + [1, 2] } })([1, 2, 3])")).toEqual([{ message: "elementwise: [3] vs [2]", user: true, line: 2 }])

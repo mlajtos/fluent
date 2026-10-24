@@ -629,10 +629,14 @@ function safeApply(fn: Value, args: Value[], env: CurrentScope, node?: { origin:
     const waiting = args.filter((a, i): a is Arriving => isArriving(a) && !placeAt(fn, i))
     return waiting.length ? new Arriving(now(), Promise.all(waiting.map((a) => a.arrival)).then(now)) : now()
   }
-  const run = watching(now)
+  // inside the prelude, what the application makes is named by the reader's call that
+  // reached it, and runs again there
+  const at = node?.origin.document === PRELUDE && engine.at.site ? { origin: engine.at.site } : node
+  const again = at === node ? now : () => appliedAt(now, [], env, at)
+  const run = watching(again)
   if (run.effect || !run.sources.length) { return run.value }
-  const live = new Computed(now, run)
-  return node ? located(live, node) : live
+  const live = new Computed(again, run)
+  return at ? located(live, at) : live
 }
 const appliedAt = (fn: Value, args: Value[], env: CurrentScope, node?: { origin: Origin }): Value => {
   if (!node) { return outcome(fn, args, env) }
