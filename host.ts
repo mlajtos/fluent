@@ -722,7 +722,10 @@ const fromPage = (value: number | number[] | string | ImageBitmap): Value =>
 const receive = (m: ToWorker) => {
   switch (m.t) {
     case "code": {
-      if ((m.v ?? VERSION) < VERSION) { post({ t: "migrated", source: migrate(m.source) }); return }
+      // a program written in an older version goes back to the page as it is written now,
+      // which sends it to run; one that reads the same now runs as it is
+      const now = (m.v ?? VERSION) < VERSION ? migrate(m.source) : m.source
+      if (now !== m.source) { post({ t: "migrated", source: now }); return }
       source = m.source
       scheduleRun()
       return

@@ -494,6 +494,9 @@ test("a link saved before ?v= is migrated as it loads: the editor shows today's 
   await hideDevOverlay(page)
   await expect(panel(page)).toContainText("3")
   await expect(page.locator(".monaco-editor .view-lines").first()).toContainText("x← x + 1")
+  // one that reads the same today – the README's link to the Tour – runs as it is
+  await page.goto("/?code=VG91cg")
+  await expect(page.getByText("Reading order is meaning")).toBeVisible()
 })
 
 test("?example= with an unknown name spells 404 in a binary tensor", async ({ page }) => {

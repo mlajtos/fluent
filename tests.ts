@@ -2921,6 +2921,10 @@ describe("the evaluation host", () => {
     expect(source).toBe("guess: $(10), hist: $([10]), Button(\"step\", { here: guess, guess← here + 1, hist← hist concat [guess] }), $[1, 2]")
     // the page sends it back as the program, in today's version, and it runs
     expect((await evaluate(source)).k).not.toBe("error")
+    // an old link that reads the same today runs as it is
+    const again = inbox.length
+    toHost({ t: "code", source: "1 + 2", v: 1 })
+    expect(numberIn(descOf(await after(again, "lives", 0), 0))).toBe(3)
   })
   test("it starts by listing the environment, with doc cards", () => {
     const ready = inbox.find((m) => m.t === "ready") as Extract<ToPage, { t: "ready" }>
