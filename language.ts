@@ -468,8 +468,8 @@ class Signal<T = Value> {
 
 // A computed runs again only when a cell it read has changed since it last looked – at
 // most once an instant – and a run that gives the same value changes nothing downstream.
-// Its value is not settled: a chain of computeds builds one graph, which the engine fuses
-// at the read, and what an earlier instant made it computes once, where a later one reads it.
+// Its value is the graph it built, not settled: a chain of computeds builds one graph,
+// which the engine fuses at the read, and computes once where a later instant reads it.
 class Computed<T = Value> extends Signal<T> {
   sources: [Signal, number][] = []
   checked = -1

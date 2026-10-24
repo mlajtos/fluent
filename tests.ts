@@ -3252,12 +3252,12 @@ describe("the evaluation host", () => {
   // A look that takes 2 ms, after a loop's statement – none, or one with steps always
   // waiting – and a frame every so many ms, on a clock moved by hand: of 20 frames, how
   // many show it
-  const costlyLooks = async (loop: string, spacing: number): Promise<number> => {
+  const costlyLooks = async (loop: string, spacing: number, look = "\${ TestSpin(x) }", cost = 2): Promise<number> => {
     let now = performance.now()
     const clock = performance.now
-    const spin = (v: Value) => { now += 2; return v }
+    const spin = (v: Value) => { now += cost; return v }
     extendEnvironment({ TestSpin: spin } as Record<string, Value>)
-    const d = await evaluate(`x: $(0), ${loop}(Button("go", { x← x + 1 }), \${ TestSpin(x) })`)
+    const d = await evaluate(`x: $(0), ${loop}(Button("go", { x← x + 1 }), ${look})`)
     const go = d.items[0].slots.onClick.id, y = d.items[1].id
     const frames: ((t: number) => void)[] = []
     ;(globalThis as any).requestAnimationFrame = (f: (t: number) => void) => frames.push(f)
@@ -3285,6 +3285,10 @@ describe("the evaluation host", () => {
   })
   test("with no steps waiting, a look is shown every frame, whatever it costs", async () => {
     expect(await costlyLooks("", 8)).toBe(20)
+  })
+  test("while steps wait, a look costs what describing it costs: a live value's numbers are computed where it is described", async () => {
+    // the look builds a live value inside the one it shows; describing it computes it: 10 ms
+    expect(await costlyLooks("{ 0 } ⟳ 1000000, ", 36, "\${ (x + 0, \${ TestSpin(x) }) }", 10)).toBeLessThan(8)
   })
 
   test("a run waits for the page as any change does: one batch at most is on its way", async () => {

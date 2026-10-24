@@ -136,10 +136,11 @@ const valueOf = (target: Signal): Value => {
 // the GPU (text decoded from codes) is shown once they arrive, and the page keeps the last
 // one until then: a value that changes every frame shows a little late, never blank.
 // While the program has steps waiting – a ⟳ loop behind its count – looking at a live
-// takes at most a twentieth of the worker, over time: a sample that took s ms makes its
-// next due 20s ms after this one was due, or now if it was idle. A cheap value is shown
-// every frame, a costly one less often, and the steps keep the rest. With no steps
-// waiting, every change is shown.
+// takes at most a twentieth of the worker, over time: a look that took s ms makes its next
+// due 20s ms after this one was due, or now if it was idle. A look is the sample and its
+// description: a live value is the graph it builds, and its numbers are computed where it
+// is described. A cheap value is shown every frame, a costly one less often, and the steps
+// keep the rest. With no steps waiting, every change is shown.
 const sampleOf = (live: Live): void => {
   const start = performance.now(), share = stepsWaiting()
   if (share && start < live.quiet) { stale = true; return }
@@ -181,7 +182,9 @@ const flush = () => {
   for (const live of dirty) {
     if (live.reading > 0) { continue }
     dirty.delete(live)
+    const start = performance.now()
     batch.push({ id: live.id, desc: describeNow(live), ack: live.ack })
+    if (stepsWaiting()) { live.quiet += 20 * (performance.now() - start) }
   }
   if (!batch.length) { return }
   send({ t: "lives", lives: batch })
