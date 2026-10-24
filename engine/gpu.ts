@@ -354,7 +354,7 @@ function syncReader(dev: GPUDevice): (buffer: GPUBuffer, bytes: number) => Uint8
 }
 
 // ── the executor: plans, buffers, bind groups, dispatches in chunked submits ──────────
-export interface Profiled { label: string; ms: number; wgsl: string; bytes: number; work: number; site?: Site }
+export interface Profiled { label: string; ms: number; start: number; wgsl: string; bytes: number; work: number; site?: Site }
 const USAGE = () => GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
 export class GPU {
   readonly name = "gpu";
@@ -442,7 +442,9 @@ export class GPU {
   // Profiling: while `profile` collects, each kernel runs in a pass of its own between two
   // timestamps, labelled by its source line, shape and form – measured attribution of a
   // step's GPU time, with the bytes of the buffers each kernel binds and the loop steps it runs.
-  // A plan's kernels carry the sites of the graph that compiled it.
+  // `start` is when a kernel began, in ms after its call's first did: kernels that read none
+  // of each other's results run side by side. A plan's kernels carry the sites of the graph
+  // that compiled it.
   profile: Profiled[] | null = null;
   #pending: Promise<void>[] = [];
   async profiled(): Promise<Profiled[]> { await Promise.all(this.#pending); this.#pending = []; const p = this.profile ?? []; this.profile = null; return p; }
@@ -522,7 +524,7 @@ export class GPU {
         const t = new BigUint64Array(read.getMappedRange().slice(0)); read.unmap();
         timed.labels.forEach((label, j) => {
           const u = timed.kernels[j]!, a = u.arg as { wgsl: string; work: number };
-          profile.push({ label, ms: Number(t[2 * j + 1]! - t[2 * j]!) / 1e6, wgsl: a.wgsl, bytes: [...u.src, u].reduce((n, x) => n + this.#bytes(x), 0), work: a.work, site: u.site });
+          profile.push({ label, ms: Number(t[2 * j + 1]! - t[2 * j]!) / 1e6, start: Number(t[2 * j]! - t[0]!) / 1e6, wgsl: a.wgsl, bytes: [...u.src, u].reduce((n, x) => n + this.#bytes(x), 0), work: a.work, site: u.site });
         });
         read.destroy(); resolve.destroy(); timed.qs.destroy();
       })());
