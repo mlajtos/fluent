@@ -212,7 +212,7 @@ const VIEWS = new Set<Op>(["BROADCAST", "PERMUTE", "RESHAPE", "SLICE", "WINDOW",
 const literals = new WeakMap<UOp, boolean>();
 const literal = (u: UOp): boolean => {
   let l = literals.get(u);
-  if (l === undefined) { l = u.op === "CONSTANT" ? !u.shape.length : u.op === "IOTA" || (u.src.length > 0 && u.src.every(literal)); literals.set(u, l); }
+  if (l === undefined) { l = u.op === "CONSTANT" ? !u.shape.length : u.op === "IOTA" || (u.op !== "LOOP" && u.src.length > 0 && u.src.every(literal)); literals.set(u, l); }
   return l;
 };
 export const loop = (inits: readonly UOp[], carries: readonly UOp[], outs: readonly UOp[], n: number): UOp[] => {

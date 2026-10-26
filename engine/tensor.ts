@@ -216,8 +216,8 @@ const follows = (nodes: readonly UOp[]): boolean => {
 // ⍣ as one engine step: f runs once, on placeholders shaped like the state xs, and gives
 // the next state – and, for a loop until, the verdict: one number, which holds when it is
 // nonzero and not NaN. A loop runs where it is built, unless a trace holds what it reads.
-// undefined when f reads the state's numbers or gives other shapes: the caller runs it
-// step by step.
+// undefined when f reads the state's numbers or gives other shapes, or when ∇ follows the
+// loop, which needs its steps: the caller runs it step by step.
 export function loop(xs: readonly Tensor[], n: number, until: boolean, f: (xs: Tensor[]) => Tensor[] | undefined): Tensor[] | undefined {
   const t: Trace = { read: false }, carries = xs.map((x) => placeholder(t, "%carry", x.node.shape)), k = xs.length;
   let out: Tensor[] | undefined;
@@ -235,6 +235,7 @@ export function loop(xs: readonly Tensor[], n: number, until: boolean, f: (xs: T
     for (let i = 0; i < n; i++) { body.carries.forEach((c, j) => bound.set(c, state[j]!)); state = substitute(body.outs, bound); }
     return state.map((u) => new Tensor(u));
   }
+  if (follows([...nodes[0]!.src, ...body.outs])) return undefined;
   runWhereBuilt(nodes);
   return nodes.map((u) => new Tensor(u));
 }

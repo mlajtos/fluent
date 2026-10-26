@@ -1628,6 +1628,17 @@ describe("⍣ power: counts, inverses, and fixed points", () => {
     expect(value("∇({ v | Σ(({ c | ({ s | s × c } ⍣ { n, o | n < 0.001 })(1) } ⍤ 0)(v)) })([0.5, 0.6])"))
       .toEqual([10 * 0.5 ** 9, 14 * 0.6 ** 13].map((x) => expect.closeTo(x, 6)))
   })
+  test("under ∇, ⍣ is one engine step wherever ∇ doesn't follow it", () => {
+    let kept: Value = null
+    const scope = createScope()
+    scope.keep = (x: Value) => { kept = x; return x }
+    // nothing the loop reads is what ∇ differentiates: the engine runs the loop
+    expect(unwrap(evaluateIn("∇({ a | a × keep(({ s | s × 0.5 } ⍣ { n, o | n < 0.001 })(1)) })(3)", scope))).toBe(0.5 ** 10)
+    expect((kept as unknown as engine.Tensor).node.op).toBe("LOOP")
+    // the loop reads a – even as a literal, inside its step: it runs step by step, and ∇ sees each
+    expect(unwrap(evaluateIn("∇({ a | keep(({ s | s × a } ⍣ { n, o | n < 0.001 })(1)) })(0.5)", scope))).toBeCloseTo(10 * 0.5 ** 9, 6)
+    expect((kept as unknown as engine.Tensor).node.op).not.toBe("LOOP")
+  })
   test("a predicate that never holds is an Error, not a frozen tab", () => {
     expect((run("({ x | x + 1 } ⍣ { a, b | 0 })(0)") as Error).message).toContain("didn't hold")
   })
