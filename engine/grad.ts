@@ -70,7 +70,7 @@ const along = (v: UOp, ax: number, idx: UOp, memo: Map<string, UOp>): UOp => {
       a.forEach((i, k) => { is[is.length - s.shape.length + b[k]!] = at(idx.shape, lead + i); });
       out = reshape(along(s, b[a.indexOf(r + ax)]! - s.shape.length, reshape(idx, is), memo), R);
     }
-  } else if (v.op === "GATHER" && r + ax === 0 && v.shape.every((_, d) => !d || free(d))) {
+  } else if (v.op === "GATHER" && v.src[1]!.shape.length === 1 && r + ax === 0 && v.shape.every((_, d) => !d || free(d))) {
     // the row each winner names – an index names the row of its whole part – then the table at it
     const [t, i] = v.src as [UOp, UOp], rows = math("trunc", along(i, -1, reshape(idx, idx.shape.slice(0, idx.shape.length - r + 1)), memo));
     out = along(t, -t.shape.length, reshape(rows, [...rows.shape, ...t.shape.slice(1).map(() => 1)]), memo);
@@ -112,8 +112,8 @@ export const JVP: Partial<Record<UOp["op"], Jvp>> = {
   BROADCAST: linear, PERMUTE: linear, RESHAPE: linear, SLICE: linear, PAD: linear, WINDOW: linear,
   GATHER: (u, [t = null]) => t && node("GATHER", [t, u.src[1]!], u.arg, u.shape),          // linear in the table; idx is primal
   SCATTER_ADD: (u, [, v = null]) => v && node("SCATTER_ADD", [u.src[0]!, v], u.arg, u.shape),
-  // a loop holds no history to differentiate: under ∇ the language runs ⍣ step by step,
-  // and a loop built anywhere else reads nothing ∇ follows
+  // a loop holds no history to differentiate: one ∇ follows runs step by step, and a loop
+  // built anywhere else reads nothing ∇ follows
   LOOP: (_u, d) => (d.some((t) => t) ? ((): never => { throw new Error("∇: a loop has no derivative – ∇ needs ⍣ step by step"); })() : null),
 };
 
@@ -164,17 +164,18 @@ export const TRANSPOSE: Partial<Record<UOp["op"], Tr>> = {
     }
     return [sum];
   },
-  GATHER: (u, ct) => [node("SCATTER_ADD", [u.src[1]!, ct], { size: u.src[0]!.shape[0] }, u.src[0]!.shape), null],
+  GATHER: (u, ct) => [node("SCATTER_ADD", [u.src[1]!, ct], { size: u.src[0]!.shape[u.src[1]!.shape.length - 1] }, u.src[0]!.shape), null],
   SCATTER_ADD: (u, ct) => [null, node("GATHER", [ct, u.src[0]!], null, u.src[1]!.shape)],
 };
 
 // The one driver: seed a cotangent on `root`, read cotangents for every target — one
 // forward linearization (all seeds live), one reverse transpose (cotangents summed at
 // forks: the tape is literally the set of summed forks).
-// A node made before every target reads none of them: the walks stop there.
+// A node made before every target reads none of them, and a detached one carries no
+// derivative: the walks stop there.
 export function vjp(root: UOp, targets: UOp[], seed: UOp): UOp[] {
   const dts = new Map(targets.map((t) => [t.id, buffer(`%dt${t.id}`, t.shape)] as const));
-  const tan = new Map<number, UOp | null>(), first = Math.min(...targets.map((t) => t.id)), since = (u: UOp) => (u.id < first ? [] : u.src);
+  const tan = new Map<number, UOp | null>(), first = Math.min(...targets.map((t) => t.id)), since = (u: UOp) => (u.id < first || u.op === "DETACH" ? [] : u.src);
   for (const u of toposort(root, since)) {
     const s = dts.get(u.id);
     if (s) { tan.set(u.id, s); continue; }

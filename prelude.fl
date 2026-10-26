@@ -41,17 +41,22 @@ FunctionNewton: newton: doc({ g, y, seed |
   ; back(x, v) carries an output-shaped v back to the inputs it came from –
   ; the transpose of g at x, by ∇
   back: { x, v | (∇{ z | Σ(v × g(z)) })(x) },
-  miss: { x | abs(g(x) - y) ÷ (1 + abs(y)) },
+  ; the smallest move from x that changes g's outputs by r: s is g's slope when g
+  ; works element by element, and how often each element is picked when g selects
+  move: { x, r |
+    s: (∇g)(x),
+    ; nothing moves where g doesn't look or is flat (s = 0)
+    Δ: where(s ≠ 0, back(x, r) ÷ (s × s), 0),
+    where(abs(Δ) < 1e30, Δ, 0)
+  },
+  ; the search reads y and seed detached, and what it finds is detached: ∇ never
+  ; walks it
+  goal: detach(y), from: detach(seed),
+  miss: { x | abs(g(x) - goal) ÷ (1 + abs(goal)) },
   ; the state is (x, its miss): the miss is computed once per step, not again to
   ; decide whether to stop
   step: { state |
-    x: state_0, m: state_1,
-    ; the smallest move that makes g land on y: s is g's slope when g works
-    ; element by element, and how often each element is picked when g selects
-    s: (∇g)(x),
-    ; nothing moves where g doesn't look or is flat (s = 0)
-    Δ0: where(s ≠ 0, back(x, y - g(x)) ÷ (s × s), 0),
-    Δ: where(abs(Δ0) < 1e30, Δ0, 0),
+    x: state_0, m: state_1, Δ: move(x, goal - g(x)),
     ; halve the step wherever it doesn't help, until nothing is left to halve:
     ; an element must get strictly closer, unless it's already well inside the
     ; tolerance – and a step off the function (NaN) never helps. Where the slope
@@ -67,8 +72,18 @@ FunctionNewton: newton: doc({ g, y, seed |
   ; each element runs until it lands or stops getting closer – one that is stuck
   ; never stops the others. Outside the tolerance a miss only ever shrinks, so
   ; this ends
-  (step ⍣ { new, old | min(new_1 ≥ old_1 ∨ (old_1 ≤ 1e-6)) })((seed, miss(seed)))_0
-}, "newton(g, y, seed)", "Newton's method from seed toward g(x) = y, with ∇ supplying the slope: where it stops, landed or not. solve checks that it landed.", "newton({ x | x^3 + x }, 10, 1) ≈ 2"),
+  found: detach((step ⍣ { new, old | min(new_1 ≥ old_1 ∨ (old_1 ≤ 1e-6)) })((from, miss(from)))_0),
+  ; at a root, a step of Newton's method carries the root's derivative – g's slope
+  ; there, inverted: the implicit function theorem – and a second step its second
+  ; derivative too. Where g mixes its inputs, a move changes each output k times as
+  ; much as asked – k is g's slope along the move, by ∇ of back – so it asks k times
+  ; less. The seed moves the root only where g doesn't look. Each step's value is
+  ; the root's: it changes only the derivative
+  start: found + (seed - from), s: (∇g)(start),
+  k: (∇{ u | Σ(back(start, u) × where(s ≠ 0, 1 ÷ s, 0)) })(g(start)),
+  carry: { x | n: x + move(x, y - g(x) ÷ k), found + (n - detach(n)) },
+  carry(carry(start))
+}, "newton(g, y, seed)", "Newton's method from seed toward g(x) = y, with ∇ supplying the slope: where it stops, landed or not. solve checks that it landed. Its derivative is the root's – g's slope there, inverted – never the search's.", "newton({ x | x^3 + x }, 10, 1) ≈ 2"),
 ; what a search that didn't land knows: it didn't land, not that nothing is there
 FunctionSolveMissed: "solve: Newton's method didn't reach g(x) = y from the seed – there may be no solution near it, or g mixes its inputs (a running sum, a matrix product), which its element-by-element step may not undo",
 FunctionSolve: solve: doc({ g, y, seed |

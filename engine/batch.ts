@@ -2,10 +2,10 @@
 // way JAX and Futhark vectorize. Every node a cell placeholder reaches gets the frame F in
 // front of its shape: an elementwise op takes it along, a reduce, slice or pad shifts its
 // axis past it, a permute keeps it in front, a reshape or broadcast prefixes it, and a
-// gather or scatter offsets its indices by cell. A loop on a cell is the loop on the frame,
-// a lane per cell: its states, its body and its verdict take the frame, and each lane stops
-// at its own verdict. A node no cell reaches is shared by every cell, so the frame sees it
-// broadcast.
+// gather or scatter takes it as a batch: each cell reads, and adds into, its own rows. A
+// loop on a cell is the loop on the frame, a lane per cell: its states, its body and its
+// verdict take the frame, and each lane stops at its own verdict. A node no cell reaches is
+// shared by every cell, so the frame sees it broadcast.
 
 import type { UOp } from "./ir.ts";
 import * as ir from "./ir.ts";
@@ -18,12 +18,8 @@ export const batch = (root: UOp, cells: ReadonlyMap<UOp, UOp>, F: readonly numbe
 
 // `memo` holds the nodes framed already; `loops`, the loops framed, by the body their states share
 function frame(roots: readonly UOp[], memo: Map<UOp, UOp>, F: readonly number[]): { roots: UOp[]; loops: Map<ir.Body, UOp[]> } {
-  const f = F.length, N = ir.numel(F), loops = new Map<ir.Body, UOp[]>();
+  const f = F.length, loops = new Map<ir.Body, UOp[]>();
   const lift = (s: UOp): UOp => memo.get(s) ?? ir.broadcastTo(s, [...F, ...s.shape]);
-  // the frame's cells laid end to end, n rows each: cell c's row r is row c·n + r
-  const rows = (s: UOp): UOp => ir.reshape(lift(s), [N * s.shape[0]!, ...s.shape.slice(1)]);
-  const offset = (idx: UOp, n: number): UOp =>
-    ir.reshape(ir.add(ir.reshape(lift(idx), [N, idx.shape[0]!]), ir.reshape(ir.mul(ir.iota(N), ir.konst(n)), [N, 1])), [N * idx.shape[0]!]);
   const outer = ir.at.site;
   try {
     for (const u of ir.toposort(roots)) {
@@ -40,12 +36,8 @@ function frame(roots: readonly UOp[], memo: Map<UOp, UOp>, F: readonly number[])
         case "RESHAPE": v = ir.reshape(lift(u.src[0]!), B); break;
         case "WINDOW": v = ir.windows(lift(u.src[0]!), u.arg as number[]); break;
         case "BROADCAST": { const s = u.src[0]!.shape; v = ir.broadcastTo(ir.reshape(lift(u.src[0]!), [...F, ...Array(u.shape.length - s.length).fill(1), ...s]), B); break; }
-        case "GATHER": {
-          // a table of the cell's own is read at the cell's rows; a shared one as it is
-          const [t, i] = u.src as [UOp, UOp], own = memo.has(t);
-          v = ir.reshape(ir.gather(own ? rows(t) : t, own ? offset(i, t.shape[0]!) : ir.reshape(lift(i), [N * i.shape[0]!])), B); break;
-        }
-        case "SCATTER_ADD": { const [i, x] = u.src as [UOp, UOp]; v = ir.reshape(ir.scatterAdd(offset(i, a.size), rows(x), N * a.size), B); break; }
+        case "GATHER": v = ir.gather(lift(u.src[0]!), lift(u.src[1]!)); break;
+        case "SCATTER_ADD": v = ir.scatterAdd(lift(u.src[0]!), lift(u.src[1]!), a.size); break;
         case "LOOP": {
           // the body reads what the loop closes over as the loop's src, framed here already
           const { body, n, out } = u.arg as ir.LoopArg, k = body.carries.length;

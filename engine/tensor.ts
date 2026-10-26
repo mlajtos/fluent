@@ -97,7 +97,12 @@ const readCells = (nodes: readonly UOp[]): void => {
 };
 function compute(nodes: readonly UOp[]): void {
   readCells(nodes);
-  const fresh = [...new Set(nodes.filter((n) => !leafOf.has(n) && !isLeaf(n)))];
+  // a detach has its source's numbers: the source is computed, and the two share its leaf
+  const own = (n: UOp): UOp => (n.op === "DETACH" ? own(n.src[0]!) : n);
+  computeOwn([...new Set(nodes.map(own).filter((n) => !leafOf.has(n) && !isLeaf(n)))]);
+  for (const n of nodes) { const s = own(n), l = leafOf.get(s); if (s !== n && l && !leafOf.has(n)) { leafOf.set(n, l); const d = hostData.get(s); if (d) hostData.set(n, d); } }
+}
+function computeOwn(fresh: UOp[]): void {
   if (!fresh.length) return;
   const cutAll = cut(fresh), hostOnly = cutAll.hostOnly, all = [...fresh, ...cutAll.kept];
   // a root that was a loop ran in the cut
@@ -196,11 +201,28 @@ export function oneNumber(t: Tensor, who: string): Tensor {
     : "min(…) holds when all do, max(…) when any does, and f ⍤ 0 runs f, the function it is in, on each element";
   throw new Error(`\`${who === "⍣" ? "(f ⍣ p)" : who}\`: the condition gave ${t.size} numbers, but ${who} asks one question of the whole value: ${ways}`);
 }
+// Whether ∇ follows any of nodes: they read a value a running ∇ differentiates with respect
+// to – through what a cell of ⍤ stands for, never through a detach. What a node reads is
+// known once, until a value stops being followed.
+const followed = new Set<UOp>(), reads = new Map<number, boolean>();
+const follows = (nodes: readonly UOp[]): boolean => {
+  if (!followed.size) return false;
+  const first = Math.min(...[...followed].map((u) => u.id)), stack = nodes.map((n): [UOp, boolean] => [n, false]);
+  const next = (u: UOp): readonly UOp[] => { const cell = traces.find((t) => t.cells.has(u))?.cells.get(u); return cell ? [cell] : u.src; };
+  while (stack.length) {
+    const [u, back] = stack.pop()!;
+    if (reads.has(u.id)) continue;
+    if (u.id < first || u.op === "DETACH" || followed.has(u)) reads.set(u.id, followed.has(u));
+    else if (back) reads.set(u.id, next(u).some((x) => reads.get(x.id)));
+    else stack.push([u, true], ...next(u).map((x): [UOp, boolean] => [x, false]));
+  }
+  return nodes.some((n) => reads.get(n.id));
+};
 // ⍣ as one engine step: f runs once, on placeholders shaped like the state xs, and gives
 // the next state – and, for a loop until, the verdict: one number, which holds when it is
 // nonzero and not NaN. A loop runs where it is built, unless a trace holds what it reads.
-// undefined when f reads the state's numbers or gives other shapes: the caller runs it
-// step by step.
+// undefined when f reads the state's numbers or gives other shapes, or when ∇ follows the
+// loop, which needs its steps: the caller runs it step by step.
 export function loop(xs: readonly Tensor[], n: number, until: boolean, f: (xs: Tensor[]) => Tensor[] | undefined): Tensor[] | undefined {
   const t: Trace = { read: false }, carries = xs.map((x) => placeholder(t, "%carry", x.node.shape)), k = xs.length;
   let out: Tensor[] | undefined;
@@ -218,6 +240,7 @@ export function loop(xs: readonly Tensor[], n: number, until: boolean, f: (xs: T
     for (let i = 0; i < n; i++) { body.carries.forEach((c, j) => bound.set(c, state[j]!)); state = substitute(body.outs, bound); }
     return state.map((u) => new Tensor(u));
   }
+  if (follows([...nodes[0]!.src, ...body.outs])) return undefined;
   runWhereBuilt(nodes);
   return nodes.map((u) => new Tensor(u));
 }
@@ -372,10 +395,13 @@ function evaluate(u: UOp, ins: Float32Array[]): Float32Array {
       }
       return out;
     }
-    case "GATHER": { const R = ir.numel(u.shape.slice(1)); return map((i) => a![Math.trunc(b![Math.floor(i / R)]!) * R + (i % R)] ?? NaN); }
+    case "GATHER": {
+      const ix = u.src[1]!.shape, B = ix.length - 1, k = ix[B]!, n = u.src[0]!.shape[B]!, R = ir.numel(u.shape.slice(B + 1));
+      return map((i) => { const j = Math.floor(i / R); return a![(Math.floor(j / k) * n + Math.trunc(b![j]!)) * R + (i % R)] ?? NaN; });
+    }
     case "SCATTER_ADD": {
-      const R = ir.numel(u.shape.slice(1));
-      for (let r = 0; r < a!.length; r++) for (let j = 0; j < R; j++) { const at = Math.trunc(a![r]!) * R + j; out[at] = out[at]! + b![r * R + j]!; }
+      const ix = u.src[0]!.shape, B = ix.length - 1, k = ix[B]!, n = (u.arg as { size: number }).size, R = ir.numel(u.shape.slice(B + 1));
+      for (let r = 0; r < a!.length; r++) for (let j = 0; j < R; j++) { const at = (Math.floor(r / k) * n + Math.trunc(a![r]!)) * R + j; out[at] = out[at]! + b![r * R + j]!; }
       return out;
     }
   }
@@ -408,8 +434,10 @@ function fold(root: UOp): UOp {
   }
   return folded(vals.get(root)!, root.shape, literal);
 }
-// the value ∇ differentiates with respect to: an identity of its own, never folded away
-export const traced = (a: Tensor): Tensor => { const n = ir.reshape(a.node, a.node.shape); differentiable.add(n); return new Tensor(n); };
+// the value ∇ differentiates with respect to: an identity of its own, never folded away,
+// and followed until ∇ has the graph it differentiates
+export const traced = (a: Tensor): Tensor => { const n = ir.reshape(a.node, a.node.shape); differentiable.add(n); followed.add(n); return new Tensor(n); };
+export const untraced = (ts: readonly Tensor[]): void => { for (const t of ts) followed.delete(t.node); reads.clear(); };
 
 // ── the value ───────────────────────────────────────────────────────────────────
 export class Tensor {
@@ -551,7 +579,8 @@ export const broadcastTo = (a: Like, shape: readonly number[]): Tensor => { cons
 // copying: as a graph, n pieces are n kernels, each adding the whole result again. Not
 // for a piece ∇ follows, whose join must stay in the graph.
 const joinOnHost = (arrays: readonly Tensor[], shapes: readonly (readonly number[])[], ax: number, shape: readonly number[]): Tensor | null => {
-  const datas = arrays.map((a) => (differentiable.has(a.node) ? undefined : dataOf(a.node)));
+  if (follows(arrays.map((a) => a.node))) return null;
+  const datas = arrays.map((a) => dataOf(a.node));
   if (datas.some((d) => d === undefined)) return null;
   const out = new Float32Array(ir.numel(shape)), outer = ir.numel(shape.slice(0, ax));
   let at = 0;
@@ -652,12 +681,11 @@ export function bitonic(x: UOp, R: number, n: number, desc: boolean): UOp {
   const tie = ir.add(i, ir.mul(ir.where(inside, ir.pad(nan, 1, 0, m - n), k(2)), k(m)));
   const pair = (a: UOp, b: UOp) => ir.add(ir.pad(ir.reshape(a, [R, m, 1]), 2, 0, 1), ir.pad(ir.reshape(b, [R, m, 1]), 2, 1, 0));
   const half = (t: UOp, c: number) => ir.reshape(ir.slice(t, 2, c, 1), [R, m]);
-  const base = rows(ir.reshape(ir.mul(ir.iota(R), k(m)), [R, 1]));
   let T = pair(key, tie);
   for (let a = 1; a <= p; a++) for (let b = a - 1; b >= 0; b--) {
     const j = 1 << b, up = ir.cmplt(mod2(ir.math("floor", ir.mul(i, k(1 / (1 << a))))), k(0.5));
     const q = ir.add(i, ir.mul(k(j), ir.add(k(1), ir.mul(mod2(ir.math("floor", ir.mul(i, k(1 / j)))), k(-2)))));
-    const Tq = ir.reshape(ir.gather(ir.reshape(T, [R * m, 2]), ir.reshape(ir.add(base, q), [R * m])), [R, m, 2]);
+    const Tq = ir.gather(T, q);
     const before = (x1: UOp, t1: UOp, x2: UOp, t2: UOp) => ir.add(ir.cmplt(x1, x2), ir.mul(ir.math("eq", x1, x2), ir.cmplt(t1, t2)));
     const [ks, ts, kq, tq] = [half(T, 0), half(T, 1), half(Tq, 0), half(Tq, 1)];
     const low = ir.math("eq", ir.cmplt(i, q), up);                             // this element keeps the smaller of the pair
@@ -674,12 +702,10 @@ export function argsort(a: Like, descending = false): Tensor {
   if (host) return new Tensor(ir.data(order(host, R, n, descending), x.shape));
   return new Tensor(ir.reshape(bitonic(ir.reshape(x, [R, n]), R, n, descending), x.shape));
 }
-// gather each row by its own indices: flatten rows, offset each index by its row
+// gather each row by its own indices: the rows are a batch
 function gatherRows(x: UOp, idx: UOp): UOp {
   const n = x.shape.at(-1)!, k = idx.shape.at(-1)!, R = ir.numel(x.shape) / n;
-  const offsets = ir.reshape(ir.broadcastTo(ir.reshape(ir.mul(ir.iota(R), ir.konst(n)), [R, 1]), [R, k]), [R * k]);
-  const flat = ir.add(ir.reshape(idx, [R * k]), offsets);
-  return ir.reshape(ir.gather(ir.reshape(x, [R * n, 1]), flat), [...x.shape.slice(0, -1), k]);
+  return ir.reshape(ir.gather(ir.reshape(x, [R, n]), ir.reshape(idx, [R, k])), [...x.shape.slice(0, -1), k]);
 }
 export const sort = (a: Like): Tensor => { const x = scalarRank(nodeOf(a)); return wrap(gatherRows(x, argsort(new Tensor(x)).node)); };
 export function topK(a: Like, k: number): [Tensor, Tensor] {
@@ -762,7 +788,8 @@ export function overFrame(F: readonly number[], xs: readonly Tensor[], f: (cells
 // copy of it the function closed over – and an outer ∇ still differentiates through it.
 export function vjp<F extends (...xs: any[]) => Tensor>(f: F, primals: Tensor[]): [Tensor, (ct: unknown) => Tensor[]] {
   const leaves = primals.map(traced);
-  const out = f(...leaves);
+  let out: Tensor;
+  try { out = f(...leaves); } finally { untraced(leaves); }
   const seed = (ct: unknown): UOp => (ct instanceof Tensor ? nodeOf(ct) : ir.broadcastTo(ir.konst(Number(ct ?? 1)), out.node.shape));
   return [out, (ct: unknown) => graphVjp(out.node, leaves.map((l) => l.node), seed(ct)).map((n) => new Tensor(n))];
 }

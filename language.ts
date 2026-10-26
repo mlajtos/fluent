@@ -829,7 +829,7 @@ const FunctionRepeat = function (this: CurrentScope, f: Value, n: Value, invert?
       step = inverse
     }
     let value: Value = (dyadic ? args[1] : args[0]) ?? null
-    if ((until || times) && !gradients) {
+    if (until || times) {
       const looped = loopStep(step, until, value, until ? REPEAT_UNTIL_BUDGET : Math.abs(times), scope)
       if (looped !== undefined) { return looped }
     }
@@ -844,7 +844,12 @@ const FunctionRepeat = function (this: CurrentScope, f: Value, n: Value, invert?
       if (!until) { continue }
       const verdict = safeApply(until, [value, prev], scope)
       if (verdict instanceof Error) { return verdict }
-      try { if (isTruthy(verdict, "⍣")) { break } } catch (e) { return asError(e) }
+      try {
+        // the state is computed with its verdict: the next step starts from its numbers, and
+        // reading the next verdict never computes the steps before it again
+        engine.materialize([verdict, ...(Array.isArray(value) ? value : [value])].filter(isTensor))
+        if (isTruthy(verdict, "⍣")) { break }
+      } catch (e) { return asError(e) }
     }
     return value
   })
@@ -852,8 +857,8 @@ const FunctionRepeat = function (this: CurrentScope, f: Value, n: Value, invert?
 // The loop as one engine step, wherever no ∇ needs its history: step, and the predicate,
 // run once on placeholders shaped like the state – a tensor, or a list of them – and the
 // engine runs what they built. A step that reads the state's numbers, writes a cell, draws
-// random numbers or gives anything but numbers of the state's shapes runs step by step
-// instead (undefined), and the draws it made are taken back.
+// random numbers or gives anything but numbers of the state's shapes, and a loop ∇
+// follows, runs step by step instead (undefined), and the draws it made are taken back.
 const loopStep = (step: Function, until: Value, value: Value, n: number, scope: CurrentScope): Value | undefined => {
   const list = Array.isArray(value), xs = list ? value : [value]
   if (!xs.length || !xs.every(isTensor)) { return undefined }
@@ -1469,18 +1474,13 @@ const differentiating = <T,>(trace: ((cell: Signal, value: unknown) => unknown) 
     sampling = outerSampling
   }
 }
-// a write a differentiated body tries is an Error that names the body; `gradients` counts
-// the ∇s running
-let gradients = 0
+// a write a differentiated body tries is an Error that names the body
 const differentiated = (body: string, trace: ((cell: Signal, value: unknown) => unknown) | null, run: () => Value, along?: Set<Signal>): Value => {
-  gradients++
   try {
     return differentiating(trace, run, along)
   } catch (e) {
     if (e instanceof StateWrite) { return new Error(`${body} cannot change state while it is differentiated (${e.message})`) }
     throw e
-  } finally {
-    gradients--
   }
 }
 // vjp with a ones cotangent: a scalar output gives the classic gradient, an elementwise
@@ -1510,11 +1510,14 @@ const TensorGradient = (map: Value) => {
 // through it.
 const gradientOfReads = (loss: Function, along?: Set<Signal>): Value => {
   const reads = new Map<Signal, engine.Tensor>()
-  const value = differentiated("`∇(loss)()`: the loss", (v, value) => {
-    let t = reads.get(v)
-    if (!t) { t = engine.traced(value as engine.Tensor); reads.set(v, t) }
-    return t
-  }, () => unwrapSignals(loss()), along)
+  let value: Value
+  try {
+    value = differentiated("`∇(loss)()`: the loss", (v, value) => {
+      let t = reads.get(v)
+      if (!t) { t = engine.traced(value as engine.Tensor); reads.set(v, t) }
+      return t
+    }, () => unwrapSignals(loss()), along)
+  } finally { engine.untraced([...reads.values()]) }
   if (value instanceof Error) { return value }
   if (!isTensor(value)) { return new Error(`\`∇(loss)()\`: the loss must give numbers, got ${describeArg(value)}`) }
   const variables = [...reads.keys()], grads = engine.gradients(value, [...reads.values()])

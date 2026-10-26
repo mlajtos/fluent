@@ -578,6 +578,22 @@ describe("tensors", () => {
     expect(value("(∇{ x | Σ((softmax ⍤ 1)(x) × [1, 2, 3]) })([[1, 2, 3], [3, 2, 1]])"))
       .toEqual(value("(∇{ x | Σ(softmax(x) × [1, 2, 3]) })([[1, 2, 3], [3, 2, 1]])"))
   })
+  test("∇ through indexing under rank ⍤ adds into each cell's own rows: its work grows with the frame", async () => {
+    const { canonical, placeholders, optimizeMany, accCost } = await import("./engine/opt.ts")
+    const { toposort, numel } = await import("./engine/ir.ts")
+    // the plan's work: each kernel's elements, times the loop each one runs
+    const work = (source: string) => {
+      const g = run(source) as engine.Tensor, { leaves } = canonical([g.node])
+      const kernels = new Set(optimizeMany(placeholders([g.node], leaves).roots).flatMap((r) => toposort(r)).filter((u) => u.op === "FUSED"))
+      return [...kernels].reduce((w, k) => w + numel(k.shape) * accCost(k.src[1]!), 0)
+    }
+    expect(value("x: 0..<12 ⍴ [3, 4], ∇({ x | Σ(({ v | v_0 × v_3 } ⍤ 1)(x)) })(x)")).toEqual([[3, 0, 0, 0], [7, 0, 0, 4], [11, 0, 0, 8]])
+    // 1024 rows, each picking 2 of its 64: every row's cotangent scanning every row's picks
+    // would be 1024 times this
+    expect(work("x: 0..<65536 ⍴ [1024, 64], ∇({ x | Σ(({ v | v_0 × v_63 } ⍤ 1)(x)) })(x)")).toBeLessThan(16 * 65536)
+    // sort's rows are a batch too
+    expect(work("x: (0..<16384 × 7919 % 16384) ⍴ [1024, 16], ∇({ x | Σ(sort(x) × (0..<16)) })(x)")).toBeLessThan(64 * 16384)
+  })
   test("inner product ∙ is matmul, and swaps its ring", () => {
     expect(value("[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]]")).toEqual([[19, 22], [43, 50]])   // ×∙+ = matmul
     expect(value("[1,2,3] (× ∙ +) [4,5,6]")).toBe(32)                                     // vectors → dot
@@ -1596,6 +1612,33 @@ describe("⍣ power: counts, inverses, and fixed points", () => {
     expect(value("W: [[0, 3, 999, 999], [3, 0, 1, 999], [999, 1, 0, 2], [999, 999, 2, 0]], (({ M | M (+ ∙ ⌊) W }) ⍣ ≡)(W)"))
       .toEqual([[0, 3, 4, 6], [3, 0, 1, 3], [4, 1, 0, 2], [6, 3, 2, 0]])
   })
+  test("∇ through ⍣ until does each step's work once", async () => {
+    const { made } = await import("./engine/ir.ts")
+    // points pulled toward a target until nothing changes: 22 steps, then 71
+    const work = (pull: number) => {
+      const before = made()
+      value(`step: { p | q: unstack(moveaxis(p, -1, 0)), moveaxis(stack((q_0 × ${pull} + 1, q_1 × ${pull} + 2)), 0, -1) }, p0: 0..<16 ⍴ [8, 2], ∇({ p | Σ((step ⍣ ≡)(p × 0.01) × p0) })(p0)`)
+      return made() - before
+    }
+    expect(work(0.84) / work(0.5)).toBeLessThan(1.5 * 71 / 22)
+    // a step's state is computed as it goes, and what joins the states still differentiates
+    // them: c ↦ c^10 at 0.5, c^14 at 0.6
+    expect(value("∇({ v | Σ(stack(ListMap(unstack(v), { c | ({ s | s × c } ⍣ { n, o | n < 0.001 })(1) }))) })([0.5, 0.6])"))
+      .toEqual([10 * 0.5 ** 9, 14 * 0.6 ** 13].map((x) => expect.closeTo(x, 6)))
+    expect(value("∇({ v | Σ(({ c | ({ s | s × c } ⍣ { n, o | n < 0.001 })(1) } ⍤ 0)(v)) })([0.5, 0.6])"))
+      .toEqual([10 * 0.5 ** 9, 14 * 0.6 ** 13].map((x) => expect.closeTo(x, 6)))
+  })
+  test("under ∇, ⍣ is one engine step wherever ∇ doesn't follow it", () => {
+    let kept: Value = null
+    const scope = createScope()
+    scope.keep = (x: Value) => { kept = x; return x }
+    // nothing the loop reads is what ∇ differentiates: the engine runs the loop
+    expect(unwrap(evaluateIn("∇({ a | a × keep(({ s | s × 0.5 } ⍣ { n, o | n < 0.001 })(1)) })(3)", scope))).toBe(0.5 ** 10)
+    expect((kept as unknown as engine.Tensor).node.op).toBe("LOOP")
+    // the loop reads a – even as a literal, inside its step: it runs step by step, and ∇ sees each
+    expect(unwrap(evaluateIn("∇({ a | keep(({ s | s × a } ⍣ { n, o | n < 0.001 })(1)) })(0.5)", scope))).toBeCloseTo(10 * 0.5 ** 9, 6)
+    expect((kept as unknown as engine.Tensor).node.op).not.toBe("LOOP")
+  })
   test("a predicate that never holds is an Error, not a frozen tab", () => {
     expect((run("({ x | x + 1 } ⍣ { a, b | 0 })(0)") as Error).message).toContain("didn't hold")
   })
@@ -1736,6 +1779,23 @@ describe("inverse and ⍢ around", () => {
     // Newton's residual is exactly 0 when it lands: its cotangent too, which the 0 × ∞ guard must not drop
     expect(value("g: { x | x^3 + x }, (∇{ y | (g ⍣ -1)(y) })([10, 2, 30])")).toEqual([1 / 13, 1 / 4, 1 / 28].map((x) => expect.closeTo(x, 5)))
     expect(value("(∇{ y | (square ⍣ -1)(y) })(9)")).toBeCloseTo(1 / 6, 5)
+    // two Newton steps from the root carry the second derivative too: √'s is -1/108 at 9
+    expect(value("(∇(∇{ y | (square ⍣ -1)(y) }))(9)")).toBeCloseTo(-1 / 108, 6)
+    // a g that mixes its inputs: the geometric mean of [1, 4] lands on 3 at [1.5, 6], so
+    // solve moves each element by a third of itself for each 1 more
+    expect(value("gm: log ⍢ μ, (∇{ y | Σ(solve(gm, y, [1, 4]) × [1, 10]) })(3)")).toBeCloseTo(20.5, 4)
+  })
+  test("∇ through nested ⍢ grows with the depth: it takes the root's slope, never the search's", async () => {
+    const { made } = await import("./engine/ir.ts")
+    // x ∥ y, resistors in parallel, nested one level deeper each time
+    const at = (depth: number) => {
+      const before = made(), chain = [2, 3, 4].slice(0, depth).map((r) => ` ∥ ${r}`).join("")
+      const slope = value(`(∥): ÷ ⍢ +, ∇({ x | x${chain} })(3)`) as number
+      return { slope, nodes: made() - before }
+    }
+    const [one, two, three] = [1, 2, 3].map(at)
+    expect(three!.slope).toBeCloseTo(value("(∥): { x, y | 1÷(1÷x + (1÷y)) }, ∇({ x | x ∥ 2 ∥ 3 ∥ 4 })(3)") as number, 6)
+    expect(three!.nodes - two!.nodes).toBeLessThan(1.5 * (two!.nodes - one!.nodes))
   })
   test("a failed seed falls through to another with try", () => {
     expect(value("cond(try({ solve(cos, 0, 0) }), { solve(cos, 0, 1) })")).toBeCloseTo(Math.PI / 2, 5)

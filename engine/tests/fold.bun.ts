@@ -39,6 +39,8 @@ const cases: [string, () => ir.UOp][] = [
   ["scatter add", () => ir.scatterAdd(index(8, 4), data([8, 2]), 4)],
   ["gather, fractional index", () => ir.gather(data([5, 2]), ragged(6, [0, 1.5, 3.7, -0.5, 4.99]))],
   ["scatter add, fractional, negative and NaN index", () => ir.scatterAdd(ragged(8, [0, 1.5, 2.9, 3, -0.5, -1, 4, NaN]), data([8, 2]), 4)],
+  ["gather, batched", () => ir.gather(data([3, 5, 2]), ir.reshape(index(12, 5), [3, 4]))],
+  ["scatter add, batched", () => ir.scatterAdd(ir.reshape(index(12, 4), [3, 4]), data([3, 4, 2]), 4)],
   ["view chain", () => ir.add(ir.slice(ir.permute(data([4, 3]), [1, 0]), 1, 1, 2), ir.iota(2))],
 ]
 

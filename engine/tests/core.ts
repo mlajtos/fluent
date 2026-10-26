@@ -82,6 +82,19 @@ export default async function (): Promise<{ fails: number }> {
     const ofGatherV = (await realize(cpu, ofGather, i2)).data, rowV = (await realize(cpu, row, i2)).data, idsV = [2, 0, 4, 2, 5];
     check("gather of a gather: rows ids[j]", [4, 0, 3].every((j, r) => [0, 1, 2, 3].every((c) => ofGatherV[r * 4 + c] === Wd[idsV[j]! * 4 + c])));
     check("gather of a constant row: that row", [0, 1, 2, 3].every((c) => rowV[c] === Wd[4 * 4 + c]));
+    // a batch: each of 3 tables of 5 rows read at its own 4 indices, and a scatter of each
+    // batch's 4 rows into its own 5
+    const B = new Map<string, HostData>([["Tb", T(rv(30), [3, 5, 2])], ["ib", T(Float32Array.from({ length: 12 }, (_, i) => (i * 7) % 5), [3, 4])], ["Vb", T(rv(24), [3, 4, 2])]]);
+    const gb = gather(buffer("Tb", [3, 5, 2]), buffer("ib", [3, 4])), sb = scatterAdd(buffer("ib", [3, 4]), buffer("Vb", [3, 4, 2]), 5);
+    for (const [nm, g] of [["batched gather", gb], ["batched scatterAdd", sb]] as const) {
+      const a = await realize(cpu, g, B), b = gpu ? await realize(gpu, g, B) : a;
+      check(`parity: ${nm}`, rel(b.data, a.data) < 1e-5);
+    }
+    const [Tb, ib, Vb] = ["Tb", "ib", "Vb"].map((k) => B.get(k)!.data), gv = (await realize(cpu, gb, B)).data, sv = (await realize(cpu, sb, B)).data;
+    const want = new Float32Array(30);
+    for (let b = 0; b < 3; b++) for (let j = 0; j < 4; j++) for (let c = 0; c < 2; c++) want[(b * 5 + ib[b * 4 + j]!) * 2 + c] += Vb[(b * 4 + j) * 2 + c]!;
+    check("batched gather: each batch's own rows", [...gv].every((v, i) => v === Tb[(Math.floor(i / 8) * 5 + ib[Math.floor(i / 2)]!) * 2 + (i % 2)]));
+    check("batched scatterAdd: into each batch's own rows", rel(sv, want) < 1e-6);
   }
   { // −0 is a constant of its own: 1 ÷ (p·0) is ∞, 1 ÷ (p·−0) is −∞
     const p = buffer("p", [2]), at = new Map([["p", T(Float32Array.of(1, 2), [2])]]);
