@@ -538,7 +538,7 @@ const operand = (v: any): any => {
   if (isText(v) || isFn(v)) { throw new Error(`expected numbers, got ${describeArg(v)}`) }
   return v
 }
-const unknownName =(s: symbol): string => `unknown name: ${Symbol.keyFor(s) ?? s.description}`
+const unknownName = (s: symbol): string => `unknown name: ${Symbol.keyFor(s) ?? s.description}`
 
 const shapeOf = (v: Value): number[] => (v instanceof FluentVariable ? v.value : (v as engine.Tensor)).shape
 

@@ -90,9 +90,9 @@ export default async function (): Promise<{ fails: number }> {
       const a = await realize(cpu, g, B), b = gpu ? await realize(gpu, g, B) : a;
       check(`parity: ${nm}`, rel(b.data, a.data) < 1e-5);
     }
-    const [Tb, ib, Vb] = ["Tb", "ib", "Vb"].map((k) => B.get(k)!.data), gv = (await realize(cpu, gb, B)).data, sv = (await realize(cpu, sb, B)).data;
+    const [Tb, ib, Vb] = ["Tb", "ib", "Vb"].map((k) => B.get(k)!.data) as [Float32Array, Float32Array, Float32Array], gv = (await realize(cpu, gb, B)).data, sv = (await realize(cpu, sb, B)).data;
     const want = new Float32Array(30);
-    for (let b = 0; b < 3; b++) for (let j = 0; j < 4; j++) for (let c = 0; c < 2; c++) want[(b * 5 + ib[b * 4 + j]!) * 2 + c] += Vb[(b * 4 + j) * 2 + c]!;
+    for (let b = 0; b < 3; b++) for (let j = 0; j < 4; j++) for (let c = 0; c < 2; c++) want[(b * 5 + ib[b * 4 + j]!) * 2 + c]! += Vb[(b * 4 + j) * 2 + c]!;
     check("batched gather: each batch's own rows", [...gv].every((v, i) => v === Tb[(Math.floor(i / 8) * 5 + ib[Math.floor(i / 2)]!) * 2 + (i % 2)]));
     check("batched scatterAdd: into each batch's own rows", rel(sv, want) < 1e-6);
   }
