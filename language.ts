@@ -534,9 +534,11 @@ const operand = (v: any): any => {
   // a decline that reaches an op is a failure, said in the decline's words
   if (v instanceof NoMatch) { const e = new Error(v.message, { cause: v.cause }); setOrigin(e, getOrigin(v)); throw e }
   if (v instanceof Error) { throw v }
+  // every op that reads an operand computes with it: text and functions are no numbers
+  if (isText(v) || isFn(v)) { throw new Error(`expected numbers, got ${describeArg(v)}`) }
   return v
 }
-const unknownName = (s: symbol): string => `unknown name: ${Symbol.keyFor(s) ?? s.description}`
+const unknownName =(s: symbol): string => `unknown name: ${Symbol.keyFor(s) ?? s.description}`
 
 const shapeOf = (v: Value): number[] => (v instanceof FluentVariable ? v.value : (v as engine.Tensor)).shape
 
@@ -1267,9 +1269,8 @@ const finite = (n: number): number => {
 const asWhole = (v: Value): number => Math.round(finite(asNumber(v)))
 const asWholeList = (v: Value): number[] => asNumberList(v).map((n) => Math.round(finite(n)))
 
-// A numeric operand: a string ("a" + "b") or a function is a mistake here, so the
-// message names it instead of an engine's. operand itself stays general – a signal may
-// hold a string.
+// A numeric operand of arithmetic: a string ("a" + "b") or a function is a mistake here,
+// and the message says how to join text or call the function.
 const numericArg = (v: Value): any => {
   if (isText(v)) {
     throw new Error(`a string (${JSON.stringify(String(v))}) is not a number – + and × need numbers; join text with StringConcat`)
@@ -1348,7 +1349,8 @@ const linearMap = (A: engine.Tensor, a: Value): engine.Tensor => {
 // stack broadcasts its inputs to a common shape, as arithmetic does: stack(x - a, y - b)
 // works when the pieces only meet by broadcasting
 const broadcastRefs = (values: Value[]): engine.Tensor[] => {
-  const tensors = values.map(sampled)
+  const tensors = values.map(sampled), odd = tensors.find((t) => isText(t) || isFn(t))
+  if (odd !== undefined) { throw new Error(`[ … ] holds numbers, got ${describeArg(odd)} – ( … ) holds anything side by side`) }
   if (tensors.length === 0 || !tensors.every(isTensor)) { return tensors.map(operand) }
   const rank = Math.max(...tensors.map((t) => t.shape.length))
   const shape = Array.from({ length: rank }, (_, i) => Math.max(...tensors.map((t) => t.shape[t.shape.length - rank + i] ?? 1)))

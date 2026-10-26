@@ -2623,6 +2623,11 @@ describe("error messages carry context", () => {
     for (let e: unknown = unwrap(run(source)); e instanceof Error; e = e.cause) { links.unshift(e) }
     return links.map((e) => ({ message: e.message, user: getOrigin(e)?.document === source, line: getOrigin(e)?.start.line }))
   }
+  test("text and functions are no numbers: [ … ] and every array op say so, never the engine", () => {
+    expect(value(`["a", "bc"]`).message).toBe("[ … ] holds numbers, got a string – ( … ) holds anything side by side")
+    expect(value("[sin, cos]").message).toBe("[ … ] holds numbers, got a function – ( … ) holds anything side by side")
+    expect([value(`Σ("ab")`).message, value(`sort("ba")`).message]).toEqual(["expected numbers, got a string", "expected numbers, got a string"])
+  })
   test("an Error in arithmetic is that Error, unchanged", () => {
     const scope = scopeOf(`e: Error("x"), r: e × 2 + 1`)
     expect(scope["r"]).toBe(scope["e"])
