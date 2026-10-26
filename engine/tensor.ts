@@ -97,7 +97,12 @@ const readCells = (nodes: readonly UOp[]): void => {
 };
 function compute(nodes: readonly UOp[]): void {
   readCells(nodes);
-  const fresh = [...new Set(nodes.filter((n) => !leafOf.has(n) && !isLeaf(n)))];
+  // a detach has its source's numbers: the source is computed, and the two share its leaf
+  const own = (n: UOp): UOp => (n.op === "DETACH" ? own(n.src[0]!) : n);
+  computeOwn([...new Set(nodes.map(own).filter((n) => !leafOf.has(n) && !isLeaf(n)))]);
+  for (const n of nodes) { const s = own(n), l = leafOf.get(s); if (s !== n && l && !leafOf.has(n)) { leafOf.set(n, l); const d = hostData.get(s); if (d) hostData.set(n, d); } }
+}
+function computeOwn(fresh: UOp[]): void {
   if (!fresh.length) return;
   const cutAll = cut(fresh), hostOnly = cutAll.hostOnly, all = [...fresh, ...cutAll.kept];
   // a root that was a loop ran in the cut

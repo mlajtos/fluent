@@ -1779,6 +1779,23 @@ describe("inverse and ⍢ around", () => {
     // Newton's residual is exactly 0 when it lands: its cotangent too, which the 0 × ∞ guard must not drop
     expect(value("g: { x | x^3 + x }, (∇{ y | (g ⍣ -1)(y) })([10, 2, 30])")).toEqual([1 / 13, 1 / 4, 1 / 28].map((x) => expect.closeTo(x, 5)))
     expect(value("(∇{ y | (square ⍣ -1)(y) })(9)")).toBeCloseTo(1 / 6, 5)
+    // two Newton steps from the root carry the second derivative too: √'s is -1/108 at 9
+    expect(value("(∇(∇{ y | (square ⍣ -1)(y) }))(9)")).toBeCloseTo(-1 / 108, 6)
+    // a g that mixes its inputs: the geometric mean of [1, 4] lands on 3 at [1.5, 6], so
+    // solve moves each element by a third of itself for each 1 more
+    expect(value("gm: log ⍢ μ, (∇{ y | Σ(solve(gm, y, [1, 4]) × [1, 10]) })(3)")).toBeCloseTo(20.5, 4)
+  })
+  test("∇ through nested ⍢ grows with the depth: it takes the root's slope, never the search's", async () => {
+    const { made } = await import("./engine/ir.ts")
+    // x ∥ y, resistors in parallel, nested one level deeper each time
+    const at = (depth: number) => {
+      const before = made(), chain = [2, 3, 4].slice(0, depth).map((r) => ` ∥ ${r}`).join("")
+      const slope = value(`(∥): ÷ ⍢ +, ∇({ x | x${chain} })(3)`) as number
+      return { slope, nodes: made() - before }
+    }
+    const [one, two, three] = [1, 2, 3].map(at)
+    expect(three!.slope).toBeCloseTo(value("(∥): { x, y | 1÷(1÷x + (1÷y)) }, ∇({ x | x ∥ 2 ∥ 3 ∥ 4 })(3)") as number, 6)
+    expect(three!.nodes - two!.nodes).toBeLessThan(1.5 * (two!.nodes - one!.nodes))
   })
   test("a failed seed falls through to another with try", () => {
     expect(value("cond(try({ solve(cos, 0, 0) }), { solve(cos, 0, 1) })")).toBeCloseTo(Math.PI / 2, 5)

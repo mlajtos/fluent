@@ -171,10 +171,11 @@ export const TRANSPOSE: Partial<Record<UOp["op"], Tr>> = {
 // The one driver: seed a cotangent on `root`, read cotangents for every target — one
 // forward linearization (all seeds live), one reverse transpose (cotangents summed at
 // forks: the tape is literally the set of summed forks).
-// A node made before every target reads none of them: the walks stop there.
+// A node made before every target reads none of them, and a detached one carries no
+// derivative: the walks stop there.
 export function vjp(root: UOp, targets: UOp[], seed: UOp): UOp[] {
   const dts = new Map(targets.map((t) => [t.id, buffer(`%dt${t.id}`, t.shape)] as const));
-  const tan = new Map<number, UOp | null>(), first = Math.min(...targets.map((t) => t.id)), since = (u: UOp) => (u.id < first ? [] : u.src);
+  const tan = new Map<number, UOp | null>(), first = Math.min(...targets.map((t) => t.id)), since = (u: UOp) => (u.id < first || u.op === "DETACH" ? [] : u.src);
   for (const u of toposort(root, since)) {
     const s = dts.get(u.id);
     if (s) { tan.set(u.id, s); continue; }
