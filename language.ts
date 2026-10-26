@@ -1280,7 +1280,7 @@ const asWholeList = (v: Value): number[] => asNumberList(v).map((n) => Math.roun
 // and the message says how to join text or call the function.
 const numericArg = (v: Value): any => {
   if (isText(v)) {
-    throw new Error(`a string (${JSON.stringify(String(v))}) is not a number – + and × need numbers; join text with StringConcat`)
+    throw new Error(`a string (${JSON.stringify(String(v))}) is not a number – join text with StringConcat, compare it with ≡`)
   }
   if (isFn(v)) { throw new Error("a function is not a number – + and × need numbers; call it first, f(x)") }
   return operand(v)
@@ -1537,12 +1537,11 @@ const TensorPadAxis = (a: Value, axis: Value, before: Value, after: Value) =>
   engine.padAxis(operand(a), asWhole(axis), asWhole(before), asWhole(after))
 const TensorWindow = (a: Value, sizes: Value) => engine.windows(operand(a), asWholeList(sizes))
 
-// start ..< stop by 1, or by -1 when stop is below start; the ends truncate
+// start ..< stop: the whole numbers from start up to stop, without stop – by 1, or by -1
+// when stop is below start – so 0 ..< 2.5 is [0, 1, 2], as fill([2.5]) makes 3
 const TensorRange = (a: Value, b?: Value) => {
-  const end = (v: Value) => Math.trunc(finite(asNumber(v)))
-  if (b == null) { return engine.arange(end(a)) }
-  const start = end(a), stop = end(b)
-  return engine.arange(start, stop, start <= stop ? 1 : -1)
+  const [start, stop] = b == null ? [0, finite(asNumber(a))] : [finite(asNumber(a)), finite(asNumber(b))]
+  return start <= stop ? engine.arange(Math.ceil(start) + 0, Math.ceil(stop) + 0, 1) : engine.arange(Math.floor(start), Math.floor(stop), -1)
 }
 
 // Rank-polymorphic convolution: the kernel's rank sets the conv's rank, so one conv
@@ -1791,6 +1790,8 @@ const TensorReduce = function (this: CurrentScope, a: Value, map: Value, axis?: 
   const fn = asMap(map)
   if (!isTensorish(a)) { return decline("numbers", a) }
   if (!isFn(fn)) { return new Error("`reduce(x, fn, axis?)`: the second argument must be a function") }
+  // a number is one item, as #5 is 1: reduced, it is itself
+  if (axis == null && tensorArg(a).ndim === 0) { return tensorArg(a) }
   const { reducer } = getMeta(fn)
   if (reducer) { return reducer(a, axis == null ? LEADING_AXIS : axis) }
   const parts = TensorUnstack(a, axis)

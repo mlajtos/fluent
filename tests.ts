@@ -433,6 +433,9 @@ describe("tensors", () => {
     expect(value("1...5")).toEqual([1, 2, 3, 4, 5])     // glued: the dots aren't a decimal point
     expect(value("5 ... 1")).toEqual([5, 4, 3, 2, 1])   // descending, inclusive
     expect(value("3 ... 3")).toEqual([3])               // single element
+    // the whole numbers between the ends, whatever the ends are: 2 is below 2.5, 0 is below 0.5
+    expect([value("0 ..< 2.5"), value("0.5 ..< 3"), value("5 ..< -0.5"), value("range(2.5)")]).toEqual([[0, 1, 2], [1, 2], [5, 4, 3, 2, 1, 0], [0, 1, 2]])
+    expect([value("0.5 ... 2"), value("1 ... 2.5"), value("2.5 ... 1"), value("0.5 ... 0.7")]).toEqual([[1, 2], [1, 2], [2, 1], []])
     // and a float literal still has its point
     expect(value("1.5 + 0.25")).toBeCloseTo(1.75, 5)
   })
@@ -1541,7 +1544,7 @@ describe("choosing: a candidate answers or declines", () => {
 
 // a block drops every value but its last, so an Error before the last would be lost
 describe("a failing statement fails its block", () => {
-  const failure = "a string (\"a\") is not a number – + and × need numbers; join text with StringConcat"
+  const failure = "a string (\"a\") is not a number – join text with StringConcat, compare it with ≡"
   test("the block's value is the first failure, and the block stops there", () => {
     expect((run(`{ 1 + "a", 5 }()`) as Error).message).toBe(failure)
     expect((run(`{ a: 1 + "a", 5 }()`) as Error).message).toBe(failure)
@@ -2066,6 +2069,8 @@ describe("one vocabulary for items: a tensor's rows, a list's elements, a string
     }
     expect(value("fold((1, 2, 3), { s, v | s × 10 + v }, 0)")).toBe(123)
     expect(value("fold([1, 2, 3], { s, v | s × 10 + v }, 0)")).toBe(123)
+    // a number is one item, as #5 is 1: reduced or scanned, it is itself, whatever f
+    expect([value("5 reduce -"), value("5 reduce ×"), value("[5] reduce -"), value("5 scan -"), value("5 scan +")]).toEqual([5, 5, 5, 5, 5])
     expect(text('fold("abc", { s, c | StringConcat(c, s) }, "")')).toBe("cba")
   })
   test("each kind keeps its own member of every verb, by its own name", () => {

@@ -202,7 +202,8 @@ TensorScan: doc(TensorOnly({ x, f, k |
   ax: cond(guard(identical(k, ◌), { 0 }), { k }),
   ; what reduce folds natively is associative, so it scans in log₂ n steps; any other f
   ; folds left to right, row by row, as reduce does
-  cond(guard(FunctionFoldsNatively(f) ∨ ((#shape(x)) = 0), { associativeScan(x, f, ax) }), {
+  ; a number is one item: its running fold is itself
+  cond(guard((#shape(x)) = 0, { x }), guard(FunctionFoldsNatively(f), { associativeScan(x, f, ax) }), {
     rows: unstack(x, ax),
     cond(guard((#rows) = 0, { x }), { stack(ListScan(rows, f), ax) })
   })
@@ -223,7 +224,7 @@ TensorOnly: doc(TensorOnly, "TensorOnly(f)", "f for numbers only: it declines an
 ; Tensor shape/indexing
 (⍴): reshape: doc(TensorReshape, "x ⍴ shape", "Reshape a tensor to a new shape; one dimension may be -1 to infer it.", "[1, 2, 3, 4] ⍴ [2, 2] = [[1, 2], [3, 4]]"),
 (..<): range: doc(TensorRange, "start ..< stop", "Integer range from start up to (but not including) stop – the `<` marks the open end.", "0 ..< 5 = [0, 1, 2, 3, 4]"),
-(...): rangeInclusive: TensorRangeInclusive: doc({ a, b | s: trunc(a), e: trunc(b), s + (where(s ≤ e, 1, -1) × (0 ..< abs(e - s)+1)) }, "start ... stop", "Integer range from start through stop, endpoint included.", "1 ... 5 = [1, 2, 3, 4, 5]"),
+(...): rangeInclusive: TensorRangeInclusive: doc({ a, b | cond(guard(a ≤ b, { ceil(a) ..< (floor(b) + 1) }), { floor(a) ..< (ceil(b) - 1) }) }, "start ... stop", "Integer range from start through stop, endpoint included: the whole numbers between them.", "1 ... 5 = [1, 2, 3, 4, 5]"),
 shape: doc(TensorShape, "shape(x)", "The length of each of x's axes, as a vector.", "shape([[1, 2, 3], [4, 5, 6]]) = [2, 3]"),
 slice: doc(TensorSlice, "slice(x, begins, sizes?)", "A block of x: from begins along the leading axes, sizes long – to the end where a size is -1 or missing. A view: nothing is copied.", "slice([10, 20, 30, 40], [1], [2]) = [20, 30]"),
 transpose: TensorTranspose: doc({ x | r: #shape(x), permute(x, r-1 - 0..<r) }, "transpose(x)", "x with its axes in reverse order – a matrix's rows become its columns.", "transpose([[1, 2], [3, 4]]) = [[1, 3], [2, 4]]"),
