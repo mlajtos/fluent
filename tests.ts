@@ -1612,6 +1612,22 @@ describe("⍣ power: counts, inverses, and fixed points", () => {
     expect(value("W: [[0, 3, 999, 999], [3, 0, 1, 999], [999, 1, 0, 2], [999, 999, 2, 0]], (({ M | M (+ ∙ ⌊) W }) ⍣ ≡)(W)"))
       .toEqual([[0, 3, 4, 6], [3, 0, 1, 3], [4, 1, 0, 2], [6, 3, 2, 0]])
   })
+  test("∇ through ⍣ until does each step's work once", async () => {
+    const { made } = await import("./engine/ir.ts")
+    // points pulled toward a target until nothing changes: 22 steps, then 71
+    const work = (pull: number) => {
+      const before = made()
+      value(`step: { p | q: unstack(moveaxis(p, -1, 0)), moveaxis(stack((q_0 × ${pull} + 1, q_1 × ${pull} + 2)), 0, -1) }, p0: 0..<16 ⍴ [8, 2], ∇({ p | Σ((step ⍣ ≡)(p × 0.01) × p0) })(p0)`)
+      return made() - before
+    }
+    expect(work(0.84) / work(0.5)).toBeLessThan(1.5 * 71 / 22)
+    // a step's state is computed as it goes, and what joins the states still differentiates
+    // them: c ↦ c^10 at 0.5, c^14 at 0.6
+    expect(value("∇({ v | Σ(stack(ListMap(unstack(v), { c | ({ s | s × c } ⍣ { n, o | n < 0.001 })(1) }))) })([0.5, 0.6])"))
+      .toEqual([10 * 0.5 ** 9, 14 * 0.6 ** 13].map((x) => expect.closeTo(x, 6)))
+    expect(value("∇({ v | Σ(({ c | ({ s | s × c } ⍣ { n, o | n < 0.001 })(1) } ⍤ 0)(v)) })([0.5, 0.6])"))
+      .toEqual([10 * 0.5 ** 9, 14 * 0.6 ** 13].map((x) => expect.closeTo(x, 6)))
+  })
   test("a predicate that never holds is an Error, not a frozen tab", () => {
     expect((run("({ x | x + 1 } ⍣ { a, b | 0 })(0)") as Error).message).toContain("didn't hold")
   })

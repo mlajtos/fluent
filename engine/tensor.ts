@@ -196,6 +196,23 @@ export function oneNumber(t: Tensor, who: string): Tensor {
     : "min(…) holds when all do, max(…) when any does, and f ⍤ 0 runs f, the function it is in, on each element";
   throw new Error(`\`${who === "⍣" ? "(f ⍣ p)" : who}\`: the condition gave ${t.size} numbers, but ${who} asks one question of the whole value: ${ways}`);
 }
+// Whether ∇ follows any of nodes: they read a value a running ∇ differentiates with respect
+// to – through what a cell of ⍤ stands for, never through a detach. What a node reads is
+// known once, until a value stops being followed.
+const followed = new Set<UOp>(), reads = new Map<number, boolean>();
+const follows = (nodes: readonly UOp[]): boolean => {
+  if (!followed.size) return false;
+  const first = Math.min(...[...followed].map((u) => u.id)), stack = nodes.map((n): [UOp, boolean] => [n, false]);
+  const next = (u: UOp): readonly UOp[] => { const cell = traces.find((t) => t.cells.has(u))?.cells.get(u); return cell ? [cell] : u.src; };
+  while (stack.length) {
+    const [u, back] = stack.pop()!;
+    if (reads.has(u.id)) continue;
+    if (u.id < first || u.op === "DETACH" || followed.has(u)) reads.set(u.id, followed.has(u));
+    else if (back) reads.set(u.id, next(u).some((x) => reads.get(x.id)));
+    else stack.push([u, true], ...next(u).map((x): [UOp, boolean] => [x, false]));
+  }
+  return nodes.some((n) => reads.get(n.id));
+};
 // ⍣ as one engine step: f runs once, on placeholders shaped like the state xs, and gives
 // the next state – and, for a loop until, the verdict: one number, which holds when it is
 // nonzero and not NaN. A loop runs where it is built, unless a trace holds what it reads.
@@ -411,8 +428,10 @@ function fold(root: UOp): UOp {
   }
   return folded(vals.get(root)!, root.shape, literal);
 }
-// the value ∇ differentiates with respect to: an identity of its own, never folded away
-export const traced = (a: Tensor): Tensor => { const n = ir.reshape(a.node, a.node.shape); differentiable.add(n); return new Tensor(n); };
+// the value ∇ differentiates with respect to: an identity of its own, never folded away,
+// and followed until ∇ has the graph it differentiates
+export const traced = (a: Tensor): Tensor => { const n = ir.reshape(a.node, a.node.shape); differentiable.add(n); followed.add(n); return new Tensor(n); };
+export const untraced = (ts: readonly Tensor[]): void => { for (const t of ts) followed.delete(t.node); reads.clear(); };
 
 // ── the value ───────────────────────────────────────────────────────────────────
 export class Tensor {
@@ -554,7 +573,8 @@ export const broadcastTo = (a: Like, shape: readonly number[]): Tensor => { cons
 // copying: as a graph, n pieces are n kernels, each adding the whole result again. Not
 // for a piece ∇ follows, whose join must stay in the graph.
 const joinOnHost = (arrays: readonly Tensor[], shapes: readonly (readonly number[])[], ax: number, shape: readonly number[]): Tensor | null => {
-  const datas = arrays.map((a) => (differentiable.has(a.node) ? undefined : dataOf(a.node)));
+  if (follows(arrays.map((a) => a.node))) return null;
+  const datas = arrays.map((a) => dataOf(a.node));
   if (datas.some((d) => d === undefined)) return null;
   const out = new Float32Array(ir.numel(shape)), outer = ir.numel(shape.slice(0, ax));
   let at = 0;
@@ -762,7 +782,8 @@ export function overFrame(F: readonly number[], xs: readonly Tensor[], f: (cells
 // copy of it the function closed over – and an outer ∇ still differentiates through it.
 export function vjp<F extends (...xs: any[]) => Tensor>(f: F, primals: Tensor[]): [Tensor, (ct: unknown) => Tensor[]] {
   const leaves = primals.map(traced);
-  const out = f(...leaves);
+  let out: Tensor;
+  try { out = f(...leaves); } finally { untraced(leaves); }
   const seed = (ct: unknown): UOp => (ct instanceof Tensor ? nodeOf(ct) : ir.broadcastTo(ir.konst(Number(ct ?? 1)), out.node.shape));
   return [out, (ct: unknown) => graphVjp(out.node, leaves.map((l) => l.node), seed(ct)).map((n) => new Tensor(n))];
 }

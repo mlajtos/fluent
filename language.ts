@@ -842,7 +842,12 @@ const FunctionRepeat = function (this: CurrentScope, f: Value, n: Value, invert?
       if (!until) { continue }
       const verdict = safeApply(until, [value, prev], scope)
       if (verdict instanceof Error) { return verdict }
-      try { if (isTruthy(verdict, "⍣")) { break } } catch (e) { return asError(e) }
+      try {
+        // the state is computed with its verdict: the next step starts from its numbers, and
+        // reading the next verdict never computes the steps before it again
+        engine.materialize([verdict, ...(Array.isArray(value) ? value : [value])].filter(isTensor))
+        if (isTruthy(verdict, "⍣")) { break }
+      } catch (e) { return asError(e) }
     }
     return value
   })
@@ -1508,11 +1513,14 @@ const TensorGradient = (map: Value) => {
 // through it.
 const gradientOfReads = (loss: Function, along?: Set<Signal>): Value => {
   const reads = new Map<Signal, engine.Tensor>()
-  const value = differentiated("`∇(loss)()`: the loss", (v, value) => {
-    let t = reads.get(v)
-    if (!t) { t = engine.traced(value as engine.Tensor); reads.set(v, t) }
-    return t
-  }, () => unwrapSignals(loss()), along)
+  let value: Value
+  try {
+    value = differentiated("`∇(loss)()`: the loss", (v, value) => {
+      let t = reads.get(v)
+      if (!t) { t = engine.traced(value as engine.Tensor); reads.set(v, t) }
+      return t
+    }, () => unwrapSignals(loss()), along)
+  } finally { engine.untraced([...reads.values()]) }
   if (value instanceof Error) { return value }
   if (!isTensor(value)) { return new Error(`\`∇(loss)()\`: the loss must give numbers, got ${describeArg(value)}`) }
   const variables = [...reads.keys()], grads = engine.gradients(value, [...reads.values()])
