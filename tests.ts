@@ -3561,12 +3561,25 @@ describe("numbers come out right", () => {
     expect(value("scan([[1, 2, 3], [4, 5, 6]], +, 0)")).toEqual([[1, 2, 3], [5, 7, 9]])
     // along the leading axis, as reduce folds: the scan's last item is the reduction, at any rank
     expect(value("[[1, 2, 3], [4, 5, 6]] scan +")).toEqual([[1, 2, 3], [5, 7, 9]])
-    for (const f of ["+", "⌈", "×"]) {
+    for (const f of ["+", "⌈", "×", "-", "÷", "{ a, x | x×(a + 1) }"]) {
       for (const x of ["[3, 1, 2]", "[[1, 5, 3], [4, 2, 6]]", "fill([2, 3, 2], 2) - (0..<2)"]) {
         expect(value(`x: ${x}, (x scan ${f})_(-1) ≡ (x reduce ${f})`)).toBe(1)
       }
     }
+    // any f folds left to right, as a list's scan does – not only an associative one
+    expect(value("scan([1, 1, 1, 1], { a, x | x×(a + 1) })")).toEqual([1, 2, 3, 4])
+    expect(value("[1, 2, 3, 4] scan -")).toEqual([1, -1, -4, -8])
+    expect(value("TensorStack((1, 2, 3, 4) scan -)")).toEqual([1, -1, -4, -8])
+    expect(value("TensorScan([[1, 2], [3, 4]], -, -1)")).toEqual([[1, -1], [3, -1]])
     expect(value("∇({ x | Σ((x scan +) × [1, 10, 100]) })([1, 2, 3])")).toEqual([111, 110, 100])
+    expect(value("∇({ v | Σ(v scan { a, x | a × x }) })([1, 2, 3])")).toEqual([9, 4, 2])
+  })
+  test("associativeScan takes log₂ n steps for an f vouched associative; scan takes them for what reduce folds natively", () => {
+    expect(value("[1, 2, 3, 4] associativeScan +")).toEqual([1, 3, 6, 10])
+    expect([value("FunctionFoldsNatively(+)"), value("FunctionFoldsNatively(⌈)"), value("FunctionFoldsNatively(-)"), value("FunctionFoldsNatively({ a, b | a + b })")]).toEqual([1, 1, 0, 0])
+    // a recurrence hₜ = aₜhₜ₋₁ + bₜ as pairs (a, b) that combine associatively
+    // – a pair's a is the array applied to [1, 0], its b to [0, 1]
+    expect(value("ab: [[2, 1], [3, 1], [1, 5]], (ab associativeScan { p, q | stack((p([1, 0]) × q([1, 0]), q([1, 0]) × p([0, 1]) + q([0, 1])), -1) })([0, 1])")).toEqual([1, 4, 9])
   })
   test("pipe, apply and zerosLike", () => {
     expect(value("(1, 2) pipe add")).toBe(3)

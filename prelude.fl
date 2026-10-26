@@ -28,6 +28,7 @@ FunctionConstantly: { v | cond(guard(isFunction(v), { v }), { { v } }) },
 𝕐: fix: FunctionFix: doc({ f | g: { x | f(x(x)) }, g(g) }, "𝕐(f)", "Fixpoint – anonymous recursion. 𝕐(f) is the x with x = f(x): hand f its own recursion handle so a nameless function can call itself. The Y combinator; equivalently (⍨ @)((⍨ @) ∘ f). Named recursion needs nothing – a binding is visible in its own body.", "𝕐({ rec | { n | cond(guard(n = 0, { 1 }), { n × rec(n-1) }) } })(5) = 120"),
 (⊢): right: FunctionRight: doc(FunctionArity(({ a, b | b }, { a | a })), "x ⊢ y", "Right: yield the right argument; with one argument, the identity.", "3 ⊢ 5 = 5"),
 (⊣): left: FunctionLeft: doc(FunctionArity(({ a, b | a }, { a | a })), "x ⊣ y", "Left: yield the left argument; with one argument, the identity.", "3 ⊣ 5 = 3"),
+FunctionFoldsNatively: doc(FunctionFoldsNatively, "FunctionFoldsNatively(f)", "1 if reduce folds f natively – +, ×, ⌈ and ⌊, which are associative – else 0. scan reads it to pick its fast path.", "FunctionFoldsNatively(+) = 1, FunctionFoldsNatively(-) = 0"),
 isFunction: doc(FunctionIs, "isFunction(v)", "1 if v is a function, else 0 – the question a combinator asks before treating an operand as a constant. Composes like a comparison.", "isFunction(√) = 1, isFunction(5) = 0"),
 isTensor: doc(TensorIs, "isTensor(v)", "1 if v is a tensor (a number included) or a variable holding one, else 0.", "isTensor([1, 2]) = 1, isTensor((1, 2)) = 0"),
 isList: doc(ListIs, "isList(v)", "1 if v is a list, else 0.", "isList((1, 2)) = 1, isList([1, 2]) = 0"),
@@ -184,7 +185,7 @@ TensorReverse: doc(TensorOnly({ x, k |
 reverse: doc(cascade((TensorReverse, ListReverse, StringReverse)), "reverse(x, axes?)", "x's items back to front; a tensor along the axes given, too.", "reverse(\"abc\") = \"cba\", reverse([[1, 2], [3, 4]]) = [[3, 4], [1, 2]]"),
 concat: doc(cascade((TensorConcat, ListConcat, StringConcat)), "a concat b  ·  concat(xs, axis?)", "a's items, then b's: tensors along the leading axis, lists, strings. concat(xs) joins the containers listed in xs – tensors along the axis given.", "(1, 2) concat (3,) = (1, 2, 3), concat((\"ab\", \"cd\")) = \"abcd\", concat(([[1], [2]], [[3], [4]]), 1) = [[1, 3], [2, 4]]"),
 reduce: doc(cascade((TensorReduce, ListReduce, StringReduce)), "x reduce f", "Fold x's items left to right with f – a tensor's along the axis given, too. Known ops (+, ×, ⌈, ⌊) fold numbers natively, so on a vector x reduce ⌈ is max. Folding nothing gives f's identity: () reduce + is 0.", "(1, 2, 3) reduce + = 6, [[1, 2], [3, 4]] reduce + = [4, 6], 1..<10 reduce + = 45"),
-TensorScan: doc(TensorOnly({ x, f, k |
+associativeScan: TensorAssociativeScan: doc(TensorOnly({ x, f, k |
   ax: cond(guard(identical(k, ◌), { 0 }), { k }),
   y: moveaxis(x, ax, 0), n: #y,
   i: 0..<n ⍴ concat(([n], fill([(#shape(y)) - 1], 1))),
@@ -196,8 +197,17 @@ TensorScan: doc(TensorOnly({ x, f, k |
     (where(i ≥ d, f(earlier, z), z), d × 2)
   },
   moveaxis((pass ⍣ cond(guard(n ≤ 1, { 0 }), { ceil(log2(n)) }))((y, 1))_0, 0, ax)
-}), "TensorScan(x, f, axis?)", "The running fold of x's rows with f – or of its slices along the axis given. f must be associative: the fold takes log₂ n steps.", "TensorScan([[1, 2, 3], [4, 5, 6]], +, 1) = [[1, 3, 6], [4, 9, 15]]"),
-scan: doc(cascade((TensorScan, ListScan, StringScan)), "x scan f", "The running fold: item i combines items 0 … i with f, so its last item is x reduce f. With + a cumulative sum, with ⌈ a running maximum.", "[1, 2, 3, 4] scan + = [1, 3, 6, 10], (1, 2, 3) scan + = (1, 3, 6)"),
+}), "x associativeScan f", "scan in log₂ n steps, for an f you vouch is associative: (a ∘ b) ∘ c = a ∘ (b ∘ c). Pairs that combine as (a₁a₂, a₂b₁ + b₂) run a recurrence hₜ = aₜhₜ₋₁ + bₜ this way. Any other f gives wrong numbers, silently – scan is the one that is always right.", "[1, 2, 3, 4] associativeScan + = [1, 3, 6, 10]"),
+TensorScan: doc(TensorOnly({ x, f, k |
+  ax: cond(guard(identical(k, ◌), { 0 }), { k }),
+  ; what reduce folds natively is associative, so it scans in log₂ n steps; any other f
+  ; folds left to right, row by row, as reduce does
+  cond(guard(FunctionFoldsNatively(f) ∨ ((#shape(x)) = 0), { associativeScan(x, f, ax) }), {
+    rows: unstack(x, ax),
+    cond(guard((#rows) = 0, { x }), { stack(ListScan(rows, f), ax) })
+  })
+}), "TensorScan(x, f, axis?)", "The running fold of x's rows with f, left to right – or of its slices along the axis given; its last row is TensorReduce's. +, ×, ⌈ and ⌊ take log₂ n steps.", "TensorScan([[1, 2, 3], [4, 5, 6]], +, 1) = [[1, 3, 6], [4, 9, 15]], [1, 2, 3, 4] scan - = [1, -1, -4, -8]"),
+scan: doc(cascade((TensorScan, ListScan, StringScan)), "x scan f", "The running fold, left to right: item i combines items 0 … i with f, so its last item is x reduce f. With + a cumulative sum, with ⌈ a running maximum.", "[1, 2, 3, 4] scan + = [1, 3, 6, 10], (1, 2, 3) scan + = (1, 3, 6)"),
 fold: doc(cascade((TensorFold, ListReduce, StringReduce)), "fold(x, f, start)", "Walk x's items from start, carrying what f makes: f(f(start, x_0), x_1) … – a loop over the items whose result can be of any kind.", "fold((1, 2, 3), { s, v | s × 10 + v }, 0) = 123"),
 identity: doc(FunctionIdentity, "identity(f, v)", "f, knowing v as its identity element – what folding nothing with f gives, as + folds nothing to 0.", "() reduce identity({ a, b | a + b }, 0) = 0"),
 TensorLength: doc(TensorLength, "TensorLength(x, axis?)", "How long x's leading axis is, or the axis given; a number is one item.", "TensorLength([[1, 2], [3, 4], [5, 6]]) = 3"),

@@ -948,6 +948,8 @@ const FunctionThen = (a: Value, b: Value) => {
 // operand constant.
 const bit = (b: boolean) => engine.tensor(b ? 1 : 0)
 const FunctionIs = (v: Value) => bit(isFn(v))
+// whether reduce folds f natively – +, ×, ⌈ and ⌊, all associative: scan's fast path
+const FunctionFoldsNatively = (f: Value) => bit(isFn(f) && getMeta(f).reducer != null)
 const TensorIs = (v: Value) => bit(isTensorish(v))
 const ListIs = (v: Value) => bit(Array.isArray(v))
 const StringIs = (v: Value) => bit(isText(v))
@@ -1896,7 +1898,7 @@ const Storage = (key: Value): Value => {
 const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(null), {
   Null: null, null: null,
   SymbolAssign, CodeParse, CodeEvaluate,
-  FunctionIterate, FunctionRepeat, FunctionMemo, FunctionThen, FunctionIs, TensorIs, ListIs, StringIs, ErrorIs, Identical,
+  FunctionIterate, FunctionRepeat, FunctionMemo, FunctionThen, FunctionIs, FunctionFoldsNatively, TensorIs, ListIs, StringIs, ErrorIs, Identical,
   FunctionCascade, FunctionCond, FunctionArity, FunctionApply,
   FunctionGuard, FunctionTry, FunctionWhen, ErrorCreate, doc, FunctionIdentity,
   Reactive, SignalCreate, SignalComputed, SignalRead, SignalUpdate,
