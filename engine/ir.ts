@@ -186,11 +186,14 @@ export const reduceMax = (a: UOp, axis: number, keepdims = true): UOp => reduceA
 export const sum = (a: UOp): UOp => { let r = a; while (r.shape.length) r = reduceAxis(r, 0, false); return r; };
 
 // ---- runtime indexing (a transpose pair, like broadcast⟷reduce) ---------------
+// idx's axes but its last are a batch the table leads with too: out[b…, j, …] =
+// table[b…, idx[b…, j], …], and a scatter adds each row into its own batch's rows only
+const batched = (idx: UOp, x: UOp): boolean => idx.shape.length > 0 && x.shape.length >= idx.shape.length && sameShape(x.shape.slice(0, idx.shape.length - 1), idx.shape.slice(0, -1));
 export const gather = (table: UOp, idx: UOp): UOp =>
-  idx.shape.length !== 1 ? err(`gather: idx must be rank-1, got ${sh(idx.shape)}`) : node("GATHER", [table, idx], null, [idx.shape[0]!, ...table.shape.slice(1)]);
+  !batched(idx, table) ? err(`gather: idx ${sh(idx.shape)} vs table ${sh(table.shape)}`) : node("GATHER", [table, idx], null, [...idx.shape, ...table.shape.slice(idx.shape.length)]);
 export const scatterAdd = (idx: UOp, values: UOp, size: number): UOp =>
-  idx.shape.length !== 1 || values.shape[0] !== idx.shape[0] ? err(`scatterAdd: idx ${sh(idx.shape)} vs values ${sh(values.shape)}`)
-    : node("SCATTER_ADD", [idx, values], { size }, [size, ...values.shape.slice(1)]);
+  !batched(idx, values) || values.shape[idx.shape.length - 1] !== idx.shape.at(-1) ? err(`scatterAdd: idx ${sh(idx.shape)} vs values ${sh(values.shape)}`)
+    : node("SCATTER_ADD", [idx, values], { size }, [...idx.shape.slice(0, -1), size, ...values.shape.slice(idx.shape.length)]);
 
 // ---- the loop ------------------------------------------------------------------
 // A loop of k states. A step takes the states' placeholders (`carries`) to `outs`: the next

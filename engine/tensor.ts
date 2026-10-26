@@ -372,10 +372,13 @@ function evaluate(u: UOp, ins: Float32Array[]): Float32Array {
       }
       return out;
     }
-    case "GATHER": { const R = ir.numel(u.shape.slice(1)); return map((i) => a![Math.trunc(b![Math.floor(i / R)]!) * R + (i % R)] ?? NaN); }
+    case "GATHER": {
+      const ix = u.src[1]!.shape, B = ix.length - 1, k = ix[B]!, n = u.src[0]!.shape[B]!, R = ir.numel(u.shape.slice(B + 1));
+      return map((i) => { const j = Math.floor(i / R); return a![(Math.floor(j / k) * n + Math.trunc(b![j]!)) * R + (i % R)] ?? NaN; });
+    }
     case "SCATTER_ADD": {
-      const R = ir.numel(u.shape.slice(1));
-      for (let r = 0; r < a!.length; r++) for (let j = 0; j < R; j++) { const at = Math.trunc(a![r]!) * R + j; out[at] = out[at]! + b![r * R + j]!; }
+      const ix = u.src[0]!.shape, B = ix.length - 1, k = ix[B]!, n = (u.arg as { size: number }).size, R = ir.numel(u.shape.slice(B + 1));
+      for (let r = 0; r < a!.length; r++) for (let j = 0; j < R; j++) { const at = (Math.floor(r / k) * n + Math.trunc(a![r]!)) * R + j; out[at] = out[at]! + b![r * R + j]!; }
       return out;
     }
   }
@@ -652,12 +655,11 @@ export function bitonic(x: UOp, R: number, n: number, desc: boolean): UOp {
   const tie = ir.add(i, ir.mul(ir.where(inside, ir.pad(nan, 1, 0, m - n), k(2)), k(m)));
   const pair = (a: UOp, b: UOp) => ir.add(ir.pad(ir.reshape(a, [R, m, 1]), 2, 0, 1), ir.pad(ir.reshape(b, [R, m, 1]), 2, 1, 0));
   const half = (t: UOp, c: number) => ir.reshape(ir.slice(t, 2, c, 1), [R, m]);
-  const base = rows(ir.reshape(ir.mul(ir.iota(R), k(m)), [R, 1]));
   let T = pair(key, tie);
   for (let a = 1; a <= p; a++) for (let b = a - 1; b >= 0; b--) {
     const j = 1 << b, up = ir.cmplt(mod2(ir.math("floor", ir.mul(i, k(1 / (1 << a))))), k(0.5));
     const q = ir.add(i, ir.mul(k(j), ir.add(k(1), ir.mul(mod2(ir.math("floor", ir.mul(i, k(1 / j)))), k(-2)))));
-    const Tq = ir.reshape(ir.gather(ir.reshape(T, [R * m, 2]), ir.reshape(ir.add(base, q), [R * m])), [R, m, 2]);
+    const Tq = ir.gather(T, q);
     const before = (x1: UOp, t1: UOp, x2: UOp, t2: UOp) => ir.add(ir.cmplt(x1, x2), ir.mul(ir.math("eq", x1, x2), ir.cmplt(t1, t2)));
     const [ks, ts, kq, tq] = [half(T, 0), half(T, 1), half(Tq, 0), half(Tq, 1)];
     const low = ir.math("eq", ir.cmplt(i, q), up);                             // this element keeps the smaller of the pair
@@ -674,12 +676,10 @@ export function argsort(a: Like, descending = false): Tensor {
   if (host) return new Tensor(ir.data(order(host, R, n, descending), x.shape));
   return new Tensor(ir.reshape(bitonic(ir.reshape(x, [R, n]), R, n, descending), x.shape));
 }
-// gather each row by its own indices: flatten rows, offset each index by its row
+// gather each row by its own indices: the rows are a batch
 function gatherRows(x: UOp, idx: UOp): UOp {
   const n = x.shape.at(-1)!, k = idx.shape.at(-1)!, R = ir.numel(x.shape) / n;
-  const offsets = ir.reshape(ir.broadcastTo(ir.reshape(ir.mul(ir.iota(R), ir.konst(n)), [R, 1]), [R, k]), [R * k]);
-  const flat = ir.add(ir.reshape(idx, [R * k]), offsets);
-  return ir.reshape(ir.gather(ir.reshape(x, [R * n, 1]), flat), [...x.shape.slice(0, -1), k]);
+  return ir.reshape(ir.gather(ir.reshape(x, [R, n]), ir.reshape(idx, [R, k])), [...x.shape.slice(0, -1), k]);
 }
 export const sort = (a: Like): Tensor => { const x = scalarRank(nodeOf(a)); return wrap(gatherRows(x, argsort(new Tensor(x)).node)); };
 export function topK(a: Like, k: number): [Tensor, Tensor] {

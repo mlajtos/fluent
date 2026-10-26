@@ -38,7 +38,7 @@ const SIMPLIFY: Rule[] = [
   (u) => (u.op === "PERMUTE" && u.src[0]!.op === "PERMUTE" ? permute(u.src[0]!.src[0]!, (u.arg as number[]).map((i) => (u.src[0]!.arg as number[])[i]!)) : null),
   // a gather of one row named when the graph is built is a view of that row
   (u) => {
-    if (u.op !== "GATHER" || u.shape[0] !== 1) return null;
+    if (u.op !== "GATHER" || u.shape[0] !== 1 || u.src[1]!.shape.length !== 1) return null;
     const i = u.src[1]!, c = i.op === "RESHAPE" ? i.src[0]! : i, v = c.op === "CONSTANT" && numel(c.shape) === 1 ? (c.arg as Float32Array)[0]! : NaN;
     return Number.isInteger(v) && v >= 0 && v < u.src[0]!.shape[0]! ? slice(u.src[0]!, 0, v, 1) : null;
   },
@@ -340,8 +340,10 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
       // it names, through its views. A gather that takes each element of the table's base
       // about once computes a computed table where it takes it – a gather of a gather is one
       // read; one that takes them many times reads them stored
-      const [t, i] = v.src as [UOp, UOp], R = Math.max(numel(v.shape.slice(1)), 1), vm = viewMap(t);
-      const row = iadd(imul(iidx(value(i, idiv(ix, iconst(R)))), iconst(R)), imod(ix, iconst(R)));
+      const [t, i] = v.src as [UOp, UOp], b = i.shape.length - 1, R = Math.max(numel(t.shape.slice(b + 1)), 1), vm = viewMap(t);
+      const j = idiv(ix, iconst(R)), at = iadd(imul(iidx(value(i, j)), iconst(R)), imod(ix, iconst(R)));
+      // a batch's rows lie after the rows of the batches before it
+      const row = b ? iadd(at, imul(idiv(j, iconst(i.shape[b]!)), iconst(t.shape[b]! * R))) : at;
       if (numel(v.shape) <= 2 * Math.max(numel(vm.base.shape), 1)) return value(t, row);
       const e = bcIndex(vm.strides, t.shape, row);
       return load(input(kernelOf(vm.base)), vm.offset ? iadd(e, iconst(vm.offset)) : e);
@@ -362,12 +364,14 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
     let out: UOp;
     if (u.op === "CONSTANT" || u.op === "BUFFER") out = u;
     else if (u.op === "SCATTER_ADD") {                                         // out[v,c] = Σ_i (idx[i]==v ? values[i,c] : 0) — GATHER's transpose, as one nest
-      const rest = u.shape.slice(1), R = Math.max(numel(rest), 1), N = u.src[0]!.shape[0]!;
-      const gid = range(Math.max(numel(u.shape), 1));
+      const idx = u.src[0]!, B = idx.shape.length - 1, k = idx.shape[B]!, size = (u.arg as { size: number }).size, R = Math.max(numel(u.shape.slice(B + 1)), 1);
+      const gid = range(Math.max(numel(u.shape), 1)), i = range(k), q = idiv(gid, iconst(R));
+      // a batch's rows take the batch's own k indices, never every batch's
+      const [v, at] = B ? [imod(q, iconst(size)), iadd(imul(idiv(q, iconst(size)), iconst(k)), i)] : [q, i];
       // an index names the row of its whole part, the row GATHER reads; NaN names none
-      const i = range(N), v = ival(idiv(gid, iconst(R))), hit = node("MATH", [node("MATH", [load(0, i)], { fn: "trunc" }, []), v], { fn: "eq" }, []);
+      const hit = node("MATH", [node("MATH", [load(0, at)], { fn: "trunc" }, []), ival(v)], { fn: "eq" }, []);
       // selected, not multiplied: an ∞ in another row's values is not 0·∞ here
-      const b = node("WHERE", [hit, load(1, iadd(imul(i, iconst(R)), imod(gid, iconst(R)))), konst(0)], null, []);
+      const b = node("WHERE", [hit, load(1, iadd(imul(at, iconst(R)), imod(gid, iconst(R)))), konst(0)], null, []);
       out = fused(gid, acc("ADD", i, b), [kernelOf(u.src[0]!), kernelOf(u.src[1]!)], u.shape);
     } else {
       // the kernel computes its own node at each element; a view that reaches here is a root,

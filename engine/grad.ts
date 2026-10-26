@@ -70,7 +70,7 @@ const along = (v: UOp, ax: number, idx: UOp, memo: Map<string, UOp>): UOp => {
       a.forEach((i, k) => { is[is.length - s.shape.length + b[k]!] = at(idx.shape, lead + i); });
       out = reshape(along(s, b[a.indexOf(r + ax)]! - s.shape.length, reshape(idx, is), memo), R);
     }
-  } else if (v.op === "GATHER" && r + ax === 0 && v.shape.every((_, d) => !d || free(d))) {
+  } else if (v.op === "GATHER" && v.src[1]!.shape.length === 1 && r + ax === 0 && v.shape.every((_, d) => !d || free(d))) {
     // the row each winner names – an index names the row of its whole part – then the table at it
     const [t, i] = v.src as [UOp, UOp], rows = math("trunc", along(i, -1, reshape(idx, idx.shape.slice(0, idx.shape.length - r + 1)), memo));
     out = along(t, -t.shape.length, reshape(rows, [...rows.shape, ...t.shape.slice(1).map(() => 1)]), memo);
@@ -164,7 +164,7 @@ export const TRANSPOSE: Partial<Record<UOp["op"], Tr>> = {
     }
     return [sum];
   },
-  GATHER: (u, ct) => [node("SCATTER_ADD", [u.src[1]!, ct], { size: u.src[0]!.shape[0] }, u.src[0]!.shape), null],
+  GATHER: (u, ct) => [node("SCATTER_ADD", [u.src[1]!, ct], { size: u.src[0]!.shape[u.src[1]!.shape.length - 1] }, u.src[0]!.shape), null],
   SCATTER_ADD: (u, ct) => [null, node("GATHER", [ct, u.src[0]!], null, u.src[1]!.shape)],
 };
 

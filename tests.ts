@@ -578,6 +578,22 @@ describe("tensors", () => {
     expect(value("(∇{ x | Σ((softmax ⍤ 1)(x) × [1, 2, 3]) })([[1, 2, 3], [3, 2, 1]])"))
       .toEqual(value("(∇{ x | Σ(softmax(x) × [1, 2, 3]) })([[1, 2, 3], [3, 2, 1]])"))
   })
+  test("∇ through indexing under rank ⍤ adds into each cell's own rows: its work grows with the frame", async () => {
+    const { canonical, placeholders, optimizeMany, accCost } = await import("./engine/opt.ts")
+    const { toposort, numel } = await import("./engine/ir.ts")
+    // the plan's work: each kernel's elements, times the loop each one runs
+    const work = (source: string) => {
+      const g = run(source) as engine.Tensor, { leaves } = canonical([g.node])
+      const kernels = new Set(optimizeMany(placeholders([g.node], leaves).roots).flatMap((r) => toposort(r)).filter((u) => u.op === "FUSED"))
+      return [...kernels].reduce((w, k) => w + numel(k.shape) * accCost(k.src[1]!), 0)
+    }
+    expect(value("x: 0..<12 ⍴ [3, 4], ∇({ x | Σ(({ v | v_0 × v_3 } ⍤ 1)(x)) })(x)")).toEqual([[3, 0, 0, 0], [7, 0, 0, 4], [11, 0, 0, 8]])
+    // 1024 rows, each picking 2 of its 64: every row's cotangent scanning every row's picks
+    // would be 1024 times this
+    expect(work("x: 0..<65536 ⍴ [1024, 64], ∇({ x | Σ(({ v | v_0 × v_63 } ⍤ 1)(x)) })(x)")).toBeLessThan(16 * 65536)
+    // sort's rows are a batch too
+    expect(work("x: (0..<16384 × 7919 % 16384) ⍴ [1024, 16], ∇({ x | Σ(sort(x) × (0..<16)) })(x)")).toBeLessThan(64 * 16384)
+  })
   test("inner product ∙ is matmul, and swaps its ring", () => {
     expect(value("[[1,2],[3,4]] (× ∙ +) [[5,6],[7,8]]")).toEqual([[19, 22], [43, 50]])   // ×∙+ = matmul
     expect(value("[1,2,3] (× ∙ +) [4,5,6]")).toBe(32)                                     // vectors → dot
