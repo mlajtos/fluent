@@ -2227,6 +2227,7 @@ editable: \${ 1 - training },
 ; strong skips and gentle starts keep 12 sublayer visits stable.
 
 (++): concat,
+(⊡): matmul, ; the matrix product, as an operator
 
 ; --- vocabulary: ' ' → 0, a…z → 1…26 (anything else collapses to space) ---
 V: 27, T: 8, C: 32, F: 96,
@@ -2261,25 +2262,25 @@ rms: { x | x ÷ √(mean(x × x, -1, 1) + 0.001) }, ; the 1 keeps the reduced ax
 quickGelu: { x | x × sigmoid(x × 1.702) }, ; GELU, through a sigmoid
 nmask: where(0..<T ⊗(≥) 0..<T, fill([T, T], 0), fill([T, T], -9999)),
 att: { x, Wq, Wk, Wv, Wo |
-  q: matmul(x, Wq),
-  k: matmul(x, Wk),
-  v: matmul(x, Wv),
+  q: x ⊡ Wq,
+  k: x ⊡ Wk,
+  v: x ⊡ Wv,
   a: softmax(einsum("btc,bsc->bts", q, k) ÷ (√C) + nmask),
-  matmul(matmul(a, v), Wo)
+  a ⊡ v ⊡ Wo
 },
 b1: { x |
   h: rms(x×α + att(x, Wq1, Wk1, Wv1, Wo1)),
-  rms(h×α + matmul(quickGelu(matmul(h, Wf1)), Wg1))
+  rms(h×α + quickGelu(h ⊡ Wf1)⊡Wg1)
 },
 b2: { x |
   h: rms(x×α + att(x, Wq2, Wk2, Wv2, Wo2)),
-  rms(h×α + matmul(quickGelu(matmul(h, Wf2)), Wg2))
+  rms(h×α + quickGelu(h ⊡ Wf2)⊡Wg2)
 },
 cycle: { x | b2(b1(x)) }, ; one round: the whole stack, once
 
-embed: { ids | matmul(oneHot(ids, V), E) + P },
-model: { ids | matmul(cycle(cycle(cycle(embed(ids)))), Wu) }, ; training unrolls R=3 rounds
-modelAt: { ids, r | matmul((cycle ⍣ r)(embed(ids)), Wu) }, ; dreaming picks its own r
+embed: { ids | oneHot(ids, V) ⊡ E + P },
+model: { ids | cycle(cycle(cycle(embed(ids)))) ⊡ Wu }, ; training unrolls R=3 rounds
+modelAt: { ids, r | (cycle ⍣ r)(embed(ids)) ⊡ Wu }, ; dreaming picks its own r
 
 ; --- what it learns from: B random windows a step; a tenth held out to score it ---
 B: 64,
@@ -2345,7 +2346,7 @@ finish: \${
 probeS: fill([T], 0) ++ enc("sophia"),
 probe: slice(probeS, [-T]),
 attProbe: { x |
-  softmax(einsum("btc,bsc->bts", matmul(x, Wq1), matmul(x, Wk1)) ÷ (√C) + nmask) ⍴ [T, T]
+  softmax(einsum("btc,bsc->bts", x ⊡ Wq1, x ⊡ Wk1) ÷ (√C) + nmask) ⍴ [T, T]
 },
 attn1: \${ attProbe(embed(probe ⍴ [1, T])) },
 attn3: \${ attProbe(cycle(cycle(embed(probe ⍴ [1, T])))) },
