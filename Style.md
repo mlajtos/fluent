@@ -55,8 +55,9 @@ element or right side: `exp(-x)`, `y: √x`. Inside a longer expression, wrap it
 the colon glued to the name. Spaced, `a : 1 + 2` binds `a` to 1. The same holds
 for `s← …` and `θ:= …`.
 
-Write one binding per line. Short related constants may share one:
-`W: 640, H: 400,`.
+Write one binding per line. Related constants with short names may share one:
+`W: 640, H: 400,`. Words take a line each, even when related: `yellow: …` and
+`blue: …` on two lines.
 
 Every statement ends with a comma; a line break does not end one. To break a long
 line, break before a spaced operator, never after a glued one: `x^` followed by
