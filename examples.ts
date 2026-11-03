@@ -2,7 +2,7 @@
 // both the IDE and the test suite can import the same corpus (tests.ts runs
 // them headless as a smoke suite).
 
-export const EXAMPLES = {
+const GALLERY = {
   "no-precedence": `
 ; Left-to-right evaluation – no operator precedence
 1 + 2 * 3 - 4 / 5 ^ sin(2)
@@ -2599,3 +2599,25 @@ fib: { n | cond(guard(n < 2, { n }), { fib(n-1) + fib(n-2) }) },
 `
 
 } as const
+
+// The gallery as a page: every example a row, linked, its first comment line split into
+// what it is called and what it shows. Built from the examples, so it lists each one.
+const galleryPage = (examples: Record<string, string>): string => {
+  const cell = (text: string) => text.replace(/\|/g, "\\|")
+  const rows = Object.entries(examples).map(([key, src]) => {
+    const first = src.trim().split("\n")[0] ?? ""
+    const line = first.replace(/^;\s*/, ""), at = line.indexOf(" – ")
+    const [name, what] = !first.startsWith(";") ? [key, ""] : at < 0 ? [line, ""] : [line.slice(0, at), line.slice(at + 3)]
+    return `| [${cell(name)}](?example=${key}) | ${cell(what)} |`
+  })
+  const table = ["| Example | What it shows |", "|---|---|", ...rows].join("\n")
+  // a Fluent string: a backslash or a quote is escaped with a backslash
+  const text = `# Gallery\n\nEvery example in the playground. Open one, and come back with ?example=gallery.\n\n${table}`
+  return `
+; 🗂 Gallery – every example, a row each, linked
+Text("${text.replace(/[\\"]/g, "\\$&")}")
+`
+}
+
+export const EXAMPLES = { gallery: galleryPage(GALLERY), ...GALLERY }
+
