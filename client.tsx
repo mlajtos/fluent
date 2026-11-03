@@ -1218,6 +1218,9 @@ const EDITOR_OPTIONS: editor.IStandaloneEditorConstructionOptions = {
   scrollBeyondLastLine: false,
   bracketPairColorization: { independentColorPoolPerBracketType: true, enabled: true },
   unicodeHighlight: { ambiguousCharacters: false },
+  // a ( or " typed over a selection wraps it, and the ) or " typed at the end steps over the
+  // one the wrap added, so typing "(a + 2)" over a selection gives (a + 2)
+  autoClosingOvertype: "always",
   // p-2
   padding: { top: 8, bottom: 8 },
   automaticLayout: true,
