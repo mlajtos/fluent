@@ -132,7 +132,18 @@ test("a picture wider than the GPU's textures still paints", async ({ page }) =>
   await expect.poll(() => spreadOf(panel(page).locator("canvas").first())).toBeGreaterThan(10)
 })
 
-test("a drawing has the display's pixels, and follows a change of density", async ({ page, context }) => {
+test.describe("on a screen with 2 pixels a unit", () => {
+  test.use({ deviceScaleFactor: 2 })
+  test("a drawing has the display's pixels", async ({ page }) => {
+    await open(page, "canvas(200, 100) . draw(dots([[50, 50]]), [1, 0.8, 0.2], 20)")
+    const canvas = panel(page).locator("canvas").first()
+    await expect.poll(() => canvas.evaluate((c: HTMLCanvasElement) => [c.width, c.height])).toEqual([400, 200])
+    expect((await canvas.boundingBox())!.width).toBeCloseTo(200, 0)
+  })
+})
+
+test("a drawing follows a change of density", async ({ page, context, browserName }) => {
+  test.skip(browserName !== "chromium", "only Chrome's DevTools protocol changes an open page's density")
   await open(page, "canvas(200, 100) . draw(dots([[50, 50]]), [1, 0.8, 0.2], 20)")
   const canvas = panel(page).locator("canvas").first()
   const pixels = () => canvas.evaluate((c: HTMLCanvasElement) => [c.width, c.height])
@@ -375,7 +386,8 @@ test("button click updates a reactive value", async ({ page }) => {
   await expect(panel(page)).toContainText("41")
 })
 
-test("camera (fake device) streams into a canvas", async ({ page }) => {
+test("camera (fake device) streams into a canvas", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "WebKit has no fake camera")
   // --use-fake-device-for-media-stream feeds a synthetic video – no hardware
   await open(page, "Camera(64, 48)")
   await expect(panel(page).locator("canvas").first()).toBeVisible({ timeout: 20_000 })
@@ -534,7 +546,8 @@ test("fft2, ifft2 and ∇ through them on the GPU agree with the DFT", async ({ 
   expect(worst).toBeLessThan(1e-5)
 })
 
-test("an array applied on the GPU gives what the CPU gives, and what matmul gives", async ({ page }) => {
+test("an array applied on the GPU gives what the CPU gives, and what matmul gives", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "Playwright's WebKit has no WebGPU")
   // W(X)'s 98,304 products are past the host's share, so the GPU computes them; whole
   // numbers whose sums float32 holds exactly, in any order – tests.ts runs this case on the CPU
   const W = Array.from({ length: 64 }, (_, o) => Array.from({ length: 48 }, (_, k) => (o * 48 + k) % 7 - 3))
@@ -548,7 +561,8 @@ Text(String((Σ(abs(W(X) - matmul(X, transpose(W)))), W(X))))`)
   expect(numbers).toEqual([0, ...reference])
 })
 
-test("softmax and crossEntropy keep their gradient on the GPU where float32 rounds Σ exp to 1", async ({ page }) => {
+test("softmax and crossEntropy keep their gradient on the GPU where float32 rounds Σ exp to 1", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "Playwright's WebKit has no WebGPU")
   // 30,000 rows [m, 0, 0], m from 0 to 30, are past the host's share, so the GPU computes
   // them; each row's gradient has a closed form – tests.ts runs the same rows on the CPU
   await open(page, `B: 30000, m: 0..<B × (30 ÷ B), z: m (⊗ ×) [1, 0, 0], e: exp(0 - m) ⍴ [B, 1],
@@ -595,7 +609,8 @@ opt: sgd(0.1),
   await expect(panel(page)).toContainText("0.47")
 })
 
-test("camera edge-detection demo produces non-flat output", async ({ page }) => {
+test("camera edge-detection demo produces non-flat output", async ({ page, browserName }) => {
+  test.skip(browserName === "webkit", "WebKit has no fake camera")
   // camera pixels are float32 in 0–1: integer pixels would truncate the edge
   // response to zeros and render a flat heatmap
   await open(page, `
