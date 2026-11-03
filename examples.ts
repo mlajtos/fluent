@@ -2311,8 +2311,13 @@ training: $1,
 ; weight decay – rms-normalized blocks shrink until they blow up
 opt: adamw(0.01, 0),
 step: $0,
-; a row each time it measures: (step, training score, held-out score)
-history: $fill([0, 3], 0),
+; how large a block's weights are: the root of the sum of their squares
+size: { ws | √(fold(ws, { total, w | total + Σ(w^2) }, 0)) },
+block1: (Wq1, Wk1, Wv1, Wo1, Wf1, Wg1),
+block2: (Wq2, Wk2, Wv2, Wo2, Wf2, Wg2),
+; a row each time it measures: step, training score, held-out score, and the
+; size of each block's weights
+history: $fill([0, 5], 0),
 stride: $20, ; steps between measurements
 {
   when(training, {
@@ -2320,8 +2325,8 @@ stride: $20, ; steps between measurements
     step← step + 1,
     s: step,
     when(s % stride = 0, {
-      measured: [s, score(0, cut()), score(cut(), (#D) - cut())],
-      history← concat((history, measured ⍴ [1, 3])),
+      measured: [s, score(0, cut()), score(cut(), (#D) - cut()), size(block1), size(block2)],
+      history← concat((history, measured ⍴ [1, 5])),
       ; the plot keeps the whole story, bounded: when it fills up,
       ; thin the history to every other row and measure half as often
       when((#history) ≥ 240, {
@@ -2333,6 +2338,7 @@ stride: $20, ; steps between measurements
   })
 } ⟳ 1000000,
 curves: \${ h: transpose(history), plot(h_0, (h_1, h_2), ("train", "held out")) },
+sizes: \${ h: transpose(history), plot(h_0, (h_3, h_4), ("block 1", "block 2")) },
 
 ; type a beginning – the model finishes it, the likeliest way (works even while paused)
 prompt: $"kri",
@@ -2359,6 +2365,8 @@ editable: \${ 1 - training },
   Text("**training** – uncheck to pause; pause to edit the corpus below"),
   Text("**loss** – on windows it trains on, and on the tenth it never sees; when held out climbs as train falls, it is memorizing:"),
   curves,
+  Text("**weights** – how large each block's weights are, √Σw²:"),
+  sizes,
   Text("**it dreams** – regenerated every 200 steps:"),
   Text(dream),
   Button("dream again", dreamNow),
