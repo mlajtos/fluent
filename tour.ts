@@ -57,9 +57,9 @@ demo: { src |
 ; The header doubles as navigation – every room's first row is
 ; [◂ back]  Fluent Tour · n / 16  [next ▸], and the last room's starts over
 nav: { label, onward |
-  Grid([1, 2, 1])(Button("◂ back", { room← 0 ⌈ (room - 1) }), Center(Text(label)), onward)
+  Grid([1, 2, 1])(Button("◂ back", { room:= 0 ⌈ (room - 1) }), Center(Text(label)), onward)
 },
-head: { label | nav(label, Button("next ▸", { room← (room + 1) ⌊ 15 })) },
+head: { label | nav(label, Button("next ▸", { room:= (room + 1) ⌊ 15 })) },
 
 ; the cell's code run again, with one more line after it, before it, or both:
 ; they run in this lambda's scope, so each sees the others' names
@@ -205,7 +205,7 @@ s9: Grid(1)(
   head("**Fluent Tour** · 9 / 16"),
   Text("### Make it move
 
-**Everything so far ran once and sat still. Wrap a value in \`$( )\` and it comes alive.** Here \`x: $(0.2)\` made \`x\` a live value. The box holds one *writer* — the slider — and two *readers*: a percentage, and a whole wave. Drag — every reader follows, nobody re-runs anything."),
+**Everything so far ran once and sat still. \`$( )\` makes a place for a value: whatever writes to it changes it, and whatever reads it follows.** Here \`x: $(0.2)\` made \`x\` a live value. The box holds one *writer* — the slider — and two *readers*: a percentage, and a whole wave. Drag — every reader follows, nobody re-runs anything."),
   demo("(
   Slider(x), ; ← writes x. drag it.
   x * 100, ; reads x
@@ -215,16 +215,16 @@ s9: Grid(1)(
     Text("✅ **Alive.** You changed a running program mid-flight and it didn’t even flinch. This is the trick behind every demo in the gallery."),
     Text("🎯 *No typing this time — **drag the slider** and pin \`x\` above 0.9.*")
   ),
-  Text("**Another name for \`x\` is \`x\` itself.** \`now: x\` names the same live value, so \`now\` moves when you drag; a list holds it the same way, and \`(x,)\` moves too. To keep the number \`x\` holds *right now*, make a new live value from it: \`$x\` starts from what \`x\` holds, and moves only when something writes to it."),
-  challenge("now: x, ; x by another name: it moves when x moves
+  Text("**Another name for \`x\` is \`x\` itself.** \`same: x\` names the same live value, so \`same\` moves when you drag; a list holds it the same way, and \`(x,)\` moves too. To keep the number \`x\` holds *right now*, make a new place from it: \`$x\` starts from what \`x\` holds, and moves only when something writes to it."),
+  challenge("same: x, ; x by another name: it moves when x moves
 held: (x,), ; a list holding x: it moves too
 start: x, ; ← make start keep the number x holds now
-(now, held, start)",
+(same, held, start)",
     { r, s |
-      min(between("x: $(0.3)", s, "x← 0.9, start") = 0.3)
-        ∧ min(between("x: $(0.6)", s, "x← 0.9, start") = 0.6)
+      min(between("x: $(0.3)", s, "x:= 0.9, start") = 0.3)
+        ∧ min(between("x: $(0.6)", s, "x:= 0.9, start") = 0.6)
     },
-    Text("✅ **Kept.** Drag the slider: \`now\` and \`held\` follow it, and \`start\` stays where \`x\` was when the box ran. A name and a list hold the live value itself; \`$x\` is a new one, holding what \`x\` held then."),
+    Text("✅ **Kept.** Drag the slider: \`same\` and \`held\` follow it, and \`start\` stays where \`x\` was when the box ran. A name and a list hold the live value itself; \`$x\` is a new place, holding what \`x\` held then, and nothing writes to it."),
     Text("🎯 *Make \`start\` keep the number \`x\` holds now — when you drag the slider, \`start\` stays put.*")
   )
 ),
@@ -234,23 +234,28 @@ s10: Grid(1)(
   head("**Fluent Tour** · 10 / 16"),
   Text("### Draw it
 
-**A shape is a distance.** \`dot: dots([[80, 60]])\` is a function: hand it a spot \`p\` — an \`[x, y]\` — and it tells you how far \`p\` is from the point at 80, 60. \`draw(shape, color, width)\` paints every pixel whose distance comes out near zero, so a point drawn 4 wide is a small disk. Its color, \`[1, 0.8, 0.2]\`, is written as the screen shows it; a picture holds light, so a 0.5 in a picture is half the light, which the screen shows as 188 of 255. \`ring\` below asks how far each spot’s distance is from 0 — still just the dot. Ask about 40 instead, and the pixels that answer zero are the ones 40 away."),
-  challenge("dot: dots([[80, 60]]),
-ring: { p | abs(dot(p) - 0) }, ; ← a ring: 40 away
+**A picture can be a rule.** \`draw\` paints every spot where the rule gives 0. Here the rule is \`ring\`: how far a spot \`p\` is from the middle, at 80, 60, less 0. That is 0 only at the middle itself, so you see a dot. (\`dots\` takes a list of points; here there is one. The last line paints on an empty canvas, 160 by 120, in red, green and blue \`[1, 0.8, 0.2]\`, 4 wide.)"),
+  challenge("distance: dots([[80, 60]]),
+ring: { p | distance(p) - 0 }, ; ← a ring: 40 away
 canvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)",
     { r, s |
       min(shape(r) = shape(canvas(160, 120)))
         ∧ (appended(s, "ring([120, 60])") = 0)
         ∧ (appended(s, "ring([80, 20])") = 0)
-        ∧ (appended(s, "ring([80, 60])") = 40)
+        ∧ (abs(appended(s, "ring([80, 60])")) = 40)
     },
     Text("✅ **A ring.** You didn’t draw a circle — you said what one *is*: every spot 40 from the middle. The computer found the spots. That is how every picture in the gallery is made."),
     Text("🎯 *Make \`ring\` a ring of radius **40** — one number to change.*")
   ),
-  Text("**A shape is a number at every spot, so it mixes with other numbers.** \`noise(p)\` is a number that wanders smoothly as \`p\` moves. Add a little to the ring’s distance and the ring wobbles, like one drawn by hand. The noise stretches the distance too, so the line would thicken and thin; \`level\` measures the distance again, from how quickly the number changes, and the line stays even. Try 2 or 15 in place of the 6."),
-  demo("dot: dots([[80, 60]]),
-ring: level({ p | dot(p) - 40 + 6×noise(p ÷ 10) }),
-canvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)")
+  Text("**A rule can use any numbers.** \`noise(p)\` wanders smoothly as \`p\` moves. Add a little of it to the distance, and the ring wobbles like one drawn by hand. Drag the two numbers: \`wobble\` is how far the line strays, \`size\` how wide each wave is."),
+  demo("distance: dots([[80, 60]]),
+wobble: $6, ; how far the line strays
+size: $10, ; how wide each wave is
+ring: { p | distance(p) - 40 + wobble×noise(p ÷ size) },
+(
+  Grid(4)(Text(\\"wobble\\"), Scrubber(wobble), Text(\\"size\\"), Scrubber(size)), ; ← drag the numbers
+  canvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4),
+)")
 ),
 
 ; 11 · the slope machine
@@ -297,43 +302,41 @@ s13: Grid(1)(
   head("**Fluent Tour** · 13 / 16"),
   Text("### Find the bottom by feel
 
-**Put the slope to work.** \`far\` scores a guess by its distance from 42, and \`dfar: grad(far)\` is its slope function — named just like \`df\` last room. Below: the score, the slope, and the guess itself, **live and draggable**. Slide it. Negative slope: too low. Positive: too high. **Zero: you have arrived.**"),
+**Put the slope to work.** \`far: { g | (g - 42)^2 }\` scores a guess \`g\`: 0 at 42, and more the further off it is. \`dfar: grad(far)\` is its slope function — named just like \`df\` last room. Below: the score, the slope, and the guess itself, **live and draggable**. Slide it. Negative slope: too low. Positive: too high. **Zero: you have arrived.**"),
   demo("(
   far(dial), ; score
   dfar(dial), ; slope
   Scrubber(dial), ; ← drag me
 )"),
   status({ abs(dial - 42) < 0.5 },
-    Text("✅ **Found it.** Score 0, slope 0, guess 42. You just solved an equation by feel — your hand did what the slope said."),
+    Text("✅ **Found it.** Score 0, slope 0, guess 42 — your hand did what the slope said."),
     Text("🎯 *No typing — **drag the rightmost number** until the slope reads **0**.*")
   )
 ),
 
 ; 14 · walk downhill
-guess: $(10),
-hist: $([10]),
-; the button labels are named out here so the cell reads as one short
-; expression – the names are the labels
-stepDownhill: "step downhill",
-backTo10: "back to 10",
 s14: Grid(1)(
   head("**Fluent Tour** · 14 / 16"),
   Text("### Walk downhill
 
-**You found the bottom by feel. Now walk there deliberately.** Each press of the first button is one honest step: read the slope where you stand, scale it down, move the *other* way, remember the footprint. Watch the path: long strides far out, baby steps near the bottom — the slope itself shrinks as you close in."),
-  demo("(
-  Button(stepDownhill, {
+**You found the bottom by feel. Now walk there deliberately.** Each press of **Step** is one honest step: read the slope where you stand, scale it down, move the *other* way, remember the footprint in \`hist\`. Watch the path: long strides far out, baby steps near the bottom — the slope itself shrinks as you close in. (The first line gives \`concat\` a glyph of your own, \`++\`: round brackets around a glyph name it, the way \`plus: add\` named a word.)"),
+  ; the light reads the box's last item, hist: the path lands within 1 of 42
+  challenge("(++): concat,
+guess: $0, ; where the walk starts
+hist: $([guess]), ; every place the guess has stood
+(
+  Button(\\"Step\\", {
     here: guess, ; where the guess stands
     there: here - dfar(here)*0.3, ; a small step against the slope
-    guess← there, ; move
-    hist← hist concat [there] ; remember the footprint
+    guess:= there, ; move
+    hist:= hist ++ [there] ; remember the footprint
   }),
-  Button(backTo10, { guess← 10, hist← [10] }),
-)"),
+  Button(\\"Reset\\", { guess:= 0, hist:= [guess] }),
   hist,
-  status({ abs(guess - 42) < 1 },
+)",
+    { r, s | min(abs(r_2 - 42)) < 1 },
     Text("✅ **Arrived.** Look at the path: the step size *is* the slope, so the walk brakes by itself. That graph is gradient descent, drawn by you pressing the button."),
-    Text("🎯 *No typing — press **step downhill** until the path lands within 1 of 42. (Overshot? Edit the 0.3 and see why.)*")
+    Text("🎯 *No typing — press **Step** until the path lands within 1 of 42. (Overshot? Edit the 0.3 and see why.)*")
   )
 ),
 
@@ -355,8 +358,8 @@ s15: Grid(1)(
 dscore: grad(score),
 step: {
   here: answer,
-  answer← here - dscore(here)*0.0005,
-  trail← trail concat [answer]
+  answer:= here - dscore(here)*0.0005,
+  trail:= trail concat [answer]
 },
 step iter 200×arrived,
 answer"),
@@ -369,7 +372,7 @@ answer"),
 
 ; 16 · it keeps going
 s16: Grid(1)(
-  nav("**Fluent Tour** · 16 / 16", Button("start over ↺", { room← 0 })),
+  nav("**Fluent Tour** · 16 / 16", Button("start over ↺", { room:= 0 })),
   Text("### It keeps going
 
 **That was the tour** — numbers, lists, names, functions, a drawing; then a slope, a bottom found by hand, a walk, and a value that found √42 on its own.

@@ -2615,7 +2615,7 @@ describe("the Tour's checks", () => {
     const light = unwrap(evaluateGeneration(() => (scope.status as Function)(ask, engine.scalar(1), engine.scalar(0))))
     return light === 1 ? true : light === 0 ? false : light
   }
-  const ring = (body: string) => `dot: dots([[80, 60]]),\nring: { p | ${body} },\ncanvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)`
+  const ring = (body: string) => `distance: dots([[80, 60]]),\nring: { p | ${body} },\ncanvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)`
   const rooms: [string, string[], string[]][] = [
     ["make this say 7", ["1 + 2*3"], ["7", "7 ; +*", "1 + 6 ; *", "1 + (2 * 3)", "[1 + 2*3, 7]", "[1 + 2*3, 1 + 2*3]"]],
     ["fish out the 30", ["[10, 20, 30] _ 2", "[10, 20, 30]_2"], ["30"]],
@@ -2626,9 +2626,9 @@ describe("the Tour's checks", () => {
       ["plus: add, 42", "plus: add, 40 + 2", "plus: add, plus(40, 2)", "plus: add, [40 plus 2, 40 plus 2]"]],
     ["almost. a cube is", ["cube: { x | x^3 }, cube(3)", "cube: { x | x × x × x }, ; ← almost.\ncube(3) ; done"], ["cube: { x | x^2 }, 27", "cube: { x | [x × x × x, x × x × x] }, cube(3)"]],
     // a name and a list hold the live value itself; $x is a new one, holding what x holds now
-    ["make start keep the number", ["now: x, held: (x,), start: $x, (now, held, start)", "start: $(x), start", "start: SignalCreate(x), start"],
-      ["now: x, held: (x,), start: x, (now, held, start)", "start: 0.2, start", "start: $0.3, start", "start: x + 0, start", "start: x(), start", "start: (x,), start_0"]],
-    ["a ring: 40 away", [ring("abs(dot(p) - 40)"), ring("abs(40 - dot(p))")], [ring("abs(dot(p) - 0)"), ring("0"), "dot: dots([[80, 60]]), ring: { p | abs(dot(p) - 40) }, 5"]],
+    ["make start keep the number", ["same: x, held: (x,), start: $x, (same, held, start)", "start: $(x), start", "start: SignalCreate(x), start"],
+      ["same: x, held: (x,), start: x, (same, held, start)", "start: 0.2, start", "start: $0.3, start", "start: x + 0, start", "start: x(), start", "start: (x,), start_0"]],
+    ["a ring: 40 away", [ring("distance(p) - 40"), ring("40 - distance(p)"), ring("abs(distance(p) - 40)")], [ring("distance(p) - 0"), ring("0"), ring("distance(p) - 4"), "distance: dots([[80, 60]]), ring: { p | distance(p) - 40 }, 5"]],
     ["the slope of x·x·x, at 2", ["f: { x | x^3 }, df: grad(f), df(2)", "f: { x | x^3 },\ndf: ∇(f),\ndf(2) ; ← now: the slope of x·x·x, at 2"],
       ["f: { x | x^2 }, df: grad(f), 12", "f: { x | x^3 }, df: { x | 3 × x^2 }, df(2)", "f: { x | x^3 }, df: { x | grad(f)(x) × [1, 1] }, df(2)"]],
   ]
@@ -2641,7 +2641,7 @@ describe("the Tour's checks", () => {
   test("the drawing room lights at any density", () => {
     toHost({ t: "density", value: 2 })
     try {
-      expect(lights("a ring: 40 away", ring("abs(dot(p) - 40)"))).toBe(true)
+      expect(lights("a ring: 40 away", ring("distance(p) - 40"))).toBe(true)
     } finally {
       toHost({ t: "density", value: 1 })
     }

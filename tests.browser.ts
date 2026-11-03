@@ -854,15 +854,15 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
   await page.locator("input[type=range]").first().fill("0.95")
   await solved("You changed a running program mid-flight")
   await rejected("make start keep the number", "start: x + 0, start", "stays where")
-  await typeInCell(page, "start: x + 0, start", "now: x, held: (x,), start: $x, (now, held, start)")
+  await typeInCell(page, "start: x + 0, start", "same: x, held: (x,), start: $x, (same, held, start)")
   await solved("stays where")
   await next()
 
   // 10 · draw it – one number turns the dot into a ring
   await room("Draw it")
-  const ring = (body: string) => `dot: dots([[80, 60]]),\nring: { p | ${body} },\ncanvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)`
+  const ring = (body: string) => `distance: dots([[80, 60]]),\nring: { p | ${body} },\ncanvas(160, 120) . draw(ring, [1, 0.8, 0.2], 4)`
   await rejected("a ring: 40 away", ring("0"), "You didn’t draw a circle")
-  await typeInCell(page, "ring: { p | 0 }", ring("abs(dot(p) - 40)"))
+  await typeInCell(page, "ring: { p | 0 }", ring("distance(p) - 40"))
   await solved("You didn’t draw a circle")
   await next()
 
@@ -901,12 +901,12 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
   await next()
 
   // 14 · walk downhill – each press is one gradient step, g ← 0.4g + 25.2,
-  // so it lands inside 1 of 42 in seven presses; press a few extra and stop
-  // as soon as the light turns.
+  // so from 0 it lands inside 1 of 42 in five presses; press a few extra and
+  // stop as soon as the light turns.
   await room("Walk downhill")
   const arrived = page.getByText("That graph is gradient descent")
   for (let i = 0; i < 14 && !(await arrived.isVisible()); i++) {
-    await page.getByRole("button", { name: "step downhill" }).click()
+    await page.getByRole("button", { name: "Step", exact: true }).click()
   }
   await expect(arrived).toBeVisible()
   await next()

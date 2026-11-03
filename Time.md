@@ -105,7 +105,7 @@ holds as cells, so a function on lists sees the structure.
 
 **Three ways to name what a cell holds** (the Tour's ninth room):
 
-- `old: s` is another name for the cell: it follows every write;
+- `same: s` is another name for the cell: it follows every write;
 - `(s,)` is a list holding the cell: it follows too;
 - `$s` is a new cell holding what `s` holds now: it moves only when something writes it.
   Making a cell reads what it is given.
