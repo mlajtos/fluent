@@ -2220,7 +2220,7 @@ editable: \${ 1 - training },
 `,
   "looped-dreamer": `
 ; 🔁 The Looped Dreamer – a transformer that thinks in rounds.
-; Two physical blocks (b1, b2), stored once, are revisited R=3 times, so the
+; Two physical blocks, stored once, are revisited R=3 times, so the
 ; unrolled network is N = K·R = 6 blocks deep – for a third of the weights.
 ; Every sublayer visit is post-norm, x ← rms(α·x + f(x)), with the DeepLoop
 ; scaling rule (p = ½): skip α = (2N)^½, per-matrix init gain β = (8N)^-½ –
@@ -2245,45 +2245,37 @@ D: \${ load(corpus) }, ; follows corpus edits – the weights stay
 E: ~(randn([V, C]) × 0.1),
 P: ~(randn([T, C]) × 0.1),
 Wu: ~(randn([C, V]) × 0.1),
-Wq1: ~(randn([C, C]) × β),
-Wk1: ~(randn([C, C]) × β),
-Wv1: ~(randn([C, C]) × β),
-Wo1: ~(randn([C, C]) × β),
-Wf1: ~(randn([C, F]) × β),
-Wg1: ~(randn([F, C]) × β),
-Wq2: ~(randn([C, C]) × β),
-Wk2: ~(randn([C, C]) × β),
-Wv2: ~(randn([C, C]) × β),
-Wo2: ~(randn([C, C]) × β),
-Wf2: ~(randn([C, F]) × β),
-Wg2: ~(randn([F, C]) × β),
+; a block's weights: one of each per block, along the first axis
+Wq: ~(randn([K, C, C]) × β),
+Wk: ~(randn([K, C, C]) × β),
+Wv: ~(randn([K, C, C]) × β),
+Wo: ~(randn([K, C, C]) × β),
+Wf: ~(randn([K, C, F]) × β),
+Wg: ~(randn([K, F, C]) × β),
 
 rms: { x | x ÷ √(mean(x × x, -1, 1) + 0.001) }, ; the 1 keeps the reduced axis
 quickGelu: { x | x × sigmoid(x × 1.702) }, ; GELU, through a sigmoid
 nmask: where(0..<T ⊗(≥) 0..<T, fill([T, T], 0), fill([T, T], -9999)),
-att: { x, Wq, Wk, Wv, Wo |
-  q: x ⊡ Wq,
-  k: x ⊡ Wk,
-  v: x ⊡ Wv,
+att: { x, b |
+  q: x ⊡ Wq_b,
+  k: x ⊡ Wk_b,
+  v: x ⊡ Wv_b,
   a: softmax(einsum("btc,bsc->bts", q, k) ÷ (√C) + nmask),
-  a ⊡ v ⊡ Wo
+  a ⊡ v ⊡ Wo_b
 },
-b1: { x |
-  h: rms(x×α + att(x, Wq1, Wk1, Wv1, Wo1)),
-  rms(h×α + quickGelu(h ⊡ Wf1)⊡Wg1)
+block: { x, b |
+  h: rms(x×α + att(x, b)),
+  f: quickGelu(h ⊡ Wf_b) ⊡ Wg_b,
+  rms(h×α + f)
 },
-b2: { x |
-  h: rms(x×α + att(x, Wq2, Wk2, Wv2, Wo2)),
-  rms(h×α + quickGelu(h ⊡ Wf2)⊡Wg2)
-},
-cycle: { x | b2(b1(x)) }, ; one round: the whole stack, once
+cycle: { x | block(block(x, 0), 1) }, ; one round: the whole stack, once
 
 embed: { ids | oneHot(ids, V) ⊡ E + P },
 model: { ids | cycle(cycle(cycle(embed(ids)))) ⊡ Wu }, ; training unrolls R=3 rounds
 modelAt: { ids, r | (cycle ⍣ r)(embed(ids)) ⊡ Wu }, ; dreaming picks its own r
 
 ; --- what it learns from: B random windows a step; a tenth held out to score it ---
-B: 64,
+B: 256, ; windows a step: enough for the GPU to work through, not to wait
 cut: { floor((#D) × 0.9) }, ; windows past the cut are held out – never trained on
 lossOn: { d | crossEntropy(slice(d, [0, 1], [-1, T]), model(slice(d, [0, 0], [-1, T]))) },
 loss: { lossOn(D_floor(⚄([B]) × cut())) },
@@ -2311,10 +2303,8 @@ training: $1,
 ; weight decay – rms-normalized blocks shrink until they blow up
 opt: adamw(0.01, 0),
 step: $0,
-; how large a block's weights are: the root of the sum of their squares
-size: { ws | √(fold(ws, { total, w | total + Σ(w^2) }, 0)) },
-block1: (Wq1, Wk1, Wv1, Wo1, Wf1, Wg1),
-block2: (Wq2, Wk2, Wv2, Wo2, Wf2, Wg2),
+; how large block b's weights are: the root of the sum of their squares
+size: { b | √(fold((Wq, Wk, Wv, Wo, Wf, Wg), { total, w | total + Σ(w_b^2) }, 0)) },
 ; a row each time it measures: step, training score, held-out score, and the
 ; size of each block's weights
 history: $fill([0, 5], 0),
@@ -2325,7 +2315,7 @@ stride: $20, ; steps between measurements
     step← step + 1,
     s: step,
     when(s % stride = 0, {
-      measured: [s, score(0, cut()), score(cut(), (#D) - cut()), size(block1), size(block2)],
+      measured: [s, score(0, cut()), score(cut(), (#D) - cut()), size(0), size(1)],
       history← concat((history, measured ⍴ [1, 5])),
       ; the plot keeps the whole story, bounded: when it fills up,
       ; thin the history to every other row and measure half as often
@@ -2352,7 +2342,7 @@ finish: \${
 probeS: fill([T], 0) ++ enc("sophia"),
 probe: slice(probeS, [-T]),
 attProbe: { x |
-  softmax(einsum("btc,bsc->bts", x ⊡ Wq1, x ⊡ Wk1) ÷ (√C) + nmask) ⍴ [T, T]
+  softmax(einsum("btc,bsc->bts", x ⊡ Wq_0, x ⊡ Wk_0) ÷ (√C) + nmask) ⍴ [T, T]
 },
 attn1: \${ attProbe(embed(probe ⍴ [1, T])) },
 attn3: \${ attProbe(cycle(cycle(embed(probe ⍴ [1, T])))) },
