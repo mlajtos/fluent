@@ -817,6 +817,79 @@ fbm: NoiseFractal: doc({ p, octaves | Σ(NoiseOctaves(p, octaves), -1) }, "fbm(p
 turbulence: NoiseTurbulence: doc({ p, octaves | Σ(abs(NoiseOctaves(p, octaves)), -1) }, "turbulence(p, octaves)", "Octaves of noise like fbm, each folded up at 0 by abs before they add: creases where it turns, the look of fire, marble and smoke.", "turbulence([0.5, 0.5], 1) = abs(noise([0.5, 0.5]))"),
 smoothstep: TensorSmoothStep: doc({ x, a, b | t: clamp(x - a ÷ (b - a), 0, 1), t^2 × (3 - 2×t) }, "smoothstep(x, a, b)", "A smooth step from 0, where x is a, to 1, where x is b – flat at both ends, so it starts and stops gently. Past either end it holds, as clamp holds x.", "smoothstep([0, 0.5, 2], 0, 1) = [0, 0.5, 1]"),
 
+; Dragging – a state moved by hand. drag(model, spots, move, view) shows view(model); press
+; near one of spots(model) and drag, and it shows the state move gives, which a release
+; keeps in model. A move takes the state the drag began from, which spot is in hand, where
+; that spot should go, and spots, and gives the state to show. Moves compose with . as
+; steps of a picture do: vary . snap(slots, 20) . constrain(f)
+drag: Drag: doc({ model, spots, move, view, radius |
+  r: cond(guard(identical(radius, ◌), { 16 }), { radius }),
+  pointer: $[0, 0],
+  from: $[0, 0],
+  start: $(model),
+  held: $(-1),
+  press: {
+    d: norm(spots(model) - pointer, -1),
+    held:= where(min(d) < r, argmin(d), -1),
+    from:= pointer,
+    start:= model
+  },
+  ; while a spot is in hand, the state move gives for it, the spot gone as far as the
+  ; pointer has – worked out once a frame, however often the pointer moves
+  shown: ${
+    cond(guard(held ≥ 0, {
+      move(start, held, spots(start)_held + (pointer - from), spots)
+    }), { model })
+  },
+  release: {
+    model:= shown,
+    held:= -1
+  },
+  picture: ${ view(shown) },
+  w: shape(picture)_1 ÷ Density(),
+  h: shape(picture)_0 ÷ Density(),
+  Layers(picture, Pointer(pointer, [[0, w], [0, h]], press, release))
+}, "drag(model, spots, move, view, radius?)", "A picture you can move things in: view(model), where a press within radius units of one of spots(model), [n, 2] – 16 unless given – takes that spot in hand. As the pointer moves the picture shows move's state for the spot – vary, closest(reach) or blend(reach), with snap and constrain after them – and letting go keeps it in model.", "drag($[50, 50], { s | s ⍴ [1, 2] }, vary, { s | canvas(100, 100) . draw(dots(s ⍴ [1, 2]), 1, 8) })"),
+vary: DragVary: doc({ s, i, t, spots |
+  ; a Levenberg–Marquardt step: the least change of the state that moves spot i to t, as
+  ; far as ∇ of its two coordinates sees; one step lands when the spot moves in step
+  step: { x |
+    p: spots(x)_i,
+    g0: ∇({ y | spots(y)_i_0 })(x),
+    g1: ∇({ y | spots(y)_i_1 })(x),
+    a: Σ(g0^2),
+    b: Σ(g0 × g1),
+    d: Σ(g1^2),
+    damp: (a + d)×1e-4 + 1e-12,
+    det: (a + damp)×(d + damp) - b^2,
+    r0: p_0 - t_0,
+    r1: p_1 - t_1,
+    u: ((d + damp)×r0 - b×r1)÷det,
+    v: ((a + damp)×r1 - b×r0)÷det,
+    x - u×g0 - v×g1
+  },
+  (step ⍣ 6)(s)
+}, "vary", "The move that changes the numbers of the state as little as it can to bring the spot in hand to the pointer, with ∇ saying how each spot moves with them: drag a point and it follows, drag a curve and its handles bend it, drag a knob and its angle turns. A spot that can't reach the pointer goes as near as it can.", "vary([0, 0], 0, [3, 4], { s | s ⍴ [1, 2] }) ≈ [3, 4]"),
+closest: DragClosest: doc({ reach | { s, i, t, spots |
+  states: reach(s, i),
+  ; where the spot in hand would be in each state, read off spots
+  landing: stack(ListMap(unstack(states), { c | spots(c)_i })),
+  states_(argmin(norm(landing - t, -1)))
+} }, "closest(reach)", "The move to one of the states reach(s, i) gives – a row each – for spot i: the state that puts the spot in hand nearest the pointer. Reorder a list, put a bead in another place on a ring.", "closest({ s, i | [[0], [10]] })([0], 0, [9, 0], { s | stack((s, s × 0), -1) }) = [10]"),
+blend: DragBlend: doc({ reach | { s, i, t, spots |
+  states: reach(s, i),
+  landing: stack(ListMap(unstack(states), { c | spots(c)_i })),
+  ; each state weighs as one over its spot's squared distance from the pointer, so at a
+  ; state's spot it is that state
+  near: 1 ÷ (Σ((landing - t)^2, -1) + 1e-6),
+  Σ(moveaxis(states, 0, -1) × (near ÷ Σ(near)), -1)
+} }, "blend(reach)", "The move that blends the states reach(s, i) gives, by where they put the spot in hand: at one of those places it is that state, and between them a mix, more of the nearer ones.", "blend({ s, i | [[0], [10]] })([0], 0, [10, 0], { s | stack((s, s × 0), -1) }) ≈ [10]"),
+snap: DragSnap: doc({ points, r | { move | { s, i, t, spots |
+  d: norm(points - t, -1),
+  move(s, i, where(min(d) < r, points_(argmin(d)), t), spots)
+} } }, "move . snap(points, r)", "move, with the spot in hand pulled onto the nearest of points, [n, 2], whenever it comes within r units of one – a shelf's slots, a grid.", "(vary . snap([[10, 10]], 5))([0, 0], 0, [8, 9], { s | s ⍴ [1, 2] }) ≈ [10, 10]"),
+constrain: DragConstrain: doc({ f | { move | { s, i, t, spots | f(move(s, i, t, spots)) } } }, "move . constrain(f)", "move, with f applied to every state it gives: keep a knob's angle in its range, a range's ends in order.", "(vary . constrain({ s | clamp(s, 0, 5) }))([0, 0], 0, [8, 9], { s | s ⍴ [1, 2] }) = [5, 5]"),
+
 ; Plotting – lines on one pair of axes, drawn with the words above, and text drawn as a
 ; shape: letters, in a font. A font is the codes of its characters, in order; each one's
 ; width, in thousandths of the font's size; and their glyphs' edges, [glyphs, E, 6], as

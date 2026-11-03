@@ -625,6 +625,37 @@ const Point2DView = ({ d }: { d: UIDesc }) => {
   )
 }
 
+// A surface over the layers below it: while a button is held it writes where the pointer is
+// into its target, and runs press and release as the button goes down and up. It takes the
+// press from the browser, so a drag never lifts the picture under it out as an image.
+const PointerView = ({ d }: { d: UIDesc }) => {
+  useSignals()
+  const { x0, y0, spanX, spanY } = d.props as PointProps
+  const { write } = useBound(d.slots.target)
+  const callback = (slot?: Desc) => slot?.k === "callback" ? slot.id : undefined
+  const press = callback(d.slots.press), release = callback(d.slots.release)
+  // write the pointer's place, then run the callback
+  const at = (e: React.PointerEvent<HTMLDivElement>, then?: number) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    write([x0 + (e.clientX - rect.left) / rect.width * spanX, y0 + (e.clientY - rect.top) / rect.height * spanY])
+    if (then !== undefined) { call(then) }
+  }
+  return (
+    <div
+      className="absolute inset-0 pointer-events-auto touch-none select-none cursor-grab active:cursor-grabbing [-webkit-user-drag:none]"
+      onPointerDown={(e) => {
+        e.preventDefault()
+        e.currentTarget.setPointerCapture(e.pointerId)
+        at(e, press)
+      }}
+      onPointerMove={(e) => { if (e.buttons) { at(e) } }}
+      onPointerUp={(e) => at(e, release)}
+      onPointerCancel={(e) => at(e, release)}
+      onDragStart={(e) => e.preventDefault()}
+    />
+  )
+}
+
 // The path a point has taken: the last 500 places it was shown at
 const TrailView = ({ d }: { d: UIDesc }) => {
   useSignals()
@@ -673,7 +704,7 @@ const CodeEditorWidgetView = ({ d }: { d: UIDesc }) => {
 const WIDGETS: Record<string, (p: { d: UIDesc }) => JSX.Element> = {
   Text: TextView, Button: ButtonView, TextEditor: TextEditorView, Slider: SliderView, Checkbox: CheckboxView,
   Scrubber: ScrubberView, ImageUpload: ImageUploadView, Grid: GridView, Center: CenterView, Layers: LayersView,
-  Point2D: Point2DView, Trail: TrailView, PointPlot: PointPlotView, Code: CodeWidgetView, CodeEditor: CodeEditorWidgetView,
+  Point2D: Point2DView, Pointer: PointerView, Trail: TrailView, PointPlot: PointPlotView, Code: CodeWidgetView, CodeEditor: CodeEditorWidgetView,
   Print: ({ d }) => <Framed d={d.children[0] ?? { k: "null" }} />,
   PrettyPrint: ({ d }) => <View d={d.children[0] ?? { k: "null" }} />,
 }
@@ -1151,7 +1182,8 @@ function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
   return (
     <div className="grid gap-1">
       <PaintedCanvas id={d.id} style={{ width: "100%", maxWidth: `${width}px`, minHeight: "4px", aspectRatio: `${width / height}`, imageRendering: m > 1 ? "pixelated" : "auto" }} />
-      <div className="flex items-center gap-2 text-xs text-neutral-500 font-mono">
+      {/* empty, it takes no row: layers over the picture map onto the picture alone */}
+      <div className="flex items-center gap-2 text-xs text-neutral-500 font-mono empty:hidden">
         {values && <Legend range={values} ramp={view === "heat"} />}
         {view === "heat" && d.shape.length > 2 && <span className="ml-2">[{d.shape.join(", ")}]</span>}
       </div>

@@ -674,6 +674,26 @@ test("Layers: a lower Point2D is draggable, not just the top one", async ({ page
   await expect(panel(page)).toContainText(/0\.5/)  // a moved off 0.25 toward the centre
 })
 
+test("Pointer writes where the pointer is over the picture, and runs press and release", async ({ page }) => {
+  // the layer maps onto the picture alone: a picture with no legend has no row under it
+  await open(page, `pointer: $[0, 0], n: $0, (
+  Layers(canvas(200, 100), Pointer(pointer, [[0, 200], [0, 100]], { n:= n + 1 }, { n:= n + 10 })),
+  Text(String(pointer)),
+  Text(String(n)),
+)`)
+  const canvas = panel(page).locator("canvas").first()
+  await expect(canvas).toBeVisible({ timeout: 20_000 })
+  const bb = (await canvas.boundingBox())!
+  const shown = async () => (await panel(page).innerText()).replace(/\s+/g, " ")
+  await page.mouse.move(bb.x + bb.width * 0.25, bb.y + bb.height * 0.5)
+  await page.mouse.down()
+  await expect.poll(shown).toContain("[50, 50] 1")
+  await page.mouse.move(bb.x + bb.width * 0.75, bb.y + bb.height * 0.2, { steps: 5 })
+  await expect.poll(shown).toContain("[150, 20] 1")
+  await page.mouse.up()
+  await expect.poll(shown).toContain("[150, 20] 11")
+})
+
 // ————————————————————————————————————————————————————————————————————
 // Embedded editors, reactive cells, and the Tour – the IDE surface the
 // tour build flushed out. Each test pins a bug that shipped once.

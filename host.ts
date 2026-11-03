@@ -589,6 +589,15 @@ const Point2D = (target: Value, range?: Value, color?: Value) =>
 // The path a point has taken
 const Trail = (target: Value, range?: Value, color?: Value) =>
   widget("Trail", { ...pointMapping(range), color: String(color ?? "white") }, { target })
+// A surface over the layers below it, for dragging: while a button is held it writes where
+// the pointer is, a [2] in a data range, into target; press runs as the button goes down,
+// after that first write, and release as it comes up
+const Pointer = (target: Value, range?: Value, press?: Value, release?: Value) =>
+  widget("Pointer", pointMapping(range), {
+    target,
+    ...(typeof press === "function" && { press: new Callback(press) as unknown as Value }),
+    ...(typeof release === "function" && { release: new Callback(release) as unknown as Value }),
+  })
 
 // PointPlot(x, y) draws y against x with connecting lines and dots; PointPlot(y) alone
 // plots y against its index
@@ -661,7 +670,7 @@ const LoadSafeTensorFromURL = (url?: Value) => url == null
   : arriving("LoadSafeTensorFromURL", [], () => withProxy(String(url), cachedFetch).then(parseSafetensors))
 
 // A widget's places: the cell it writes, and the slots and children it shows live
-for (const f of [Text, Button, Slider, Checkbox, Scrubber, ImageUpload, Center, Point2D, Trail, Code, CodeEditor, Print]) { setMeta(f, { places: ["cell"] }) }
+for (const f of [Text, Button, Slider, Checkbox, Scrubber, ImageUpload, Center, Point2D, Trail, Pointer, Code, CodeEditor, Print]) { setMeta(f, { places: ["cell"] }) }
 setMeta(TextEditor, { places: ["cell", "cell"] })
 setMeta(Layers, { places: "cell" })
 
@@ -818,7 +827,7 @@ export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
   extendEnvironment({
     Documentation: Text(Documentation),
     CodePrint,
-    Button, Center, Checkbox, Grid, ImageUpload, Layers, MousePosition, Point2D, PointPlot, Trail, Slider, Scrubber,
+    Button, Center, Checkbox, Grid, ImageUpload, Layers, MousePosition, Point2D, Pointer, PointPlot, Trail, Slider, Scrubber,
     Text, TextEditor, Code, CodeEditor,
     Fetch, LoadSafeTensorFromURL, LoadTensorFromImageUrl, Camera, Microphone, MicrophoneSpectrum, SampleRate, Time,
     Print, PrettyPrint,

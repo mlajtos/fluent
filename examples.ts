@@ -521,6 +521,477 @@ pred: \${ f(grid) },
   \${ plot(0..<(#losses) × 10, (√(losses), √(tests)), ("train", "unseen")) },
 )
 `,
+"draw-and-slope": `
+; ⛰ Draw and differentiate – a hill, a contour on it, and the way uphill
+
+yellow: [1, 0.8, 0.2],
+blue: [0.35, 0.65, 1],
+
+; a round bump, 1 high at its top and about w wide
+bump: { p, top, w |
+  d: norm(p - top, -1),
+  exp(-(d^2 ÷ w^2))
+},
+hill: { p |
+  100×bump(p, [120, 90], 60)
+  + 70×bump(p, [225, 75], 40)
+},
+
+c: $50, ; drag me
+spot: $[90, 130], ; drag me (orange)
+
+; level(f) draws where f is 0: here, where the hill is c high
+contour: level({ p | hill(p) - c }),
+
+; the way uphill, longer where the hill is steeper
+up: grad(hill)(spot),
+arrow: line(stack((spot, spot + up×25))),
+
+; draw it
+picture: canvas(320, 200)
+  . draw(contour, yellow, 2)
+  . draw(arrow, blue, 2),
+
+; the picture's corners, so the orange dot lands where it is drawn
+view: [[0, 320], [0, 200]],
+(
+  Text("# ⛰ Draw and differentiate"),
+  Text("The **yellow** line is where the hill is **c** high. The **blue** arrow is grad(hill) at the **orange** dot: it points uphill. Drag the dot onto the line, and the arrow leaves it square on."),
+  Grid(2)(Text("c"), Scrubber(c)),
+  Grid(2)(Text("height at the dot"), hill(spot)),
+  Layers(picture, Point2D(spot, view, "orange")),
+)
+`,
+"fit-a-circle": `
+; ⭕ Fit a circle – the circle nearest five spots, found by walking downhill
+
+yellow: [1, 0.8, 0.2],
+blue: [0.35, 0.65, 1],
+
+; five spots on the edge of something round – drag us (orange)
+a: $[99, 78],
+b: $[150, 32],
+c: $[228, 66],
+d: $[224, 137],
+e: $[128, 160],
+spots: stack((a, b, c, d, e)), ; [5, 2]
+
+; the circle, which the walk moves
+middle: ~[160, 100],
+radius: ~40,
+
+; how far each spot is from the ring – 0 when it sits on it
+miss: { norm(spots - middle, -1) - radius },
+𝓛: { mean(miss()^2) },
+
+; walk downhill, 60 steps a second
+opt: sgd(0.1),
+{ opt(𝓛) } ⟳ Time()×60,
+
+; draw it
+ring: { p | norm(p - middle, -1) - radius },
+picture: canvas(320, 200)
+  . draw(ring, yellow, 2)
+  . draw(dots(middle ⍴ [1, 2]), blue, 6),
+
+; the picture's corners, so the orange dots land where they are drawn
+view: [[0, 320], [0, 200]],
+(
+  Text("# ⭕ Fit a circle"),
+  Text("Five spots measured on the edge of something round: a table, a pond, a tree trunk. No formula gives the circle nearest all five, but the miss has a slope. Drag the **orange** spots: the **yellow** ring follows, its middle in **blue**."),
+  Grid(2)(Text("radius"), radius),
+  Layers(
+    picture,
+    Point2D(a, view, "orange"),
+    Point2D(b, view, "orange"),
+    Point2D(c, view, "orange"),
+    Point2D(d, view, "orange"),
+    Point2D(e, view, "orange"),
+  ),
+)
+`,
+"drag-list": `
+; ☰ Reorder a list – drag a row; the others make room
+
+W: 280,
+H: 200,
+ink: [0.9, 0.9, 0.9],
+dim: [0.2, 0.2, 0.2],
+gray: [0.5, 0.5, 0.5],
+
+tasks: (
+  "Buy milk",
+  "Call mom",
+  "Fix the bike",
+  "Write the report",
+  "Water the plants",
+),
+n: #tasks,
+
+; the model: the row each task sits in
+row: $(0 ..< n),
+
+; the middle of each task's row: a press anywhere on the row takes it
+centers: { s | stack((s × 0 + 140, s×36 + 28), -1) },
+
+; the states a drag of task i reaches: task i in row j, the rest moved over
+reach: { s, i |
+  j: (0 ..< n) ⍴ [n, 1],
+  k: s_i,
+  shift: (k < s)×(s ≤ j) - (j ≤ s)×(s < k),
+  where(0..<n = i, j, s - shift)
+},
+
+; draw a state: each task's row, its handle and its words
+card: { y | { p |
+  d: abs(p - [140, y + 18]) - [124, 14],
+  norm(d ⌈ 0, -1) + (max(d, -1) ⌊ 0) - 4
+} },
+grip: { y |
+  ys: [y + 12, y + 18, y + 24],
+  segments(stack((ys × 0 + 16, ys), -1), stack((ys × 0 + 32, ys), -1))
+},
+view: { s |
+  drawTask: { picture, t |
+    y: s_t×36 + 10,
+    picture
+      . paint(card(y), solid(dim))
+      . draw(grip(y), gray, 2)
+      . paint(letters(tasks_t, [44, y + 9], 15), solid(ink))
+  },
+  fold(0..<n, drawTask, canvas(W, H))
+},
+(
+  Text("# ☰ Reorder a list"),
+  Text("Drag a task up or down: the others make room, and it stays where you let go. The program says only which orders a drag can reach – closest picks the one that puts the row under the pointer."),
+  drag(row, centers, closest(reach), view, 130),
+)
+`,
+"drag-knob": `
+; 🎚 A volume knob – drag its dot around; it stops at 0 and at 11
+
+W: 220,
+H: 200,
+ink: [0.9, 0.9, 0.9],
+dim: [0.25, 0.25, 0.25],
+gold: [1, 0.8, 0.2],
+
+; the model: the volume, 0 to 11
+volume: $4,
+
+; which way the knob points: from lower left, round the top, to lower right
+turn: { v | 0.75×π + v÷11×1.5×π },
+tip: { v | [110, 100] + 60×stack((cos(turn(v)), sin(turn(v))), -1) },
+
+; the track, drawn once
+track: canvas(W, H) . draw(line(arc([110, 100], 60, [0.75×π, 2.25×π], 48)), dim, 6),
+
+; draw a state: how far it is turned, the dot and the number
+view: { v |
+  label: String(round(v)),
+  track
+    . draw(line(arc([110, 100], 60, [0.75×π, turn(v)], 48)), gold, 6)
+    . draw(dots(tip(v) ⍴ [1, 2]), ink, 18)
+    . paint(letters(label, [110 - (#label)×8.4, 86], 28), solid(ink))
+},
+(
+  Text("# 🎚 A volume knob"),
+  Text("Drag the dot around the track. Nothing says how an angle follows a pointer: vary finds the volume that puts the dot nearest it, and constrain keeps the volume between 0 and 11."),
+  drag(volume, { v | tip(v) ⍴ [1, 2] }, vary . constrain({ v | clamp(v, 0, 11) }), view),
+)
+`,
+"drag-range": `
+; ⏱ Pick a time range – drag an end, or the bar between to move both
+
+W: 300,
+H: 110,
+ink: [0.9, 0.9, 0.9],
+dim: [0.35, 0.35, 0.35],
+blue: [0.35, 0.65, 1],
+
+; the model: from and to, in hours
+span: $[9, 13],
+
+; where an hour sits on the line
+x: { h | 18 + h×11 },
+
+; the two ends, then the bar's middle
+spots: { s | stack(([x(s_0), 50], [x(s_1), 50], [x(s_0 + s_1 ÷ 2), 50])) },
+
+; quarter hours, in the day, in order
+tidy: { s | sort(clamp(round(s × 4) ÷ 4, 0, 24)) },
+
+; the day, its hours and their numbers, drawn once
+ticks: x(0 ..< 25),
+top: stack((ticks, ticks × 0 + 58), -1),
+hourLabel: { picture, h |
+  picture . paint(letters(String(h), [x(h) - 4, 70], 12), solid(dim))
+},
+day: fold([0, 6, 12, 18, 24], hourLabel, canvas(W, H))
+  . draw(line([[x(0), 50], [x(24), 50]]), dim, 4)
+  . draw(segments(top, top + [0, 5]), dim, 1),
+
+; draw a state: the range and its ends, on the day
+view: { s |
+  ends: stack(([x(s_0), 50], [x(s_1), 50])),
+  day
+    . draw(line(ends), blue, 8)
+    . draw(dots(ends), ink, 14)
+},
+(
+  Text("# ⏱ Pick a time range"),
+  Text("Drag either end, or grab the bar in the middle to move the whole range. constrain rounds to quarter hours and keeps the ends in the day, in order."),
+  drag(span, spots, vary . constrain(tidy), view),
+  Text(concat(("From ", String(span_0), " h to ", String(span_1), " h"))),
+)
+`,
+"drag-crop": `
+; ✂ Crop a picture – drag a corner to resize, the middle to move
+
+W: 300,
+H: 200,
+ink: [0.95, 0.95, 0.95],
+sky: [[0.1, 0.2, 0.45], [0.35, 0.55, 0.8], [0.95, 0.85, 0.6]],
+
+; a picture to crop: clouds, from fractal noise
+photo: canvas(W, H) . paint({ p | fbm(p ÷ 60, 4)×0.5 + 0.5 }, ramp(sky)),
+
+; the model: the frame's left, top, right and bottom
+frame: $[70, 40, 230, 160],
+
+; its four corners, then its middle
+spots: { f |
+  stack((
+    [f_0, f_1],
+    [f_2, f_1],
+    [f_2, f_3],
+    [f_0, f_3],
+    [f_0 + f_2 ÷ 2, f_1 + f_3 ÷ 2],
+  ))
+},
+
+; the left stays left of the right, the top above the bottom
+inOrder: { f | [f_0 ⌊ f_2, f_1 ⌊ f_3, f_0 ⌈ f_2, f_1 ⌈ f_3] },
+
+; where each pixel of the picture is, x then y
+xy: moveaxis(pixels(photo), -1, 0),
+
+; draw a state: the picture, dimmed outside the frame, and the frame
+view: { f |
+  inside: (f_0 ≤ xy_0)×(xy_0 ≤ f_2)×(f_1 ≤ xy_1)×(xy_1 ≤ f_3),
+  corners: spots(f)_(0 ..< 4),
+  where(unsqueeze(inside, -1), photo, photo × 0.3)
+    . draw(line(concat((corners, corners_[0]))), ink, 1.5)
+    . draw(dots(spots(f)), ink, 9)
+},
+(
+  Text("# ✂ Crop a picture"),
+  Text("Drag a corner to resize the frame, or its middle to move it. The middle is the corners' average, so vary moves all four together – nothing else says how."),
+  drag(frame, spots, vary . constrain(inOrder), view),
+  Text(concat((String(round(frame_2 - frame_0)), " × ", String(round(frame_3 - frame_1))))),
+)
+`,
+"drag-graph": `
+; 🕸 Move the nodes – drag a node; it snaps to the grid, and its lines follow
+
+W: 300,
+H: 200,
+dim: [0.4, 0.4, 0.4],
+faint: [0.2, 0.2, 0.2],
+gold: [1, 0.8, 0.2],
+
+; the model: where each node sits
+nodes: $[[60, 60], [180, 40], [120, 120], [240, 140], [60, 160]],
+
+; the lines, as the two nodes each joins
+edges: [[0, 1], [0, 2], [1, 2], [2, 3], [1, 3], [2, 4]],
+ends: transpose(edges),
+
+; a point every 20 units
+grid: stack(meshgrid(0..<16 × 20, 0..<11 × 20), -1) ⍴ [-1, 2],
+
+; the grid, drawn once
+paper: canvas(W, H) . draw(dots(grid), faint, 2),
+
+; draw a state: the lines, then the nodes
+view: { s |
+  paper
+    . draw(segments(s_(ends_0), s_(ends_1)), dim, 2)
+    . draw(dots(s), gold, 18)
+},
+
+; how long all the lines are
+wire: { s | Σ(norm(s_(ends_0) - s_(ends_1), -1)) },
+(
+  Text("# 🕸 Move the nodes"),
+  Text("Drag a node: it snaps to the grid, and the lines that join it follow."),
+  drag(nodes, { s | s }, vary . snap(grid, 10), view),
+  Text(concat(("Wire: ", String(round(wire(nodes))), " units"))),
+)
+`,
+"drag-tiles": `
+; 🧩 Tiles and a shelf – drag tiles anywhere; near the shelf they snap in
+
+W: 320,
+H: 200,
+dim: [0.35, 0.35, 0.35],
+gold: [1, 0.8, 0.2],
+
+slots: [[70, 50], [130, 50], [190, 50], [250, 50]],
+
+; a tile's shape: a square with round corners around c
+box: { c | { p |
+  d: abs(p - c) - 12,
+  norm(d ⌈ 0, -1) + (max(d, -1) ⌊ 0) - 6
+} },
+
+; the model: where each tile sits
+tiles: $[[130, 50], [180, 140], [80, 150]],
+
+; draw a state: the shelf's slots, then the tiles
+outline: { picture, c | picture . draw(box(c), dim, 2) },
+piece: { picture, c | picture . paint(box(c), solid(gold)) },
+shelf: fold(unstack(slots), outline, canvas(W, H)),
+view: { s | fold(unstack(s), piece, shelf) },
+(
+  Text("# 🧩 Tiles and a shelf"),
+  Text("Drag a tile anywhere; near the shelf it snaps into a slot – the move is vary, then snap."),
+  drag(tiles, { s | s }, vary . snap(slots, 20), view),
+)
+`,
+"drag-curve": `
+; 〰 Pull a curve – grab it anywhere and pull; ∇ moves its handles to follow
+
+W: 320,
+H: 200,
+blue: [0.35, 0.65, 1],
+gray: [0.4, 0.4, 0.4],
+pink: [0.95, 0.4, 0.8],
+
+ends: [[30, 150], [290, 150]],
+
+; the model: the two handles between the ends
+handles: $[[110, 40], [210, 40]],
+
+; 64 points along the curve, then every spot to grab: those and the handles
+curve: { h | bezier(concat((ends_[0], h, ends_[1])), 64) },
+points: { h | concat((curve(h), h)) },
+
+; draw a state
+view: { h |
+  canvas(W, H)
+    . draw(line(concat((ends_[0], h, ends_[1]))), gray, 1)
+    . draw(line(curve(h)), blue, 3)
+    . draw(dots(h), pink, 9)
+},
+(
+  Text("# 〰 Pull a curve"),
+  Text("Grab the **blue** curve anywhere, or a **pink** handle, and pull. Nothing says how a handle should move: vary finds, by ∇, the least move that brings the point in your hand to the pointer."),
+  drag(handles, points, vary, view),
+)
+`,
+"drag-face": `
+; 🙂 A face between faces – drag the mouth's corner; the face blends three
+
+W: 240,
+H: 240,
+ink: [0.9, 0.9, 0.9],
+dim: [0.35, 0.35, 0.35],
+gold: [1, 0.8, 0.2],
+
+; a face is three numbers: smile, brows raised, eyes and mouth open
+happy: [1, 0.3, 0.1],
+sad: [-1, -0.5, 0.1],
+surprised: [0, 1, 1],
+faces: stack((happy, sad, surprised)),
+
+; where the mouth's right corner sits, for one face or a row of them
+corner: { f |
+  c: moveaxis(f, -1, 0),
+  stack((165 - c_2×35, 170 - c_0×24), -1)
+},
+
+; the lips: side 1 is the upper, -1 the lower
+lip: { f, side |
+  smile: f_0,
+  open: f_2,
+  t: linspace([-1, 1], 24),
+  y: 170 - t^2×smile×24 - (1 - t^2)×side×open×14,
+  stack((120 + t×(45 - open×35), y), -1)
+},
+
+; the model: the face shown
+face: $(happy),
+
+; the head, and where the corner sits on each of the three faces, drawn once
+head: canvas(W, H)
+  . draw(dots(corner(faces)), dim, 6)
+  . draw({ p | norm(p - [120, 120], -1) - 92 }, dim, 2),
+
+; draw a state
+view: { f |
+  brow: 82 - f_1×12,
+  head
+    . draw(dots([[95, 108], [145, 108]]), ink, 6 + f_2×10)
+    . draw(line(stack(([80, brow], [108, brow]))), ink, 3)
+    . draw(line(stack(([132, brow], [160, brow]))), ink, 3)
+    . draw(line(lip(f, 1)), ink, 3)
+    . draw(line(lip(f, -1)), ink, 3)
+    . draw(dots(corner(f) ⍴ [1, 2]), gold, 9)
+},
+(
+  Text("# 🙂 A face between faces"),
+  Text("Drag the **gold** corner of the mouth: up is happy, down is sad, in toward the middle is surprised. blend mixes the three faces by how near the pointer is to where each puts the corner – the small dots."),
+  drag(face, { f | corner(f) ⍴ [1, 2] }, blend({ f, i | faces }), view),
+)
+`,
+"drag-beads": `
+; ⭕ Ring of beads – drag a bead around the ring, and the others make room
+
+W: 240,
+H: 240,
+gray: [0.3, 0.3, 0.3],
+colors: [
+  [0.95, 0.45, 0.45],
+  [0.95, 0.75, 0.3],
+  [0.45, 0.8, 0.5],
+  [0.4, 0.65, 0.95],
+  [0.7, 0.5, 0.9],
+],
+
+; where slot k sits on the ring
+slot: { k |
+  a: k×2×π÷5 - π÷2,
+  [120, 120] + 80×stack((cos(a), sin(a)), -1)
+},
+
+; the model: the slot each bead sits in
+at: $(0 ..< 5),
+
+; the states a drag of bead b reaches: b in slot j, the rest moved over
+reach: { s, b |
+  j: (0 ..< 5) ⍴ [5, 1],
+  k: s_b,
+  shift: (k < s)×(s ≤ j) - (j ≤ s)×(s < k),
+  where(0..<5 = b, j, s - shift)
+},
+
+; the ring, drawn once
+ring: canvas(W, H) . draw({ p | norm(p - [120, 120], -1) - 80 }, gray, 2),
+
+; draw a state
+view: { s |
+  bead: { picture, i |
+    picture . draw(dots(slot(s_i) ⍴ [1, 2]), colors_i, 24)
+  },
+  fold(0..<5, bead, ring)
+},
+(
+  Text("# ⭕ Ring of beads"),
+  Text("Drag a bead around the ring: the others make room. The program lists the states a drag can reach, and closest picks the one whose drawing puts the bead nearest the pointer."),
+  drag(at, slot, closest(reach), view),
+)
+`,
 "loss-landscape": `
 ; Touch the Loss Landscape – one loss definition drives both the surface and the descent.
 ; Edit it live.
