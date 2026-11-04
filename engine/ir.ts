@@ -123,9 +123,14 @@ export const recip = un("RECIPROCAL"); export const exp = un("EXP"); export cons
 type MathRow = { arity: 1 | 2; js: (...a: number[]) => number; wgsl: (...a: string[]) => string };
 const same = (fn: string): [string, MathRow] => [fn, { arity: 1, js: (Math as unknown as Record<string, (x: number) => number>)[fn]!, wgsl: (x) => `${fn}(${x})` }];
 export const MATHS: Record<string, MathRow> = {
-  ...Object.fromEntries(["sin", "cos", "tanh", "asin", "acos", "atan", "asinh", "acosh", "atanh", "floor", "ceil", "trunc", "abs"].map(same)),
+  ...Object.fromEntries(["sin", "cos", "asin", "acos", "atan", "acosh", "atanh", "floor", "ceil", "trunc", "abs"].map(same)),
+  // Metal's tanh goes through e²ˣ and gives NaN past 44.4; past 15 an f32 tanh is ±1 already
+  // (a clamp would turn NaN into a number)
+  tanh: { arity: 1, js: Math.tanh, wgsl: (x) => `select(tanh(${x}), sign(${x}), abs(${x}) > 15.0)` },
+  // Metal's asinh, log(x + √(x² + 1)), cancels for a large negative x; asinh is odd
+  asinh: { arity: 1, js: Math.asinh, wgsl: (x) => `(sign(${x}) * asinh(abs(${x})))` },
   round: { arity: 1, js: (x) => { const r = Math.round(x); return r - x === 0.5 && r % 2 !== 0 ? r - 1 : r; }, wgsl: (x) => `round(${x})` },   // half to even
-  sign: { arity: 1, js: (x) => (x > 0 ? 1 : x < 0 ? -1 : x), wgsl: (x) => `sign(${x})` },
+  sign: { arity: 1, js: (x) => (x > 0 ? 1 : x < 0 ? -1 : x), wgsl: (x) => `select(sign(${x}), ${x}, (bitcast<u32>(${x}) & 0x7fffffffu) > 0x7f800000u)` },   // WGSL's sign of NaN is 0
   isnan: { arity: 1, js: (x) => (x !== x ? 1 : 0), wgsl: (x) => `select(0.0, 1.0, (bitcast<u32>(${x}) & 0x7fffffffu) > 0x7f800000u)` },   // WGSL may fold x != x away
   expm1: { arity: 1, js: Math.expm1, wgsl: (x) => `select(exp(${x}) - 1.0, ${x} * (1.0 + ${x} * (0.5 + ${x} / 6.0)), abs(${x}) < 1e-3)` },
   log1p: { arity: 1, js: Math.log1p, wgsl: (x) => `select(log(1.0 + ${x}), ${x} * (1.0 - ${x} * (0.5 - ${x} / 3.0)), abs(${x}) < 1e-3)` },

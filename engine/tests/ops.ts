@@ -42,6 +42,17 @@ export default async function (): Promise<{ fails: number }> {
     check(`${fn}: cpu == Math, gpu == cpu`, maxDiff(a, ref) < 1e-6 && maxDiff(b, a) < tol, `cpu ${maxDiff(a, ref).toExponential(1)} gpu ${maxDiff(b, a).toExponential(1)}`);
   }
 
+  // the far ends, where a GPU's own formula can overflow: a function of every real number
+  // gives there what the CPU gives
+  {
+    const far = [44.5, 50, 88.8, 100, 1000, Infinity], fd = Float32Array.from([...far, ...far.map((x) => -x), 0, 1, 2, NaN]), k = fd.length, fx = buffer("x", [k]);
+    for (const fn of ["sin", "cos", "tanh", "atan", "asinh", "floor", "ceil", "trunc", "abs", "round", "sign", "expm1", "cbrt"]) {
+      const { a, b } = await both(math(fn, fx), new Map([["x", T(fd, [k])]]));
+      const tol = fn === "sin" || fn === "cos" ? 1e-3 : 2e-5;
+      check(`${fn} far from 0: gpu == cpu`, maxDiff(b, a) < tol, `gpu ${maxDiff(b, a).toExponential(1)}`);
+    }
+  }
+
   // ── 2. derivatives of the MATHS rows == finite differences ─────────────────────────
   {
     let worst = 0, worstName = "";
