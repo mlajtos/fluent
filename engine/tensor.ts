@@ -721,6 +721,13 @@ export function matmul(a: Like, b: Like): Tensor {
   if (vecA) x = ir.reshape(x, [1, x.shape[0]!]);
   if (vecB) y = ir.reshape(y, [y.shape[0]!, 1]);
   const fx = x.shape.slice(0, -2), fy = y.shape.slice(0, -2);
+  // a frame on the left only: its rows join the matrix's rows – one product, whose
+  // gradient for y sums over one axis instead of a frame's every axis
+  if (fx.length && !fy.length) {
+    const [m, k] = x.shape.slice(-2) as [number, number];
+    x = ir.reshape(cellMatmul(ir.reshape(x, [ir.numel(fx) * m, k]), y), [...fx, m, y.shape.at(-1)!]);
+    return wrap(vecB ? ir.reshape(x, x.shape.slice(0, -1)) : x);
+  }
   if (fx.length && fy.length && !ir.sameShape(fx, fy)) {                       // frames broadcast against each other, numpy-style
     const n = Math.max(fx.length, fy.length), F: number[] = [];
     for (let i = 0; i < n; i++) F.push(Math.max(fx[fx.length - n + i] ?? 1, fy[fy.length - n + i] ?? 1));
