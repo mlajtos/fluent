@@ -319,10 +319,9 @@ s14: Grid(1)(
   head("**Fluent Tour** · 14 / 16"),
   Text("### Walk downhill
 
-**You found the bottom by feel. Now walk there deliberately.** Each press of **Step** is one honest step: read the slope where you stand, scale it down, move the *other* way, remember the footprint in \`hist\`. Watch the path: long strides far out, baby steps near the bottom — the slope itself shrinks as you close in. (The first line gives \`concat\` a glyph of your own, \`++\`: round brackets around a glyph name it, the way \`plus: add\` named a word.)"),
+**You found the bottom by feel. Now walk there deliberately.** Each press of **Step** is one honest step: read the slope where you stand, scale it down, move the *other* way, remember the footprint in \`hist\`. Watch the path: long strides far out, baby steps near the bottom — the slope itself shrinks as you close in."),
   ; the light reads the box's last item, hist: the path lands within 1 of 42
-  challenge("(++): concat,
-guess: $0, ; where the walk starts
+  challenge("guess: $0, ; where the walk starts
 hist: $([guess]), ; every place the guess has stood
 (
   Button(\\"Step\\", {

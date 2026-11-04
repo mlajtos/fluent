@@ -64,8 +64,8 @@ x: 1 ..< 10,
 `,
   "ad-hoc-operators": `
 ; Ad-hoc operators – defining custom operators
-(++): concat,
-(1, 2) ++ (3, 4)
+(+-): { a, b | (a - b, a + b) },
+10 +- 3
 `,
   "combinators": `
 ; Combinators – the songbirds of tacit programming.
@@ -254,7 +254,6 @@ marks: curve_(0..<8 × 18),
 ; TODO App – reactive task management
 
 ; Helper operators
-(++): concat,
 (++=): { a, b | a← a ++ List(b) },
 
 ; Task factory – creates an editable task with a toggle
@@ -285,11 +284,10 @@ tasks: $List(),
 )
 `,
   "tasks-compressed": `
-(++):concat,taskName: $"",taskCreate:{name|s: $name,f: $"🔴",Grid([1,10])(Button(f,{f← "✅"}),TextEditor(s))},tasks: $(()),(Text("# TODO"),Grid([5,1])(TextEditor(taskName),Button("Add",{tasks← tasks++List(taskCreate(taskName)),taskName← ""})),tasks)
+taskName: $"",taskCreate:{name|s: $name,f: $"🔴",Grid([1,10])(Button(f,{f← "✅"}),TextEditor(s))},tasks: $(()),(Text("# TODO"),Grid([5,1])(TextEditor(taskName),Button("Add",{tasks← tasks++List(taskCreate(taskName)),taskName← ""})),tasks)
 `,
   "tasks-mini": `
 ; Minimal TODO app – type a task, add it to the list
-(++): concat,
 n: $"",
 tasks: $List(),
 (
@@ -304,8 +302,6 @@ tasks: $List(),
   ,
   "calculator": `
 ; Calculator – builds an expression string and evaluates it
-
-(++): concat,
 
 expr: $"",
 result: expr . CodeEvaluate,
@@ -326,9 +322,6 @@ btn: { c | Button(c, { x | x ++ c } . append) },
   "linear-regression": `
 ; Linear regression – with gradient descent
 ; Find θ that minimizes (f(x) - y)²
-
-; Operators
-(++): concat,
 
 ; Data: y = 0.23x + 0.47
 x: 0 ..< 10,
@@ -430,8 +423,6 @@ curve: \${ PointPlot(x, p(λ)) },
 ; trip. This √exp has no elementary closed form (Kneser built it with complex
 ; analysis); we just fit it, straight from its own equation.
 
-(++): concat,
-
 d: 16,
 x: linspace([-1, 1], 96),
 X: x ⍴ [96, 1],
@@ -500,7 +491,6 @@ xs: ⚄([24]) × 2×π,
 grid: linspace([0, 2×π], 200),
 
 ; Training
-(++): concat,
 𝓛: { mean((f(xs) - sin(xs))^2) },
 unseen: { mean((f(grid) - sin(grid))^2) },
 opt: adam(0.01),
@@ -1021,7 +1011,6 @@ surface: log(linspace(view_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(view_0, 
 ; optimizer starts there and takes 60 steps, and each step's point is
 ; kept – the path, run again as you drag.
 
-(++): concat,
 W: 360, H: 360,
 white: [1, 1, 1],
 ink: [0.1, 0.04, 0.2],
@@ -1076,14 +1065,14 @@ more: { n |
   }, path)
 },
 
-; --- each frame: a pressed pointer moves the start; a new start,
-; walker or pace restarts the run, which takes 15 more steps ---
-start: $[-0.3, -1.4],
-pointer: $[0, 0], ; in the picture's units
-down: $0,
+; --- the start: where the pointer was last pressed ---
+pointer: $[153, 306], ; in the picture's units
+start: \${ ofPicture(pointer) },
+
+; --- each frame: a new start, walker or pace restarts the run,
+; which takes 15 more steps ---
 ranFor: $[0, 0, -1, -1], ; the start, walker and pace of this run
 {
-  when(down, { start:= ofPicture(pointer) }),
   key: [start_0, start_1, which, pace],
   when(¬(key ≡ ranFor), { restart(start), ranFor:= key }),
   when((#path) ≤ steps, { more(15) })
@@ -1107,7 +1096,7 @@ lossText: \${ StringConcat(
 (
   Text("# 🧭 The Descent Path"),
   Text("Press or drag on the picture: an optimizer starts there and takes its steps, a dot each. The × is the lowest point."),
-  Layers(picture, Pointer(pointer, [[0, W], [0, H]], { down:= 1 }, { down:= 0 })),
+  Layers(picture, Pointer(pointer, [[0, W], [0, H]])),
   Text(lossText),
   walkers ¨ { w, i | Button(w_0, { which:= i }) } . Grid(5),
   Grid([1, 5])(Text("**step**"), Slider(pace)),
@@ -1908,8 +1897,6 @@ weights: \${ softmax(scores × temp) },
 ; A network of soft NAND-ish gates learns XOR – which isn't in its toolbox,
 ; so it must compose it (XOR = OR ∧ ¬AND). "Education" is just backprop.
 
-(++): concat,
-
 a: [0, 0, 1, 1],
 b: [0, 1, 0, 1],
 target: [0, 1, 1, 0],
@@ -1957,8 +1944,6 @@ gates: \${ stack((softmax(t1), softmax(t2), softmax(to))) },
 ; scaled up. 512 → 200 soft boolean gates wired at random over 196 pixels;
 ; each gate's identity (which of the 16 two-input truth tables it computes) is
 ; a learnable softmax, educated by gradient descent. No neurons, just logic.
-
-(++): concat,
 
 ; --- data: 14×14 binarised MNIST (6000 train, 1000 test) as safetensors ---
 ; the signal is an empty list until the fetch resolves to [Xtrain, Ytrain, Xtest, Ytest]
@@ -2039,8 +2024,6 @@ accuracy: \${
 ; units – no ∇, no weight transport, no transposed backward pass. Each layer's
 ; update is a local, Hebbian outer product: ΔW ∝ Aᵀ·(φ'(z)⊙routed-error).
 ; After "Diffusing Blame", Yamada et al., Sakana AI (arXiv:2606.31700).
-
-(++): concat,
 
 ; --- data: 14×14 binarised MNIST as safetensors (an empty list until it loads) ---
 mnist: LoadSafeTensorFromURL("mnist.safetensors"),
@@ -2187,8 +2170,6 @@ amp: \${
 ; The training data follows the corpus: pausing, editing the text and resuming
 ; re-trains on your data without resetting the weights.
 
-(++): concat,
-
 ; --- vocabulary: ' ' → 0, a…z → 1…26 (anything else collapses to space) ---
 V: 27, T: 8, C: 32, F: 96,
 enc: { s | clamp(StringToCodes(s) - 96, 0, 26) },
@@ -2331,7 +2312,6 @@ editable: \${ 1 - training },
 ; place in the name from what it sees. Training scores every round's
 ; guess, so it answers after any number of rounds.
 
-(++): concat,
 (⊡): matmul, ; the matrix product, as an operator
 
 ; --- vocabulary: a name's end → 0, a…z → 1…26 ---
@@ -2725,8 +2705,6 @@ roundsText: \${ StringConcat("**rounds of thought:** ", String(rounds)) },
 ; minibatches, AdamW, warmup and cosine decay, gradient clipping, evaluation, a log,
 ; a checkpoint that survives a reload, sampling and a clock. A program draws the
 ; same random numbers each time it runs, so a run from step 0 repeats exactly.
-
-(++): concat,
 
 ; --- config ---
 run: "names", ; the checkpoint's name – rename it to start a fresh run

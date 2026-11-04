@@ -2109,7 +2109,10 @@ describe("one vocabulary for items: a tensor's rows, a list's elements, a string
     // Bird and Meertens' ↓/ ∘ (⊙/)* on pairs: the smallest number two neighbours' digits make
     expect(value("(⊙): { a, b | 10^(#(⍕b))×a + b }, [12, 34, 5, 6, 7, 0]⍴[-1, 2] ¨ ⌿(⊙) ⌿ ⌊")).toBe(56)
     // the same ⊙ by text: format both, join, read the number back
-    expect(["[12, 34, 5, 6, 7, 0]", "[100, 1, 3, 1000]", "[0, 0, 5, 5]"].map((x) => value(`${x}⍴[-1, 2] ¨ ⌿(⍕ ⍥ concat ∘ ⍎) ⌿ ⌊`))).toEqual([56, 1001, 0])
+    expect(["[12, 34, 5, 6, 7, 0]", "[100, 1, 3, 1000]", "[0, 0, 5, 5]"].map((x) => value(`${x}⍴[-1, 2] ¨ ⌿(⍕ ⍥ ++ ∘ ⍎) ⌿ ⌊`))).toEqual([56, 1001, 0])
+    // K's ASCII for each and scan; ++ joins; format and execute are ⍕ and ⍎
+    expect([value("(1, 2, 3) ' { v | v × 2 } ≡ (2, 4, 6)"), value("[1, 2, 3, 4] \\ +"), value("(1, 2) ++ (3,) ≡ (1, 2, 3)")]).toEqual([1, [1, 3, 6, 10], 1])
+    expect([value('execute(format((1, "a", [2]))) ≡ (1, "a", [2])'), value('(1, 2) ¨ ⍕ ≡ ("1", "2")')]).toEqual([1, 1])
   })
   test("StringFind is where a part starts, or past the end; StringSplit cuts at every separator", () => {
     expect([value('StringFind("banana", "na")'), value('StringFind("banana", "x")'), value('StringFind("aé–b", "–")')]).toEqual([2, 6, 2])

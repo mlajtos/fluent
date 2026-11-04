@@ -104,16 +104,16 @@ Button("Reset", { x(0) }),
   - axis variants: \`stack((a, b), axis)\`, \`concat((a, b), axis)\`, \`unstack(x, axis)\`, \`sum(x, axis)\`
   - outer product \`⊗\`: \`a (⊗ f) b\` pairs every cell of a with every cell of b; \`a (f ⊗ k) b\` keeps trailing k axes zipped
   - inner product \`∙\`: \`a (g ∙ f) b\` combines with g, then reduces with f – \`A (× ∙ +) B\` is matrix multiply, \`W (+ ∙ ⌊) W\` is shortest paths
-  - items – a tensor's rows, a list's elements, a string's characters: \`#\`, \`_\`, \`take\`, \`drop\`, \`reverse\`, \`concat\`, \`reduce\`, \`scan\` and \`fold(x, f, start)\` work on all three; each kind's own is named for it (\`TensorTake\`, \`ListTake\`, \`StringTake\`); \`ListMap\` maps a list
-  - each, reduce and scan as glyphs, data first: \`x ¨ f\`, \`x ⌿ f\`, \`x ⍀ f\`; given only f, each is the function that does it – \`⌿(⌊)\` is the minimum
-  - text: \`StringSplit(s, separator)\` cuts it into a list, \`StringFind(s, part)\` is where part starts (the length when it isn't there), \`StringConcat\` joins, \`StringToCodes\` and \`CodesToString\` go to numbers and back
+  - items – a tensor's rows, a list's elements, a string's characters: \`#\`, \`_\`, \`take\`, \`drop\`, \`reverse\`, \`concat\` (\`++\`), \`reduce\`, \`scan\` and \`fold(x, f, start)\` work on all three; each kind's own is named for it (\`TensorTake\`, \`ListTake\`, \`StringTake\`); \`ListMap\` maps a list
+  - each, reduce and scan as glyphs, data first: \`x ¨ f\`, \`x ⌿ f\`, \`x ⍀ f\`; given only f, each is the function that does it – \`⌿(⌊)\` is the minimum. Each and scan also type as K's ASCII: \`x ' f\`, \`x \\ f\`
+  - text: \`StringSplit(s, separator)\` cuts it into a list, \`StringFind(s, part)\` is where part starts (the length when it isn't there), \`StringConcat\` joins, \`format\` (\`⍕\`) writes a value as source and \`execute\` (\`⍎\`) runs it, \`StringToCodes\` and \`CodesToString\` go to numbers and back
   - the playground's examples: \`Examples\`, a list of (name, source) pairs
   - UI: \`Slider\`, \`Scrubber\`, \`Checkbox\`, \`Button\`, \`Text\`, \`TextEditor\`, \`Code\`, \`CodeEditor\`, \`CodePrint\`, \`Print\`, \`PrettyPrint\`, \`Grid\`, \`Layers\`, \`Center\`, \`Point2D\`, \`Pointer\`, \`Trail\`, \`PointPlot\`, \`ImageUpload\`
   - live inputs: \`Camera\`, \`Microphone\`, \`MicrophoneSpectrum\`, \`Time\`, \`MousePosition\`, \`Density\`
   - optimizers: \`sgd\` (optional momentum), \`adam\`, \`adamw\`, \`adagrad\`, \`rmsprop\`, \`lion\`, \`muon\` and more – each built on \`optimizer(init, rule)\`
   - metadata: \`doc(fn, signature, description, example)\` attaches the card hover shows
 - Ad-hoc operators
-  - define custom operators: \`(++): concat, (1, 2) ++ (3, 4)\`
+  - define custom operators: \`(+-): { a, b | (a - b, a + b) }, 10 +- 3\`
 
 ### IDE
 - Syntax highlighting
