@@ -1065,7 +1065,7 @@ restart: { s |
   o: walkers_which_1,
   memory: o(),
   θ:= s,
-  memory:= ListMap(memory, { c | c × 0 }),
+  memory:= memory ¨ { c | c × 0 },
   path:= [s]
 },
 more: { n |
@@ -1109,7 +1109,7 @@ lossText: \${ StringConcat(
   Text("Press or drag on the picture: an optimizer starts there and takes its steps, a dot each. The × is the lowest point."),
   Layers(picture, Pointer(pointer, [[0, W], [0, H]], { down:= 1 }, { down:= 0 })),
   Text(lossText),
-  ListMap(walkers, { w, i | Button(w_0, { which:= i }) }) . Grid(5),
+  walkers ¨ { w, i | Button(w_0, { which:= i }) } . Grid(5),
   Grid([1, 5])(Text("**step**"), Slider(pace)),
 )
 `,
@@ -2348,7 +2348,7 @@ loaded: { cond(guard(isString(text), { (#text) > 0 }), 0) },
 ; and the tenth it never sees
 streams: \${ when(loaded(), {
   ids: enc(text),
-  name: (ids = 0) scan +, ; which name each character belongs to
+  name: (ids = 0) ⍀ +, ; which name each character belongs to
   held: name % 10 = 9,
   (mask(ids, ¬held), mask(ids, held))
 }) },
@@ -2745,7 +2745,7 @@ decode: { t | CodesToString(where(t = 0, 32, t + 96)) },
 ; arrived, its two token streams
 streams: \${ when(loaded(), {
   ids: encode(text),
-  name: (ids = 0) scan +, ; which name each character belongs to
+  name: (ids = 0) ⍀ +, ; which name each character belongs to
   held: name % 10 = 9,
   (mask(ids, ¬held), mask(ids, held))
 }) },
@@ -2798,7 +2798,7 @@ step: $0,
 history: $fill([0, 3], 0), ; a row an evaluation: (step, train loss, val loss)
 state: ListConcat((step, history), params, opt()), ; opt() is the optimizer's memory
 ; kept in this browser, under the run's name and the model's shapes
-checkpoint: Storage(StringConcat(run, String(ListMap(params, shape)))),
+checkpoint: Storage(StringConcat(run, String(params ¨ shape))),
 
 ; --- sampling: a character at a time, from the model's softmax at temperature τ ---
 τ: $0.8,
@@ -2969,7 +2969,7 @@ Text(StringConcat(
   "Every example in the playground. Open one, and come back with ?example=gallery.", newline, newline,
   "| Example | What it shows |", newline,
   "|---|---|", newline,
-  StringConcat(ListMap(Examples, row))
+  StringConcat(Examples ¨ row)
 ))
 `
 

@@ -184,7 +184,20 @@ TensorReverse: doc(TensorOnly({ x, k |
 }), "TensorReverse(x, axes?)", "x's rows back to front – or x reversed along each of the axes given.", "TensorReverse([[1, 2], [3, 4]], 1) = [[2, 1], [4, 3]]"),
 reverse: doc(cascade((TensorReverse, ListReverse, StringReverse)), "reverse(x, axes?)", "x's items back to front; a tensor along the axes given, too.", "reverse(\"abc\") = \"cba\", reverse([[1, 2], [3, 4]]) = [[3, 4], [1, 2]]"),
 concat: doc(cascade((TensorConcat, ListConcat, StringConcat)), "a concat b  ·  concat(xs, axis?)", "a's items, then b's: tensors along the leading axis, lists, strings. concat(xs) joins the containers listed in xs – tensors along the axis given.", "(1, 2) concat (3,) = (1, 2, 3), concat((\"ab\", \"cd\")) = \"abcd\", concat(([[1], [2]], [[3], [4]]), 1) = [[1, 3], [2, 4]]"),
-reduce: doc(cascade((TensorReduce, ListReduce, StringReduce)), "x reduce f", "Fold x's items left to right with f – a tensor's along the axis given, too. Known ops (+, ×, ⌈, ⌊) fold numbers natively, so on a vector x reduce ⌈ is max. Folding nothing gives f's identity: () reduce + is 0.", "(1, 2, 3) reduce + = 6, [[1, 2], [3, 4]] reduce + = [4, 6], 1..<10 reduce + = 45"),
+; Each, reduce and scan walk the items, data first – x ¨ f, x ⌿ f, x ⍀ f; given
+; only f, each is the function that does it: ⌿(⌊) is the minimum
+ItemsReduce: cascade((TensorReduce, ListReduce, StringReduce)),
+(⌿): reduce: doc({ x, f, init |
+  cond(guard(identical(f, ◌), { { y | reduce(y, x) } }), { ItemsReduce(x, f, init) })
+}, "x ⌿ f · x reduce f · ⌿(f)", "Fold x's items left to right with f – a tensor's along the axis given, too. Known ops (+, ×, ⌈, ⌊) fold numbers natively, so on a vector x ⌿ ⌈ is max. Folding nothing gives f's identity: () ⌿ + is 0. Given only f, the function that folds with it.", "(1, 2, 3) ⌿ + = 6, [[1, 2], [3, 4]] reduce + = [4, 6], ⌿(⌊)([3, 1, 2]) = 1"),
+TensorEach: TensorOnly({ x, f |
+  cond(guard((#shape(x)) = 0, { f(x, 0) }), guard((#x) = 0, { x }), { stack(ListMap(unstack(x), f)) })
+}),
+StringEach: { s, f | cond(guard(isString(s), { ListMap(StringSplit(s, ""), f) }), { NoMatch }) },
+ItemsEach: cascade((TensorEach, StringEach, ListMap)),
+(¨): each: doc({ x, f |
+  cond(guard(identical(f, ◌), { { y | each(y, x) } }), { ItemsEach(x, f) })
+}, "x ¨ f · each(x, f) · ¨(f)", "Each: f on every item with its index – a list's elements, a tensor's rows, a string's characters. A list gives a list, a tensor the results stacked, a string the list of them. Given only f, the function that maps with it.", "[1, 2, 3] ¨ { v | v × 2 } = [2, 4, 6], (\"a\", \"b\") ¨ { s, i | i } ≡ (0, 1)"),
 associativeScan: TensorAssociativeScan: doc(TensorOnly({ x, f, k |
   ax: cond(guard(identical(k, ◌), { 0 }), { k }),
   y: moveaxis(x, ax, 0), n: #y,
@@ -208,7 +221,10 @@ TensorScan: doc(TensorOnly({ x, f, k |
     cond(guard((#rows) = 0, { x }), { stack(ListScan(rows, f), ax) })
   })
 }), "TensorScan(x, f, axis?)", "The running fold of x's rows with f, left to right – or of its slices along the axis given; its last row is TensorReduce's. +, ×, ⌈ and ⌊ take log₂ n steps.", "TensorScan([[1, 2, 3], [4, 5, 6]], +, 1) = [[1, 3, 6], [4, 9, 15]], [1, 2, 3, 4] scan - = [1, -1, -4, -8]"),
-scan: doc(cascade((TensorScan, ListScan, StringScan)), "x scan f", "The running fold, left to right: item i combines items 0 … i with f, so its last item is x reduce f. With + a cumulative sum, with ⌈ a running maximum.", "[1, 2, 3, 4] scan + = [1, 3, 6, 10], (1, 2, 3) scan + = (1, 3, 6)"),
+ItemsScan: cascade((TensorScan, ListScan, StringScan)),
+(⍀): scan: doc({ x, f, init |
+  cond(guard(identical(f, ◌), { { y | scan(y, x) } }), { ItemsScan(x, f, init) })
+}, "x ⍀ f · x scan f · ⍀(f)", "The running fold, left to right: item i combines items 0 … i with f, so its last item is x ⌿ f. With + a cumulative sum, with ⌈ a running maximum. Given only f, the function that scans with it.", "[1, 2, 3, 4] ⍀ + = [1, 3, 6, 10], (1, 2, 3) scan + = (1, 3, 6)"),
 fold: doc(cascade((TensorFold, ListReduce, StringReduce)), "fold(x, f, start)", "Walk x's items from start, carrying what f makes: f(f(start, x_0), x_1) … – a loop over the items whose result can be of any kind.", "fold((1, 2, 3), { s, v | s × 10 + v }, 0) = 123"),
 identity: doc(FunctionIdentity, "identity(f, v)", "f, knowing v as its identity element – what folding nothing with f gives, as + folds nothing to 0.", "() reduce identity({ a, b | a + b }, 0) = 0"),
 TensorLength: doc(TensorLength, "TensorLength(x, axis?)", "How long x's leading axis is, or the axis given; a number is one item.", "TensorLength([[1, 2], [3, 4], [5, 6]]) = 3"),

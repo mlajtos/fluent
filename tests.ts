@@ -2099,6 +2099,16 @@ describe("one vocabulary for items: a tensor's rows, a list's elements, a string
       expect([call, v instanceof Error, v instanceof NoMatch]).toEqual([call, true, false])
     }
   })
+  test("¨ ⌿ ⍀ walk the items, data first; given only f, each is the function that does it", () => {
+    expect([value("[1, 2, 3] ¨ { v | v × 2 }"), value("[[1, 2], [3, 4]] ¨ { r, i | Σ(r) + i }"), value("5 ¨ { v | v × 2 }")]).toEqual([[2, 4, 6], [3, 8], 10])
+    expect(value('(1, "a", [2]) ¨ { v, i | i } ≡ (0, 1, 2)')).toBe(1)
+    expect(value('"abc" ¨ { c | StringConcat(c, c) } ≡ ("aa", "bb", "cc")')).toBe(1)
+    expect([value("(1, 2, 3) ⌿ +"), value("[[1, 2], [3, 4]] ⌿ +"), value("() ⌿ +"), value("reduce((1, 2), { a, b | a + b }, 10)")]).toEqual([6, [4, 6], 0, 13])
+    expect([value("[1, 2, 3, 4] ⍀ +"), value("(1, 2, 3) ⍀ + ≡ (1, 3, 6)")]).toEqual([[1, 3, 6, 10], 1])
+    expect([value("¨({ v | v + 1 })([1, 2])"), value("⌿(⌊)([3, 1, 2])"), value("⍀(+)([1, 1, 1])")]).toEqual([[2, 3], 1, [1, 2, 3]])
+    // Bird and Meertens' ↓/ ∘ (⊙/)* on pairs: the smallest number two neighbours' digits make
+    expect(value("(⊙): { a, b | 10^(#(⍕b))×a + b }, [12, 34, 5, 6, 7, 0]⍴[-1, 2] ¨ ⌿(⊙) ⌿ ⌊")).toBe(56)
+  })
   test("StringFind is where a part starts, or past the end; StringSplit cuts at every separator", () => {
     expect([value('StringFind("banana", "na")'), value('StringFind("banana", "x")'), value('StringFind("aé–b", "–")')]).toEqual([2, 6, 2])
     // what comes before the part, or all of it: never -1, which would count from the end
@@ -2603,7 +2613,8 @@ describe("every name in shipped Fluent source resolves", () => {
       for (const k of Object.keys(n)) { if (k !== "origin") { walk(n[k]) } }
     }
     for (const source of [PRELUDE, TOUR_SOURCE, ...Object.values(EXAMPLES)]) { walk(CodeParse(source)) }
-    expect(counts.sort()).toEqual(["#b", "arrow", "dots", "Σ(k)"].sort())
+    // the dreamers keep a name's letters up to its end mark: a count, from argmax
+    expect(counts.sort()).toEqual(["#b", "arrow", "dots", "Σ(k)", "argmax((more ++ [0]) = 0)", "argmax((more ++ [0]) = 0)"].sort())
   })
 
   test("the README's names at a glance are each one function", async () => {

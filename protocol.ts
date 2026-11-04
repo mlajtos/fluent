@@ -283,6 +283,8 @@ export const OPERATOR_RANGES: Record<string, [string, string]> = {
   MIDDLE_DOT: ["·", "·"],
   // the norm, ‖
   DOUBLE_VERTICAL_LINE: ["‖", "‖"],
+  // each, ¨
+  DIAERESIS: ["¨", "¨"],
   // ↔︎ is ↔ and U+FE0E
   VARIATION_SELECTORS: ["︀", "️"],
 }
