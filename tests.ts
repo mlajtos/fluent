@@ -1137,6 +1137,13 @@ describe("training: ∇ follows what the loss reads", () => {
     expect(plain(value("θ: ~([1]), x: $([2]), (θ, x) := ([3], [4]), (θ, x)"))).toEqual([[3], [4]])
     expect(run("θ: ~([1]), (θ,) := ([1], [2])")).toBeInstanceOf(Error)
   })
+  test("a listed optimizer trains its cells in the list's order, and a listed cell the loss doesn't read is an Error", () => {
+    // ∇ gives the cells in the order the loss reads them: x first, though y is listed first
+    expect(plain(value("x: ~1, y: ~1, o: sgd(0.1, (y, x)), o({ x × 3 + (y × 5) }), (x, y)"))).toEqual([0.7, 0.5].map(Math.fround))
+    expect(plain(value("x: ~1, o: sgd(0.1, (x,)), o({ x × 3 }), x"))).toBeCloseTo(0.7, 6)
+    expect(value("x: ~1, y: ~2, o: adam(0.1, (x, y)), isError(o({ x × 3 }))")).toBe(1)
+    expect(value("x: ~1, o: adam(0.1), isError(o({ 3 }))")).toBe(1)
+  })
   test("two optimizers each train only what their loss reads", () => {
     // adamw decays its own variables – not the other model's
     const [a, b] = plain(value(`a: ~([0]), b: ~([0]), la: { (a_0 - 1) ^ 2 }, lb: { (b_0 + 1) ^ 2 },

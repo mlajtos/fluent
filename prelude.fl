@@ -1074,23 +1074,19 @@ plot: DrawPlot: doc({ x, ys, names |
 ; first sees them; ← writes the cells and what it remembers of them in one pass.
 TensorOptimizerStep: { loss, only |
   r: cond(guard(isList(only), { (∇loss)(only) }), { (∇loss)() }),
-  vs: r_1, gs: r_2, n: #vs,
-  among: { o, list | ListReduce(ListMap(list, { v | identical(o, v) }), { p, q | p ⌈ q }, 0) },
+  vs: r_1,
+  ; with a list, ∇ gives the listed cells the loss reads, in the order it reads
+  ; them: fewer than listed is one it doesn't read, and one alone is in order
   cond(
-    guard(n = 0, { Error("nothing to train – the loss reads no ~ variable") }),
-    guard(isList(only), {
-      cond(
-        guard(ListReduce(ListMap(only, { o | 1 - among(o, vs) }), { p, q | p ⌈ q }, 0), {
-          Error("a listed cell isn't one the loss reads, so nothing would train it")
-        }),
-        {
-          ; in the list's order, which is the order of the memory made for them
-          at: ListMap(only, { o | ListReduce(ListMap(vs, { v, i | identical(o, v) × i }), { p, q | p + q }, 0) }),
-          (r_0, only, gs_at)
-        }
-      )
-    }),
-    { r }
+    guard((#vs) = 0, { Error("nothing to train – the loss reads no ~ variable") }),
+    guard(¬isList(only), { r }),
+    guard((#vs) < (#only), { Error("a listed cell isn't one the loss reads, so nothing would train it") }),
+    guard((#vs) = 1, { (r_0, only, r_2) }),
+    ; in the list's order, which is the order of the memory made for them
+    {
+      at: ListMap(only, { o | ListReduce(ListMap(vs, { v, i | identical(o, v) × i }), { p, q | p + q }, 0) }),
+      (r_0, only, r_2_at)
+    }
   )
 },
 ; the slots a step keeps for its cells, made again when the cells change
@@ -1098,6 +1094,7 @@ TensorOptimizerSlots: { held, vs, make |
   h: held,
   same: cond(
     guard(¬isList(h), { 0 }),
+    guard(identical(h_0, vs), { 1 }), ; the very list it was made for
     guard((#h_0) ≠ (#vs), { 0 }),
     { ListMap(vs, { v, i | identical(v, h_0_i) }) reduce ∧ }),
   cond(guard(same, { h_1 }), { fresh: ListMap(vs, { v | make(v) }), held← (vs, fresh), fresh })
