@@ -2311,17 +2311,25 @@ describe("gallery examples smoke suite", () => {
     expect(read("shape(f([1.5]))")).toEqual([1])
     flushRetirements()
   }, 60_000)
-  test("the dreamers train on random minibatches – a corpus of names.txt's size fits – and score a held-out tenth", () => {
-    for (const name of ["dreamer", "looped-dreamer"]) {
-      steps.length = 0
-      const scope = scopeOf(EXAMPLES[name as keyof typeof EXAMPLES])
-      const corpus = scope.corpus as Signal<string>
-      // ~200k windows: a step over all of them would need gigabytes
-      corpus.value = Array(300).fill(corpus.peek()).join(" ")
-      for (let i = 0; i < 20; i++) { expect([name, unwrap(steps[0]!(engine.scalar(i)))]).toEqual([name, null]) }
-      const [step, train, heldOut] = unwrap(evaluateSyntaxTreeNode(CodeParse("history()_0"), scope)) as number[]
-      expect([name, step, train! > 0, heldOut! > 0]).toEqual([name, 20, true, true])
-      flushRetirements()
+  test("the dreamers train on random minibatches – a corpus of names.txt's size fits – and score a held-out tenth", async () => {
+    // the Looped Dreamer fetches names.txt; the dreamer's corpus is a string in the program
+    const names = await Bun.file(new URL("names.txt", import.meta.url)).text()
+    const fetch = DefaultEnvironment.Fetch!
+    extendEnvironment({ Fetch: () => SignalCreate(names) } as Record<string, Value>)
+    try {
+      for (const name of ["dreamer", "looped-dreamer"]) {
+        steps.length = 0
+        const scope = scopeOf(EXAMPLES[name as keyof typeof EXAMPLES])
+        const corpus = scope.corpus as Signal<string> | undefined
+        // ~200k windows: a step over all of them would need gigabytes
+        if (corpus) corpus.value = Array(300).fill(corpus.peek()).join(" ")
+        for (let i = 0; i < 20; i++) { expect([name, unwrap(steps[0]!(engine.scalar(i)))]).toEqual([name, null]) }
+        const [step, train, heldOut] = unwrap(evaluateSyntaxTreeNode(CodeParse("history()_0"), scope)) as number[]
+        expect([name, step, train! > 0, heldOut! > 0]).toEqual([name, 20, true, true])
+        flushRetirements()
+      }
+    } finally {
+      extendEnvironment({ Fetch: fetch } as Record<string, Value>)
     }
   }, 60_000)
   test("makemore learns, and a new run resumes from the checkpoint the last one saved", async () => {

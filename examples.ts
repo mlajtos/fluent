@@ -2221,27 +2221,40 @@ editable: \${ 1 - training },
   "looped-dreamer": `
 ; 🔁 The Looped Dreamer – a transformer that thinks in rounds.
 ; Two physical blocks, stored once, are revisited R=3 times, so the
-; unrolled network is N = K·R = 6 blocks deep – for a third of the weights.
-; Every sublayer visit is post-norm, x ← rms(α·x + f(x)), with the DeepLoop
-; scaling rule (p = ½): skip α = (2N)^½, per-matrix init gain β = (8N)^-½ –
-; strong skips and gentle starts keep 12 sublayer visits stable.
-; Attention stops at a space: a letter reads its own name, never the
-; one before it, and knows its place in the name from what it sees.
+; unrolled network is N = K·R = 6 blocks deep, for a third of the
+; weights. Every sublayer visit is post-norm, x ← rms(α·x + f(x)),
+; with the DeepLoop scaling rule (p = ½): skip α = (2N)^½, per-matrix
+; init gain β = (8N)^-½ – strong skips and gentle starts keep 12
+; sublayer visits stable.
+; It learns makemore's 32,033 names. Attention stops between names: a
+; letter reads its own name, never the one before it, and knows its
+; place in the name from what it sees. Training scores every round's
+; guess, so it answers after any number of rounds.
 
 (++): concat,
 (⊡): matmul, ; the matrix product, as an operator
 
-; --- vocabulary: ' ' → 0, a…z → 1…26 (anything else collapses to space) ---
-V: 27, T: 8, C: 32, F: 96,
+; --- vocabulary: a name's end → 0, a…z → 1…26 ---
+V: 27, T: 16, C: 32, F: 96, ; T: a window holds the longest name
 K: 2, R: 3, N: K × R, ; physical blocks × rounds = unrolled depth
 α: √(2 × N), β: 1 ÷ √(8 × N), ; the scaling rule
 enc: { s | clamp(StringToCodes(s) - 96, 0, 26) },
 dec: { t | CodesToString(where(t = 0, 32, t + 96)) },
 
-; --- the entire dataset is this editable string ---
-corpus: $"emma olivia ava isabella sophia charlotte mia amelia harper evelyn abigail emily elizabeth mila ella avery sofia camila aria scarlett victoria madison luna grace chloe penelope layla riley zoey nora lily eleanor hannah lillian addison aubrey ellie stella natalie zoe leah hazel violet aurora savannah audrey brooklyn bella claire skylar lucy paisley everly anna caroline nova genesis emilia kennedy samantha maya willow kinsley naomi aaliyah elena sarah ariana allison gabriella alice madelyn cora ruby eva serenity autumn adeline hailey gianna valentina isla eliana quinn ivy sadie piper lydia alexa josephine emery julia delilah arianna vivian kaylee sophie brielle madeline",
-load: { c | window(enc(c), [T + 1]) }, ; every 9-char window is an example
-D: \${ load(corpus) }, ; follows corpus edits – the weights stay
+; --- data: names.txt, a name a line; every tenth held out ---
+text: Fetch("names.txt"), ; ◌ until it arrives
+loaded: { cond(guard(isString(text), { (#text) > 0 }), 0) },
+; once the text has arrived, its two streams: the names it trains on,
+; and the tenth it never sees
+streams: \${ when(loaded(), {
+  ids: enc(text),
+  name: (ids = 0) scan +, ; which name each character belongs to
+  held: name % 10 = 9,
+  (mask(ids, ¬held), mask(ids, held))
+}) },
+; a window: T+1 characters; each of the first T is followed by the next
+train: { window(streams_0, [T + 1]) },
+val: { window(streams_1, [T + 1]) },
 
 ; --- K=2 physical blocks: this is all the depth there is ---
 E: ~(randn([V, C]) × 0.1),
@@ -2290,13 +2303,24 @@ modelAt: { ids, r |
   ({ x | cycle(x, m) } ⍣ r)(embed(ids)) ⊡ Wu
 },
 
-; --- what it learns from: B random windows a step; a tenth held out to score it ---
-B: 256, ; windows a step: enough for the GPU to work through, not to wait
-cut: { floor((#D) × 0.9) }, ; windows past the cut are held out – never trained on
+; --- what it learns from: B random windows a step ---
+B: 128, ; windows a step: enough for the GPU to work through, not to wait
+batch: { d | d_floor(⚄([B]) × (#d)) }, ; B windows of d, at random
 lossOn: { d | crossEntropy(slice(d, [0, 1], [-1, T]), model(slice(d, [0, 0], [-1, T]))) },
-loss: { lossOn(D_floor(⚄([B]) × cut())) },
-; a score: 256 windows spread evenly over n windows from from – steady, at a bounded cost
-score: { from, n | lossOn(D_(from + floor(linspace([0, n - 1], 256)))) },
+; training scores every round's guess, so any number of rounds answers
+lossRounds: { d |
+  x: slice(d, [0, 0], [-1, T]),
+  y: slice(d, [0, 1], [-1, T]),
+  m: wall(x),
+  turn: { st |
+    h: cycle(st_0, m),
+    (h, st_1 + crossEntropy(y, h ⊡ Wu))
+  },
+  (turn ⍣ R)((embed(x), 0))_1 ÷ R
+},
+loss: { lossRounds(batch(train())) },
+; a score: 256 windows spread over a stream – steady, at a bounded cost
+score: { d | lossOn(d_floor(linspace([0, (#d) - 1], 256))) },
 
 ; --- sampling: gumbel-max, with temperature and rounds you can drag ---
 τ: $0.5,
@@ -2321,17 +2345,17 @@ opt: adamw(0.01, 0.1),
 step: $0,
 ; how large block b's weights are: the root of the sum of their squares
 size: { b | √(fold((Wq, Wk, Wv, Wo, Wf, Wg), { total, w | total + Σ(w_b^2) }, 0)) },
-; a row each time it measures: step, training score, held-out score, and the
-; size of each block's weights
+; a row each time it measures: the step, the training and held-out
+; scores, and the size of each block's weights
 history: $fill([0, 5], 0),
 stride: $20, ; steps between measurements
 {
-  when(training, {
+  when(training ∧ isList(streams), {
     opt(loss),
     step← step + 1,
     s: step,
     when(s % stride = 0, {
-      measured: [s, score(0, cut()), score(cut(), (#D) - cut()), size(0), size(1)],
+      measured: [s, score(train()), score(val()), size(0), size(1)],
       history← concat((history, measured ⍴ [1, 5])),
       ; the plot keeps the whole story, bounded: when it fills up,
       ; thin the history to every other row and measure half as often
@@ -2343,10 +2367,17 @@ stride: $20, ; steps between measurements
     when(s % 200 = 0, dreamNow)
   })
 } ⟳ 1000000,
+about: \${ cond(
+  guard(isError(text), { text }),
+  guard(isList(streams), {
+    StringConcat(String(#streams_0), " characters to train on, ", String(#streams_1), " held out")
+  }),
+  { "fetching names.txt…" }
+) },
 curves: \${ h: transpose(history), plot(h_0, (h_1, h_2), ("train", "held out")) },
 sizes: \${ h: transpose(history), plot(h_0, (h_3, h_4), ("block 1", "block 2")) },
 
-; type a beginning – the model finishes it, the likeliest way (works even while paused)
+; type a beginning: it finishes it the likeliest way, paused or not
 prompt: $"kri",
 finish: \${
   p: prompt,
@@ -2354,7 +2385,7 @@ finish: \${
   StringConcat("## ", p, "·", dec(slice(gen(s, 10, best), #s)))
 },
 
-; the same block 1, watched in round 1 and in round 3: shared weights, different work
+; block 1 in round 1 and in round 3: shared weights, different work
 probeS: fill([T], 0) ++ enc("sophia"),
 probe: slice(probeS, [-T]),
 probeWall: wall(probe ⍴ [1, T]),
@@ -2364,20 +2395,20 @@ attProbe: { x |
 attn1: \${ attProbe(embed(probe ⍴ [1, T])) },
 attn3: \${ attProbe(cycle(cycle(embed(probe ⍴ [1, T]), probeWall), probeWall)) },
 
-editable: \${ 1 - training },
 (
   Text("# 🔁 The Looped Dreamer"),
-  Text("Two transformer blocks, stored once, revisited three times – a 6-block-deep name dreamer for a third of the weights (~22k parameters)."),
+  Text("Two transformer blocks, stored once, revisited three times – a 6-block-deep name dreamer for a third of the weights (~22k parameters). It learns makemore's 32,033 names."),
+  Text(about),
   Checkbox(training),
-  Text("**training** – uncheck to pause; pause to edit the corpus below"),
-  Text("**loss** – on windows it trains on, and on the tenth it never sees; when held out climbs as train falls, it is memorizing:"),
+  Text("**training** – uncheck to pause"),
+  Text("**loss** – on names it trains on, and on the tenth it never sees; when held out climbs as train falls, it is memorizing:"),
   curves,
   Text("**weights** – how large each block's weights are, √Σw²:"),
   sizes,
   Text("**it dreams** – regenerated every 200 steps:"),
   Text(dream),
   Button("dream again", dreamNow),
-  Text("**rounds of thought** while dreaming – 1 on the left, 6 on the right; it trained at 3:"),
+  Text("**rounds of thought** while dreaming – 1 on the left, 6 on the right; it learns to answer after each of its 3:"),
   Slider(rounds),
   Text("**finish my name:**"),
   TextEditor(prompt),
@@ -2386,8 +2417,6 @@ editable: \${ 1 - training },
   Slider(τ),
   Text("**block 1's attention** reading “sophia” – round 1 beside round 3, on one scale (row attends to column). Same weights, different work:"),
   \${ stack((attn1, attn3)) },
-  Text("**the training data** – uncheck training to edit; resuming keeps the weights:"),
-  TextEditor(corpus, editable),
 )
 `,
   "looped-sudoku": `
@@ -2413,7 +2442,7 @@ peers: where((row ⊗(=) row) ⌈ (col ⊗(=) col) ⌈ (box ⊗(=) box), 0, -999
 ; the 27 groups that must each hold 1…9 once: rows, columns, boxes
 groups: concat((0..<9 ⊗(=) row, 0..<9 ⊗(=) col, 0..<9 ⊗(=) box)),
 
-; --- puzzles: one solved grid, shuffled every way that keeps it solved ---
+; --- puzzles: a solved grid, shuffled in ways that keep it solved ---
 ; 0…8 in an order that keeps three groups of three together
 grouped: { n |
   bands: ⍋(⚄([n, 3])), ; the groups' order
@@ -2488,7 +2517,7 @@ lossOf: { z |
 loss: { lossOf(puzzles(B, 0.2, 0.7)) },
 opt: adamw(0.003, 0.1),
 
-; --- solved: every group holds 1…9 once, and the puzzle's digits stay ---
+; --- solved: each group holds 1…9 once; the puzzle's digits stay ---
 fits: { p, grid |
   counts: einsum("gc,ncd->ngd", groups, oneHot(grid - 1, 9)),
   kept: where(p > 0, grid = p, 1),

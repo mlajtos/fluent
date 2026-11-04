@@ -5,12 +5,14 @@
 import { CodeParse, evaluateSyntaxTreeNode, evaluateGeneration, createScope } from "../../language.ts";
 import { EXAMPLES } from "../../examples.ts";
 import { engineGpu, init } from "../tensor.ts";
+import NAMES from "../../names.txt" with { type: "text" };
 
 export default async function (): Promise<{ fails: number }> {
   await init();
   const name = new URLSearchParams(globalThis.location?.search).get("example") ?? "dreamer";
   const src = (EXAMPLES as Record<string, string>)[name]!, head = src.slice(0, src.indexOf("; --- sampling"));
-  const program = `${head}opt: adamw(0.03, 0.001),\n({ opt(loss) }, { 0 })`;
+  // names.txt, which the page would fetch, in the program: a name a word
+  const program = `${head.replace("Fetch(\"names.txt\")", `"${NAMES.trim().replace(/\n/g, " ")}"`)}opt: adamw(0.03, 0.001),\n({ opt(loss) }, { 0 })`;
   const [step] = evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(program), createScope())) as unknown as [() => unknown];
   const engine = engineGpu();
   if (!engine) { console.log("no GPU"); return { fails: 1 }; }
