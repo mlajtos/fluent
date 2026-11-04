@@ -2102,6 +2102,12 @@ describe("one vocabulary for items: a tensor's rows, a list's elements, a string
     for (const call of ["StringFind((1, 2), \"a\")", "StringSplit([1, 2], \",\")"]) { expect([call, run(call) instanceof NoMatch]).toEqual([call, true]) }
     for (const call of ['StringFind("ab", 1)', 'StringSplit("ab", 1)']) { expect([call, run(call) instanceof Error]).toEqual([call, true]) }
   })
+  test("⍎ undoes ⍕: ⍎(⍕x) ≡ x for data – numbers, tensors of any rank, text, lists, ◌", () => {
+    const data = ["0", "3.5", "1e-7", "-2.25", "1e30", "1 ÷ 3", "1 ÷ 0", "-1 ÷ 0", "[1, 2]", "[[1, 2], [3, 4]]", "[[[1]]]", "fill([2, 0], 0)",
+      '""', '"ab"', '"a\\"b"', '"back\\\\slash"', '"–λ🙂"', "()", "(1,)", '(1, "a", [2, 3])', "((1, 2), (3,))", "◌", "(◌, 1)"]
+    for (const x of data) { expect([x, value(`x: ${x}, ⍎(⍕x) ≡ x`)]).toEqual([x, 1]) }
+    expect([text("⍕[1, 2]"), value('⍎"1 + 2"')]).toEqual(["[1, 2]", 3])
+  })
   test("the gallery is a program over Examples: a row for every example, linked by its name", () => {
     // Text as its own text, so the program gives the page's markdown
     const shown = String(value(`Text: { t | t },\n${EXAMPLES.gallery}`))

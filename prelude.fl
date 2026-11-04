@@ -1255,12 +1255,12 @@ StringReduce: doc(StringReduce, "StringReduce(s, f, init?)", "Fold the character
 StringScan: doc(StringScan, "StringScan(s, f, init?)", "The running fold of the characters, as a list: its last item is StringReduce(s, f).", "StringScan(\"abc\", StringConcat) = (\"a\", \"ab\", \"abc\")"),
 StringToCodes: doc(StringToCodes, "StringToCodes(text)", "Text to a tensor of character codes – the door from strings into tensors.", "StringToCodes(\"abc\") = [97, 98, 99]"),
 CodesToString: doc(CodesToString, "CodesToString(codes)", "A tensor of character codes back to text. Rounds first, so model outputs decode directly.", "CodesToString([104, 105]) = \"hi\""),
-String: doc(StringLiteral, "String(x)", "The Fluent source that reproduces a value: CodeEvaluate(String(x)) is x again. A string comes back quoted, a list keeps its parens, a tensor keeps its rank. Exact for data; a signal or ~ round-trips to a new one, and a lambda needs its free names in scope.", "String([1, 2]) = \"[1, 2]\""),
+(⍕): String: doc(StringLiteral, "⍕x · String(x)", "Format: the Fluent source that reproduces a value – ⍎(⍕x) is x again. A string comes back quoted, a list keeps its parens, a tensor keeps its rank. Exact for data; a signal or ~ round-trips to a new one, and a lambda needs its free names in scope.", "String([1, 2]) = \"[1, 2]\""),
 
 ; Cards for built-ins bound natively
 ln: doc(TensorNaturalLogarithm, "ln(x)", "The natural logarithm – log to base e, the same as log(x).", "ln(1) = 0"),
 CodeParse: doc(CodeParse, "CodeParse(text)", "Fluent source text as a syntax tree – a program as a value.", "CodeParse(\"1 + 2\")"),
-CodeEvaluate: doc(CodeEvaluate, "CodeEvaluate(code)", "Run Fluent source text – or a quoted program – and give its value.", "CodeEvaluate(\"1 + 2\") = 3"),
+(⍎): CodeEvaluate: doc(CodeEvaluate, "⍎code · CodeEvaluate(code)", "Execute: run Fluent source text – or a quoted program – and give its value. It undoes ⍕: ⍎(⍕x) is x.", "⍎\"1 + 2\" = 3"),
 FunctionArity: doc(FunctionArity, "FunctionArity((two, one))", "One function from two, chosen by how many arguments it gets: the first takes two, the second one – how + is add and abs.", "FunctionArity(({ x, y | x + y }, { x | -x }))(5) = -5"),
 doc: FunctionDoc: doc(doc, "doc(f, signature, description, example)", "Attach a doc card to f – what hover shows – and give f back.", "double: doc({ x | x × 2 }, \"double(x)\", \"x twice\", \"double(2) = 4\")"),
 SignalCreate: doc(SignalCreate, "SignalCreate(value)", "A cell holding value: its name is its value now, and s← v writes it. $value is the short form.", "s: SignalCreate(1), s + 1 = 2"),
