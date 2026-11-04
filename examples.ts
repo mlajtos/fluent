@@ -1017,17 +1017,16 @@ surface: log(linspace(view_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(view_0, 
 `,
 "descent-path": `
 ; 🧭 The Descent Path – drag the start; the whole descent redraws
-; A loss over two numbers, drawn as a picture. Press or drag on it:
-; from there an optimizer takes 60 steps, and each step's point is
+; A loss over two numbers, drawn as a picture. Press or drag on it: an
+; optimizer starts there and takes 60 steps, and each step's point is
 ; kept – the path, run again as you drag.
 
 (++): concat,
-W: 360,
-H: 360,
+W: 360, H: 360,
 white: [1, 1, 1],
 ink: [0.1, 0.04, 0.2],
 
-; --- the loss: a valley that bends down to its lowest point, the × ---
+; --- the loss: a valley bending down to its lowest point, the × ---
 target: [1.2, 0.9],
 bend: { x | 0.9×sin(1.3×x) }, ; the valley's floor
 ; how far above the floor, and a gentle slope along it to the ×
@@ -1037,19 +1036,18 @@ lossAt: { x, y | (y - bend(x))^2 + 0.03×((x - target_0)^2 + (y - target_1)^2) }
 ; --- the picture: both numbers from -2 to 2, y up ---
 onPicture: { θ | (θ + [2, -2]) × [W, -H] ÷ 4 },
 ofPicture: { p | p × 4 ÷ [W, -H] - [2, -2] },
-; the loss at every pixel in viridis, drawn once, and the ×
-paper: canvas(W, H),
+; the loss's root at each pixel, over 2.5 – about the largest – for viridis
 height: { p |
   c: unstack(ofPicture(p), -1),
   √(lossAt(c_0, c_1)) ÷ 2.5
 },
-land: viridis(height(pixels(paper)))
-  . draw(segments(onPicture(target) + [[-6, -6], [-6, 6]], onPicture(target) + [[6, 6], [6, -6]]), white, 2),
+; the ×, two strokes across the target
+cross: segments(onPicture(target) + [[-6, -6], [-6, 6]], onPicture(target) + [[6, 6], [6, -6]]),
+land: viridis(height(pixels(canvas(W, H)))) . draw(cross, white, 2),
 
 ; --- the walkers: optimizers moving θ, their steps scaled by pace ---
 θ: ~[-0.3, -1.4],
-pace: $0.5, ; the steps' size: at half, each optimizer's own
-steps: 60,
+pace: $0.5, ; at half, each optimizer's own step
 walkers: (
   ("gradient descent", sgd({ t | pace × 0.3 }, (θ,))),
   ("momentum", sgd({ t | pace × 0.3 }, 0.8, (θ,))),
@@ -1058,33 +1056,41 @@ walkers: (
   ("Lion", lion({ t | pace × 0.04 }, (θ,))),
 ),
 which: $1,
+steps: 60,
 
-; --- a run: θ to the start, the optimizer's memory cleared, then its
-; steps, each point kept ---
-path: $[[-0.3, -1.4], [-0.3, -1.4]],
-run: { s |
+; --- a run: θ to the start and the optimizer's memory cleared; then
+; its steps, each point kept ---
+path: $[[-0.3, -1.4]],
+restart: { s |
   o: walkers_which_1,
   memory: o(),
   θ:= s,
   memory:= ListMap(memory, { c | c × 0 }),
-  path:= fold(0..<steps, { q, i |
+  path:= [s]
+},
+more: { n |
+  o: walkers_which_1,
+  path:= fold(0..<n, { q, i |
     o({ 𝓛(θ) }),
     q ++ [θ]
-  }, [s])
+  }, path)
 },
 
-; --- the pointer: while it is down, the start follows it, and a
-; frame whose start, walker or pace changed runs the path again ---
+; --- each frame: a pressed pointer moves the start; a new start,
+; walker or pace restarts the run; the run takes 20 more steps ---
 start: $[-0.3, -1.4],
-pointer: $[0, 0], ; where it is, in the picture's units
+pointer: $[0, 0], ; in the picture's units
 down: $0,
-done: $[0, 0, -1, -1], ; what the path was last run for
+ranFor: $[0, 0, -1, -1], ; the start, walker and pace of this run
 {
   when(down, { start:= ofPicture(pointer) }),
-  wanted: [start_0, start_1, which, pace],
-  when(¬(wanted ≡ done), { run(start), done:= wanted })
+  want: [start_0, start_1, which, pace],
+  when(¬(want ≡ ranFor), { restart(start), ranFor:= want }),
+  toGo: steps + 1 - (#path),
+  when(toGo > 0, { more(toGo ⌊ 20) })
 } ⟳ 1000000,
 
+; --- what it shows ---
 picture: \${
   p: onPicture(path),
   s: onPicture(start) ⍴ [1, 2],
@@ -1094,9 +1100,10 @@ picture: \${
     . draw(dots(s), ink, 16)
     . draw(dots(s), white, 10)
 },
+three: { v | round(v × 1000) ÷ 1000 }, ; to three decimals
 lossText: \${ StringConcat(
-  "**", walkers_which_0, "** – loss ", ⍕(round(𝓛(path_0) × 1000) ÷ 1000), " at the start, ",
-  ⍕(round(𝓛(path_(-1)) × 1000) ÷ 1000), " after ", ⍕steps, " steps"
+  "**", walkers_which_0, "** – loss ", ⍕three(𝓛(path_0)), " at the start, ",
+  ⍕three(𝓛(path_(-1))), " after ", ⍕((#path) - 1), " steps"
 ) },
 (
   Text("# 🧭 The Descent Path"),
