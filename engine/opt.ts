@@ -20,6 +20,15 @@ const scalarOf = (u: UOp): number | null =>
 const is = (u: UOp, v: number): boolean => Object.is(scalarOf(u), v);
 const UNROLL = 4;
 const SIMPLIFY: Rule[] = [
+  // a reduction over nothing is where its loop starts – 0 for a sum, 1 for a product, -∞
+  // for a maximum, 0 for its winner – and a value with no elements needs no kernel: a
+  // kernel over a zero-length axis would divide by that length
+  (u) => {
+    if (u.op !== "REDUCE") return null;
+    const g = u.arg as { axis: number; op: Fold };
+    return u.src[0]!.shape[g.axis] === 0 ? broadcastTo(konst(g.op === "MAX" ? -Infinity : g.op === "MUL" ? 1 : 0), u.shape) : null;
+  },
+  (u) => (numel(u.shape) === 0 && u.op !== "BROADCAST" && u.op !== "CONSTANT" && u.op !== "BUFFER" ? broadcastTo(konst(0), u.shape) : null),
   (u) => (u.op === "DETACH" ? u.src[0]! : null),                              // ∇ captured this already; identity forward
   (u) => (u.op === "MULTIPLY" && is(u.src[0]!, 1) ? u.src[1]! : null),
   (u) => (u.op === "MULTIPLY" && is(u.src[1]!, 1) ? u.src[0]! : null),

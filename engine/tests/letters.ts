@@ -27,6 +27,9 @@ const CASES = [
   'Σ(canvas(520, 160, 0) . paint(letters(("glow", "far"), [[40, 40], [300, 90]], 16, Hyperlegible), solid(1) above halo([1, 0.5, 0], 6)))',
   'z: Σ(⚄([4]) × 0), Σ(canvas(520, 160, 0) . paint(letters(unstack(DrawDigits([z ÷ z, -1 ÷ z, z - 1.5e9, z - 0.052, z - 4.2e-11, z + 2e-37])), [[0, 0], [0, 20], [0, 40], [0, 60], [0, 80], [0, 100]], 12, Hyperlegible), solid(1)))',
   'Σ(plot(0..<10, (0..<10, 9 - 0..<10), ("up", "down")) > 0.3)',
+  // a line through one point has no segments: it draws nothing, its distance an empty
+  // minimum – a reduction over a zero-length axis, which must not divide by that length
+  'Σ(canvas(520, 160, 0.5) . draw(line([[10, 10]]), 1, 2))',
   'z: Σ(⚄([4]) × 0), Σ(canvas(520, 160, 0) . paint(letters(unstack(DrawDigits([z ÷ z, -1 ÷ z, z - 1.5e9, z - 0.052, z - 4.2e-11, z + 2e-37])), [[0, 0], [0, 20], [0, 40], [0, 60], [0, 80], [0, 100]], 12), solid(1)))',
   'Σ(plot(0..<10 × 1e8, (0..<10 - 5, 9 - 0..<10), ("up", "down")) > 0.3)',
   // more points than the picture has columns: each column keeps its first, top, bottom and last
