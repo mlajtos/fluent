@@ -71,13 +71,25 @@ export const checkMemory = (roots: readonly UOp[], materialized: Op): void => {
 // the tile and coop tree-reduces already take it). ∇'s fork-summed cotangents (several
 // reduce chains added per weight) become ONE chain whose sum-of-products body the split-K
 // tile printer catches: ADD(W a, W b) → W(ADD(a, b)) for one linear wrapper W – a Σ, or a
-// reshape or permute in the way of one.
+// reshape or permute in the way of one. A body joins only while one kernel can read it: a
+// weight a loop reads every round has a cotangent a round, and their products joined past
+// MAX_INPUTS split into partial sums the size of the product – [M, k, n] for a matrix's.
 const SCHED_REWRITES: Rule[] = [(u) => {
   const [x, y] = u.src as [UOp, UOp];
   if (u.op !== "ADD" || x.op !== y.op || !(x.op === "RESHAPE" || x.op === "PERMUTE" || (x.op === "REDUCE" && (x.arg as { op: string }).op === "ADD"))) return null;
   const a = x.src[0]!, b = y.src[0]!;
-  return JSON.stringify(x.arg) === JSON.stringify(y.arg) && sameShape(a.shape, b.shape) ? node(x.op, [node("ADD", [a, b], null, a.shape)], x.arg, u.shape) : null;
+  if (JSON.stringify(x.arg) !== JSON.stringify(y.arg) || !sameShape(a.shape, b.shape) || loadsOf(b, loadsOf(a)).size > MAX_INPUTS) return null;
+  return node(x.op, [node("ADD", [a, b], null, a.shape)], x.arg, u.shape);
 }];
+// what a body fused into one kernel loads: the values it reaches through elementwise ops and
+// views, a small constant aside
+function loadsOf(u: UOp, out = new Set<number>(), seen = new Set<number>()): Set<number> {
+  if (seen.has(u.id)) return out;
+  seen.add(u.id);
+  if (ELEM.has(u.op) || VIEW.has(u.op)) for (const s of u.src) loadsOf(s, out, seen);
+  else if (!small(u)) out.add(u.id);
+  return out;
+}
 
 // ---- the schedule ----------------------------------------------------------------
 // Measured platform constants: inlining a kernel that carries a loop trades a dispatch for
