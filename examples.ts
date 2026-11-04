@@ -1015,6 +1015,77 @@ surface: log(linspace(view_1, n) (⊗ { y, x | 𝓛([x, y]) }) linspace(view_0, 
   \${ 𝓛(θ) }, ; live loss – updates while you drag
 )
 `,
+"descent-path": `
+; 🧭 The Descent Path – drag the start; the whole descent redraws
+; A loss over two numbers, drawn as a picture. From the start you
+; drag, momentum descent takes 60 steps, a dot each – worked out again
+; every frame while you drag.
+
+(++): concat,
+W: 360,
+H: 360,
+white: [1, 1, 1],
+ink: [0.1, 0.04, 0.2],
+magma: ramp([[0.05, 0.02, 0.12], [0.3, 0.07, 0.4], [0.72, 0.21, 0.47], [0.93, 0.5, 0.62], [1, 0.86, 0.9]]),
+
+; --- the loss: a valley that bends down to its lowest point, the × ---
+target: [1.2, 0.9],
+bend: { x | 0.9×sin(1.3×x) }, ; the valley's floor
+; how far above the floor, and a gentle slope along it to the ×
+lossAt: { x, y | (y - bend(x))^2 + 0.03×((x - target_0)^2 + (y - target_1)^2) },
+𝓛: { θ | lossAt(θ_0, θ_1) },
+
+; --- the picture: both numbers from -2 to 2, y up ---
+onPicture: { θ | (θ + [2, -2]) × [W, -H] ÷ 4 },
+ofPicture: { p | p × 4 ÷ [W, -H] - [2, -2] },
+; the loss at every pixel, drawn once, and the ×
+land: canvas(W, H)
+  . paint({ p |
+    c: unstack(ofPicture(p), -1),
+    √(lossAt(c_0, c_1)) ÷ 2.5
+  }, magma)
+  . draw(segments(onPicture(target) + [[-6, -6], [-6, 6]], onPicture(target) + [[6, 6], [6, -6]]), white, 2),
+
+; --- the descent: momentum, 60 steps from a start ---
+lr: $0.15, ; the step's size
+β: $0.8, ; how much of each step carries into the next
+steps: 60,
+descend: { θ0 |
+  ; a step: the velocity, slowed and pushed downhill, then the move
+  turn: { st, i |
+    v: st_1×β - (∇𝓛)(st_0)×lr,
+    θ: st_0 + v,
+    (θ, v, st_2 ++ (θ,))
+  },
+  stack(fold(0..<steps, turn, (θ0, [0, 0], (θ0,)))_2)
+},
+
+; --- a state drawn: the path, its dots, and the start ---
+view: { s |
+  path: onPicture(descend(s)),
+  at: onPicture(s) ⍴ [1, 2],
+  land
+    . draw(line(path), white, 1.5)
+    . draw(dots(path), white, 4)
+    . draw(dots(at), ink, 16)
+    . draw(dots(at), white, 10)
+},
+
+start: $[-0.3, -1.4],
+ends: \${ descend(start) },
+lossText: \${ StringConcat(
+  "**loss** ", String(round(𝓛(start) × 1000) ÷ 1000), " at the start, ",
+  String(round(𝓛(ends_steps) × 1000) ÷ 1000), " after ", String(steps), " steps"
+) },
+(
+  Text("# 🧭 The Descent Path"),
+  Text("Drag the white dot: momentum descent starts there, and its steps redraw as you move. The × is the lowest point."),
+  drag(start, { s | onPicture(s) ⍴ [1, 2] }, { s, i, t | ofPicture(t) }, view),
+  Text(lossText),
+  Grid([1, 5])(Text("**step**"), Slider(lr)),
+  Grid([1, 5])(Text("**momentum**"), Slider(β)),
+)
+`,
 "geometric-median": `
 ; 📍 Geometric median – drag the three orange anchors. The blue point rolls
 ; downhill on the total-distance field to the spot closest to all three,
