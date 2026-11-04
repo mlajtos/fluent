@@ -1097,13 +1097,15 @@ TensorOptimizerStep: { loss, only |
   cond(
     guard((#vs) = 0, { Error("nothing to train – the loss reads no ~ variable") }),
     guard(¬isList(only), { r }),
-    guard((#vs) < (#only), { Error("a listed cell isn't one the loss reads, so nothing would train it") }),
-    guard((#vs) = 1, { (r_0, only, r_2) }),
-    ; in the list's order, which is the order of the memory made for them
-    {
-      at: ListMap(only, { o | ListReduce(ListMap(vs, { v, i | identical(o, v) × i }), { p, q | p + q }, 0) }),
-      (r_0, only, r_2_at)
-    }
+    { cond(
+      guard((#vs) < (#only), { Error("a listed cell isn't one the loss reads, so nothing would train it") }),
+      guard((#vs) = 1, { (r_0, only, r_2) }),
+      ; in the list's order, which is the order of the memory made for them
+      {
+        at: ListMap(only, { o | ListReduce(ListMap(vs, { v, i | identical(o, v) × i }), { p, q | p + q }, 0) }),
+        (r_0, only, r_2_at)
+      }
+    ) }
   )
 },
 ; the slots a step keeps for its cells, made again when the cells change
