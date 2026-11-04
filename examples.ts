@@ -2390,6 +2390,204 @@ editable: \${ 1 - training },
   TextEditor(corpus, editable),
 )
 `,
+  "looped-sudoku": `
+; 🧩 The Looped Sudoku Solver – one block, thought over and over.
+; A cell reads only its row, its column and its box: the rules are the
+; mask. Every round reads the puzzle again and answers, and training
+; scores every round's answer – so rounds past the 8 it trains at keep
+; helping: thinking longer solves harder puzzles.
+
+(⊡): matmul, ; the matrix product, as an operator
+
+; --- sizes ---
+C: 64, F: 192, ; width, hidden width
+R: 8, ; rounds it trains at
+B: 8, ; puzzles a step
+α: √(2 × R), β: 1 ÷ √(8 × R), ; the Looped Dreamer's scaling rule
+
+; --- the rules: each cell's row, column and box, and whom it reads ---
+row: floor(0..<81 ÷ 9),
+col: 0..<81 % 9,
+box: floor(row ÷ 3) × 3 + floor(col ÷ 3),
+peers: where((row ⊗(=) row) ⌈ (col ⊗(=) col) ⌈ (box ⊗(=) box), 0, -9999),
+; the 27 groups that must each hold 1…9 once: rows, columns, boxes
+groups: concat((0..<9 ⊗(=) row, 0..<9 ⊗(=) col, 0..<9 ⊗(=) box)),
+
+; --- puzzles: one solved grid, shuffled every way that keeps it solved ---
+; 0…8 in an order that keeps three groups of three together
+grouped: { n |
+  bands: ⍋(⚄([n, 3])), ; the groups' order
+  within: ⍋(⚄([n, 3, 3])) ⍴ [n, 9], ; each group's own order
+  3 × transpose(transpose(bands)_[0, 0, 0, 1, 1, 1, 2, 2, 2]) + within
+},
+; the grid (3·(r mod 3) + ⌊r/3⌋ + c) mod 9, its rows, columns and
+; digits shuffled: n solved grids, [n, 81], digits 1…9
+solved: { n |
+  r: grouped(n) ⍴ [n, 9, 1],
+  c: grouped(n) ⍴ [n, 1, 9],
+  g: (3 × (r % 3) + floor(r ÷ 3) + c) % 9,
+  digits: ⍋(⚄([n, 9])) ⍴ [n, 1, 1, 9],
+  (Σ(oneHot(g, 9) × digits, -1) + 1) ⍴ [n, 81]
+},
+; n puzzles, each with a share from lo to hi of its cells blank:
+; (the puzzle, 0 where blank; its solution; where it is blank)
+puzzles: { n, lo, hi |
+  s: solved(n),
+  p: ⚄([n, 1]) × (hi - lo) + lo,
+  blank: ⚄([n, 81]) < p,
+  (where(blank, 0, s), s, blank)
+},
+
+; --- one block of weights, about 42k ---
+E: ~(randn([10, C]) × 0.1), ; a vector for blank and each digit
+Wq: ~(randn([C, C]) × β),
+Wk: ~(randn([C, C]) × β),
+Wv: ~(randn([C, C]) × β),
+Wo: ~(randn([C, C]) × β),
+Wf: ~(randn([C, F]) × β),
+Wg: ~(randn([F, C]) × β),
+Wu: ~(randn([C, 9]) × 0.1), ; a cell's state to its 9 digits
+
+rms: { x | x ÷ √(mean(x × x, -1, 1) + 0.001) }, ; the 1 keeps the axis
+quickGelu: { x | x × sigmoid(x × 1.702) }, ; GELU, through a sigmoid
+; attention among a cell's peers only
+att: { x |
+  q: x ⊡ Wq,
+  k: x ⊡ Wk,
+  v: x ⊡ Wv,
+  a: softmax(einsum("bic,bjc->bij", q, k) ÷ (√C) + peers),
+  a ⊡ v ⊡ Wo
+},
+block: { x |
+  h: rms(x×α + att(x)),
+  f: quickGelu(h ⊡ Wf) ⊡ Wg,
+  rms(h×α + f)
+},
+embed: { p | oneHot(p, 10) ⊡ E },
+; a round: the puzzle again, then the block
+think: { x, e | block(x + e) },
+; each cell's digit after r rounds, from a blank slate
+answer: { p, r |
+  e: embed(p),
+  argmax(({ x | think(x, e) } ⍣ r)(e × 0) ⊡ Wu, -1) + 1
+},
+
+; --- training: every round's answer, scored on the blank cells ---
+lossOf: { z |
+  e: embed(z_0),
+  y: oneHot(z_1 - 1, 9),
+  w: z_2 ÷ Σ(z_2),
+  ; the log-chance it gives each cell's right digit
+  sure: { x | Σ(y × logSoftmax(x ⊡ Wu), -1) },
+  turn: { st |
+    x: think(st_0, e),
+    (x, st_1 - Σ(sure(x) × w))
+  },
+  (turn ⍣ R)((e × 0, 0))_1 ÷ R
+},
+loss: { lossOf(puzzles(B, 0.2, 0.7)) },
+opt: adamw(0.003, 0.1),
+
+; --- solved: every group holds 1…9 once, and the puzzle's digits stay ---
+fits: { p, grid |
+  counts: einsum("gc,ncd->ngd", groups, oneHot(grid - 1, 9)),
+  kept: where(p > 0, grid = p, 1),
+  min(min(counts = 1, -1), -1) × min(kept, -1)
+},
+; small sets: a measurement is one step of work, and fits in memory
+mid: puzzles(16, 0.45, 0.45), ; 16 puzzles, 45% blank
+hard: puzzles(16, 0.6, 0.6), ; 16 more, 60% blank
+solvedShare: { z, r | μ(fits(z_0, answer(z_0, r))) },
+
+; --- training: ⟳-paced, gated by the checkbox ---
+training: $1,
+step: $0,
+; a row every 100 steps: the step, and the share solved at R rounds
+history: $fill([0, 3], 0),
+; the share solved after each of these rounds, on both sets: one a
+; step, in the 12 steps after every 1000th
+tries: [1, 2, 4, 8, 12, 16],
+longer: $fill([2, 6], 0),
+{
+  when(training, {
+    opt(loss),
+    step:= step + 1,
+    s: step,
+    when(s % 100 = 0, {
+      measured: [s, solvedShare(mid, R), solvedShare(hard, R)],
+      history:= concat((history, measured ⍴ [1, 3]))
+    }),
+    k: s % 1000,
+    when(k < 12, {
+      z: cond(guard(k < 6, { mid }), { hard }),
+      longer:= where((0..<12 ⍴ [2, 6]) = k, solvedShare(z, tries_(k % 6)), longer)
+    })
+  })
+} ⟳ 1000000,
+curves: \${ h: transpose(history), plot(h_0, (h_1, h_2), ("45% blank", "60% blank")) },
+longerCurves: \${ plot(tries, (longer_0, longer_1), ("45% blank", "60% blank")) },
+
+; --- try it: a puzzle, and the board after the rounds you pick ---
+blanks: $0.5, ; the share of cells blank in the next puzzle
+puzzle: $puzzles(1, 0.5, 0.5),
+thinking: $0.23, ; rounds while you watch: 1 + 31 × this
+rounds: \${ round(1 + thinking×31) },
+board: \${ answer(puzzle_0, rounds) ⍴ [81] },
+
+; --- the board, drawn ---
+cell: 32,
+side: 9 × cell,
+at: stack((col × cell + 10, row × cell + 4), -1), ; each digit's corner
+; a line along each x and each y of xs, across the board
+rules: { xs |
+  zero: xs × 0,
+  far: zero + side,
+  starts: concat((stack((xs, zero), -1), stack((zero, xs), -1))),
+  ends: concat((stack((xs, far), -1), stack((far, xs), -1))),
+  segments(starts, ends)
+},
+; each cell's text: its digit, or a space
+shown: { d | unstack(where(d > 0, d + 48, 32) ⍴ [81, 1]) },
+; the cells a cell must differ from: its peers, itself aside
+others: (peers = 0) - (0..<81 ⊗(=) 0..<81),
+green: [0.35, 0.8, 0.45],
+orange: [1, 0.55, 0.2],
+picture: \${
+  p: puzzle_0 ⍴ [81],
+  b: board,
+  given: p > 0,
+  clash: Σ((b ⊗(=) b) × others, -1) > 0, ; a peer holds the same digit
+  canvas(side, side)
+    . draw(rules(0..<10 × cell), 0.3, 1)
+    . draw(rules([0, 3, 6, 9] × cell), 0.7, 2)
+    . paint(letters(shown(p), at, 22), solid(0.9))
+    . paint(letters(shown(where(given ⌈ clash, 0, b)), at, 22), solid(green))
+    . paint(letters(shown(where(given ⌈ (1 - clash), 0, b)), at, 22), solid(orange))
+},
+verdict: \${
+  done: fits(puzzle_0, board ⍴ [1, 81])_0,
+  cond(guard(done = 1, { "**solved** – every row, column and box holds 1…9" }), { "not solved yet – orange digits clash with a peer" })
+},
+roundsText: \${ StringConcat("**rounds of thought:** ", String(rounds)) },
+
+(
+  Text("# 🧩 The Looped Sudoku Solver"),
+  Text("One transformer block, about 42k weights, thought over and over. A cell reads only its row, column and box; every round reads the puzzle again and answers."),
+  Checkbox(training),
+  Text("**training** – uncheck to pause"),
+  Text("**solved** – the share of 16 puzzles it fills in completely after the 8 rounds it trains at:"),
+  curves,
+  Text("**thinking longer** – the share solved after 1 to 16 rounds, measured every 1000 steps. It trains at 8; more keep helping:"),
+  longerCurves,
+  Text("**try it** – the share of cells blank:"),
+  Slider(blanks),
+  Button("new puzzle", { puzzle:= puzzles(1, blanks, blanks) }),
+  Text(roundsText),
+  Slider(thinking),
+  picture,
+  Text(verdict),
+)
+`,
   "makemore": `
 ; makemore, the nanoGPT way – a small transformer learns 32,033 names and makes up
 ; new ones, with what a real training run has: a dataset fetched and split, random
