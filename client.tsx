@@ -1593,6 +1593,7 @@ const SYMBOL_TABLE: [string, string, string, string][] = [
   ["℘", "wp", "Weierstrass p", "wp weierstrass"],
   ["ℵ", "aleph", "Aleph (cardinal)", "aleph cardinal"],
 ]
+const TABLED = new Set(SYMBOL_TABLE.map(([symbol]) => symbol))
 registeredProviders.push(monaco.languages.registerCompletionItemProvider("fluent", {
   provideCompletionItems: (model, position) => {
     const word = model.getWordUntilPosition(position)
@@ -1602,10 +1603,14 @@ registeredProviders.push(monaco.languages.registerCompletionItemProvider("fluent
         ...SYMBOL_TABLE.map(([symbol, name, detail, filterText]) => ({
           label: `${symbol} ${name}`, kind: monaco.languages.CompletionItemKind.Text, insertText: symbol, detail, range, filterText,
         })),
-        ...[...environmentNames.peek()].map(([key, { detail, doc }]) => ({
-          label: key, kind: monaco.languages.CompletionItemKind.Function, insertText: key,
-          documentation: doc ? { value: docCard(doc, false) } : `Function: ${key}`, detail, range, filterText: key,
-        })),
+        ...[...environmentNames.peek()].map(([key, { detail, doc }]) => {
+          // a glyph the table doesn't name is found by its other names: "each" offers ¨
+          const names = /[\p{L}\p{N}\x00-\x7f]/u.test(key) || TABLED.has(key) ? [] : [...doc?.also ?? []].sort((a, b) => a.length - b.length)
+          return {
+            label: [key, ...names].join(" "), kind: monaco.languages.CompletionItemKind.Function, insertText: key,
+            documentation: doc ? { value: docCard(doc, false) } : `Function: ${key}`, detail, range, filterText: [...names, key].join(" "),
+          }
+        }),
       ],
     }
   },

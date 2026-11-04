@@ -2108,6 +2108,8 @@ describe("one vocabulary for items: a tensor's rows, a list's elements, a string
     expect([value("¨({ v | v + 1 })([1, 2])"), value("⌿(⌊)([3, 1, 2])"), value("⍀(+)([1, 1, 1])")]).toEqual([[2, 3], 1, [1, 2, 3]])
     // Bird and Meertens' ↓/ ∘ (⊙/)* on pairs: the smallest number two neighbours' digits make
     expect(value("(⊙): { a, b | 10^(#(⍕b))×a + b }, [12, 34, 5, 6, 7, 0]⍴[-1, 2] ¨ ⌿(⊙) ⌿ ⌊")).toBe(56)
+    // the same ⊙ by text: format both, join, read the number back
+    expect(["[12, 34, 5, 6, 7, 0]", "[100, 1, 3, 1000]", "[0, 0, 5, 5]"].map((x) => value(`${x}⍴[-1, 2] ¨ ⌿(⍕ ⍥ concat ∘ ⍎) ⌿ ⌊`))).toEqual([56, 1001, 0])
   })
   test("StringFind is where a part starts, or past the end; StringSplit cuts at every separator", () => {
     expect([value('StringFind("banana", "na")'), value('StringFind("banana", "x")'), value('StringFind("aé–b", "–")')]).toEqual([2, 6, 2])
