@@ -1059,7 +1059,7 @@ which: $1,
 steps: 60,
 
 ; --- a run: θ to the start and the optimizer's memory cleared; then
-; its steps, each point kept ---
+; steps, a few a frame, each point kept ---
 path: $[[-0.3, -1.4]],
 restart: { s |
   o: walkers_which_1,
@@ -1077,17 +1077,16 @@ more: { n |
 },
 
 ; --- each frame: a pressed pointer moves the start; a new start,
-; walker or pace restarts the run; the run takes 20 more steps ---
+; walker or pace restarts the run, which takes 15 more steps ---
 start: $[-0.3, -1.4],
 pointer: $[0, 0], ; in the picture's units
 down: $0,
 ranFor: $[0, 0, -1, -1], ; the start, walker and pace of this run
 {
   when(down, { start:= ofPicture(pointer) }),
-  want: [start_0, start_1, which, pace],
-  when(¬(want ≡ ranFor), { restart(start), ranFor:= want }),
-  toGo: steps + 1 - (#path),
-  when(toGo > 0, { more(toGo ⌊ 20) })
+  key: [start_0, start_1, which, pace],
+  when(¬(key ≡ ranFor), { restart(start), ranFor:= key }),
+  when((#path) ≤ steps, { more(15) })
 } ⟳ 1000000,
 
 ; --- what it shows ---
