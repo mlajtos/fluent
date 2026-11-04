@@ -2225,6 +2225,8 @@ editable: \${ 1 - training },
 ; Every sublayer visit is post-norm, x ← rms(α·x + f(x)), with the DeepLoop
 ; scaling rule (p = ½): skip α = (2N)^½, per-matrix init gain β = (8N)^-½ –
 ; strong skips and gentle starts keep 12 sublayer visits stable.
+; Attention stops at a space: a letter reads its own name, never the
+; one before it, and knows its place in the name from what it sees.
 
 (++): concat,
 (⊡): matmul, ; the matrix product, as an operator
@@ -2243,7 +2245,6 @@ D: \${ load(corpus) }, ; follows corpus edits – the weights stay
 
 ; --- K=2 physical blocks: this is all the depth there is ---
 E: ~(randn([V, C]) × 0.1),
-P: ~(randn([T, C]) × 0.1),
 Wu: ~(randn([C, V]) × 0.1),
 ; a block's weights: one of each per block, along the first axis
 Wq: ~(randn([K, C, C]) × β),
@@ -2256,23 +2257,38 @@ Wg: ~(randn([K, F, C]) × β),
 rms: { x | x ÷ √(mean(x × x, -1, 1) + 0.001) }, ; the 1 keeps the reduced axis
 quickGelu: { x | x × sigmoid(x × 1.702) }, ; GELU, through a sigmoid
 nmask: where(0..<T ⊗(≥) 0..<T, fill([T, T], 0), fill([T, T], -9999)),
-att: { x, b |
+; the mask of a window: no reading ahead, and no reading past a space
+wall: { ids |
+  n: (ids = 0) ⊡ (0..<T ⊗(≤) 0..<T), ; the spaces up to each place
+  apart: (n ⍴ [#ids, T, 1]) - (n ⍴ [#ids, 1, T]), ; spaces between places
+  where(apart = 0, nmask, -9999)
+},
+att: { x, b, m |
   q: x ⊡ Wq_b,
   k: x ⊡ Wk_b,
   v: x ⊡ Wv_b,
-  a: softmax(einsum("btc,bsc->bts", q, k) ÷ (√C) + nmask),
+  a: softmax(einsum("btc,bsc->bts", q, k) ÷ (√C) + m),
   a ⊡ v ⊡ Wo_b
 },
-block: { x, b |
-  h: rms(x×α + att(x, b)),
+block: { x, b, m |
+  h: rms(x×α + att(x, b, m)),
   f: quickGelu(h ⊡ Wf_b) ⊡ Wg_b,
   rms(h×α + f)
 },
-cycle: { x | block(block(x, 0), 1) }, ; one round: the whole stack, once
+cycle: { x, m | block(block(x, 0, m), 1, m) }, ; one round: the whole stack
 
-embed: { ids | oneHot(ids, V) ⊡ E + P },
-model: { ids | cycle(cycle(cycle(embed(ids)))) ⊡ Wu }, ; training unrolls R=3 rounds
-modelAt: { ids, r | (cycle ⍣ r)(embed(ids)) ⊡ Wu }, ; dreaming picks its own r
+; letters only: a place in the window says nothing about a name
+embed: { ids | oneHot(ids, V) ⊡ E },
+; training unrolls R=3 rounds
+model: { ids |
+  m: wall(ids),
+  cycle(cycle(cycle(embed(ids), m), m), m) ⊡ Wu
+},
+; dreaming picks its own r
+modelAt: { ids, r |
+  m: wall(ids),
+  ({ x | cycle(x, m) } ⍣ r)(embed(ids)) ⊡ Wu
+},
 
 ; --- what it learns from: B random windows a step; a tenth held out to score it ---
 B: 256, ; windows a step: enough for the GPU to work through, not to wait
@@ -2299,9 +2315,9 @@ dreamNow: { dream← StringConcat("### ", dec(slice(gen(fill([T], 0), 48, pick),
 
 ; --- training: ⟳-paced, gated by the checkbox ---
 training: $1,
-; post-norm runs hotter than pre-norm: a cooler lr, and no
-; weight decay – rms-normalized blocks shrink until they blow up
-opt: adamw(0.01, 0),
+; weight decay holds the weights steady: without it they grow until
+; attention hardens to one letter and the model stops reading
+opt: adamw(0.01, 0.1),
 step: $0,
 ; how large block b's weights are: the root of the sum of their squares
 size: { b | √(fold((Wq, Wk, Wv, Wo, Wf, Wg), { total, w | total + Σ(w_b^2) }, 0)) },
@@ -2341,11 +2357,12 @@ finish: \${
 ; the same block 1, watched in round 1 and in round 3: shared weights, different work
 probeS: fill([T], 0) ++ enc("sophia"),
 probe: slice(probeS, [-T]),
+probeWall: wall(probe ⍴ [1, T]),
 attProbe: { x |
-  softmax(einsum("btc,bsc->bts", x ⊡ Wq_0, x ⊡ Wk_0) ÷ (√C) + nmask) ⍴ [T, T]
+  softmax(einsum("btc,bsc->bts", x ⊡ Wq_0, x ⊡ Wk_0) ÷ (√C) + probeWall) ⍴ [T, T]
 },
 attn1: \${ attProbe(embed(probe ⍴ [1, T])) },
-attn3: \${ attProbe(cycle(cycle(embed(probe ⍴ [1, T])))) },
+attn3: \${ attProbe(cycle(cycle(embed(probe ⍴ [1, T]), probeWall), probeWall)) },
 
 editable: \${ 1 - training },
 (
