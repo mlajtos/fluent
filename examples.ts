@@ -2183,7 +2183,9 @@ prompt: $"kri",
 finish: \${
   p: prompt,
   s: fill([T], 0) ++ enc(p),
-  StringConcat("## ", p, "·", dec(slice(gen(s, 10, best), #s)))
+  more: slice(gen(s, 12, best), #s), ; up to 12 letters past the beginning
+  ; the name ends at its first 0, the end-of-name mark
+  StringConcat("## ", p, "·", dec(take(more, argmax((more ++ [0]) = 0))))
 },
 
 ; what the head attends to while reading a name, live
@@ -2382,7 +2384,9 @@ prompt: $"kri",
 finish: \${
   p: prompt,
   s: fill([T], 0) ++ enc(p),
-  StringConcat("## ", p, "·", dec(slice(gen(s, 10, best), #s)))
+  more: slice(gen(s, 12, best), #s), ; up to 12 letters past the beginning
+  ; the name ends at its first 0, the end-of-name mark
+  StringConcat("## ", p, "·", dec(take(more, argmax((more ++ [0]) = 0))))
 },
 
 ; block 1 in round 1 and in round 3: shared weights, different work
