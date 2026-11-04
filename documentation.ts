@@ -105,6 +105,8 @@ Button("Reset", { x(0) }),
   - outer product \`⊗\`: \`a (⊗ f) b\` pairs every cell of a with every cell of b; \`a (f ⊗ k) b\` keeps trailing k axes zipped
   - inner product \`∙\`: \`a (g ∙ f) b\` combines with g, then reduces with f – \`A (× ∙ +) B\` is matrix multiply, \`W (+ ∙ ⌊) W\` is shortest paths
   - items – a tensor's rows, a list's elements, a string's characters: \`#\`, \`_\`, \`take\`, \`drop\`, \`reverse\`, \`concat\`, \`reduce\`, \`scan\` and \`fold(x, f, start)\` work on all three; each kind's own is named for it (\`TensorTake\`, \`ListTake\`, \`StringTake\`); \`ListMap\` maps a list
+  - text: \`StringSplit(s, separator)\` cuts it into a list, \`StringFind(s, part)\` is where part starts (the length when it isn't there), \`StringConcat\` joins, \`StringToCodes\` and \`CodesToString\` go to numbers and back
+  - the playground's examples: \`Examples\`, a list of (name, source) pairs
   - UI: \`Slider\`, \`Scrubber\`, \`Checkbox\`, \`Button\`, \`Text\`, \`TextEditor\`, \`Code\`, \`CodeEditor\`, \`CodePrint\`, \`Print\`, \`PrettyPrint\`, \`Grid\`, \`Layers\`, \`Center\`, \`Point2D\`, \`Pointer\`, \`Trail\`, \`PointPlot\`, \`ImageUpload\`
   - live inputs: \`Camera\`, \`Microphone\`, \`MicrophoneSpectrum\`, \`Time\`, \`MousePosition\`, \`Density\`
   - optimizers: \`sgd\` (optional momentum), \`adam\`, \`adamw\`, \`adagrad\`, \`rmsprop\`, \`lion\`, \`muon\` and more – each built on \`optimizer(init, rule)\`

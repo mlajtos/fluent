@@ -18,6 +18,7 @@ import {
 } from "./protocol"
 import { Documentation } from "./documentation"
 import { TOUR_SOURCE } from "./tour"
+import { EXAMPLES } from "./examples"
 import { CpuPainter, GpuPainter, type Picture } from "./painter"
 import { migrate } from "./migrate"
 
@@ -826,6 +827,7 @@ export const startHost = (postMessage: Post): ((message: ToWorker) => void) => {
   setCodeNodePrinter((node) => new CodeTree(node) as unknown as Value)
   extendEnvironment({
     Documentation: Text(Documentation),
+    Examples: Object.entries(EXAMPLES), // every example, a (name, source) pair
     CodePrint,
     Button, Center, Checkbox, Grid, ImageUpload, Layers, MousePosition, Point2D, Pointer, PointPlot, Trail, Slider, Scrubber,
     Text, TextEditor, Code, CodeEditor,

@@ -34,6 +34,8 @@ const hold = (what: keyof typeof held) => {
 const loading = { LoadTensorFromImageUrl: () => SignalCreate(engine.zeros([16, 16, 3])), Fetch: () => SignalCreate(""), LoadSafeTensorFromURL: () => SignalCreate([]) }
 const hostFetch = DefaultEnvironment.Fetch
 extendEnvironment(loading as Record<string, Value>)
+// as the host does: every example, a (name, source) pair
+extendEnvironment({ Examples: Object.entries(EXAMPLES) } as Record<string, Value>)
 
 const evaluateIn = (source: string, scope = createScope()) => evaluateGeneration(() => evaluateSyntaxTreeNode(CodeParse(source), scope))
 const run = (source: string) => evaluateIn(source)
@@ -2089,6 +2091,21 @@ describe("one vocabulary for items: a tensor's rows, a list's elements, a string
       const v = run(call)
       expect([call, v instanceof Error, v instanceof NoMatch]).toEqual([call, true, false])
     }
+  })
+  test("StringFind is where a part starts, or past the end; StringSplit cuts at every separator", () => {
+    expect([value('StringFind("banana", "na")'), value('StringFind("banana", "x")'), value('StringFind("aé–b", "–")')]).toEqual([2, 6, 2])
+    // what comes before the part, or all of it: never -1, which would count from the end
+    expect([text('s: "kri·ster", StringTake(s, StringFind(s, "·"))'), text('s: "kri", StringTake(s, StringFind(s, "·"))')]).toEqual(["kri", "kri"])
+    expect(value('StringSplit("a,b,,c", ",") ≡ ("a", "b", "", "c")')).toBe(1)
+    expect(value('StringSplit("a – b – c", " – ") ≡ ("a", "b", "c")')).toBe(1)
+    expect(value('StringSplit("ab", "") ≡ ("a", "b")')).toBe(1)
+    for (const call of ["StringFind((1, 2), \"a\")", "StringSplit([1, 2], \",\")"]) { expect([call, run(call) instanceof NoMatch]).toEqual([call, true]) }
+    for (const call of ['StringFind("ab", 1)', 'StringSplit("ab", 1)']) { expect([call, run(call) instanceof Error]).toEqual([call, true]) }
+  })
+  test("the gallery is a program over Examples: a row for every example, linked by its name", () => {
+    // Text as its own text, so the program gives the page's markdown
+    const shown = String(value(`Text: { t | t },\n${EXAMPLES.gallery}`))
+    for (const name of Object.keys(EXAMPLES)) { expect([name, shown.includes(`](?example=${name})`)]).toEqual([name, true]) }
   })
   test("the list members read the list they are given, not the cells inside it", () => {
     expect(value("x: $1, identical(ListGet(ListConcat((x,), (2,)), 0), x)")).toBe(1)

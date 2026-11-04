@@ -1248,6 +1248,8 @@ StringGather: doc(StringGather, "StringGather(s, indices)", "The characters at t
 StringTake: doc(StringTake, "StringTake(s, n)", "The first n characters; with a negative n, the last n.", "StringTake(\"hello\", -2) = \"lo\""),
 StringDrop: doc(StringDrop, "StringDrop(s, n)", "All but the first n characters; with a negative n, all but the last n.", "StringDrop(\"hello\", 2) = \"llo\""),
 StringReverse: doc(StringReverse, "StringReverse(s)", "s back to front.", "StringReverse(\"abc\") = \"cba\""),
+StringFind: doc(StringFind, "StringFind(s, part)", "Where part first starts in s, counted in characters – the length of s, one past its end, when part isn't in it: StringTake(s, StringFind(s, part)) is what comes before it.", "StringFind(\"banana\", \"na\") = 2"),
+StringSplit: doc(StringSplit, "StringSplit(s, separator)", "s cut at every separator, the separators left out: a list of the pieces. An empty separator gives the characters.", "StringSplit(\"a,b,,c\", \",\") = (\"a\", \"b\", \"\", \"c\")"),
 StringConcat: identity(doc(StringConcat, "StringConcat(a, b, …)  ·  StringConcat(strings)", "Strings joined end to end – after the first, a value that isn't a string as the source that writes it. One list of strings joins the strings in it.", "StringConcat(\"ab\", \"cd\") = \"abcd\""), ""),
 StringReduce: doc(StringReduce, "StringReduce(s, f, init?)", "Fold the characters left to right with f, from init or from the first character.", "StringReduce(\"abc\", { a, c | StringConcat(c, a) }) = \"cba\""),
 StringScan: doc(StringScan, "StringScan(s, f, init?)", "The running fold of the characters, as a list: its last item is StringReduce(s, f).", "StringScan(\"abc\", StringConcat) = (\"a\", \"ab\", \"abc\")"),

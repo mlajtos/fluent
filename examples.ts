@@ -2847,24 +2847,33 @@ fib: { n | cond(guard(n < 2, { n }), { fib(n-1) + fib(n-2) }) },
 
 } as const
 
-// The gallery as a page: every example a row, linked, its first comment line split into
-// what it is called and what it shows. Built from the examples, so it lists each one.
-const galleryPage = (examples: Record<string, string>): string => {
-  const cell = (text: string) => text.replace(/\|/g, "\\|")
-  const rows = Object.entries(examples).map(([key, src]) => {
-    const first = src.trim().split("\n")[0] ?? ""
-    const line = first.replace(/^;\s*/, ""), at = line.indexOf(" – ")
-    const [name, what] = !first.startsWith(";") ? [key, ""] : at < 0 ? [line, ""] : [line.slice(0, at), line.slice(at + 3)]
-    return `| [${cell(name)}](?example=${key}) | ${cell(what)} |`
-  })
-  const table = ["| Example | What it shows |", "|---|---|", ...rows].join("\n")
-  // a Fluent string: a backslash or a quote is escaped with a backslash
-  const text = `# Gallery\n\nEvery example in the playground. Open one, and come back with ?example=gallery.\n\n${table}`
-  return `
+// The gallery is a program like the others: it reads every example from Examples, the
+// host's (name, source) pairs, itself among them
+const GALLERY_PAGE = `
 ; 🗂 Gallery – every example, a row each, linked
-Text("${text.replace(/[\\"]/g, "\\$&")}")
-`
-}
+; Examples holds every example as (name, source). An example's first
+; line names it: "; title – what it shows".
 
-export const EXAMPLES = { gallery: galleryPage(GALLERY), ...GALLERY }
+newline: CodesToString([10]),
+; the title and what it shows, from the first line under the newline
+; a source opens with, past its "; "
+heading: { source |
+  text: StringDrop(StringSplit(source, newline)_1, 2),
+  at: StringFind(text, " – "),
+  (StringTake(text, at), StringDrop(text, at + 3))
+},
+row: { e |
+  h: heading(e_1),
+  StringConcat("| [", h_0, "](?example=", e_0, ") | ", h_1, " |", newline)
+},
+Text(StringConcat(
+  "# Gallery", newline, newline,
+  "Every example in the playground. Open one, and come back with ?example=gallery.", newline, newline,
+  "| Example | What it shows |", newline,
+  "|---|---|", newline,
+  StringConcat(ListMap(Examples, row))
+))
+`
+
+export const EXAMPLES = { gallery: GALLERY_PAGE, ...GALLERY }
 

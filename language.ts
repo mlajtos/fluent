@@ -1742,6 +1742,23 @@ const StringDrop = (a: Value, n: Value) => isText(a) ? cut(chars(a), n, false).j
 const ListReverse = (a: Value) => Array.isArray(a) ? [...a].reverse() : decline("a list", a)
 const StringReverse = (a: Value) => isText(a) ? chars(a).reverse().join("") : decline("a string", a)
 
+// where part first starts in s, in characters – s's length, one past its end, when it
+// isn't there, as APL's ⍳: StringTake(s, StringFind(s, part)) is what comes before it.
+// Never -1, which as an index counts from the end
+const StringFind = (a: Value, b: Value) => {
+  if (!isText(a)) { return decline("a string", a) }
+  if (!isText(b)) { return new Error(`'StringFind': expected a string to find, got ${describeArg(b)}`) }
+  const s = String(a), at = s.indexOf(String(b))
+  return engine.tensor(chars(at < 0 ? s : s.slice(0, at)).length)
+}
+// s cut at every separator, the separators left out: the pieces, a list; an empty
+// separator gives the characters
+const StringSplit = (a: Value, b: Value) => {
+  if (!isText(a)) { return decline("a string", a) }
+  if (!isText(b)) { return new Error(`'StringSplit': expected a string to split at, got ${describeArg(b)}`) }
+  return String(b) === "" ? chars(a) : String(a).split(String(b))
+}
+
 // a concat b joins a's items and b's, concat(a, b, …) any number of them; concat(xs),
 // one list, joins the containers in it – tensors along the axis given after it. The first
 // says which kind they are; in a step, a live value among them is read now.
@@ -1910,7 +1927,7 @@ const DefaultEnvironment: Record<string, Value> = Object.assign(Object.create(nu
   TensorWhere, TensorSlice, TensorVariable, TensorRandomUniform, TensorMemoryOf,
   List, ListMap, StringLiteral, StringToCodes, CodesToString,
   TensorLength, ListLength, StringLength, TensorGet, ListGet, StringGet, TensorGather, ListGather, StringGather,
-  TensorTake, ListTake, StringTake, TensorDrop, ListDrop, StringDrop, ListReverse, StringReverse, TensorConcat, ListConcat,
+  TensorTake, ListTake, StringTake, TensorDrop, ListDrop, StringDrop, ListReverse, StringReverse, StringFind, StringSplit, TensorConcat, ListConcat,
   StringConcat, TensorReduce, ListReduce, StringReduce, TensorFold, ListScan, StringScan, TensorOnly,
   Storage, Density,
 })
