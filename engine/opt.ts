@@ -228,6 +228,9 @@ const stored = (work: number, a: number): boolean => work * (a - 1) > COST.recom
 // which no pass frees again. optimizeMany passes again until the plan stops changing. A
 // kernel of the last pass (`kept`) is kept when nothing it computes or loads, and none of its
 // inputs, changed (`changed`).
+// `planNotes` counts the copies the plans have noted – their work, the same on any machine
+let notes = 0;
+export const planNotes = (): number => notes;
 type Built = { outN: number; gid: UOp; here: [UOp, UOp, number][]; loads: [UOp, UOp][] };
 type Kept = { kernels: Map<number, { k: UOp; rec?: Built }>; owner: Map<UOp, UOp> };
 function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, settled: Set<number>, kept: Kept, changed: Set<number>): UOp[] {
@@ -266,7 +269,7 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
     // chain of forks read at two indices each, butterflies, from building 2^depth copies first.
     // Each note keeps the count it replaces, so an undone copy takes its notes back.
     const tally = new Map<number, [number, number]>(), noted: [number, [number, number] | undefined][] = [];
-    const note = ([x, i, w]: [UOp, UOp, number]) => { const t = tally.get(x.id); noted.push([x.id, t]); tally.set(x.id, [(t?.[0] ?? 0) + outN * steps(i, gid), Math.max(t?.[1] ?? 0, w)]); };
+    const note = ([x, i, w]: [UOp, UOp, number]) => { notes++; const t = tally.get(x.id); noted.push([x.id, t]); tally.set(x.id, [(t?.[0] ?? 0) + outN * steps(i, gid), Math.max(t?.[1] ?? 0, w)]); };
     const costlier = (v: UOp, ix: UOp): boolean => {
       const t = tally.get(v.id);
       if (!t || v.op === "GATHER" || (reads.get(v.id) ?? 1) < 2) return false;

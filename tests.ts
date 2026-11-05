@@ -3979,15 +3979,18 @@ describe("the engine", () => {
     const sizes = ir.toposort(optimizeMany([g.node])).filter((u) => u.op === "FUSED").map((u) => ir.numel(u.shape))
     expect(Math.max(...sizes)).toBeLessThanOrEqual(520 * 320 * 2)   // no more than the points p
   })
-  test("a copy that takes a kernel past its inputs takes back only its own counts: ∇ through 40 steps of a raymarch plans in under 2.7 s", async () => {
-    const { optimizeMany } = await import("./engine/opt.ts")
+  test("a copy that takes a kernel past its inputs takes back only its own counts: ∇ through 40 steps of a raymarch notes under a million copies", async () => {
+    const { optimizeMany, planNotes } = await import("./engine/opt.ts")
     const g = run(`N: 256, a: (0 ..< N) - (N ÷ 2) × (0.96 ÷ N), rays: stack((sin(a), a × 0, cos(a)), -1),
       depth: { c | sdf: { p | norm(p - c, -1) - 1 }, march: { t | t + sdf(unsqueeze(t, -1) × rays) },
         step: { s | new: march(s_0), (where(s_1, s_0, new), s_1 ∨ (sdf(unsqueeze(new, -1) × rays) < 1e-3 ∨ (new > 20)), s_2 + 1) },
         Σ((step ⍣ { new, old | min(new_1) ∨ (new_2 ≥ 40) })((a × 0, a × 0, 0))_0) },
       ∇(depth)([0, 0, 3])`) as engine.Tensor
-    const time = () => { const t = performance.now(); optimizeMany([g.node]); return performance.now() - t }
-    expect(Math.min(time(), time())).toBeLessThan(2700)
+    // the work, not the time, so any machine checks it: 470 thousand notes, where counts
+    // rebuilt at each undo would note 22 million
+    const before = planNotes()
+    optimizeMany([g.node])
+    expect(planNotes() - before).toBeLessThan(1e6)
   }, 60_000)
   test("joining n pieces the host does not hold takes about n/7 kernels, not n", async () => {
     const { optimizeMany } = await import("./engine/opt.ts")
