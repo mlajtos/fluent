@@ -468,7 +468,8 @@ test("typing while a demo trains keeps the page at frame rate", async ({ page })
     return f.slice(1).map((t, i) => t - f[i]!).sort((a, b) => a - b)
   })
   expect(gaps.length).toBeGreaterThan(200)
-  expect(gaps[Math.floor(gaps.length * 0.95)]!).toBeLessThan(50)
+  // a frame the main thread holds is 115–200 ms; a runner that draws in software takes 60
+  expect(gaps[Math.floor(gaps.length * 0.95)]!).toBeLessThan(100)
 })
 
 test("Ctrl/Cmd+O opens the example gallery without editor focus", async ({ page }) => {
