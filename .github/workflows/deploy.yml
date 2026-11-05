@@ -50,8 +50,8 @@ jobs:
       - name: Test (engine, CPU)
         run: bun run test:engine
 
-      - name: Install Playwright Chromium
-        run: bunx playwright install --with-deps chromium
+      - name: Install Playwright Chromium and WebKit
+        run: bunx playwright install --with-deps chromium webkit
 
       - name: Test (browser)
         run: npx playwright test
