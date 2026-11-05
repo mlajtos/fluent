@@ -705,7 +705,10 @@ test("Pointer writes where the pointer is over the picture, and runs press and r
 // the main editor's source can contain the same text, and it mounts first.
 const typeInCell = async (page: Page, anchor: string, code: string) => {
   await panel(page).locator(".view-line", { hasText: anchor }).first().click()
-  await page.keyboard.press("ControlOrMeta+KeyA")
+  // the editor's select-all: Monaco reads a Macintosh user agent as macOS, and
+  // Playwright's WebKit reports one on every OS
+  const mac = await page.evaluate(() => navigator.userAgent.includes("Macintosh"))
+  await page.keyboard.press(mac ? "Meta+KeyA" : "Control+KeyA")
   await page.keyboard.press("Backspace")
   await page.keyboard.insertText(code)
   await page.keyboard.press("Escape")
