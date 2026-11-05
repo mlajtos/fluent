@@ -2239,7 +2239,7 @@ describe("gallery examples smoke suite", () => {
       expect(firstError(scope)).toBeNull()
       expect(trained.filter((k, i) => JSON.stringify((scope[k] as FluentVariable).value.js()) === before[i])).toEqual([])
       flushRetirements()
-    }, 60_000)
+    }, 180_000) // a guard against a hang, not a speed bound: the Looped Dreamer's steps take a minute on a CI runner
   }
 
   test("a demo you drag descends on the clock: so many steps a second, on any machine", () => {

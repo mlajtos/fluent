@@ -36,8 +36,16 @@ jobs:
       - name: Typecheck
         run: bunx tsc --noEmit
 
+      # three processes, as the suite runs locally: the host is one per process and
+      # answers every write, so the gallery's demos and the host's tests each get their own
       - name: Test (language)
-        run: bun test ./tests.ts
+        run: "bun test ./tests.ts -t '^(?!gallery examples smoke suite|the evaluation host)'"
+
+      - name: Test (gallery)
+        run: "bun test ./tests.ts -t '^gallery examples smoke suite'"
+
+      - name: Test (host)
+        run: "bun test ./tests.ts -t '^the evaluation host'"
 
       - name: Test (engine, CPU)
         run: bun run test:engine
