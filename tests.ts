@@ -2110,8 +2110,11 @@ describe("one vocabulary for items: a tensor's rows, a list's elements, a string
     expect(value("(⊙): { a, b | 10^(#(⍕b))×a + b }, [12, 34, 5, 6, 7, 0]⍴[-1, 2] ¨ ⌿(⊙) ⌿ ⌊")).toBe(56)
     // the same ⊙ by text: format both, join, read the number back
     expect(["[12, 34, 5, 6, 7, 0]", "[100, 1, 3, 1000]", "[0, 0, 5, 5]"].map((x) => value(`${x}⍴[-1, 2] ¨ ⌿(⍕ ⍥ ++ ∘ ⍎) ⌿ ⌊`))).toEqual([56, 1001, 0])
-    // K's ASCII for each and scan; ++ joins; format and execute are ⍕ and ⍎
+    // K's ASCII for each, reduce and scan; ++ joins; format and execute are ⍕ and ⍎
     expect([value("(1, 2, 3) ' { v | v × 2 } ≡ (2, 4, 6)"), value("[1, 2, 3, 4] \\ +"), value("(1, 2) ++ (3,) ≡ (1, 2, 3)")]).toEqual([1, [1, 3, 6, 10], 1])
+    // / reduces when given a function and divides by anything else, as ÷ does
+    expect([value("[1, 2, 3, 4] / +"), value("/(⌊)([3, 1, 2])"), value("() / +"), value("[3, 4] / 2"), value("/(4)"), value("[6, 3] / [2, 3]")]).toEqual([10, 1, 0, [1.5, 2], 0.25, [3, 1]])
+    expect([value("∇({ x | sum(x / [1, 2]) })([3, 4])"), value("isError(÷(+))")]).toEqual([[1, 0.5], 1])
     expect([value('execute(format((1, "a", [2]))) ≡ (1, "a", [2])'), value('(1, 2) ¨ ⍕ ≡ ("1", "2")')]).toEqual([1, 1])
   })
   test("StringFind is where a part starts, or past the end; StringSplit cuts at every separator", () => {
