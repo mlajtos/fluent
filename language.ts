@@ -1553,7 +1553,7 @@ const TensorMeshgrid = (...args: Value[]) => engine.meshgrid(args.map(operand))
 // the k largest values and their indices, as (values, indices)
 const TensorTopK = (a: Value, k: Value) => engine.topK(operand(a), asWhole(k))
 // x ⍴ shape reshapes; ⍴x alone is x's shape
-const TensorReshape = (a: Value, b?: Value) => b != null ? engine.reshape(operand(a), asWholeList(b)) : engine.tensor(shapeOf(a))
+const TensorReshape = (a: Value, b?: Value) => b != null ? engine.reshape(operand(a), asWholeList(b)) : TensorShape(a)
 
 const TensorShape = (a: Value) => isTensorish(a) ? engine.tensor(shapeOf(a)) : new Error(`shape: expected numbers, got ${describeArg(a)}`)
 
@@ -1780,7 +1780,7 @@ const StringConcat = (...args: Value[]) => {
   const xs = joined(args).map(sampled)
   if (!isText(xs[0] ?? null)) { return decline("a string", xs[0] ?? null) }
   const bad = xs.findIndex((a) => a == null || a instanceof Error || typeof a === "symbol")
-  if (bad >= 0) { throw new Error(`StringConcat: expected text, got ${describeArg(xs[bad]!)}`) }
+  if (bad >= 0) { return new Error(`StringConcat: expected text, got ${describeArg(xs[bad]!)}`) }
   return xs.map((a) => isText(a) ? String(a) : StringLiteral(a)).join("")
 }
 

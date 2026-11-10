@@ -2011,6 +2011,12 @@ describe("adversarial edge cases", () => {
     expect(value("transpose([1, 2, 3])")).toEqual([1, 2, 3])
     expect(run("[1, 2, 3] ⍴ [2, 2]")).toBeInstanceOf(Error)
   })
+  test("⍴ of one argument is its shape, and says what isn't numbers", () => {
+    expect(value("⍴([[1, 2, 3], [4, 5, 6]])")).toEqual([2, 3])
+    for (const [x, got] of [[`"abc"`, "a string"], ["(1, 2)", "a ( … ) list of 2"], ["{ x | x }", "a function"], ["◌", "◌"], ["nope", "the unknown name nope"]] as const) {
+      expect((run(`⍴(${x})`) as Error).message).toBe(`shape: expected numbers, got ${got}`)
+    }
+  })
   test("∇ nests to third order", () => {
     expect(value("∇(∇(∇({ x | x^3 })))([5])")).toEqual([6])
   })
