@@ -329,13 +329,13 @@ const COLORS: editor.ITokenThemeRule[] = [
   { token: "keyword.md", foreground: "7F7F7F" },
 ]
 
-// a syntax tree node's label, colored as the editor colors its kind of token
-const colorOf = (label: string): string =>
-  numberRegexp.test(label) ? `#${tokenColors.number}`
-    : stringRegexp.test(label) ? `#${tokenColors.string}`
-      : identifierRegexp.test(label) ? `#${tokenColors.identifier}`
-        : operatorRegexp.test(label) ? `#${tokenColors.operator}`
-          : "#D4D4D4"
+// a syntax tree node's label, colored as the editor colors the token it starts with
+const TOKEN_KINDS = ([[numberRegexp, "number"], [stringRegexp, "string"], [identifierRegexp, "identifier"], [operatorRegexp, "operator"]] as const)
+  .map(([pattern, kind]) => [new RegExp(`^(?:${pattern.source})`, pattern.flags), kind] as const)
+const colorOf = (label: string): string => {
+  const kind = TOKEN_KINDS.find(([pattern]) => pattern.test(label))?.[1]
+  return kind ? `#${tokenColors[kind]}` : "#D4D4D4"
+}
 
 const StringSerialize = (s: string) => Base64.encodeURI(s)
 const StringDeserialize = (s: string) => Base64.decode(s)
@@ -1368,7 +1368,7 @@ function CodeEditorView({ value, onChange, auto }: { value: string, onChange: (c
 const RESERVED_HOVER = new Set(["|", ",", "{", "}", "(", ")", "[", "]", ";", '"', "`"])
 const isOperatorChar = (ch: string | undefined): ch is string =>
   !!ch && !/\s/.test(ch) && !/[\p{L}\p{N}]/u.test(ch) && !RESERVED_HOVER.has(ch)
-const isIdentChar = (ch: string | undefined): ch is string => !!ch && /[\p{L}\p{N}\-]/u.test(ch)
+const isIdentChar = (ch: string | undefined): ch is string => !!ch && /[\p{L}\p{N}]/u.test(ch)
 
 function fluentTokenAt(model: editor.ITextModel, position: monaco.Position): string | null {
   const line = model.getLineContent(position.lineNumber)
@@ -1441,7 +1441,7 @@ monaco.languages.setLanguageConfiguration("fluent", {
   surroundingPairs: [...PAIRS, '""'].map(([open, close]) => ({ open: open!, close: close! })),
   indentationRules: { increaseIndentPattern: /^\s*[\(\{\[]/, decreaseIndentPattern: /^\s*[\)\}\]]/ },
   // identifiers: letter-based symbols
-  wordPattern: /(?:\p{L})[\p{L}\p{N}\-]*/gu,
+  wordPattern: /(?:\p{L})[\p{L}\p{N}]*/gu,
   comments: { lineComment: ";" },
 })
 
@@ -1709,8 +1709,10 @@ function Playground(): JSX.Element {
       mainEditor.getAction(shortcut.action)?.run()
     }
     // back and forward restore the program from the URL; pushState (⌘S) fires nothing,
-    // and the editor already holds that program
-    const onPopState = () => { const l = programInUrl(); if (l) { written = l.v; program.value = l.source } }
+    // and the editor already holds that program. A program the editor already shows is
+    // left as it is: nothing would be sent, and the link's version would wait for the
+    // next edit.
+    const onPopState = () => { const l = programInUrl(); if (l && l.source !== program.peek()) { written = l.v; program.value = l.source } }
     window.addEventListener("keydown", onKeyDown, true)
     window.addEventListener("popstate", onPopState)
     return () => {

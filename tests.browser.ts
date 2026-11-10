@@ -1,7 +1,7 @@
-// IDE tests: real Chromium against the real dev server (playwright.config.ts
+// IDE tests: real Chromium and WebKit against the real dev server (playwright.config.ts
 // boots it on :3210). Covers what tests.ts structurally can't – Monaco, the
 // output panel, reactive islands, canvas renderers, media sources.
-// Run with `bun run test:browser`; `bunx playwright install chromium` once.
+// Run with `bun run test:browser`; `bunx playwright install chromium webkit` once.
 import { test, expect, type Locator, type Page } from "@playwright/test"
 import { VERSION } from "./protocol"
 
@@ -923,7 +923,7 @@ test("a learner walks the whole Tour, solving every room", async ({ page }) => {
   await room("Find the bottom by feel")
   const scrubber = page.locator('span[style*="ew-resize"]').first()
   for (let i = 0; i < 8; i++) {
-    const shown = Number((await scrubber.innerText()).replace(/_/g, ""))
+    const shown = Number(await scrubber.innerText())
     if (Math.abs(shown - 42) < 0.5) break
     // each press captures the value it started from, so a drag that runs out
     // of viewport just gets picked up by the next one
