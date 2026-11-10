@@ -93,11 +93,11 @@ The whole thing fits in a handful of files — read it, change it:
 
 | file | what |
 |---|---|
-| [`language.ts`](language.ts) | the language — grammar ([Ohm](https://ohmjs.org)), evaluator, native built-ins; reactivity via [preact signals](https://preactjs.com/guide/v10/signals/) |
+| [`language.ts`](language.ts) | the language — grammar ([Ohm](https://ohmjs.org)), evaluator, cells, native built-ins |
 | [`prelude.fl`](prelude.fl) | the standard library, written in Fluent |
 | [`engine/`](engine) | Fluent's own tensor engine — WebGPU, with a CPU fallback |
 | [`host.ts`](host.ts), [`worker.ts`](worker.ts) | the evaluation host, run in a worker: widgets, live sources, values described to the page |
 | [`client.tsx`](client.tsx) | the IDE — components, visualizers, Monaco editor, playground |
 | [`tour.ts`](tour.ts) | the tour — sixteen rooms, written in Fluent itself |
 | [`tests.ts`](tests.ts) | language tests (`bun test ./tests.ts`); engine tests (`bun run test:engine`) |
-| [`tests.browser.ts`](tests.browser.ts) | IDE tests in real Chromium (`bun run test:browser`) |
+| [`tests.browser.ts`](tests.browser.ts) | IDE tests in real Chromium and WebKit (`bun run test:browser`) |

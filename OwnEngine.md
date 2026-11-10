@@ -257,8 +257,8 @@ Prelude definitions against the jax-js natives they replaced:
 
 `worker.ts` owns the engine and the GPU and runs `host.ts`, which evaluates the program,
 binds the widgets and sources, and describes values to the page. The page
-(`client.tsx`) keeps React, Monaco and input, imports the language only to parse, and
-never touches the engine. Values cross as plain data (`protocol.ts`).
+(`client.tsx`) keeps React, Monaco and input; the worker parses for it too, and the page
+imports neither the language nor the engine. Values cross as plain data (`protocol.ts`).
 
 - **Live values** are ids, reference-counted across the boundary: the worker counts how
   often it sent an id, the page releases all it received at once, so a release never
@@ -433,7 +433,6 @@ compute device. Where it is heading, with the source of each idea:
   loop's states reruns the whole loop.
 - **Device-loss recovery**: a new adapter, re-evaluation, `~` variables restored from an
   OPFS checkpoint (WebLLM, Figma).
-- **Parsing in the worker.** The page re-parses on every keystroke for its markers.
 - **A subgroup-matrix matmul** behind feature detection, the day Chrome ships it.
 
 Not copied: tinygrad's WebGPU runtime (a pipeline, layout and bind group per call, with

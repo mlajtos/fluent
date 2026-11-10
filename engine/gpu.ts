@@ -313,9 +313,9 @@ export function lowerMany(roots: UOp[]): UOp[] {
 
 // ── the synchronous read: WebGPU has none, so a buffer is copied into the texture of a
 // WebGPU canvas, drawn onto a 2-D canvas and read with getImageData (TF.js's trick, which
-// jax-js uses too) — once as opaque RGB, once premultiplied for alpha. Slow, and only a
-// bridge: the evaluator reads asynchronously once it runs in a worker (OwnEngine.md S5).
-// Each canvas is SIDE × SIDE pixels.
+// jax-js uses too) — once as opaque RGB, once premultiplied for alpha. Slow: it holds the
+// thread it runs on, which is the worker's, never the page's. Each canvas is SIDE × SIDE
+// pixels.
 const SIDE = 256;
 function syncReader(dev: GPUDevice): (buffer: GPUBuffer, bytes: number) => Uint8Array {
   let canvases: { canvas: OffscreenCanvas; context: GPUCanvasContext; alpha: "opaque" | "premultiplied" }[] | null = null, host: OffscreenCanvasRenderingContext2D;
