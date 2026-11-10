@@ -667,7 +667,7 @@ const LoadTensorFromImageUrl = (url: Value) => arriving("LoadTensorFromImageUrl"
   withProxy(String(url), (u) => fetched(u).then((r) => r.blob()).then((blob) => createImageBitmap(blob))).then(fromPixels))
 // an empty list until it loads – readers can gate on `#(data()) > 0` – and an Error if it can't
 const LoadSafeTensorFromURL = (url?: Value) => url == null
-  ? new Error("loadSafeTensorFromURL: url is required")
+  ? new Error("LoadSafeTensorFromURL: url is required")
   : arriving("LoadSafeTensorFromURL", [], () => withProxy(String(url), cachedFetch).then(parseSafetensors))
 
 // A widget's places: the cell it writes, and the slots and children it shows live

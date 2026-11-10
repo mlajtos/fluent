@@ -21,7 +21,7 @@ square(a), ; [1, 4, 9]
 x: $(0.5),
 Slider(x),
 square(x),  ; auto-lifts to reactive!
-Button("Reset", { x(0) }),
+Button("Reset", { x← 0 }),
 \`\`\`
 
 ## Features
