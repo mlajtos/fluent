@@ -1640,6 +1640,17 @@ describe("⍣ power: counts, inverses, and fixed points", () => {
     expect(value("∇({ v | Σ(({ c | ({ s | s × c } ⍣ { n, o | n < 0.001 })(1) } ⍤ 0)(v)) })([0.5, 0.6])"))
       .toEqual([10 * 0.5 ** 9, 14 * 0.6 ** 13].map((x) => expect.closeTo(x, 6)))
   })
+  test("∇ through steps that stack and unstack is planned in the time its steps take", () => {
+    // each step reads its state through a pad and a slice of an axis that isn't the first, so
+    // the indices nest a step deeper each round: sin five times over, read back as a column
+    const slope = (rounds: number) => value(`f: { x | unstack(sin(stack((x × 0.5, x), 1)), 1)_1 }, Σ((∇{ x | Σ((f ⍣ ${rounds})(x)) })(fill([8, 2], 0.3)))`)
+    slope(1)
+    const t = performance.now()
+    let x = 0.3, product = 1
+    for (let k = 0; k < 5; k++) { product *= Math.cos(x); x = Math.sin(x) }
+    expect(slope(5)).toBeCloseTo(16 * product, 4)
+    expect(performance.now() - t).toBeLessThan(1_000)
+  })
   test("under ∇, ⍣ is one engine step wherever ∇ doesn't follow it", () => {
     let kept: Value = null
     const scope = createScope()

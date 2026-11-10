@@ -238,17 +238,18 @@ function fuseWith(roots: UOp[], reads: Map<number, number>, store: Set<number>, 
   let fresh = 0; // the nodes this pass stores as it builds
   // per kernel: its threads, its index, and each node it computes in place or loads, at its index
   const computed = new Map<UOp, Built>();
-  // an index by its structure – the same index built twice is one key, a number – and a value
-  // in it, a gather's row, by identity
-  const iKeys = new WeakMap<UOp, string>(), iNums = new WeakMap<UOp, number>(), byKey = new Map<string, number>();
-  const iKey = (u: UOp): string => {
-    let k = iKeys.get(u);
-    if (k === undefined) { k = u.op === "ICONST" ? `${u.arg}` : INDEX.has(u.op) ? `${u.op}(${u.src.map(iKey).join(",")})` : `#${u.id}`; iKeys.set(u, k); }
-    return k;
-  };
+  // an index by its structure – the same index built twice is one number – and a value in it,
+  // a gather's row, by identity. A key names its sources by their numbers, so it is as short
+  // for an index nested many views deep as for a flat one
+  const iNums = new WeakMap<UOp, number>(), byKey = new Map<string, number>();
   const iNum = (u: UOp): number => {
     let n = iNums.get(u);
-    if (n === undefined) { const k = iKey(u); n = byKey.get(k); if (n === undefined) byKey.set(k, (n = byKey.size)); iNums.set(u, n); }
+    if (n === undefined) {
+      const k = u.op === "ICONST" ? `${u.arg}` : INDEX.has(u.op) ? `${u.op}(${u.src.map(iNum).join(",")})` : `#${u.id}`;
+      n = byKey.get(k);
+      if (n === undefined) byKey.set(k, (n = byKey.size));
+      iNums.set(u, n);
+    }
     return n;
   };
 
