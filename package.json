@@ -12,6 +12,7 @@
   },
   "scripts": {
     "dev": "bun server.ts",
+    "paper": "HOST=0.0.0.0 PORT=3211 FRONT_PORT=3210 TLS_CERT=paper/cert.pem TLS_KEY=paper/key.pem bun server.ts",
     "build": "bun build.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",

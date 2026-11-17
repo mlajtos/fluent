@@ -281,6 +281,8 @@ export const OPERATOR_RANGES: Record<string, [string, string]> = {
   // ⚀–⚅; ⚄ is rand
   DIE_FACES: ["⚀", "⚅"],
   MIDDLE_DOT: ["·", "·"],
+  // □, the square a pen draws
+  WHITE_SQUARE: ["□", "□"],
   // the norm, ‖
   DOUBLE_VERTICAL_LINE: ["‖", "‖"],
   // each, ¨
@@ -307,6 +309,16 @@ const IDENTIFIER_CHARS = charClass(IDENTIFIER_RANGES)
 // grammar's `identifier`
 export const identifierRegexp = new RegExp(`[\\p{L}${IDENTIFIER_CHARS}][\\p{L}\\p{N}${IDENTIFIER_CHARS}]*`, "u")
 export const numberRegexp = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/
+// A number as a tokenizer finds it, each rule tried in order where the one before fails, a
+// group a token. A - before digits is the number's sign where a number can start: at a
+// line's start (the ^), and after a space or one of | , { ( [. Glued to anything else –
+// `3-4`, `a-4`, `2*-4` – the - is an operator, as the grammar reads it.
+export const numberRules: [RegExp, ...("" | "delimiter" | "number")[]][] = [
+  [new RegExp(`^${numberRegexp.source}`), "number"],
+  [new RegExp(`(\\s+)(${numberRegexp.source})`), "", "number"],
+  [new RegExp(`([|,{(\\[])(${numberRegexp.source})`), "delimiter", "number"],
+  [new RegExp(numberRegexp.source.replace(/^-\?/, "")), "number"],
+]
 export const stringRegexp = /"(?:[^"\\]|\\.)*"/
 // one character of the grammar's `operator`; identifiers, numbers, strings and delimiters
 // are taken first, so the ASCII letters and digits it covers never reach it

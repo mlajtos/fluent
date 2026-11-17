@@ -316,7 +316,18 @@ function evaluateSyntaxTreeNode(node: SyntaxTreeNode, env: CurrentScope): Value 
       // KNOWN WART: a lone (a: 2) is grouping, not a list, so its binding is not local;
       // the intended fix is the unit axiom (x) ≡ x – a singleton scopes, then demotes.
       const local = Object.create(env) as CurrentScope
-      return located(node.content.value.map((e) => evaluateSyntaxTreeNode(e, local)), node)
+      // an element that read a name nothing had bound yet waits for it, as a program's line does
+      const late: number[] = []
+      const values = node.content.value.map((e, i) => {
+        const outer = unbound
+        unbound = false
+        const value = evaluateSyntaxTreeNode(e, local), waits = unbound
+        unbound = outer
+        if (waits) { late.push(i) }
+        return waits ? waiting(e, local) : value
+      })
+      for (const i of late) { values[i] = unwaited(values[i]!) }
+      return located(values, node)
     }
     case "Lambda": {
       const params = node.content.args.map((arg) => (arg as { content: { value: string } }).content.value)
@@ -364,8 +375,10 @@ const operation = (node: SyntaxTreeNode & { type: "Operation" }, fn: Value, env:
 // and `dropped` hears each value it drops.
 const statements = (nodes: SyntaxTreeNode[], env: CurrentScope, block: boolean, dropped?: (value: Value, node: SyntaxTreeNode) => void): Value => {
   let last: Value = null
+  const late: [node: SyntaxTreeNode, value: Value, final: boolean][] = []
   for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i]!, final = i === nodes.length - 1
+    const node = nodes[i]!, final = i === nodes.length - 1, outer = unbound
+    if (!block) { unbound = false }
     if (!final && node.type === "Operation") {
       const head = evaluateSyntaxTreeNode(node.content.operator, env), held = settled(head)
       if (isTensor(held) || isText(held)) { return located(inert(node.content.operator, head, held), node) }
@@ -373,10 +386,36 @@ const statements = (nodes: SyntaxTreeNode[], env: CurrentScope, block: boolean, 
     } else {
       last = evaluateSyntaxTreeNode(node, env)
     }
-    if (!final) { dropped?.(last, node) }
+    const waits = !block && unbound
+    if (waits) { late.push([node, last = waiting(node, env), final]) }
+    if (!block) { unbound = outer }
+    if (!final && !waits) { dropped?.(last, node) }
     if (block && !final && isFailure(last)) { return last }
   }
+  for (const [node, value, final] of late) {
+    if (final) { last = unwaited(value) } else { dropped?.(unwaited(value), node) }
+  }
   return last ?? null
+}
+// A line of a program that read a name nothing had bound yet waits for it: its value is
+// live, and runs – with the names as they are then – where it is read. So a program's
+// lines may name each other in any order. What the line binds, it binds at once, to the
+// value that waits. When the program's last line has run, a line still waiting for a name
+// nothing bound is what it was at first – its Error (`unwaited`).
+const waiting = (node: SyntaxTreeNode, env: CurrentScope): Value => {
+  const [name, value] = node.type === "Operation" ? node.content.args.content.value : []
+  return name?.type === "Symbol" && value && settled(evaluateSyntaxTreeNode((node as SyntaxTreeNode & { type: "Operation" }).content.operator, env)) === SymbolAssign
+    ? SymbolAssign.call(env, Symbol.for(name.content.value), waiting(value, env))
+    : located(computed(() => evaluateSyntaxTreeNode(node, env)), node)
+}
+const unwaited = (value: Value): Value => {
+  const outer = unbound
+  unbound = false
+  let now: Value
+  try { now = settled(value) } catch (e) { now = asError(e) }
+  const still = unbound
+  unbound = outer
+  return still || now instanceof Error ? now : value
 }
 // what a cell holds now, through any cells it holds
 const settled = (v: Value): Value => v instanceof Signal ? settled(v.peek()) : v
@@ -538,7 +577,10 @@ const operand = (v: any): any => {
   if (isText(v) || isFn(v)) { throw new Error(`expected numbers, got ${describeArg(v)}`) }
   return v
 }
-const unknownName = (s: symbol): string => `unknown name: ${Symbol.keyFor(s) ?? s.description}`
+// whether a name nothing had bound was read as a value, since the line of a program or the
+// element of a list that is running began
+let unbound = false
+const unknownName = (s: symbol): string => { unbound = true; return `unknown name: ${Symbol.keyFor(s) ?? s.description}` }
 
 const shapeOf = (v: Value): number[] => (v instanceof FluentVariable ? v.value : (v as engine.Tensor)).shape
 

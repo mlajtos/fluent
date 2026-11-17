@@ -76,7 +76,7 @@
 
 import { signal, computed, effect } from "@preact/signals-core"
 import {
-  tensorView, labelled, heatScale, numberText, documentHash, VERSION, identifierRegexp, numberRegexp, stringRegexp, operatorRegexp, delimiterRegexp,
+  tensorView, labelled, heatScale, numberText, documentHash, VERSION, identifierRegexp, numberRegexp, numberRules, stringRegexp, operatorRegexp, delimiterRegexp,
   connect, mirrors, payloads, root, update, write, call,
   type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where,
 } from "./protocol"
@@ -95,6 +95,11 @@ import { IQuickInputService } from "monaco-editor/esm/vs/platform/quickinput/com
 import dedent from "ts-dedent"
 import { Base64 } from "js-base64"
 import "./index.css"
+import { parsed as parsedOnPage } from "./ink"
+import { Canvas } from "./canvas"
+import { Copybook } from "./copybook"
+import { Hand } from "./hand"
+import { Ruled } from "./ruled"
 
 // The workers' scripts: a build names them by their content (build.ts), the dev server by
 // their purpose
@@ -164,7 +169,7 @@ function receive({ data: m, target }: MessageEvent<ToPage>) {
       environmentNames.value = new Map(m.names.map(([name, detail, doc]) => [name, { detail, doc }]))
       return
     }
-    case "parsed": { showParseErrors(m); return }
+    case "parsed": { showParseErrors(m); parsedOnPage(m); return }
     case "migrated": { program.value = m.source; return }
     case "warnings": { showWarnings(m); return }
     case "lives": case "tensor": { update(m); return }
@@ -337,6 +342,15 @@ const colorOf = (label: string): string => {
   return kind ? `#${tokenColors[kind]}` : "#D4D4D4"
 }
 
+// each character of a line of Fluent in the color the editor gives it
+const colorsOf = (text: string): string[] => {
+  const tokens = monaco.editor.tokenize(text, "fluent")[0] ?? []
+  return Array.from({ length: text.length }, (_, at) => {
+    const kind = tokens.findLast(({ offset }) => offset <= at)?.type.split(".")[0]
+    return `#${tokenColors[kind as keyof typeof tokenColors] ?? tokenColors.string}`
+  })
+}
+
 const StringSerialize = (s: string) => Base64.encodeURI(s)
 const StringDeserialize = (s: string) => Base64.decode(s)
 
@@ -400,7 +414,7 @@ const Markdown = ({ text }: { text: string }) => {
     convertTextToHTML(text).then((element) => { if (current) { ref.current?.replaceChildren(element) } })
     return () => { current = false }
   }, [text])
-  return <div className="prose prose-neutral prose-invert"><div ref={ref}></div></div>
+  return <div className="prose prose-neutral prose-invert font-sans"><div ref={ref}></div></div>
 }
 
 const TextView = ({ d }: { d: UIDesc }) => {
@@ -1102,24 +1116,27 @@ const extent = (values: ArrayLike<number>): [number, number] => {
   return lo > hi ? [0, 0] : [lo, hi]
 }
 
-// A plot's frame: the y range to its left, the x range below
-const Axes = ({ y, x, children }: { y?: [number, number], x?: [number, number], children: JSX.Element }) => (
+// A plot's frame: the y range to its left – `inset`, between the ends of a plot that keeps
+// room above and below – and the x range below
+const Axes = ({ y, x, inset = false, children }: { y?: [number, number], x?: [number, number], inset?: boolean, children: JSX.Element }) => (
   <div className="grid gap-x-2 text-xs text-neutral-500 font-mono" style={{ gridTemplateColumns: "auto 1fr" }}>
-    <div className="flex flex-col justify-between text-right">{y && <><span>{short(y[1])}</span><span>{short(y[0])}</span></>}</div>
+    <div className={`flex flex-col justify-between text-right ${inset ? "py-4" : ""}`}>{y && <><span>{short(y[1])}</span><span>{short(y[0])}</span></>}</div>
     <div className="relative" style={{ height: "10em" }}>{children}</div>
     {x && <><div /><div className="flex justify-between"><span>{short(x[0])}</span><span>{short(x[1])}</span></div></>}
   </div>
 )
 
-// A few bars, each labelled with its value at its end – a NaN at zero, ∞ at the top
-const Bars = ({ id, values = new Float32Array() }: { id: number, values?: Float32Array }) => {
-  const [lo, hi] = extent([...values, 0]), n = values.length
+// Bars over the range they span, zero in it, with room above and below for a label. A few
+// bars are each labelled with its value at its end – a NaN at zero, ∞ at the top; more are
+// drawn in the same frame with no labels.
+const Bars = ({ id, range: [lo, hi], values }: { id: number, range: [number, number], values?: Float32Array }) => {
+  const n = values?.length ?? 0
   const y = (v: number) => (hi - (Number.isNaN(v) ? 0 : Math.min(Math.max(v, lo), hi))) / (hi - lo || 1) * 100
   return (
-    <Axes>
+    <Axes y={[lo, hi]} inset>
       <div className="absolute inset-x-0 top-4 bottom-4">
         <PaintedCanvas id={id} fill />
-        {[...values].map((v, i) => (
+        {[...values ?? []].map((v, i) => (
           <span key={i} className="absolute text-neutral-300" style={{ left: `${(i + 0.5) / n * 100}%`, top: `${y(v)}%`, transform: `translate(-50%, ${v < 0 ? 0 : -100}%)` }}>{short(v)}</span>
         ))}
       </div>
@@ -1166,8 +1183,8 @@ function TensorPlot({ d }: { d: TensorDesc }): JSX.Element {
   switch (view) {
     case "number": return <span style={{ color: `#${tokenColors.number}`, opacity: values ? 1 : 0.5 }}>{values ? numberText(values[0]!) : "…"}</span>
     case "bars":
-      if (few) { return <Bars id={d.id} values={values} /> }
-      return <Axes y={values && [Math.min(values[0]!, 0), Math.max(values[1]!, 0)]}><PaintedCanvas id={d.id} fill /></Axes>
+      if (few) { return <Bars id={d.id} range={extent([...values ?? [], 0])} values={values} /> }
+      return <Bars id={d.id} range={values ? [Math.min(values[0]!, 0), Math.max(values[1]!, 0)] : [0, 0]} />
     case "heat":
       if (few) { return <Cells id={d.id} values={values} shape={d.shape} /> }
   }
@@ -1419,7 +1436,7 @@ monaco.languages.setMonarchTokensProvider("fluent", {
   tokenizer: {
     root: [
       [/;.*$/, { token: "comment" }],
-      [numberRegexp, { token: "number" }],
+      ...numberRules.map(([regexp, ...tokens]): [RegExp, string | string[]] => [regexp, tokens.length > 1 ? tokens : tokens[0]!]),
       [/"/, { token: "string", next: "@string" }],
       [identifierRegexp, { token: "identifier" }],
       [delimiterRegexp, { token: "delimiter" }],
@@ -1459,6 +1476,8 @@ for (const [name, background] of [["fluentTheme", "#1C1C1C"], ["fluentThemeReadO
     },
   })
 }
+// a page with no editor colors the code in its prose too
+monaco.editor.setTheme("fluentTheme")
 
 // BQN386 (dzaima/BQN386, APL385-derived, free for any use) supplies the
 // tacit/APL glyph blocks as one matched set – system monospace fonts miss
@@ -1687,7 +1706,15 @@ const programInUrl = (): { source: string, v: number } | null => {
   return code !== "" ? { source: code, v: Number(params.get("v") ?? 1) } : example !== null ? { source: exampleSource(example), v: VERSION } : null
 }
 const linked = programInUrl()
-const program = signal(linked?.source ?? "Tour")
+// ?copybook is the copybook (copybook.tsx): it has no program
+const onCopybook = new URLSearchParams(window.location.search).has("copybook")
+// ?hand is the copybook's lines in the hand's form (hand.tsx): it has no program
+const onHand = new URLSearchParams(window.location.search).has("hand")
+// ?ruled is the ruled paper (ruled.tsx): its lines are the program
+const onRuled = new URLSearchParams(window.location.search).has("ruled")
+// ?canvas is the canvas (canvas.tsx): its lines are the program
+const onCanvas = new URLSearchParams(window.location.search).has("canvas")
+const program = signal(linked?.source ?? (onCopybook || onHand || onRuled || onCanvas ? "" : "Tour"))
 let written = linked?.v ?? VERSION
 effect(() => { toWorker({ t: "code", source: program.value, v: written }); written = VERSION })
 
@@ -1731,4 +1758,6 @@ function Playground(): JSX.Element {
   )
 }
 
-createRoot(document.getElementById("root")!).render(<Playground />)
+// what a page of the pen needs of the playground: a value's view, the editor's colors, and the worker to run and to parse
+const toPage = { View, colorsOf, run: (source: string) => { program.value = source }, parse: (source: string) => toWorker({ t: "parse", source }) }
+createRoot(document.getElementById("root")!).render(onCopybook ? <Copybook /> : onHand ? <Hand /> : onRuled ? <Ruled {...toPage} /> : onCanvas ? <Canvas {...toPage} /> : <Playground />)

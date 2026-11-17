@@ -1,5 +1,6 @@
 node_modules/
 dist/
+paper/
 .DS_Store
 .playwright-mcp/
 test-results/
@@ -11,3 +12,4 @@ fluent3000/browser/bundle.js
 fluent3000/browser/driver/node_modules/
 fluent3000/browser/driver/package-lock.json
 fluent3000/browser/*.js
+__pycache__/
