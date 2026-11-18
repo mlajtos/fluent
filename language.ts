@@ -1583,7 +1583,7 @@ const TensorWindow = (a: Value, sizes: Value) => engine.windows(operand(a), asWh
 // when stop is below start – so 0 ..< 2.5 is [0, 1, 2], as fill([2.5]) makes 3
 const TensorRange = (a: Value, b?: Value) => {
   const [start, stop] = b == null ? [0, finite(asNumber(a))] : [finite(asNumber(a)), finite(asNumber(b))]
-  return start <= stop ? engine.arange(Math.ceil(start) + 0, Math.ceil(stop) + 0, 1) : engine.arange(Math.floor(start), Math.floor(stop), -1)
+  return start <= stop ? engine.arange(Math.ceil(start) + 0, Math.ceil(stop) + 0, 1) : engine.arange(Math.floor(start) + 0, Math.floor(stop) + 0, -1)
 }
 
 // Rank-polymorphic convolution: the kernel's rank sets the conv's rank, so one conv

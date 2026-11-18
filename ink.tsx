@@ -289,8 +289,9 @@ export const parsed = (m: Extract<ToPage, { t: "parsed" }>) => {
   verdicts.value = new Map(verdicts.value).set(m.d, m.errors[0]?.message ?? null)
 }
 
-// The program of a page's texts: those that parse are one list, in the order the page has
-// them, and `values` has what each shows
+// The program of a page's texts: those that parse and say something – a comment alone
+// says nothing – are one list, in the order the page has them, and `values` has what each
+// shows
 export const program = (texts: () => { id: number, text: string }[], run: (source: string) => void, parse: (source: string) => void) => {
   const asked = new Set<number>()
   const stops = [
@@ -302,7 +303,7 @@ export const program = (texts: () => { id: number, text: string }[], run: (sourc
       }
     }),
     effect(() => {
-      const runs = texts().filter(({ text }) => text.trim() && verdicts.value.get(documentHash(text)) === null)
+      const runs = texts().filter(({ text }) => bare(text).trim() && verdicts.value.get(documentHash(text)) === null)
       const key = runs.map(({ id, text }) => `${id} ${text}`).join("\n")
       if (key === sent && serial > 0) { return }
       sent = key

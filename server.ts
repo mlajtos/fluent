@@ -1,7 +1,7 @@
 import { serve } from "bun";
 import index from "./index.html";
 import { families, CANDIDATES } from "./dictation.ts";
-import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, appendFileSync, existsSync, readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { createServer, connect } from "node:net";
 
 const javascript = (body: BodyInit) => new Response(body, { headers: { "Content-Type": "application/javascript" } });
@@ -19,18 +19,22 @@ const evaluationWorker = async () => {
 };
 
 mkdirSync("paper/copybook/candidates", { recursive: true });
+mkdirSync("paper/canvases", { recursive: true });
 // a glyph's file is named by its code point, a line's by a hash of its text. A candidate's
 // file is in a folder of its own: the readers learn the files of paper/copybook itself.
 const samplesOf = (text: string) => `paper/copybook/${CANDIDATES.includes(text) ? "candidates/" : ""}${[...text].length === 1 ? text.codePointAt(0)!.toString(16) : `line-${Bun.hash(text).toString(16)}`}.json`;
 
-// a page the browser keeps here as one JSON file
-const page = (file: string) => ({
-  GET: async () => new Response(await Bun.file(file).exists() ? Bun.file(file) : "{}"),
-  PUT: async (req: Request) => {
-    await Bun.write(file, await req.text());
-    return new Response("kept");
-  },
-});
+// a page the browser keeps here as one JSON file, or as the file its request names
+const page = (file: string | ((req: Request) => string)) => {
+  const of = (req: Request) => typeof file === "string" ? file : file(req);
+  return {
+    GET: async (req: Request) => new Response(await Bun.file(of(req)).exists() ? Bun.file(of(req)) : "{}"),
+    PUT: async (req: Request) => {
+      await Bun.write(of(req), await req.text());
+      return new Response("kept");
+    },
+  };
+};
 
 // The readers of lines (ink/serve.py): a process that takes a written line's strokes on a
 // line of its stdin and answers on a line of its stdout, in the order asked. It starts when
@@ -140,8 +144,13 @@ const server = serve({
     },
     // the ruled paper's page: the ink of its lines
     "/ruled": page("paper/ruled.json"),
-    // the canvas (canvas.tsx): its lines – where each is, how large, and its ink – and its camera
-    "/canvas": page("paper/canvas.json"),
+    // The canvases (canvas.tsx), each a file named by a number, in the order they were
+    // begun: a canvas's lines – where each is, how large, and its ink – its camera, and a
+    // picture of it.
+    // /canvases is all of them, and when each was last written.
+    "/canvas/:name": page((req) => `paper/canvases/${Math.trunc(Number((req as Request & { params: { name: string } }).params.name)) || 0}.json`),
+    "/canvases": () => Response.json(readdirSync("paper/canvases").filter((file) => /^\d+\.json$/.test(file))
+      .map((file) => ({ name: file.slice(0, -5), at: statSync(`paper/canvases/${file}`).mtimeMs })).sort((a, b) => Number(a.name) - Number(b.name))),
     // the copybook's lines as the pen wrote them and in the hand's form (hand.tsx), as
     // ink/hand.py left them
     "/hand": async () => await Bun.file("paper/ink/hand.json").exists()

@@ -12,7 +12,7 @@ import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
 from ink import KEPT, LONGEST, STROKES, Block, descend, vary
-from line import CUTS, FIRST, KINDS, LATER, M, SPACED, TURNS, edits, even, given, hand, misread, most, parsed, quarter, respaced, spaced
+from line import CUTS, FIRST, KINDS, LATER, M, SPACED, TURNS, edits, even, given, hand, misread, most, parsed, penned, quarter, respaced, spaced
 
 # a line has at most LONG strokes
 LONG = 96
@@ -202,13 +202,15 @@ def cut(model, text, strokes, glyphs):
     likely, of = max(along(place), along(np.arange(len(strokes))), key=lambda found: found[0])
     return of[place].tolist() if np.isfinite(likely) else None
 
-# every dictated line cut by the reader that has not learned from it, with the ink the cut is of
-def cuts(readers, lines, held, glyphs):
+# every dictated line, as the pen wrote it, cut by the reader that has not learned from it,
+# with the ink the cut is of and whether that reader read the line as its text, but for spaces
+def cuts(readers, held, glyphs):
+    lines = penned()
     found = {}
     for reader, quarter in zip(readers, held):
         for l in quarter:
             of = cut(reader, *lines[l], glyphs)
-            if of: found[lines[l][0]] = {"ink": [len(stroke) for stroke in lines[l][1]], "of": of}
+            if of: found[lines[l][0]] = {"ink": [len(stroke) for stroke in lines[l][1]], "of": of, "read": read(reader, lines[l][1], glyphs)[0].replace(" ", "") == lines[l][0].replace(" ", "")}
     return found
 
 # how a reader does on lines it reads with no text: what it reads, and in words how well
@@ -231,7 +233,7 @@ if __name__ == "__main__":
         glyphs, lines, cells, _, _, _, whole, gaps = hand()
         readers = [PageReader(len(glyphs)) for _ in range(4)]
         for k, reader in enumerate(readers): reader.load_weights(os.path.join(KEPT, f"page-{k}.safetensors")); reader.eval()
-        json.dump(cuts(readers, lines, [quarter(k, lines, cells, whole, gaps)[4] for k in range(4)], glyphs), open(CUTS, "w"), ensure_ascii=False)
+        json.dump(cuts(readers, [quarter(k, lines, cells, whole, gaps)[4] for k in range(4)], glyphs), open(CUTS, "w"), ensure_ascii=False)
         sys.exit()
     steps = int(rest[0]) if rest else 3000
     quarters = [int(k) for k in rest[1:]] or range(4)
@@ -256,7 +258,7 @@ if __name__ == "__main__":
         descend(model, loss, lessons(ink[mine], count[mine], label[mine], cells, mine_gaps, often, np.random.default_rng(k + 4 * seed), stray, runs, twice), steps, 1e-3, say=500, watch=watch if curve and not every else None, every=curve)
         model.save_weights(os.path.join(KEPT, f"{name}-{k}.safetensors"))
         if every: continue
-        cut_as.update(cuts([model], lines, [held], glyphs))
+        cut_as.update(cuts([model], [held], glyphs))
         guesses, _ = tried(model, lines, held, glyphs)
         harmed, _ = tried(model, lines, held, glyphs, marred)
         again = [respaced(lines[l][0], guess) for l, guess in zip(held, guesses)]

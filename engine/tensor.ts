@@ -495,7 +495,8 @@ export function arange(start: number, stop?: number, step = 1): Tensor {
   const [a, b] = stop === undefined ? [0, start] : [start, stop];
   const n = Math.max(0, Math.ceil((b - a) / step));
   const i = ir.iota(n), scaled = step === 1 ? i : ir.mul(i, ir.konst(step));
-  return new Tensor(a === 0 ? scaled : ir.add(scaled, ir.konst(a)));
+  // counting down, 0 × step is -0: the start is added, though it is 0
+  return new Tensor(a === 0 && step > 0 ? scaled : ir.add(scaled, ir.konst(a)));
 }
 // a scalar held as data – a one-element buffer seen as rank 0 – never folded into a
 // kernel as a literal: a value that changes every frame (a clock, a slider, a computed

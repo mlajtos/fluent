@@ -12,10 +12,14 @@
 // grip where its rule starts, and the pen on the grip moves the line as a finger does.
 // A mouse stands in for the pen, its wheel for the finger, and with ⌃ – a trackpad's pinch –
 // for two.
+//
+// There are many canvases, and ?canvas=<name> is the one shown – ?canvas alone, the one
+// kept last. A tab at the left edge opens them all, each as it looked, and a clean one to
+// begin.
 
 import { signal, effect } from "@preact/signals-core"
 import { useSignals } from "@preact/signals-react/runtime"
-import { memo, useEffect, useRef, type JSX } from "react"
+import { memo, useEffect, useRef, useState, type JSX } from "react"
 import { type Desc, root } from "./protocol"
 import { BLANK, INK, PALM, PEN, PLAIN, REST, TAP, VALUE, type Line, type Look, type Stroke, Shown, Written, asked, boxOf, forming, hearing, pathOf, penned, problem, program, reading, record, shown, touched, under, worked } from "./ink"
 
@@ -32,6 +36,8 @@ const writing = signal<number | null>(null)
 // the line the pen is near, and the line a finger or the pen holds to move it
 const neared = signal<number | null>(null)
 const holding = signal<number | null>(null)
+// when the pen was last near: the hand that holds it rests on the glass, and moves nothing
+let pen = -Infinity
 
 // A stroke is of a line when it starts in the line's band – no further over its baseline or
 // under it than this, and no further beside its ink, before it or after: room for a name
@@ -104,24 +110,82 @@ const undo = () => {
   lines.value = page
 }
 
-// MARK: The canvas as a file
-// The dev server keeps the lines – where each is, and its ink – and the camera (server.ts,
-// /canvas); the lines' texts are read again
+// MARK: The canvases as files
+// The dev server keeps every canvas as a file (server.ts, /canvas/<name>) – its lines, where
+// each is and its ink, its camera, and a picture of it for the cards; the lines' texts are
+// read again. A canvas is named by a number, the next when it is begun, and has no file
+// until something is on it.
 
-const keep = () => {
-  let loaded = false, timer: ReturnType<typeof setTimeout> | undefined
-  fetch("canvas").then((r) => r.json()).then((page: { lines?: Pick<Placed, "id" | "x" | "y" | "k" | "strokes">[], camera?: Camera }) => {
-    if (lines.value.length === 0 && page.lines) {
+// a canvas as it looked: the plane's markup, and the part of the plane that had something on it
+type Picture = { html: string, left: number, top: number, right: number, bottom: number }
+type Page = { lines?: Pick<Placed, "id" | "x" | "y" | "k" | "strokes">[], camera?: Camera, picture?: Picture }
+type Kept = { name: string, at: number }
+const canvases = (): Promise<Kept[]> => fetch("canvases").then((r) => r.json())
+// the canvas shown, once it is known which, and whether its file has been read
+const open = signal<string | null>(null)
+let loaded = false, timer: ReturnType<typeof setTimeout> | undefined
+// the plane's element: the lines as the page shows them
+const plane: { current: HTMLDivElement | null } = { current: null }
+
+// The plane as it looks now – ink and print in their colors, and the values – with what a
+// value painted as a picture of that
+const pictured = (): Picture | undefined => {
+  const live = plane.current, { x, y, k } = camera.value
+  if (!live || lines.value.length === 0) { return undefined }
+  const box = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity }
+  for (const el of live.querySelectorAll("path, [data-value]")) {
+    const r = el.getBoundingClientRect()
+    if (r.width === 0 && r.height === 0) { continue }
+    box.left = Math.min(box.left, (r.left - x) / k); box.top = Math.min(box.top, (r.top - y) / k)
+    box.right = Math.max(box.right, (r.right - x) / k); box.bottom = Math.max(box.bottom, (r.bottom - y) / k)
+  }
+  const copy = live.cloneNode(true) as HTMLDivElement, painted = [...live.querySelectorAll("canvas")]
+  copy.querySelectorAll("canvas").forEach((canvas, i) => {
+    const image = document.createElement("img")
+    image.width = canvas.width; image.height = canvas.height; image.className = canvas.className; image.style.cssText = canvas.style.cssText
+    // a canvas the worker paints gives no picture of itself
+    try { image.src = painted[i]!.toDataURL() } catch { }
+    canvas.replaceWith(image)
+  })
+  return { html: copy.innerHTML, ...box }
+}
+
+// keeps the canvas shown, as it is now
+const save = (): Promise<unknown> => {
+  clearTimeout(timer)
+  if (!loaded || open.value === null) { return Promise.resolve() }
+  const page: Page = { lines: lines.value.map(({ id, x, y, k, strokes }) => ({ id, x, y, k, strokes })), camera: camera.value, picture: pictured() }
+  return fetch(`canvas/${open.value}`, { method: "PUT", body: JSON.stringify(page) }).catch(() => { })
+}
+
+// Shows another canvas: the one shown is kept first, and nothing is kept while the other's
+// file is read
+const show = async (name: string) => {
+  await save()
+  loaded = false
+  open.value = name
+  lines.value = []; camera.value = { x: 0, y: 0, k: 1 }
+  before.length = 0; lastId = 0
+  window.history.replaceState(null, "", `?canvas=${name}`)
+  try {
+    const page: Page = await (await fetch(`canvas/${name}`)).json()
+    if (open.value !== name) { return }
+    if (page.lines) {
       lines.value = page.lines.map((line) => ({ ...BLANK, ...line }))
       lastId = Math.max(0, ...page.lines.map(({ id }) => id))
     }
     if (page.camera) { camera.value = page.camera }
-  }).catch(() => { }).finally(() => { loaded = true })
+  } catch { }
+  loaded = true
+}
+
+const keep = () => {
+  const named = new URLSearchParams(window.location.search).get("canvas")
+  void (named ? Promise.resolve(named) : canvases().then((all) => all.toSorted((a, b) => b.at - a.at)[0]?.name ?? "1").catch(() => "1")).then(show)
   return effect(() => {
-    const page = { lines: lines.value.map(({ id, x, y, k, strokes }) => ({ id, x, y, k, strokes })), camera: camera.value }
+    void lines.value, camera.value
     clearTimeout(timer)
-    if (!loaded) { return }
-    timer = setTimeout(() => { fetch("canvas", { method: "PUT", body: JSON.stringify(page) }).catch(() => { }) }, 800)
+    if (loaded) { timer = setTimeout(save, 800) }
   })
 }
 
@@ -135,8 +199,6 @@ const mount = (ground: HTMLDivElement, wetInk: SVGGElement, rule: HTMLDivElement
   const touches = new Map<number, [number, number]>()
   // a tap: when its first finger landed, the most fingers down at once, and how far they moved
   let tap = { at: 0, most: 0, moved: 0 }
-  // when the pen was last near: the hand that holds it rests on the glass, and moves nothing
-  let pen = -Infinity
   let resting: ReturnType<typeof setTimeout> | undefined
   // where on the screen the baseline is of the rule shown to the pen near the glass
   let shownAt: number | null = null
@@ -319,9 +381,12 @@ const mount = (ground: HTMLDivElement, wetInk: SVGGElement, rule: HTMLDivElement
 // its grip, and a line that is held is brighter.
 const Standing = memo(function Standing({ line, near, held, value, error, View, colorsOf }: { line: Placed, near: boolean, held: boolean, value?: Desc, error?: string } & Look): JSX.Element {
   const { from, to } = reach(line, BAND.ruled), beside = BAND.ruled / (to - from), shade = held ? "#a3a3a3" : "#404040"
+  // the picture is as large as what is in it – the band, and ink that goes out of it: a
+  // browser paints anew what changes within a picture's box, and not always what hangs out of it
+  const ink = boxOf(line.strokes), top = Math.min(-BAND.over, ink.top - PEN), height = Math.max(BAND.under, ink.bottom + PEN) - top
   return (
     <div className="absolute left-0 top-0" style={{ transform: `translate(${line.x}px, ${line.y}px) scale(${line.k})`, transformOrigin: "0 0" }}>
-      <svg width={1} height={1} className="absolute left-0 top-0 overflow-visible">
+      <svg width={to - from} height={height} viewBox={`${from} ${top} ${to - from} ${height}`} className="absolute overflow-visible" style={{ left: from, top }}>
         <linearGradient id={`rule-${line.id}`} gradientUnits="userSpaceOnUse" x1={from} x2={to}>
           <stop offset={0} stopColor={shade} stopOpacity={0} />
           <stop offset={beside} stopColor={shade} />
@@ -339,6 +404,48 @@ const Standing = memo(function Standing({ line, near, held, value, error, View, 
   )
 })
 
+// a canvas's picture in small: all that was on it, as large as fits
+const SMALL = { width: 152, height: 96 }
+const Small = memo(function Small({ name }: { name: string }): JSX.Element {
+  const [picture, setPicture] = useState<Picture>()
+  useEffect(() => { fetch(`canvas/${name}`).then((r) => r.json()).then((page: Page) => { setPicture(page.picture) }).catch(() => { }) }, [name])
+  if (!picture) { return <div style={SMALL} /> }
+  const { html, left, top, right, bottom } = picture, s = Math.min((SMALL.width - 8) / Math.max(right - left, 1), (SMALL.height - 8) / Math.max(bottom - top, 1), 1)
+  return (
+    <div className="relative overflow-hidden pointer-events-none text-white" style={SMALL}>
+      <div className="absolute left-0 top-0" style={{ transform: `translate(${4 - left * s}px, ${4 - top * s}px) scale(${s})`, transformOrigin: "0 0" }} dangerouslySetInnerHTML={{ __html: html }} />
+    </div>
+  )
+})
+
+// The canvases, at the left edge: a tab, and behind it all of them, the last begun first,
+// each as it looked when it was last kept – and over them a clean one to begin. A tap takes
+// one; a tap beside them closes them.
+function Canvases(): JSX.Element {
+  useSignals()
+  const [all, setAll] = useState<Kept[] | null>(null)
+  if (all === null) {
+    // the hand that holds the pen rests on the glass, and opens nothing
+    const list = (e: React.PointerEvent) => { if (e.pointerType !== "touch" || performance.now() - pen > PALM) { save().then(canvases).then(setAll).catch(() => { }) } }
+    return <div key="tab" onPointerUp={list} className="fixed left-0 top-1/2 -translate-y-1/2 w-5 h-20 flex items-center"><div className="w-1.5 h-14 rounded-r bg-neutral-600/60" /></div>
+  }
+  const next = String(Math.max(0, Number(open.value) || 0, ...all.map(({ name }) => Number(name))) + 1)
+  const card = "shrink-0 rounded border bg-neutral-900"
+  const take = (name: string) => () => { setAll(null); void show(name) }
+  return (
+    <>
+      {/* the touch that closes them must not end on the tab: the two are not one element */}
+      <div key="beside" className="fixed inset-0" style={{ touchAction: "none" }} onPointerDown={() => { setAll(null) }} />
+      <div className="fixed left-0 inset-y-0 flex flex-col gap-2 p-2 overflow-y-auto select-none bg-neutral-950/95 border-r border-neutral-800">
+        <div onClick={take(next)} className={`${card} border-neutral-700 text-neutral-400 text-2xl flex items-center justify-center`} style={SMALL}>+</div>
+        {all.toReversed().map(({ name }) => (
+          <div key={name} onClick={take(name)} className={`${card} ${name === open.value ? "border-neutral-300" : "border-neutral-800"}`}><Small name={name} /></div>
+        ))}
+      </div>
+    </>
+  )
+}
+
 export function Canvas({ View, colorsOf, run, parse }: Look & { run: (source: string) => void, parse: (source: string) => void }): JSX.Element {
   useSignals()
   const ground = useRef<HTMLDivElement>(null), wetInk = useRef<SVGGElement>(null), rule = useRef<HTMLDivElement>(null)
@@ -350,14 +457,16 @@ export function Canvas({ View, colorsOf, run, parse }: Look & { run: (source: st
   }, [])
   const { x, y, k } = camera.value, whole = root.desc.value
   return (
+    <>
     <div
       ref={ground} className="fixed inset-0 overflow-hidden bg-neutral-900 text-white select-none"
       style={{ touchAction: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none" }}
     >
-      <div className="absolute left-0 top-0" style={{ transform: `translate(${x}px, ${y}px) scale(${k})`, transformOrigin: "0 0" }}>
+      <div ref={plane} className="absolute left-0 top-0" style={{ transform: `translate(${x}px, ${y}px) scale(${k})`, transformOrigin: "0 0" }}>
         {lines.value.map((line) => <Standing key={line.id} line={line} near={neared.value === line.id} held={holding.value === line.id} {...shown(line, line.id, writing.value !== line.id)} View={View} colorsOf={colorsOf} />)}
-        <svg width={1} height={1} className="absolute left-0 top-0 overflow-visible"><g ref={wetInk} stroke={PLAIN} {...INK} /></svg>
       </div>
+      {/* the stroke under the pen, on a picture as large as the page */}
+      <svg className="absolute inset-0 w-full h-full pointer-events-none"><g transform={`translate(${x} ${y}) scale(${k})`}><g ref={wetInk} stroke={PLAIN} {...INK} /></g></svg>
       <div ref={rule} hidden className="absolute left-0 top-0 h-px pointer-events-none" style={{ width: START.before + BAND.ruled, background: `linear-gradient(to right, transparent, #404040 ${START.before}px, transparent)` }} />
       {lines.value.length === 0 && (
         <div className="absolute inset-x-0 bottom-6 text-center text-neutral-600 text-sm pointer-events-none">
@@ -368,5 +477,7 @@ export function Canvas({ View, colorsOf, run, parse }: Look & { run: (source: st
       {/* a program that fails whole has no list to show: it says why */}
       {whole?.k === "error" && <div className="absolute left-2 bottom-2 max-w-md"><View d={whole} /></div>}
     </div>
+    <Canvases />
+    </>
   )
 }

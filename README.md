@@ -44,7 +44,7 @@ More in the playground: press <kbd>Ctrl</kbd>+<kbd>O</kbd> for the full gallery.
 | `_` | `gather` | `Gather` |
 | `⍴` | `reshape` | `TensorReshape` |
 | `..<` | `range` | `TensorRange` |
-| `...` | `rangeInclusive` | `TensorRangeInclusive` |
+| `...` | `through`, `rangeInclusive` | `TensorRangeInclusive` |
 | `⊗` | `outer` | `TensorOuter` |
 | `^` | `pow` | `TensorPower` |
 | `√` | `root` | `TensorRoot` |

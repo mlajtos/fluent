@@ -191,23 +191,57 @@ def respaced(text, guess):
     if len(mine) != len(theirs): return None
     return "".join((" " if space else "") + c for space, c in zip(spaced(guess), mine))
 
-# The hand of the copybook: the glyphs' names, the dictated lines – text and strokes – and
+# The hand of the copybook: the glyphs' names, the dictated lines – text and strokes, a glyph
+# the hand has changed in its new way (`renewed`) – and
 # every glyph the pen wrote, the first `cells` of them in cells and the others in the lines,
 # cut into their text's glyphs. A line is cut as the page reader that had not learned from
 # it cut it – page.py keeps those cuts in CUTS, of each stroke its glyph, with the ink the
-# cut is of – and a line with no such cut by the reader of cells. Of each glyph: its ink, how many strokes it has and
+# cut is of and whether that reader `read` the line as its text – and a line with no such cut by the reader of cells. Of each glyph: its ink, how many strokes it has and
 # which glyph it is. Of each line: `whole`, the glyphs it is made of and what the first
 # stroke of each is – after a space where the text has one – and `gaps`, the gaps the hand
 # left at places of each kind.
 CUTS = os.path.join(KEPT, "cuts.json")
+# the dictated lines as the pen wrote them, in the pen's alphabet
+def penned(): return [("".join(SAME.get(c, c) for c in text), strokes) for text, strokes in dictated()]
+
+# A glyph the hand writes another way since a moment (ms of the epoch) – n, whose arch now
+# leaves the stem at its top. Its ink from before is this hand's no more: wherever the
+# readers see a line written before, in lessons and in tests, such a glyph is one written
+# since – from a line of the same quarter, so that a reader is tried on none it learned
+# from – as large as the old ink and where it stood. `cuts` says of each stroke its glyph;
+# a line gives its glyphs only if it is `right`, read as its text: the hand slips to the old
+# way, and writes a line other than it was told.
+CHANGED = {"n": 1794920400000}
+def renewed(lines, cuts, begun, right):
+    for glyph, since in CHANGED.items():
+        places = lambda text: [g for g, c in enumerate(text.replace(" ", "")) if c == glyph]
+        new = {}
+        for l, (text, strokes) in enumerate(lines):
+            if begun[l] < since or not right[l]: continue
+            for g in places(text): new.setdefault(part(text), []).append([even(stroke) for stroke, of in zip(strokes, cuts[l]) if of == g])
+        every = sum(new.values(), [])
+        for l, (text, strokes) in enumerate(lines):
+            if begun[l] >= since or not every or not places(text): continue
+            rng, strokes, of = np.random.default_rng(zlib.crc32(text.encode())), list(strokes), list(cuts[l])
+            for g in places(text):
+                mine, some = [s for s, o in enumerate(of) if o == g], new.get(part(text), every)
+                was, now = np.concatenate([strokes[s] for s in mine]), some[rng.integers(len(some))]
+                box = np.concatenate(now); scale = np.ptp(was[:, 1]) / max(np.ptp(box[:, 1]), 1)
+                made = [((stroke - [(box[:, 0].min() + box[:, 0].max()) / 2, box[:, 1].max()]) * scale + [(was[:, 0].min() + was[:, 0].max()) / 2, was[:, 1].max()]).astype(np.float32) for stroke in now]
+                strokes, of = [s for i, s in enumerate(strokes) if i not in mine], [o for i, o in enumerate(of) if i not in mine]
+                strokes[mine[0]:mine[0]], of[mine[0]:mine[0]] = made, [g] * len(made)
+            lines[l], cuts[l] = (text, strokes), of
+    return lines, cuts
+
 def hand():
     cells, glyphs = written()
-    lines = [("".join(SAME.get(c, c) for c in text), strokes) for text, strokes in dictated()]
+    lines = penned()
     kept = json.load(open(CUTS)) if os.path.exists(CUTS) else {}
     cuts = {l: kept[text]["of"] for l, (text, strokes) in enumerate(lines) if text in kept and kept[text]["ink"] == [len(stroke) for stroke in strokes]}
     rest = [l for l in range(len(lines)) if l not in cuts]
     reader = Reader(len(glyphs)); reader.load_weights(os.path.join(KEPT, "reader.safetensors")); reader.eval()
     for l, pieces in zip(rest, cut(reader, [lines[l] for l in rest], glyphs)): cuts[l] = [g for g, (*_, n) in enumerate(pieces) for _ in range(n)]
+    lines, cuts = renewed(lines, cuts, [at for *_, at in dictated(True)], [kept.get(text, {}).get("read", False) for text, _ in lines])
     same = {glyphs.index(a): glyphs.index(b) for a, b in SAME.items()}
     cells = [(same.get(glyph, glyph), cell, strokes) for glyph, cell, strokes in cells if glyphs[glyph] not in GONE]
     ink, count, label = map(list, zip(*[(*inked(strokes), glyph) for glyph, _, strokes in cells]))

@@ -435,6 +435,9 @@ describe("tensors", () => {
     expect(value("1...5")).toEqual([1, 2, 3, 4, 5])     // glued: the dots aren't a decimal point
     expect(value("5 ... 1")).toEqual([5, 4, 3, 2, 1])   // descending, inclusive
     expect(value("3 ... 3")).toEqual([3])               // single element
+    expect([value("...(3)"), value("rangeInclusive(3)"), value("...(-2)"), value("...(0)")]).toEqual([[0, 1, 2, 3], [0, 1, 2, 3], [0, -1, -2], [0]])   // one number: from 0 through it
+    expect([value("1 through 4"), value("3 through 1"), value("through(2)")]).toEqual([[1, 2, 3, 4], [3, 2, 1], [0, 1, 2]])   // the word for ...
+    expect([value("0 ..< -2"), value("0 ... -2"), value("-0 ..< -2")]).toEqual([[0, -1], [0, -1, -2], [0, -1]])   // counting down from 0 starts at 0, not at -0
     // the whole numbers between the ends, whatever the ends are: 2 is below 2.5, 0 is below 0.5
     expect([value("0 ..< 2.5"), value("0.5 ..< 3"), value("5 ..< -0.5"), value("range(2.5)")]).toEqual([[0, 1, 2], [1, 2], [5, 4, 3, 2, 1, 0], [0, 1, 2]])
     expect([value("0.5 ... 2"), value("1 ... 2.5"), value("2.5 ... 1"), value("0.5 ... 0.7")]).toEqual([[1, 2], [1, 2], [2, 1], []])

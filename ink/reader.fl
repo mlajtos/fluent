@@ -1,0 +1,165 @@
+; The page reader – ink/page.py's PageReader as it reads, with the weights it learned there:
+; which strokes of a line are one glyph, which glyph that is, and where the spaces are.
+; The ink has one shape whatever the line, so that every line is one computation: strokes
+; [S, P, 2], points from the baseline, a stroke filled up with its last point, and real [S],
+; 1 for the line's strokes – the first ones – and 0 for the rest. read(files, glyphs)
+; makes of them what the readers say, one tensor [S, 5], and told(said, real) is that as
+; (the text, of each stroke which glyph of the text it is of, how sure of each glyph).
+
+; --- a stroke as a curve: M points evenly along it, then PIECES cubic pieces end to end ---
+; strokes [S, P, 2] as [S, M, 2]
+M: 32, PIECES: 2, T: 3×PIECES + 1,
+even: { p |
+  P: shape(p)_1,
+  step: slice(p, [0, 1]) - slice(p, [0, 0], [-1, P-1]),
+  far: concat((fill([#p, 1], 0), TensorScan(√Σ(step × step, 2), +, 1)), 1), ; how far along its stroke each point is
+  at: slice(far, [0, P-1]) × linspace([0, 1], M),
+  k: clamp(Σ(unsqueeze(at, 2) ≥ unsqueeze(far, 1), 2) - 1, 0, P-2),
+  a: oneHot(k, P), b: oneHot(k + 1, P), ; [S, M, P]: the points each of the M lies between
+  from: Σ(a × unsqueeze(far, 1), 2),
+  t: at - from ÷ (Σ(b × unsqueeze(far, 1), 2) - from ⌈ 1e-9),
+  start: a matmul p,
+  start + (b matmul p - start × unsqueeze(t, 2))
+},
+; B: what each of the T control points weighs at each of the M points, each piece an equal
+; part of the stroke – Bernstein's cubics
+along: linspace([0, PIECES], M),
+piece: floor(along) ⌊ PIECES-1,
+u: unsqueeze(along - piece, 1),
+j: 0..<T - unsqueeze(3×piece, 1),
+c: clamp(j, 0, 3),
+B: (j = c) × [1, 3, 3, 1]_c × u^c × (1-u)^(3-c),
+; fit × points are the control points of the curve nearest the points: BᵀB cleared to the
+; identity row by row, with Bᵀ beside it
+fit: slice(fold(0..<T, { A, k |
+  row: A_k ÷ A_k_k,
+  A - (transpose(A)_k - (0..<T = k) ⊗(×) row)
+}, concat((transpose(B) matmul B, transpose(B)), 1)), [0, T]),
+
+; --- what a reader is given of a line's ink [n, M, 2], its strokes left to right ---
+FLOOR: 8, TURNS: 0.5 × 2^(0..<9),
+seen: { ink |
+  n: #ink,
+  low: min(ink, 1), high: max(ink, 1),
+  middle: low + high ÷ 2,
+  size: max(high - low, 1) ⌈ FLOOR,
+  curve: fit matmul (ink - unsqueeze(middle, 1) ÷ (size ⍴ [n, 1, 1])), ; [n, T, 2]
+  step: curve - concat((slice(curve, [0, 0], [-1, 1]), slice(curve, [0, 0], [-1, T-1])), 1),
+  whole: stack((log(size ÷ 32), transpose(middle)_1 ÷ 32), 1),
+  ; from the stroke before: its end to this one's start, and its right edge – and the right
+  ; edge of all before – to this one's left
+  first: slice(ink, [0, 0], [-1, 1]) ⍴ [n, 2], last: slice(ink, [0, M-1], [-1, 1]) ⍴ [n, 2],
+  left: drop(transpose(low)_0, 1), right: transpose(high)_0,
+  after: concat((fill([1, 4], 0), concat((
+    drop(first, 1) - drop(last, -1),
+    stack((left - drop(right, -1), left - drop(scan(right, ⌈), -1)), 1)
+  ), 1)), 0),
+  turn: 2×π × slice(middle, [0, 0], [-1, 1]) ÷ 32 ÷ TURNS, ; [n, 9]
+  (
+    concat((curve × 2, step × T÷4), 2),
+    whole,
+    concat((whole, high - low ÷ 32, after ÷ 16, sin(turn), cos(turn)), 1),
+  )
+},
+
+; --- the readers as one: each weight of all of them along a first axis ---
+; files: of each reader what page.py kept, a list of (name, tensor). What goes through is
+; [reader, strokes, tokens, d] in a stroke and [reader, 1, strokes, d] in the line.
+H: 4,
+reader: { files |
+  R: ListLength(files),
+  w: { name | stack(ListMap(files, { file | fold(file, { found, pair | cond(guard(pair_0 ≡ name, { pair_1 }), found) }, 0) })) },
+  turned: { name | unsqueeze(permute(w(name), [0, 2, 1]), 1) }, ; [R, 1, in, out]
+  row: { name | w(name) ⍴ [R, 1, 1, -1] },
+  linear: { name |
+    W: turned(name ++ ".weight"), b: row(name ++ ".bias"),
+    { x | x matmul W + b }
+  },
+  normed: { name |
+    g: row(name ++ ".weight"), b: row(name ++ ".bias"),
+    { x | y: x - μ(x, -1, 1), y ÷ √(μ(y × y, -1, 1) + 1e-5) × g + b }
+  },
+  attend: { name |
+    Q: turned(name ++ ".query_proj.weight"), K: turned(name ++ ".key_proj.weight"),
+    V: turned(name ++ ".value_proj.weight"), O: turned(name ++ ".out_proj.weight"),
+    heads: { x | permute(x ⍴ (take(shape(x), 3) ++ [H, -1]), [0, 1, 3, 2, 4]) }, ; [R, b, H, t, d÷H]
+    { x, none |
+      q: heads(x matmul Q), k: heads(x matmul K), v: heads(x matmul V),
+      a: softmax(q matmul permute(k, [0, 1, 2, 4, 3]) ÷ √(shape(Q)_2 ÷ H) + none),
+      permute(a matmul v, [0, 1, 3, 2, 4]) ⍴ shape(x) matmul O
+    }
+  },
+  gate: { x | x × 0.5 × (1 + erf(x ÷ (√2))) }, ; GELU, exactly
+  block: { name |
+    before: normed(name ++ ".before"), mix: attend(name ++ ".attend"),
+    after: normed(name ++ ".after"), wide: linear(name ++ ".wide"), narrow: linear(name ++ ".narrow"),
+    { x, none | y: x + mix(before(x), none), y + narrow(gate(wide(after(y)))) }
+  },
+  past: { x, blocks, none | fold(blocks, { x, f | f(x, none) }, x) },
+  stroke: ListMap(("stroke.0", "stroke.1"), block),
+  line: ListMap(("line.0", "line.1", "line.2", "line.3"), block),
+  point: linear("point"), whole: linear("whole"), where: linear("where"), place: unsqueeze(w("place"), 1),
+  final: normed("norm"), glyph: linear("glyph"), role: linear("role"),
+  asks: linear("asks"), answers: linear("answers"),
+  ; what the readers find likely, multiplied: the logs of each, added
+  as: { x | Σ(logSoftmax(x), 0)_0 },
+  ; a transformer over each stroke's control points and one more token, the whole, which
+  ; comes to the stroke's vector; then one over the line's strokes. Of each stroke: the log
+  ; of how likely each glyph is, each role, and each stroke as the first of its glyph.
+  ; `none` is -1e9 at the strokes that are not the line's: nothing looks at them
+  { given, none |
+    n: #given_0,
+    x: concat((whole(unsqueeze(given_1, 1)), point(given_0)), 2) + place, ; [R, n, 1 + T, d]
+    s: slice(past(x, stroke, 0), [0, 0, 0], [-1, -1, 1]) ⍴ [R, 1, n, -1] + where(given_2),
+    y: final(past(s, line, none)),
+    (
+      as(glyph(y)),
+      as(role(y)),
+      as(asks(y) matmul permute(answers(y), [0, 1, 3, 2]) ÷ √(shape(place)_3) + none),
+    )
+  }
+},
+
+; --- reading ---
+FIRST: 1, SPACED: 2,
+read: { files, glyphs | says: reader(files), { strokes, real |
+  S: #strokes, i: 0..<S,
+  ink: even(strokes),
+  ; the line's strokes by where each begins on the left, the higher first; then the rest
+  low: transpose(min(ink, 1)),
+  high: argsort(low_1),
+  order: high_(argsort(where(real, low_0, 1e9)_high)),
+  mine: real_order,
+  given: seen(ink_order), none: 1-mine × -1e9,
+  said: says(given, none),
+  to: argmax(said_2, -1),
+  ; A stroke's glyph starts where its links end. Each round walks the links twice as far
+  ; as the last – seven rounds pass 128 strokes – and minds the leftmost stroke passed:
+  ; links that go round start there.
+  walk: ({ s | (s_0_(s_0), s_1 ⌊ s_1_(s_0)) } ⍣ 7)((to, i)),
+  end: walk_0,
+  root: where(to_end = end, end, walk_1),
+  of: (root ⊗(=) i) × unsqueeze(mine, 1), ; [stroke, its glyph's first stroke]
+  starts: max(of, 0),
+  rank: scan(starts, +) - 1,
+  named: transpose(of) matmul said_0,
+  played: transpose(said_1),
+  spaced: (played_SPACED > played_FIRST) × (rank > 0) × starts,
+  ; of each stroke: which glyph of the text it is of; and of each place left to right:
+  ; whether a glyph starts there, after a space, which glyph, and how sure
+  stack((
+    rank_root_(argsort(order)),
+    starts,
+    spaced,
+    glyphs_(argmax(named, -1)),
+    1 ÷ Σ(exp(named - max(named, -1, 1) ÷ ListLength(files)), -1),
+  ), 1)
+} },
+told: { said, real |
+  s: transpose(said),
+  (
+    CodesToString(mask(flat(stack((fill([#said], 32), s_3), 1)), flat(stack((s_2, s_1), 1)))),
+    mask(s_0, real),
+    mask(s_4, s_1),
+  )
+},

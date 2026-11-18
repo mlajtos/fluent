@@ -181,14 +181,16 @@ def nearest(P, S, y, cells, glyphs):
             right += (y[learn][far.argmin(1)] == y[held]).sum()
         print(f"nearest neighbour, {name}: {100 * right / len(P):.1f} %")
 
-# the copybook's dictated lines: the text, and the strokes as the pen made them
-def dictated():
+# the copybook's dictated lines: the text, and the strokes as the pen made them – and, with
+# `begun`, when the pen began the line, in ms of the epoch
+def dictated(begun=False):
     lines = []
     for file in sorted(os.listdir(COPYBOOK)):
         if not file.startswith("line-"): continue
         kept = json.load(open(os.path.join(COPYBOOK, file)))
         if kept["samples"] and kept["samples"][0]:
-            lines.append((kept["glyph"], [np.array([p[:2] for p in stroke["points"]], np.float32) for stroke in kept["samples"][0]["strokes"]]))
+            strokes = kept["samples"][0]["strokes"]
+            lines.append((kept["glyph"], [np.array([p[:2] for p in stroke["points"]], np.float32) for stroke in strokes]) + ((strokes[0]["at"],) if begun else ()))
     return lines
 
 # Which strokes of a line are which glyph of its text, when the pen wrote the glyphs in
