@@ -4,13 +4,16 @@
 # its glyph starts with – so a glyph may be touched up, gone over or finished late, and two
 # glyphs may reach into each other. It learns on the copybook's glyphs in random order
 # (line.py's hand), with what a pen does to a glyph it is not happy with.
-#   python3 ink/page.py [steps=3000] [quarter ...] [seed=0] [wide=128] [curve=0] [name=page] [stray=1] [runs=0.06] [all=0]
+#   python3 ink/page.py [steps=3000] [quarter ...] [seed=0] [wide=128] [deep=2,4] [loops=1] [curve=0] [name=page] [stray=1] [runs=0.06] [all=0]
+# `deep` is how many blocks a stroke goes through, and the line; `loops` is how many times
+# the line goes through its blocks.
 # `curve` is every how many steps a reader is tried, as it learns, on the lines kept from it.
 # A reader of quarter k is kept as paper/ink/<name>-k.safetensors.
 import json, math, os, sys
 import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
+from mlx.utils import tree_flatten
 from ink import KEPT, LONGEST, STROKES, Block, descend, vary
 from line import CUTS, FIRST, KINDS, LATER, M, SPACED, TURNS, edits, even, given, hand, misread, most, parsed, penned, quarter, respaced, spaced
 
@@ -38,13 +41,16 @@ def across(ink): return np.lexsort((ink[..., 1].min(1), ink[..., 0].min(1)))
 # Two transformers: one over a stroke's control points, whose first token comes to the
 # stroke's vector, and one over the line's strokes, which knows of each where it is and nothing of
 # when it was made. Of each stroke the second says which glyph it is of, what it is to that
-# glyph, and – `link` – which stroke of the line that glyph starts with.
+# glyph, and – `link` – which stroke of the line that glyph starts with. With `loops`, the
+# line goes through its blocks that many times, and after the first with what went in
+# added: a looped transformer, as deep as loops × blocks with the weights of the blocks.
 class PageReader(nn.Module):
-    def __init__(self, classes, d=128, heads=4, drop=0.1):
+    def __init__(self, classes, d=128, heads=4, drop=0.1, deep=(2, 4), loops=1):
         super().__init__()
+        self.loops = loops
         self.point, self.whole, self.where = nn.Linear(4, d), nn.Linear(2, d), nn.Linear(8 + 2 * len(TURNS), d)
         self.place = mx.random.normal((T + 1, d)) * 0.02
-        self.stroke, self.line = [Block(d, heads, drop) for _ in range(2)], [Block(d, heads, drop) for _ in range(4)]
+        self.stroke, self.line = [Block(d, heads, drop) for _ in range(deep[0])], [Block(d, heads, drop) for _ in range(deep[1])]
         self.norm, self.glyph, self.role = nn.LayerNorm(d), nn.Linear(d, classes), nn.Linear(d, 3)
         self.asks, self.answers = nn.Linear(d, d), nn.Linear(d, d)
     def __call__(self, points, whole, where, index):
@@ -52,7 +58,10 @@ class PageReader(nn.Module):
         for block in self.stroke: x = block(x)
         x = mx.concatenate([x[:, 0] + self.where(where), mx.zeros((1, x.shape[-1]))])[index]
         none = (index == points.shape[0])[:, None, None, :] * -1e9
-        for block in self.line: x = block(x, none)
+        went = x
+        for loop in range(self.loops):
+            if loop: x = x + went
+            for block in self.line: x = block(x, none)
         x = self.norm(x)
         link = self.asks(x) @ self.answers(x).transpose(0, 2, 1) / math.sqrt(x.shape[-1]) + none[:, 0]
         return self.glyph(x), self.role(x), link
@@ -147,6 +156,18 @@ def lessons(ink, count, label, cells, gaps, often, rng, stray, runs, twice, line
         return composed(ink, count, label, lesson, rng, stray)
     return some
 
+# A reader is kept with the alphabet it reads, `glyphs`: the code point of each, in the
+# order the reader names them – the copybook's, as it was when the reader learned.
+def keep(model, glyphs, name):
+    mx.save_safetensors(os.path.join(KEPT, f"{name}.safetensors"), {**dict(tree_flatten(model.parameters())), "glyphs": mx.array([ord(glyph) for glyph in glyphs]), **({"loops": mx.array([model.loops])} if model.loops > 1 else {})})
+def kept_as(name):
+    weights = mx.load(os.path.join(KEPT, f"{name}.safetensors"))
+    glyphs = [chr(code) for code in weights.pop("glyphs").tolist()]
+    loops = int(weights.pop("loops").item()) if "loops" in weights else 1
+    deep = [len({name.split(".")[1] for name in weights if name.startswith(blocks)}) for blocks in ("stroke.", "line.")]
+    reader = PageReader(len(glyphs), d=weights["place"].shape[1], deep=deep, loops=loops); reader.load_weights(list(weights.items())); reader.eval()
+    return reader, glyphs
+
 # What a reader makes of a line's strokes, in any order: the text, of each stroke which
 # glyph of the text it is of, and of each glyph how sure the reader is – the share its name
 # has among all names. Readers in a list read as one: what each finds likely, multiplied;
@@ -230,22 +251,22 @@ if __name__ == "__main__":
     named = dict(word.split("=") for word in sys.argv[1:] if "=" in word)
     rest = [word for word in sys.argv[1:] if "=" not in word]
     if rest == ["cut"]:
-        glyphs, lines, cells, _, _, _, whole, gaps = hand()
-        readers = [PageReader(len(glyphs)) for _ in range(4)]
-        for k, reader in enumerate(readers): reader.load_weights(os.path.join(KEPT, f"page-{k}.safetensors")); reader.eval()
-        json.dump(cuts(readers, [quarter(k, lines, cells, whole, gaps)[4] for k in range(4)], glyphs), open(CUTS, "w"), ensure_ascii=False)
+        _, lines, cells, _, _, _, whole, gaps = hand()
+        readers = [kept_as(f"page-{k}") for k in range(4)]
+        json.dump(cuts([reader for reader, _ in readers], [quarter(k, lines, cells, whole, gaps)[4] for k in range(4)], readers[0][1]), open(CUTS, "w"), ensure_ascii=False)
         sys.exit()
     steps = int(rest[0]) if rest else 3000
     quarters = [int(k) for k in rest[1:]] or range(4)
     seed, wide, curve, name = int(named.get("seed", 0)), int(named.get("wide", 128)), int(named.get("curve", 0)), named.get("name", "page")
     stray, runs, every = float(named.get("stray", 1)), float(named.get("runs", 0.06)), int(named.get("all", 0))
+    deep, loops = [int(blocks) for blocks in named.get("deep", "2,4").split(",")], int(named.get("loops", 1))
     mx.random.seed(seed)
     glyphs, lines, cells, ink, count, label, whole, gaps = hand()
     marred = {}
     for l in whole:
         rng = np.random.default_rng(l)
         marred[l] = [stroke for i in whole[l][0] for stroke in strayed(ink[i][:count[i]], rng, 4)]
-    print(f"{len(lines)} lines, {len(ink) - cells} glyphs in them; stray {stray}, runs {runs}, wide {wide}, seed {seed}", flush=True)
+    print(f"{len(lines)} lines, {len(ink) - cells} glyphs in them; stray {stray}, runs {runs}, wide {wide}, deep {deep}{f" × {loops} loops" if loops > 1 else ""}, seed {seed}", flush=True)
     wrong = long = same = spaces = counted = lines_read = spoiled = 0
     # places between two glyphs, and those read as the text has them: where a space changes no tree, and where it does
     places, kept = [0, 0], [0, 0]
@@ -254,9 +275,9 @@ if __name__ == "__main__":
         seen, mine, mine_gaps, often, held = quarter(-1 if every else k, lines, cells, whole, gaps)
         twice = [(int(label[a]), float(ink[b, ..., 0].min() - ink[a, ..., 0].max())) for l in seen for a, b in zip(whole[l][0], whole[l][0][1:]) if label[a] == label[b]]
         def watch(step): print(f"  step {step}: {tried(model, lines, held, glyphs)[1]}; marred: {tried(model, lines, held, glyphs, marred)[1]}", flush=True)
-        model = PageReader(len(glyphs), d=wide)
+        model = PageReader(len(glyphs), d=wide, deep=deep, loops=loops)
         descend(model, loss, lessons(ink[mine], count[mine], label[mine], cells, mine_gaps, often, np.random.default_rng(k + 4 * seed), stray, runs, twice), steps, 1e-3, say=500, watch=watch if curve and not every else None, every=curve)
-        model.save_weights(os.path.join(KEPT, f"{name}-{k}.safetensors"))
+        keep(model, glyphs, f"{name}-{k}")
         if every: continue
         cut_as.update(cuts([model], [held], glyphs))
         guesses, _ = tried(model, lines, held, glyphs)

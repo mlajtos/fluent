@@ -1,4 +1,4 @@
-// Ink: what the pen's pages – the copybook, the ruled paper, the canvas – have in common.
+// Ink: what the pen's pages – the copybook and the canvas – have in common.
 // The pen's points and strokes and the cell they are written in; a line of ink and the
 // readers that read it (ink/page.py, the dev server's /reading); the scratch that erases;
 // the form that read ink goes to; the pen's points, its record and its touches; the program
@@ -6,7 +6,9 @@
 
 import { type Signal, signal, effect } from "@preact/signals-core"
 import { useEffect, useRef, type JSX } from "react"
+import { useSignals } from "@preact/signals-react/runtime"
 import { type Desc, type ToPage, documentHash, stringRegexp, root } from "./protocol"
+import { read as readHere } from "./readers"
 
 // MARK: Ink
 
@@ -27,6 +29,76 @@ export const pathOf = (points: readonly (readonly [x: number, y: number, ...rest
 
 // a point of ink, whatever else the pen told of it
 type XY = readonly [x: number, y: number, ...rest: number[]]
+
+// MARK: Tips
+// How ink shows – the ink itself is the pen's points, whatever tip draws it. A tip has a
+// width; it may go through the points as a curve; and its width may follow the pen – wider
+// where it pressed harder, thinner where it went faster, thin over `taper` units at a
+// stroke's ends – each by a share from 0, not at all, to 1.
+type Tip = { width: number, curved?: boolean, pressure?: number, speed?: number, taper?: number }
+export const TIPS: Record<string, Tip> = {
+  line: { width: 2.4 },
+  fine: { width: 1.7, curved: true },
+  bold: { width: 3.2, curved: true },
+  pen: { width: 2.6, pressure: 0.6, taper: 3 },
+  nib: { width: 2.8, pressure: 0.3, speed: 0.7, taper: 4 },
+  brush: { width: 3.8, pressure: 1, speed: 0.4, taper: 8 },
+}
+// the tip this device draws with
+const chosen = (() => { try { return localStorage.getItem("tip") } catch { return null } })()
+export const tip = signal(chosen && TIPS[chosen] ? chosen : "line")
+const choose = (name: string) => {
+  tip.value = name
+  try { localStorage.setItem("tip", name) } catch { }
+}
+// a tip whose width changes draws a stroke's outline, and fills it
+const outlined = ({ pressure, speed, taper }: Tip) => !!(pressure || speed || taper)
+export const inkOf = (color: string, as = TIPS[tip.value]!) => (outlined(as)
+  ? { fill: color, stroke: color, strokeWidth: 0.4, strokeLinejoin: "round" } as const
+  : { fill: "none", stroke: color, strokeWidth: as.width, strokeLinecap: "round", strokeLinejoin: "round" } as const)
+
+// this hand presses lightly and writes at a walk: the pressure and the speed, in units a
+// ms, that leave a tip's width as it is
+const USUAL = { pressure: 0.16, speed: 0.2 }
+const within = (x: number, low: number, high: number) => Math.min(high, Math.max(low, x))
+const n2 = (x: number) => Math.round(x * 100) / 100
+// each number with its neighbours `reach` to each side, evened out
+const evened = (xs: number[], reach: number) => xs.map((_, i) => {
+  let sum = 0, count = 0
+  for (let j = Math.max(0, i - reach); j <= Math.min(xs.length - 1, i + reach); j++) { sum += xs[j]!; count++ }
+  return sum / count
+})
+// A stroke as the tip draws it: `at` is where its points show, and `told` what the pen
+// told of each – they are the pen's own points until the ink goes to its form
+export const traced = (at: readonly XY[], told: readonly XY[] = at, as = TIPS[tip.value]!): string => {
+  if (!outlined(as)) {
+    if (!as.curved || at.length < 3) { return pathOf(at) }
+    // through the middles of the points' steps, each point the bend between two
+    const bends = at.slice(1, -1).map(([x, y], i) => `Q${x} ${y} ${n2((x + at[i + 2]![0]) / 2)} ${n2((y + at[i + 2]![1]) / 2)}`)
+    return `M${at[0]![0]} ${at[0]![1]}${bends.join("")}L${at.at(-1)![0]} ${at.at(-1)![1]}`
+  }
+  const { width, pressure = 0, speed = 0, taper = 0 } = as, last = at.length - 1
+  const xs = evened(at.map(([x]) => x), 1), ys = evened(at.map(([, y]) => y), 1)
+  const along = [0]
+  for (let i = 1; i <= last; i++) { along.push(along[i - 1]! + Math.hypot(xs[i]! - xs[i - 1]!, ys[i]! - ys[i - 1]!)) }
+  const fast = evened(at.map((_, i) => (i === 0 ? 0 : (along[i]! - along[i - 1]!) / Math.max(1, (told[i]?.[3] ?? i) - (told[i - 1]?.[3] ?? i - 1)))), 2)
+  const half = evened(at.map((_, i) => {
+    const pressed = within(((told[i]?.[2] ?? USUAL.pressure) / USUAL.pressure) ** 0.7, 0.4, 2.2), paced = within(1.3 - 0.3 * fast[i]! / USUAL.speed, 0.4, 1.3)
+    return width / 2 * (1 + pressure * (pressed - 1)) * (1 + speed * (paced - 1))
+  }), 2).map((r, i) => Math.max(0.3, taper ? r * Math.min(1, (along[i]! + 0.3 * taper) / taper, (along[last]! - along[i]! + 0.3 * taper) / taper) : r))
+  const dot = (i: number) => `M${n2(xs[i]! + half[i]!)} ${n2(ys[i]!)}a${n2(half[i]!)} ${n2(half[i]!)} 0 1 0 ${n2(-2 * half[i]!)} 0a${n2(half[i]!)} ${n2(half[i]!)} 0 1 0 ${n2(2 * half[i]!)} 0`
+  if (along[last]! < 0.5) { return dot(last) }
+  // the way the stroke goes at each point, and its two sides there
+  const way = at.map((_, i): [number, number] => {
+    const a = Math.max(0, i - 2), b = Math.min(last, i + 2), far = Math.hypot(xs[b]! - xs[a]!, ys[b]! - ys[a]!) || 1
+    return [(xs[b]! - xs[a]!) / far, (ys[b]! - ys[a]!) / far]
+  })
+  const side = (i: number, to: 1 | -1) => `${n2(xs[i]! - to * way[i]![1] * half[i]!)} ${n2(ys[i]! + to * way[i]![0] * half[i]!)}`
+  const order = at.map((_, i) => i), end = n2(half[last]!), start = n2(half[0]!)
+  // where a stroke turns back on itself its sides cross: a dot there keeps it whole
+  const turns = order.filter((i) => i > 0 && way[i]![0] * way[i - 1]![0] + way[i]![1] * way[i - 1]![1] < 0.3).map(dot)
+  return `M${order.map((i) => side(i, 1)).join("L")}A${end} ${end} 0 0 0 ${side(last, -1)}L${order.reverse().map((i) => side(i, -1)).join("L")}A${start} ${start} 0 0 0 ${side(0, 1)}Z${turns.join("")}`
+}
 type Box = { left: number, top: number, right: number, bottom: number }
 export const boxOf = (strokes: { points: XY[] }[]): Box => {
   const box = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity }
@@ -54,6 +126,24 @@ export const BLANK: Line = { strokes: none, read: none, text: "", of: [], sure: 
 
 // why the ink is not read
 export const problem = signal("")
+// With `self` in the URL the page reads its ink by itself (readers.ts): a line's text
+// first, then the places of its strokes in the hand's form.
+const HERE = new URLSearchParams(location.search).has("self")
+// What the readers did goes to the pen's record (/heard, paper/pen.jsonl), a second after
+// the last of it: how long each line took to read and to form, and by whom
+const noted: unknown[] = []
+let noting: ReturnType<typeof setTimeout> | undefined
+const note = (type: string, more: Record<string, unknown>) => {
+  noted.push({ at: Date.now(), on: "readers", type, ...more })
+  clearTimeout(noting)
+  noting = setTimeout(() => { fetch("heard", { method: "POST", body: JSON.stringify(noted.splice(0)) }).catch(() => { }) }, 1000)
+}
+const rounded = (ms: number) => Math.round(ms * 10) / 10
+const theirs = async (ink: number[][][]) => {
+  const response = await fetch("reading", { method: "POST", body: JSON.stringify(ink) })
+  if (!response.ok) { throw new Error(await response.text()) }
+  return await response.json() as Pick<Line, "text" | "of" | "sure" | "to">
+}
 // the strokes the readers were asked to read
 export const asked = new WeakSet<Stroke[]>()
 
@@ -63,11 +153,21 @@ export const asked = new WeakSet<Stroke[]>()
 const ask = async <L extends Line>(lines: Signal<L[]>, strokes: Stroke[]) => {
   asked.add(strokes)
   try {
-    const response = await fetch("reading", { method: "POST", body: JSON.stringify(strokes.map(({ points }) => points.map(([x, y]) => [x, y]))) })
-    if (!response.ok) { throw new Error(await response.text()) }
-    const { text, of, sure, to } = await response.json() as Pick<Line, "text" | "of" | "sure" | "to">
+    const ink = strokes.map(({ points }) => points.map(([x, y]) => [x, y]))
+    const began = performance.now(), mine = HERE ? await readHere(ink) : null
+    const { text, of, sure, to } = mine ? { ...mine, to: strokes.map(() => null) } : await theirs(ink)
+    note("read", {
+      by: mine ? "page" : "server", ms: rounded(mine?.ms ?? performance.now() - began), strokes: ink.length, glyphs: sure.length,
+      ...(mine && { shape: mine.shape, evaluated: rounded(mine.took[0]), computed: rounded(mine.took[1]), ...(mine.knew !== undefined && { knew: rounded(mine.knew) }) }),
+    })
     problem.value = ""
     lines.value = lines.value.map((line) => (line.strokes === strokes ? { ...line, read: strokes, text, of, sure, to } : line))
+    if (!mine) { return }
+    // the form is of the ink that was read: a line that has other ink by then gets its own
+    mine.form().then((formed) => {
+      note("formed", { by: "page", ms: rounded(formed.ms), strokes: ink.length, evaluated: rounded(formed.took[0]), computed: rounded(formed.took[1]) })
+      lines.value = lines.value.map((line) => (line.read === strokes ? { ...line, to: formed.to } : line))
+    }, (e) => { problem.value = `the ink is not formed: ${String((e as Error).message ?? e)}` })
   } catch (e) {
     asked.delete(strokes)
     problem.value = `the ink is not read: ${String((e as Error).message ?? e)}`
@@ -76,7 +176,8 @@ const ask = async <L extends Line>(lines: Signal<L[]>, strokes: Stroke[]) => {
 export const reading = <L extends Line>(lines: Signal<L[]>) => {
   const all = () => { for (const { strokes, read } of lines.value) { if (read !== strokes && !asked.has(strokes)) { ask(lines, strokes) } } }
   // the readers start as the page opens, and a line they did not answer is sent again
-  fetch("reading", { method: "POST", body: "[]" }).catch(() => { })
+  if (!HERE) { fetch("reading", { method: "POST", body: "[]" }).catch(() => { }) }
+  note("open", { by: HERE ? "page" : "server", agent: navigator.userAgent, touches: navigator.maxTouchPoints, gpu: "gpu" in navigator, tip: tip.value })
   const stop = effect(all), again = setInterval(all, 3000)
   return () => { stop(); clearInterval(again) }
 }
@@ -141,22 +242,20 @@ export const under = <S extends { points: XY[] }>(scratch: { width: number, poin
 
 // MARK: Form
 // Ink the readers have read goes to the hand's form: each point of a stroke to the point as
-// far along the form's stroke. It goes while the pen writes, and slowly – what is left of
-// the way falls to 1/e in EASE ms of writing – so that no eye is on it; and the glyph the
-// pen wrote last stays as it is, for it may not be done. What the readers read, and what a
-// scratch erases, is the ink as the pen made it.
+// far along the form's stroke. A glyph starts on its way WAIT ms after its last stroke left
+// the pen – or after its form came, when that is later – and goes slowly: what is left of
+// the way falls to 1/e in EASE ms. What the readers read, and what a scratch erases, is the
+// ink as the pen made it.
 
-const EASE = 2000
+const WAIT = 1500, EASE = 3000
 // a stroke's points as the page shows them, once they have left the pen's
 const shownAs = new WeakMap<Stroke, [number, number][]>()
 // the ink on the page: of each stroke its glyph's strokes, and where its points go
 const drawn = new Map<SVGPathElement, { stroke: Stroke, glyph: Stroke[], aim: XY[] }>()
-// the stroke the pen made last
-let fresh: Stroke | null = null
-export const penned = (stroke: Stroke) => { fresh = stroke }
 
-// where each point of a stroke goes: as far along `to` as it is along its own stroke
-const aims = new WeakMap<Stroke, { to: XY[], aim: XY[] }>()
+// where each point of a stroke goes: as far along `to` as it is along its own stroke; and
+// since when that is known, in ms of the epoch
+const aims = new WeakMap<Stroke, { to: XY[], aim: XY[], since: number }>()
 const aimOf = (stroke: Stroke, to: XY[] | null): XY[] => {
   if (!to) { return stroke.points }
   const kept = aims.get(stroke)
@@ -167,16 +266,21 @@ const aimOf = (stroke: Stroke, to: XY[] | null): XY[] => {
     const at = far / (along.at(-1) || 1) * (to.length - 1), a = to[Math.floor(at)]!, b = to[Math.ceil(at)]!, part = at - Math.floor(at)
     return [a[0] + part * (b[0] - a[0]), a[1] + part * (b[1] - a[1])]
   })
-  aims.set(stroke, { to, aim })
+  aims.set(stroke, { to, aim, since: Date.now() })
   return aim
 }
 
+// One step of every stroke that is on its way; whether any is, or waits to be
 let turn = 0, last = 0
-const step = (now: number) => {
-  const part = 1 - Math.exp(-(now - last) / EASE)
+const step = (now: number): boolean => {
+  // a page that was away does not leap
+  const part = 1 - Math.exp(-Math.min(now - last, 100) / EASE), today = Date.now()
   last = now
+  let going = false
   for (const [path, { stroke, glyph, aim }] of drawn) {
-    if (glyph.includes(fresh!) || (aim === stroke.points && !shownAs.has(stroke))) { continue }
+    if (aim === stroke.points && !shownAs.has(stroke)) { continue }
+    const left = Math.max(aims.get(stroke)?.since ?? 0, ...glyph.map(({ at, points }) => at + (points.at(-1)?.[3] ?? 0))) + WAIT - today
+    if (left > 0) { going = true; continue }
     const at = shownAs.get(stroke) ?? stroke.points.map(([x, y]): [number, number] => [x, y])
     let far = 0
     for (const [i, point] of at.entries()) {
@@ -186,21 +290,20 @@ const step = (now: number) => {
       point[1] += part * dy
     }
     if (far < 0.05) { continue }
+    going = true
     shownAs.set(stroke, at)
-    path.setAttribute("d", pathOf(at))
+    path.setAttribute("d", traced(at, stroke.points))
   }
+  return going
 }
-// a slow way needs few steps a second
+// a slow way needs few steps a second, and none when all the ink is where it goes
 const form = (now: number) => {
-  turn = requestAnimationFrame(form)
-  if (now - last >= 50) { step(now) }
+  turn = now - last < 50 || step(now) ? requestAnimationFrame(form) : 0
 }
-// the ink goes to its form from when a stroke of the pen starts until it ends
-export const forming = (on: boolean) => {
-  cancelAnimationFrame(turn)
-  if (turn && !on) { step(performance.now()) }
+const forming = () => {
+  if (turn) { return }
   last = performance.now()
-  turn = on ? requestAnimationFrame(form) : 0
+  turn = requestAnimationFrame(form)
 }
 
 // MARK: Pen and fingers
@@ -333,7 +436,6 @@ export const PLAIN = "#D8D8D8"
 
 export type Look = { View: (p: { d: Desc }) => JSX.Element, colorsOf: (text: string) => string[] }
 
-export const INK = { fill: "none", strokeWidth: PEN, strokeLinecap: "round", strokeLinejoin: "round" } as const
 // The print over the ink: its size and how far over the baseline it stands, in CSS pixels,
 // and how faint it is, for the eye to stay on the ink. A glyph the readers are less sure of
 // than DOUBT has a short stroke under its print: about one glyph in twenty, and nearly half
@@ -359,13 +461,34 @@ const glyphsOf = ({ read, text, of, sure }: Line, colorsOf: Look["colorsOf"]) =>
 
 // a stroke on the page: as the pen made it, or as far to its form as it has gone
 function Ink({ stroke, glyph, aim, color }: { stroke: Stroke, glyph: Stroke[], aim: XY[], color: string }): JSX.Element {
+  useSignals()
   const path = useRef<SVGPathElement>(null)
   useEffect(() => {
     const ink = path.current!
     drawn.set(ink, { stroke, glyph, aim })
+    forming()
     return () => { drawn.delete(ink) }
   }, [stroke, glyph, aim])
-  return <path ref={path} d={pathOf(shownAs.get(stroke) ?? stroke.points)} stroke={color} {...INK} />
+  return <path ref={path} d={traced(shownAs.get(stroke) ?? stroke.points, stroke.points)} {...inkOf(color)} />
+}
+
+// the tips to choose from, each with a stroke it drew
+const SAMPLE = Array.from({ length: 60 }, (_, i): XY => {
+  const t = i / 59, turnOf = 2 * Math.PI * (2.2 * t - 0.1)
+  return [6 + 58 * t + 5 * Math.sin(turnOf), 15 - 9 * Math.cos(turnOf) * (1 - 0.3 * t), 0.06 + 0.24 * Math.sin(Math.PI * t) ** 2 * (0.6 + 0.4 * Math.cos(turnOf)), 16 * i * (1.4 - Math.sin(Math.PI * t))]
+})
+export function Tips(): JSX.Element {
+  useSignals()
+  return (
+    <div className="grid grid-cols-2 gap-1">
+      {Object.entries(TIPS).map(([name, as]) => (
+        <div key={name} onClick={() => { choose(name) }} className={`rounded border bg-neutral-900 text-neutral-500 text-[10px] leading-none text-center pb-1 ${name === tip.value ? "border-neutral-300" : "border-neutral-800"}`}>
+          <svg width={74} height={30} viewBox="0 0 74 30"><path d={traced(SAMPLE, SAMPLE, as)} {...inkOf(PLAIN, as)} /></svg>
+          {name}
+        </div>
+      ))}
+    </div>
+  )
 }
 
 // a line's print and its ink, about the start of its baseline

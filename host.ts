@@ -14,7 +14,7 @@ import {
 } from "./language"
 import {
   tensorView, labelled, heatScale, documentHash, VERSION,
-  type Desc, type Doc, type SourceKind, type TensorView, type ToPage, type ToWorker, type Tree, type Where,
+  type Desc, type Doc, type Given, type SourceKind, type TensorView, type ToPage, type ToWorker, type Tree, type Where,
 } from "./protocol"
 import { Documentation } from "./documentation"
 import { TOUR_SOURCE } from "./tour"
@@ -525,7 +525,8 @@ const parseSafetensors = (bytes: Uint8Array): [string, engine.Tensor][] => {
     if (!dtype) { throw new Error(`safetensors: unsupported dtype ${t.dtype} for '${key}'`) }
     const [View, decode] = dtype, at = t.data_offsets[0], n = t.shape.reduce((a, b) => a * b, 1)
     const raw = new View(body.slice(at, at + n * View.BYTES_PER_ELEMENT)) as ArrayLike<number>
-    return [key, engine.tensor(Float32Array.from(raw, decode), { shape: t.shape })]
+    // float32 is taken as it is
+    return [key, engine.tensor(raw instanceof Float32Array ? raw : Float32Array.from(raw, decode), { shape: t.shape })]
   })
 }
 
@@ -729,6 +730,14 @@ const fromPage = (value: number | number[] | string | ImageBitmap): Value =>
       : typeof value === "string" ? value
         : fromPixels(value)
 
+// The page's own Fluent ("ask"): a scope apart from the program's, kept from one question
+// to the next. It is no run of the program – nothing of the program is retired by it.
+let own: CurrentScope | null = null
+const given = (value: Given): Value =>
+  value instanceof ArrayBuffer ? parseSafetensors(new Uint8Array(value))
+    : Array.isArray(value) ? value.map(given)
+      : engine.tensor(value.values, { shape: value.shape })
+
 const receive = (m: ToWorker) => {
   switch (m.t) {
     case "code": {
@@ -808,6 +817,26 @@ const receive = (m: ToWorker) => {
     case "density": {
       // a picture drawn in units follows it, and the page paints its canvases again
       if (m.value !== densityNow()) { density.value = TensorScalarLive(m.value) }
+      return
+    }
+    case "ask": {
+      const began = performance.now()
+      let evaluated = 0
+      const tell = (answer: { shape?: number[], values?: Float32Array, error?: string }) =>
+        post({ t: "told", id: m.id, ...answer, took: [evaluated, performance.now() - began - evaluated] }, answer.values ? [answer.values.buffer as ArrayBuffer] : [])
+      try {
+        own ??= createScope()
+        for (const [name, value] of Object.entries(m.given)) { own[name] = given(value) }
+        let value = evaluateProgram(CodeParse(m.source), own)
+        while (value instanceof Signal) { value = value.value as Value }
+        evaluated = performance.now() - began
+        if (value instanceof Error) { throw value }
+        if (!(value instanceof engine.Tensor)) { tell({}); return }
+        const shape = [...value.shape]
+        value.read().then((data) => tell({ shape, values: data.slice() }), (e) => tell({ error: asError(e).message }))
+      } catch (e) {
+        tell({ error: asError(e).message })
+      }
       return
     }
     case "sampleRate": {

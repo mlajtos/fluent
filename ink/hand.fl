@@ -1,0 +1,144 @@
+; A read line in the hand's own form
+;
+; hand.py keeps a form of every glyph: the mean of the cells the pen wrote
+; of it, as strokes of N points. When a line is read, this program says of
+; each stroke where it goes in the form of its glyph, and the page eases
+; the ink there.
+;
+;   1. the forms hand.py kept, and every order of a form's strokes
+;   2. the glyphs of the line: of each, its form and its ink
+;   3. the hand of this line: how large it is, how low it runs
+;   4. each form, put where the pen wrote its glyph
+;   5. which stroke of the ink is which stroke of the form
+;   6. where each stroke goes
+;
+; places: formed(file) takes the file hand.py kept, a list of (name,
+; tensor). places(said, strokes, real) is [S, 1 + 2×N]: of each stroke
+; whether it has a place and, if so, the place's N points, x and y, from
+; the end the pen began at. A stroke has a place when the pen wrote its
+; glyph in as many strokes as the form has. `said`, `strokes` and `real`
+; are reader.fl's, and so are `held` and `even`.
+
+N: 48, ; the points of a form's stroke
+
+; Every order of K things, [K!, K], the first order first. Order p is the
+; number p in digits, where digit `at` says which of the things still free
+; comes at `at`: the first of them, the second …
+orders: { K |
+  all: Π(1...K),
+  worth: reverse(scan(0..<K ⌈ 1, ×)), ; of a digit: (K-1)!, … 2, 1, 1
+  digit: floor((0..<all ⍴ [all, 1]) ÷ worth) % (K - (0..<K)),
+  pick: { state, at |
+    free: state_0,
+    order: state_1,
+    chosen: free × (TensorScan(free, +, 1) - 1 = unsqueeze(transpose(digit)_at, 1)),
+    (free - chosen, order + (unsqueeze(argmax(chosen, -1), 1) × (0..<K = at)))
+  },
+  fold(0..<K, pick, (fill([all, K], 1), fill([all, K], 0)))_1
+},
+
+; The middle of the numbers that are `ok`, as numpy has it: of an even
+; number of them, the mean of the middle two. `none` when none is ok.
+median: { v, ok, none |
+  many: Σ(ok),
+  sorted: sort(where(ok, v, 1e9)),
+  lower: sorted_(floor(many - 1 ÷ 2) ⌈ 0),
+  upper: sorted_(floor(many ÷ 2)),
+  where(many > 0, lower + upper ÷ 2, none)
+},
+
+formed: { file |
+
+  ; 1. The forms: of each of A glyphs, K strokes of N points
+
+  codes: held(file, "glyphs"), ; [A]: a glyph's code point
+  count: held(file, "strokes"), ; [A]: how many strokes its form has
+  form: held(file, "forms"), ; [A, K, N, 2]
+  K: shape(form)_1,
+  formLow: min(min(form, 2), 1),
+  formHigh: max(max(form, 2), 1), ; [A, 2]: the corners of a form's box
+  formSize: max(formHigh - formLow, 1), ; [A]: its longer side
+  formMiddle: formLow + formHigh ÷ 2,
+  ; every way to give K strokes of ink to the K strokes of a form: [F, K]
+  order: orders(K),
+  F: #order,
+  ; the same as 0s and 1s, [F, k×K + i]: 1 where the order gives the
+  ; form's stroke k the ink's stroke i
+  gives: oneHot(order, K) ⍴ [F, K×K],
+
+  { said, strokes, real |
+    S: #strokes,
+    i: 0..<S,
+    s: transpose(said),
+    of: s_0, ; of each stroke: which glyph of the text it is of
+    starts: s_1, ; of each place: whether a glyph starts there
+    code: s_3, ; and that glyph's code point
+
+    ; 2. The glyphs of the line, one in a row – S rows, those past the
+    ;    end of the text empty
+
+    ; [glyph, place]: 1 at the place the glyph starts at
+    place: (i ⊗(=) (scan(starts, +) - 1)) × starts,
+    hit: Σ(place × code, 1) ⊗(=) codes, ; [glyph, A]: 1 at its form
+    a: argmax(hit, -1),
+    known: max(hit, 1) × Σ(place, 1), ; whether it is a glyph with a form
+    inForm: count_a, ; how many strokes its form has
+    member: (i ⊗(=) of) × real, ; [glyph, stroke]: 1 at the strokes of its ink
+    inInk: Σ(member, 1), ; how many strokes its ink has
+    mine: unsqueeze(member, 2),
+    inkLow: min(where(mine, min(strokes, 1), 1e9), 1),
+    inkHigh: max(where(mine, max(strokes, 1), -1e9), 1), ; [glyph, 2]: the corners of its ink's box
+    inkMiddle: inkLow + inkHigh ÷ 2,
+
+    ; 3. The hand of this line, beside the hand of the cells: how many
+    ;    times as large it is – a dot or a comma says nothing of that –
+    ;    and how far under its rule the line runs. Both are the middle of
+    ;    what the glyphs say.
+
+    scale: median(max(inkHigh - inkLow, 1) ÷ formSize_a, known × (formSize_a ≥ 12), 1),
+    base: median(transpose(inkMiddle)_1 - (scale × transpose(formMiddle_a)_1), known, 0),
+
+    ; 4. Each glyph's form, as large as the hand: across, its middle on
+    ;    the middle of the ink; down, on the line's baseline.
+    ;    [glyph, K, N, 2]
+
+    from: (formMiddle_a × [1, 0]) ⍴ [S, 1, 1, 2],
+    to: (inkMiddle × [1, 0] + ([0, 1] × base)) ⍴ [S, 1, 1, 2],
+    put: form_a - from × scale + to,
+
+    ; 5. Which stroke of the ink is which stroke of the form
+
+    ; a glyph's strokes in the order the pen made them: a stroke is the
+    ; nth of its glyph
+    nth: Σ((of ⊗(=) of) × real × (i ⊗(>) i), 1),
+    ; [glyph, k, stroke]: 1 at the stroke that is the glyph's k-th
+    kth: unsqueeze(member, 1) × unsqueeze((0..<K) ⊗(=) nth, 0),
+    ink: kth matmul (even(strokes, N) ⍴ [S, 2×N]) ⍴ [S, K, N, 2],
+    ; How far each stroke of the ink is from each stroke of the form, a
+    ; point from its point: [glyph, the ink's, the form's]. The pen may
+    ; have made a stroke from its other end, so also the other way round.
+    apart: { x | Σ(Σ((unsqueeze(x, 2) - unsqueeze(put, 1))^2, 4), 3) },
+    fore: apart(ink),
+    back: apart(reverse(ink, 2)),
+    ; What it costs to take the ink's stroke i for the form's stroke k:
+    ; how far apart they are. Past the form's strokes there is nothing to
+    ; choose – stroke k goes with stroke k, at no cost, and with no other.
+    is: inForm ⊗(>) (0..<K), ; [glyph, k]: the form has a stroke k
+    both: unsqueeze(is, 2) × unsqueeze(is, 1),
+    neither: (1 - unsqueeze(is, 2)) × (1 - unsqueeze(is, 1)) × eye(K),
+    cost: (fore ⌊ back × both) + ((1 - both - neither) × 1e12),
+    ; the order that costs least, of all F: [glyph, K]
+    best: order_(argmin((permute(cost, [0, 2, 1]) ⍴ [S, K×K]) matmul transpose(gives), -1)),
+
+    ; 6. Where each stroke goes
+
+    ; [stroke, K]: 1 at the form's stroke that is this stroke's
+    its: best_of = unsqueeze(nth, 1),
+    goes: unsqueeze(its, 1) matmul (put_of ⍴ [S, K, 2×N]) ⍴ [S, N, 2],
+    ; whether the pen made it from the other end than the form has it
+    turned: Σ(Σ(unsqueeze(oneHot(nth ⌊ (K-1), K), 2) × unsqueeze(its, 1) × (back < fore)_of, 2), 1),
+    placed: real × known_of × (inInk_of = inForm_of),
+    points: where(turned ⍴ [S, 1, 1], reverse(goes, 1), goes) ⍴ [S, 2×N],
+    concat((unsqueeze(placed, 1), points × unsqueeze(placed, 1)), 1)
+  }
+},

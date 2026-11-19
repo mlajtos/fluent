@@ -1,7 +1,7 @@
 // Canvas: an unbounded plane to write Fluent on with a pen. Where the pen starts in the
 // open, a line is ruled for it, as large on the screen as the copybook's lines are: ink
 // written zoomed in is finer on the plane, and the readers see every line at the hand's
-// size. A line is read as the ruled paper's lines are (ink.tsx), and the lines' texts, top
+// size. A line is read by the readers of this hand (ink.tsx), and the lines' texts, top
 // to bottom, are one program – a line that reads a name bound further down waits for it,
 // as any line of a program does; under a line is its value.
 //
@@ -21,10 +21,10 @@ import { signal, effect } from "@preact/signals-core"
 import { useSignals } from "@preact/signals-react/runtime"
 import { memo, useEffect, useRef, useState, type JSX } from "react"
 import { type Desc, root } from "./protocol"
-import { BLANK, INK, PALM, PEN, PLAIN, REST, TAP, VALUE, type Line, type Look, type Stroke, Shown, Written, asked, boxOf, forming, hearing, pathOf, penned, problem, program, reading, record, shown, touched, under, worked } from "./ink"
+import { BLANK, PALM, PEN, PLAIN, REST, TAP, VALUE, type Line, type Look, type Stroke, Shown, Tips, Written, asked, boxOf, hearing, inkOf, problem, program, reading, record, shown, touched, traced, under, worked } from "./ink"
 
 // A line of the canvas: where its baseline starts on the plane, how many units of the plane
-// one unit of its ink is, and the line as the ruled paper has it
+// one unit of its ink is, and the line as its readers have it
 type Placed = Line & { id: number, x: number, y: number, k: number }
 type Camera = { x: number, y: number, k: number }
 
@@ -98,7 +98,6 @@ const commit = (home: Placed, stroke: Stroke) => {
   lines.value = gone.size > 0
     ? lines.value.flatMap((each) => (kept(each).length === each.strokes.length ? [each] : kept(each).length > 0 ? [{ ...each, strokes: kept(each) }] : []))
     : [...lines.value.filter(({ id }) => id !== home.id), { ...line, strokes: [...line.strokes, stroke] }]
-  penned(stroke)
 }
 
 // Takes back the last act: a stroke, a scratch, or a line moved. A line whose readers had
@@ -124,6 +123,10 @@ const canvases = (): Promise<Kept[]> => fetch("canvases").then((r) => r.json())
 // the canvas shown, once it is known which, and whether its file has been read
 const open = signal<string | null>(null)
 let loaded = false, timer: ReturnType<typeof setTimeout> | undefined
+// Which writing of the canvas's file the page has (server.ts, ETag). A page keeps its canvas
+// over that writing only: a file written since – by another page, or by ink/canvas.py – is
+// read anew, and what this page had of the canvas is gone.
+let had: string | null = null, keeping: Promise<unknown> = Promise.resolve()
 // the plane's element: the lines as the page shows them
 const plane: { current: HTMLDivElement | null } = { current: null }
 
@@ -150,33 +153,45 @@ const pictured = (): Picture | undefined => {
   return { html: copy.innerHTML, ...box }
 }
 
-// keeps the canvas shown, as it is now
-const save = (): Promise<unknown> => {
-  clearTimeout(timer)
-  if (!loaded || open.value === null) { return Promise.resolve() }
-  const page: Page = { lines: lines.value.map(({ id, x, y, k, strokes }) => ({ id, x, y, k, strokes })), camera: camera.value, picture: pictured() }
-  return fetch(`canvas/${open.value}`, { method: "PUT", body: JSON.stringify(page) }).catch(() => { })
+// reads a canvas's file: nothing is kept meanwhile
+const load = async (name: string) => {
+  loaded = false
+  before.length = 0
+  try {
+    const kept = await fetch(`canvas/${name}`), page: Page = await kept.json()
+    if (open.value !== name) { return }
+    had = kept.headers.get("ETag")
+    lines.value = (page.lines ?? []).map((line) => ({ ...BLANK, ...line }))
+    lastId = Math.max(0, ...lines.value.map(({ id }) => id))
+    if (page.camera) { camera.value = page.camera }
+  } catch { }
+  loaded = true
 }
 
-// Shows another canvas: the one shown is kept first, and nothing is kept while the other's
-// file is read
+// keeps the canvas shown, as it is now – one writing after another, each over the one before
+const save = (): Promise<unknown> => {
+  clearTimeout(timer)
+  return keeping = keeping.then(async () => {
+    const name = open.value
+    if (!loaded || name === null) { return }
+    const page: Page = { lines: lines.value.map(({ id, x, y, k, strokes }) => ({ id, x, y, k, strokes })), camera: camera.value, picture: pictured() }
+    const kept = await fetch(`canvas/${name}`, { method: "PUT", headers: had === null ? {} : { "If-Match": had }, body: JSON.stringify(page) })
+    if (kept.status === 412) { await load(name) } else if (kept.ok) { had = kept.headers.get("ETag") }
+  }).catch(() => { })
+}
+
+// Shows another canvas: the one shown is kept first
 const show = async (name: string) => {
   await save()
   loaded = false
   open.value = name
   lines.value = []; camera.value = { x: 0, y: 0, k: 1 }
-  before.length = 0; lastId = 0
-  window.history.replaceState(null, "", `?canvas=${name}`)
-  try {
-    const page: Page = await (await fetch(`canvas/${name}`)).json()
-    if (open.value !== name) { return }
-    if (page.lines) {
-      lines.value = page.lines.map((line) => ({ ...BLANK, ...line }))
-      lastId = Math.max(0, ...page.lines.map(({ id }) => id))
-    }
-    if (page.camera) { camera.value = page.camera }
-  } catch { }
-  loaded = true
+  had = null
+  // the URL's other words stay
+  const url = new URL(window.location.href)
+  url.searchParams.set("canvas", name)
+  window.history.replaceState(null, "", url)
+  await load(name)
 }
 
 const keep = () => {
@@ -241,14 +256,13 @@ const mount = (ground: HTMLDivElement, wetInk: SVGGElement, rule: HTMLDivElement
     if (!wet) { return }
     const { left, base, scale } = wet
     record(e, wet.stroke, wet.since, (x, y) => [(x - left) / scale, (y - base) / scale])
-    wet.ink.setAttribute("d", pathOf(wet.stroke.points))
+    wet.ink.setAttribute("d", traced(wet.stroke.points))
   }
 
   const dry = () => {
     if (!wet) { return }
     const { home, stroke, ink } = wet
     wet = null
-    forming(false)
     ink.remove()
     commit(home, stroke)
     resting = setTimeout(() => { writing.value = null }, REST)
@@ -301,7 +315,6 @@ const mount = (ground: HTMLDivElement, wetInk: SVGGElement, rule: HTMLDivElement
     wet = { pointer: e.pointerId, home, left: x + home.x * k, base: y + home.y * k, scale: home.k * k, since: e.timeStamp, stroke: { at: Date.now(), points: [] }, ink }
     clearTimeout(resting)
     writing.value = home.id
-    forming(true)
     take(e)
     hear(e, `a stroke in line ${home.id}`)
   }
@@ -383,7 +396,7 @@ const Standing = memo(function Standing({ line, near, held, value, error, View, 
   const { from, to } = reach(line, BAND.ruled), beside = BAND.ruled / (to - from), shade = held ? "#a3a3a3" : "#404040"
   // the picture is as large as what is in it – the band, and ink that goes out of it: a
   // browser paints anew what changes within a picture's box, and not always what hangs out of it
-  const ink = boxOf(line.strokes), top = Math.min(-BAND.over, ink.top - PEN), height = Math.max(BAND.under, ink.bottom + PEN) - top
+  const ink = boxOf(line.strokes), top = Math.min(-BAND.over, ink.top - 2 * PEN), height = Math.max(BAND.under, ink.bottom + 2 * PEN) - top
   return (
     <div className="absolute left-0 top-0" style={{ transform: `translate(${line.x}px, ${line.y}px) scale(${line.k})`, transformOrigin: "0 0" }}>
       <svg width={to - from} height={height} viewBox={`${from} ${top} ${to - from} ${height}`} className="absolute overflow-visible" style={{ left: from, top }}>
@@ -437,6 +450,7 @@ function Canvases(): JSX.Element {
       {/* the touch that closes them must not end on the tab: the two are not one element */}
       <div key="beside" className="fixed inset-0" style={{ touchAction: "none" }} onPointerDown={() => { setAll(null) }} />
       <div className="fixed left-0 inset-y-0 flex flex-col gap-2 p-2 overflow-y-auto select-none bg-neutral-950/95 border-r border-neutral-800">
+        <Tips />
         <div onClick={take(next)} className={`${card} border-neutral-700 text-neutral-400 text-2xl flex items-center justify-center`} style={SMALL}>+</div>
         {all.toReversed().map(({ name }) => (
           <div key={name} onClick={take(name)} className={`${card} ${name === open.value ? "border-neutral-300" : "border-neutral-800"}`}><Small name={name} /></div>
@@ -466,7 +480,7 @@ export function Canvas({ View, colorsOf, run, parse }: Look & { run: (source: st
         {lines.value.map((line) => <Standing key={line.id} line={line} near={neared.value === line.id} held={holding.value === line.id} {...shown(line, line.id, writing.value !== line.id)} View={View} colorsOf={colorsOf} />)}
       </div>
       {/* the stroke under the pen, on a picture as large as the page */}
-      <svg className="absolute inset-0 w-full h-full pointer-events-none"><g transform={`translate(${x} ${y}) scale(${k})`}><g ref={wetInk} stroke={PLAIN} {...INK} /></g></svg>
+      <svg className="absolute inset-0 w-full h-full pointer-events-none"><g transform={`translate(${x} ${y}) scale(${k})`}><g ref={wetInk} {...inkOf(PLAIN)} /></g></svg>
       <div ref={rule} hidden className="absolute left-0 top-0 h-px pointer-events-none" style={{ width: START.before + BAND.ruled, background: `linear-gradient(to right, transparent, #404040 ${START.before}px, transparent)` }} />
       {lines.value.length === 0 && (
         <div className="absolute inset-x-0 bottom-6 text-center text-neutral-600 text-sm pointer-events-none">

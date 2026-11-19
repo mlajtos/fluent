@@ -87,6 +87,10 @@ export const numberText = (n: number, digits = Infinity): string => {
 // written in an older one is migrated as it loads (migrate.ts)
 export const VERSION = 2
 
+// What the page gives with a question: numbers in a shape; the bytes of a safetensors
+// file, which are a list of (name, tensor); or a list of such
+export type Given = { shape: number[], values: Float32Array } | ArrayBuffer | Given[]
+
 // page → worker
 export type ToWorker =
   // the program, and the version it is written in when that is older than VERSION
@@ -111,6 +115,9 @@ export type ToWorker =
   | { t: "paint", slot: number, id: number, size: [number, number] }
   // the display's pixels a unit (devicePixelRatio), at start and on each change
   | { t: "density", value: number }
+  // Fluent the page evaluates for itself, apart from the program: in a scope of its own
+  // that the worker keeps, with `given` bound there first. The value comes back as "told".
+  | { t: "ask", id: number, source: string, given: Record<string, Given> }
 
 export type SourceKind = "camera" | "microphone" | "spectrum" | "pointer"
 
@@ -137,6 +144,10 @@ export type ToPage =
   | { t: "needSampleRate" }
   // the GPU is gone: the page starts another worker
   | { t: "lost", message: string }
+  // what an "ask" came to: a tensor's shape and numbers, nothing for any other value, or
+  // why there is no value; and how long the worker took, in ms – to evaluate the source,
+  // which builds the graph, and from there until the numbers were computed and read
+  | { t: "told", id: number, shape?: number[], values?: Float32Array, error?: string, took: [evaluated: number, computed: number] }
 
 // A short hash of a document's text (cyrb53): an origin names its document by it
 export const documentHash = (text: string): number => {
@@ -185,6 +196,8 @@ let whenDrawn = (answer: () => void) => { answer() }
 export const connect = (post: Send, drawn: (answer: () => void) => void) => {
   send = post
   whenDrawn = drawn
+  for (const { failed } of asks.values()) { failed(new Error("the worker started again")) }
+  asks.clear()
   mirrors.clear()
   payloads.clear()
   root.desc.value = undefined
@@ -259,6 +272,22 @@ export const write = (id: number, value: number | number[] | string | ImageBitma
   send({ t: "set", id, value, seq: held.sent }, image ? [value] : [])
 }
 export const call = (id: number) => { if (mirrors.has(id)) { send({ t: "call", id }) } }
+
+// The page's own questions, each answered once. The scope they are evaluated in is the
+// worker's: a worker that starts again knows none of what the last one was given.
+type Told = { shape: number[], values: Float32Array, took: [evaluated: number, computed: number] } | null
+const asks = new Map<number, { said: (told: Told) => void, failed: (why: Error) => void }>()
+let asked = 0
+export const ask = (source: string, given: Record<string, Given> = {}, transfer: Transferable[] = []): Promise<Told> =>
+  new Promise((said, failed) => {
+    asks.set(++asked, { said, failed })
+    send({ t: "ask", id: asked, source, given }, transfer)
+  })
+export const told = ({ id, shape, values, error, took }: Extract<ToPage, { t: "told" }>) => {
+  const waiting = asks.get(id)
+  asks.delete(id)
+  if (error !== undefined) { waiting?.failed(new Error(error)) } else { waiting?.said(shape && values ? { shape, values, took } : null) }
+}
 
 // MARK: Lexicon
 // The characters each kind of token is made of: the grammar is built from these tables,

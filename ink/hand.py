@@ -2,14 +2,15 @@
 # which of its strokes are one glyph and names the glyphs, with no text. The form of each
 # glyph is the mean of that glyph's cells (mean.py), where the pen wrote the glyph: as large
 # as the hand of this line, and on one baseline. paper/ink/hand.json has both inks of every
-# line, for the page ?hand (hand.tsx); the readers of the ruled paper give a line's form
+# line, for the page ?hand (hand.tsx); the readers of the canvas give a line's form
 # with its text (serve.py).
-import json, os
+import json, os, sys
 import numpy as np
+import mlx.core as mx
 from ink import COPYBOOK, KEPT, written
 from line import SAME, parsed, part
 from mean import cells, even, middle, paired
-from page import LONG, PageReader, read
+from page import LONG, kept_as, read
 
 # the dictated lines in the order line.py has them: of each its text, when the pen began
 # it, and its strokes as points of x, y from the baseline, and pressure
@@ -35,6 +36,23 @@ def shapes(glyphs):
     book = cells()
     return {glyph: middle([strokes for _, strokes in book[glyph]])[0] for glyph in glyphs if book.get(glyph)}
 
+# The forms as they are kept for the readers of lines – serve.py, and hand.fl in the page
+# that reads by itself – in paper/ink/forms.safetensors: `glyphs`, the code point of each
+# glyph that has a form; `strokes`, how many strokes its form has; and `forms`, of each
+# stroke its points' x and y – a form of fewer strokes than the most is filled up with its
+# first stroke, which leaves its box as it is.
+FORMS = os.path.join(KEPT, "forms.safetensors")
+def keep_forms(forms):
+    most = max(map(len, forms.values()))
+    mx.save_safetensors(FORMS, {
+        "glyphs": mx.array([ord(glyph) for glyph in forms]),
+        "strokes": mx.array([len(form) for form in forms.values()]),
+        "forms": mx.array(np.array([[stroke[:, :2] for stroke in form + form[:1] * (most - len(form))] for form in forms.values()], np.float32)),
+    })
+def kept_forms():
+    kept = mx.load(FORMS)
+    return {chr(code): [np.array(stroke, np.float64) for stroke in form[:count]] for code, count, form in zip(kept["glyphs"].tolist(), kept["strokes"].tolist(), kept["forms"])}
+
 # A line as its reader read it – `said`, and `of` each stroke which glyph of that – in the
 # hand's form. Of each glyph: its name, which strokes of the line it is, its form where the
 # pen wrote it, and – when the pen wrote it in as many strokes as the form has – of each
@@ -59,12 +77,12 @@ def formed(said, of, strokes, forms):
     return found, scale
 
 if __name__ == "__main__":
-    _, glyphs = written()
+    # `forms` alone keeps the forms and no more
+    if sys.argv[1:] == ["forms"]: keep_forms(shapes(written()[1])); sys.exit()
+    pages = [kept_as(f"page-{k}") for k in range(4)]
+    readers, glyphs = [reader for reader, _ in pages], pages[0][1]
     forms = shapes(glyphs)
-    readers = []
-    for k in range(4):
-        reader = PageReader(len(glyphs)); reader.load_weights(os.path.join(KEPT, f"page-{k}.safetensors")); reader.eval()
-        readers.append(reader)
+    keep_forms(forms)
     learned = os.path.getmtime(os.path.join(KEPT, "page-0.safetensors"))
     hand, moved, sizes, morphed, faded = [], [], [], 0, 0
     for l, (text, at, strokes, kept) in enumerate(lines()):

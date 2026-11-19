@@ -77,7 +77,7 @@
 import { signal, computed, effect } from "@preact/signals-core"
 import {
   tensorView, labelled, heatScale, numberText, documentHash, VERSION, identifierRegexp, numberRegexp, numberRules, stringRegexp, operatorRegexp, delimiterRegexp,
-  connect, mirrors, payloads, root, update, write, call,
+  connect, mirrors, payloads, root, update, write, call, told,
   type Desc, type Doc, type SourceKind, type ToPage, type ToWorker, type Tree as SyntaxTree, type Where,
 } from "./protocol"
 import { EXAMPLES } from "./examples"
@@ -99,7 +99,6 @@ import { parsed as parsedOnPage } from "./ink"
 import { Canvas } from "./canvas"
 import { Copybook } from "./copybook"
 import { Hand } from "./hand"
-import { Ruled } from "./ruled"
 
 // The workers' scripts: a build names them by their content (build.ts), the dev server by
 // their purpose
@@ -173,6 +172,7 @@ function receive({ data: m, target }: MessageEvent<ToPage>) {
     case "migrated": { program.value = m.source; return }
     case "warnings": { showWarnings(m); return }
     case "lives": case "tensor": { update(m); return }
+    case "told": { told(m); return }
     case "source": { startSource(m.id, m.kind, m.size, m.fps); return }
     case "stop": { pageSources.get(m.id)?.(); pageSources.delete(m.id); return }
     case "took": { taking.delete(m.id); return }
@@ -1710,11 +1710,9 @@ const linked = programInUrl()
 const onCopybook = new URLSearchParams(window.location.search).has("copybook")
 // ?hand is the copybook's lines in the hand's form (hand.tsx): it has no program
 const onHand = new URLSearchParams(window.location.search).has("hand")
-// ?ruled is the ruled paper (ruled.tsx): its lines are the program
-const onRuled = new URLSearchParams(window.location.search).has("ruled")
 // ?canvas is the canvas (canvas.tsx): its lines are the program
 const onCanvas = new URLSearchParams(window.location.search).has("canvas")
-const program = signal(linked?.source ?? (onCopybook || onHand || onRuled || onCanvas ? "" : "Tour"))
+const program = signal(linked?.source ?? (onCopybook || onHand || onCanvas ? "" : "Tour"))
 let written = linked?.v ?? VERSION
 effect(() => { toWorker({ t: "code", source: program.value, v: written }); written = VERSION })
 
@@ -1760,4 +1758,4 @@ function Playground(): JSX.Element {
 
 // what a page of the pen needs of the playground: a value's view, the editor's colors, and the worker to run and to parse
 const toPage = { View, colorsOf, run: (source: string) => { program.value = source }, parse: (source: string) => toWorker({ t: "parse", source }) }
-createRoot(document.getElementById("root")!).render(onCopybook ? <Copybook /> : onHand ? <Hand /> : onRuled ? <Ruled {...toPage} /> : onCanvas ? <Canvas {...toPage} /> : <Playground />)
+createRoot(document.getElementById("root")!).render(onCopybook ? <Copybook /> : onHand ? <Hand /> : onCanvas ? <Canvas {...toPage} /> : <Playground />)

@@ -24,14 +24,20 @@ mkdirSync("paper/canvases", { recursive: true });
 // file is in a folder of its own: the readers learn the files of paper/copybook itself.
 const samplesOf = (text: string) => `paper/copybook/${CANDIDATES.includes(text) ? "candidates/" : ""}${[...text].length === 1 ? text.codePointAt(0)!.toString(16) : `line-${Bun.hash(text).toString(16)}`}.json`;
 
-// a page the browser keeps here as one JSON file, or as the file its request names
+// A page the browser keeps here as one JSON file, or as the file its request names. With
+// the file goes which writing of it this is – when it was written – and a page that says
+// which writing it had (If-Match) keeps its own over that one only: over a file written
+// since, nothing is kept, and the answer is 412.
+const written = (file: string) => `"${existsSync(file) ? statSync(file).mtimeMs : 0}"`;
 const page = (file: string | ((req: Request) => string)) => {
   const of = (req: Request) => typeof file === "string" ? file : file(req);
   return {
-    GET: async (req: Request) => new Response(await Bun.file(of(req)).exists() ? Bun.file(of(req)) : "{}"),
+    GET: async (req: Request) => new Response(await Bun.file(of(req)).exists() ? Bun.file(of(req)) : "{}", { headers: { ETag: written(of(req)) } }),
     PUT: async (req: Request) => {
+      const had = req.headers.get("If-Match");
+      if (had !== null && had !== written(of(req))) return new Response("written since", { status: 412 });
       await Bun.write(of(req), await req.text());
-      return new Response("kept");
+      return new Response("kept", { headers: { ETag: written(of(req)) } });
     },
   };
 };
@@ -131,7 +137,7 @@ const server = serve({
         return new Response("kept");
       },
     },
-    // the readers of the ruled paper and of the canvas (ink.tsx): a written line's strokes in,
+    // the readers of the canvas (ink.tsx): a written line's strokes in,
     // each its points, and out its text, of each stroke which glyph of the text it is of,
     // how sure the readers are of each glyph, and where each stroke goes in the hand's form
     "/reading": async (req: Request) => {
@@ -142,13 +148,22 @@ const server = serve({
         return new Response(String((e as Error).message ?? e), { status: 502 });
       }
     },
-    // the ruled paper's page: the ink of its lines
-    "/ruled": page("paper/ruled.json"),
     // The canvases (canvas.tsx), each a file named by a number, in the order they were
     // begun: a canvas's lines – where each is, how large, and its ink – its camera, and a
     // picture of it.
     // /canvases is all of them, and when each was last written.
     "/canvas/:name": page((req) => `paper/canvases/${Math.trunc(Number((req as Request & { params: { name: string } }).params.name)) || 0}.json`),
+    // the readers that learned from every line, each as page.py kept it, and the hand's
+    // forms as hand.py kept them: a page that reads its ink by itself (readers.ts) takes
+    // them, with the Fluent that reads with them
+    "/readers": () => Response.json(readdirSync("paper/ink").filter((file) => /^canvas-\d+\.safetensors$/.test(file)).sort().map((file) => file.slice(0, -12))),
+    "/readers/:name": (req: Request) => {
+      const { name } = (req as Request & { params: { name: string } }).params;
+      return /^canvas-\d+$/.test(name) ? new Response(Bun.file(`paper/ink/${name}.safetensors`)) : new Response("no such reader", { status: 404 });
+    },
+    "/ink/reader.fl": () => new Response(Bun.file("ink/reader.fl")),
+    "/ink/hand.fl": () => new Response(Bun.file("ink/hand.fl")),
+    "/forms": () => new Response(Bun.file("paper/ink/forms.safetensors")),
     "/canvases": () => Response.json(readdirSync("paper/canvases").filter((file) => /^\d+\.json$/.test(file))
       .map((file) => ({ name: file.slice(0, -5), at: statSync(`paper/canvases/${file}`).mtimeMs })).sort((a, b) => Number(a.name) - Number(b.name))),
     // the copybook's lines as the pen wrote them and in the hand's form (hand.tsx), as
